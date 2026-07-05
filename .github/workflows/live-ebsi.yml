@@ -1,0 +1,31 @@
+name: Live EBSI smoke
+
+# A drift alarm against the REAL EBSI registries. It runs weekly (and on demand),
+# never on pull requests: the offline suite in ci.yml is the gate; this only warns
+# if EBSI's live behaviour diverges from what the adapters expect (a new API
+# version, a changed content type, a moved link). See docs/adr/ADR-0001.
+on:
+  schedule:
+    - cron: "17 6 * * 1"          # Mondays 06:17 UTC
+  workflow_dispatch:
+
+jobs:
+  live:
+    name: Resolve a real DID against pilot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install (core + ebsi + dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[ebsi,dev]"
+
+      - name: Live EBSI smoke test
+        env:
+          OPENVC_EBSI_LIVE: "1"
+        run: pytest -q tests/test_ebsi_verifier.py -k live

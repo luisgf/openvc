@@ -17,10 +17,10 @@ jobs:
         python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -38,8 +38,10 @@ jobs:
 
       # Offline tier only: the live EBSI smoke test stays opt-in
       # (OPENVC_EBSI_LIVE=1) so CI never depends on an external service.
-      - name: Test (pytest)
-        run: pytest -q
+      - name: Test (pytest + coverage)
+        run: >-
+          pytest -q --cov=openvc --cov=openvc_ebsi
+          --cov-report=term-missing --cov-fail-under=80
 
   publish:
     name: Publish to PyPI
@@ -54,10 +56,10 @@ jobs:
     permissions:
       id-token: write        # OIDC token for Trusted Publishing
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 

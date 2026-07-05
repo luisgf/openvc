@@ -46,13 +46,14 @@ not here).
   and a recorded accreditation's ES256 signature verifies against the recorded
   DID document. Recording them caught (and fixed) a `406` content-negotiation bug
   and a wrong TIR v5 `attribute.body` mapping.
+- **CI hardening** — a coverage gate (`--cov-fail-under=80`), a scheduled
+  live-EBSI drift alarm (`.github/workflows/live-ebsi.yml`), Dependabot (pip +
+  actions), and Node-24 action versions. Published to PyPI as `openvc-core`.
 
 ## Next
 
 1. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the
    same `DataIntegrityProofSuite` interface (larger; no rush).
-2. **Packaging/CI polish** — coverage reporting and a live-EBSI job gated behind a
-   schedule. (Published to PyPI as `openvc-core`; the core install is free.)
 
 ## Deliberately out of scope
 

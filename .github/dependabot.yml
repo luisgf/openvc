@@ -1,0 +1,19 @@
+# Keep runtime/dev dependencies and GitHub Actions fresh (and surface security
+# advisories). Grouped so each ecosystem opens one batched PR per week, not many.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
