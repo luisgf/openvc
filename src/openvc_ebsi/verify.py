@@ -153,7 +153,8 @@ def verify_ebsi_badge(
         try:
             chain = verify_trust_chain(
                 verified.issuer, cred_types, resolver=resolver,
-                proof_suite=proof_suite, anchors=trust_anchors)
+                proof_suite=proof_suite, anchors=trust_anchors,
+                resolve_status_list=resolve_status_list)
         except TrustChainError:
             if require_trust:
                 raise

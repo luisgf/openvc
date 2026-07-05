@@ -18,7 +18,10 @@ not here).
 - **Recursive trust chain** (`openvc_ebsi.trust`) — walk `TI → TAO → RootTAO`,
   verifying every accreditation's signature against the accreditor's resolved
   key, up to a caller-supplied trusted RootTAO anchor. Wired into
-  `verify_ebsi_badge` via `trust_anchors`.
+  `verify_ebsi_badge` via `trust_anchors`. Enforces **per-hop delegation
+  scoping** (each accreditor's `accreditedFor` must be a superset of the
+  delegated scope) and, with a `resolve_status_list`, **status-list revocation of
+  the accreditations** themselves (a revoked accreditation breaks the chain).
 - **Status-list revocation** (`openvc.status`) — W3C Bitstring Status List bit
   codec (gzip + base64url, MSB-first) + `credentialStatus` parsing +
   `check_credential_status`. Wired into `verify_ebsi_badge` via
@@ -33,16 +36,10 @@ not here).
 
 ## Next
 
-1. **Per-hop delegation scoping (chain refinement).** The recursive chain
-   (`openvc_ebsi.trust.verify_trust_chain`, wired via `verify_ebsi_badge`'s
-   `trust_anchors`) verifies each accreditation's signature and scopes the *leaf*
-   hop to the credential's types; higher hops only require a valid accreditation.
-   Refine to enforce that each accreditor's `accreditedFor` is a superset of what
-   it delegates, and status-list-check the accreditations themselves.
-2. **Token Status List (IETF)** — the other status encoding (1/2/4/8-bit
+1. **Token Status List (IETF)** — the other status encoding (1/2/4/8-bit
    statuses, CBOR/JWT), behind the same `openvc.status` interface as the W3C
    Bitstring list.
-3. **Recorded golden fixtures.** Replace the representative inline fixtures in the
+2. **Recorded golden fixtures.** Replace the representative inline fixtures in the
    TIR-v5 test with real recorded conformance responses, turning the adapter tests
    into true drift alarms.
 4. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the

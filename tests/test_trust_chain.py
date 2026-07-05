@@ -14,14 +14,37 @@ import pytest
 
 from openvc.keys import P256SigningKey
 from openvc.proof.vc_jwt import VcJwtProofSuite
+from openvc.status import encode_bitstring, set_status_bit
 from openvc_ebsi.http import HttpNotFound
 from openvc_ebsi.trust import (
     AccreditationInvalid,
+    AccreditationRevoked,
     NoTrustedAnchor,
     verify_trust_chain,
 )
 from openvc_ebsi.verify import verify_ebsi_badge
 from openvc_ebsi.versioning import DidEbsiResolver, TirV5
+
+ACC_STATUS_URL = "https://tao.example/acc-status/1"
+
+
+def _acc_status_entry(index: str = "3") -> dict:
+    return {
+        "id": f"{ACC_STATUS_URL}#{index}",
+        "type": "BitstringStatusListEntry",
+        "statusPurpose": "revocation",
+        "statusListIndex": index,
+        "statusListCredential": ACC_STATUS_URL,
+    }
+
+
+def _acc_status_vc(*set_indices: int) -> dict:
+    bits = bytearray(32)
+    for i in set_indices:
+        set_status_bit(bits, i, 1)
+    return {"credentialSubject": {"statusPurpose": "revocation",
+                                  "encodedList": encode_bitstring(bytes(bits))}}
+
 
 BASE = "https://api-pilot.ebsi.eu"
 LEAF = "did:ebsi:zLeafIssuerAAAAAAAAAA"
@@ -55,7 +78,8 @@ def _did_doc(did: str, sk: P256SigningKey) -> dict:
 
 
 def _accreditation(suite, signer: P256SigningKey, *, subject: str,
-                   accredited_by: str, issuer_type: str, accredited_for: tuple[str, ...]) -> str:
+                   accredited_by: str, issuer_type: str, accredited_for: tuple[str, ...],
+                   credential_status: dict | None = None) -> str:
     acc = {
         "id": f"urn:uuid:acc-{subject[-4:]}",
         "type": ["VerifiableCredential", "VerifiableAccreditationToAttest"],
@@ -68,6 +92,8 @@ def _accreditation(suite, signer: P256SigningKey, *, subject: str,
             "accreditedFor": list(accredited_for),
         },
     }
+    if credential_status is not None:
+        acc["credentialStatus"] = credential_status
     return suite.sign(acc, signing_key=signer)
 
 
@@ -81,7 +107,9 @@ def _tir_routes(base_issuer_url: str, body_token: str, tag: str) -> dict:
     }
 
 
-def build_chain(*, mid_issuer_type: str = "TAO") -> SimpleNamespace:
+def build_chain(*, mid_issuer_type: str = "TAO",
+                mid_accredited_for: tuple[str, ...] = TYPES,
+                mid_status: dict | None = None) -> SimpleNamespace:
     """A valid LEAF -(TAO)-> MID -(RootTAO)-> ROOT chain. Returns everything a
     test needs, including the shared routes dict it can mutate."""
     suite = VcJwtProofSuite()
@@ -101,7 +129,8 @@ def build_chain(*, mid_issuer_type: str = "TAO") -> SimpleNamespace:
     leaf_acc = _accreditation(suite, mid_sk, subject=LEAF, accredited_by=MID,
                               issuer_type="TI", accredited_for=TYPES)
     mid_acc = _accreditation(suite, root_sk, subject=MID, accredited_by=ROOT,
-                             issuer_type=mid_issuer_type, accredited_for=TYPES)
+                             issuer_type=mid_issuer_type, accredited_for=mid_accredited_for,
+                             credential_status=mid_status)
 
     tir = f"{BASE}/trusted-issuers-registry/v5/issuers"
     routes: dict[str, dict] = {
@@ -193,3 +222,62 @@ def test_verify_badge_untrusted_anchor_optional_returns_untrusted():
     assert result.trusted is False
     assert result.chain is None
     assert result.issuer == LEAF          # signature still verified
+
+
+def test_chain_records_delegated_scope():
+    c = build_chain()
+    chain = verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
+                               proof_suite=c.suite, anchors={ROOT})
+    assert chain.scope == frozenset({"OpenBadgeCredential"})
+
+
+# --------------------------------------------------------------------------- #
+# Refinement 1: per-hop delegation scoping
+# --------------------------------------------------------------------------- #
+
+def test_delegation_scope_enforced_superset():
+    # MID is only accredited for a different type, so it cannot delegate
+    # OpenBadgeCredential to LEAF -> the chain must break at MID.
+    c = build_chain(mid_accredited_for=("SomeOtherCredential",))
+    with pytest.raises(NoTrustedAnchor, match="delegated types"):
+        verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
+                           proof_suite=c.suite, anchors={ROOT})
+
+
+def test_delegation_ok_when_parent_scope_is_superset():
+    # MID accredited for a superset (OBC + extra) can delegate OBC -> trusted.
+    c = build_chain(mid_accredited_for=("OpenBadgeCredential", "OtherCredential"))
+    chain = verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
+                               proof_suite=c.suite, anchors={ROOT})
+    assert chain.anchor == ROOT
+
+
+# --------------------------------------------------------------------------- #
+# Refinement 2: status-list revocation of an accreditation itself
+# --------------------------------------------------------------------------- #
+
+def test_revoked_accreditation_via_status_breaks_chain():
+    c = build_chain(mid_status=_acc_status_entry("3"))
+    resolve = {ACC_STATUS_URL: _acc_status_vc(3)}.__getitem__     # bit 3 set
+    with pytest.raises(AccreditationRevoked):
+        verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
+                           proof_suite=c.suite, anchors={ROOT},
+                           resolve_status_list=resolve)
+
+
+def test_accreditation_status_clear_still_trusts():
+    c = build_chain(mid_status=_acc_status_entry("3"))
+    resolve = {ACC_STATUS_URL: _acc_status_vc(9)}.__getitem__     # bit 3 clear
+    chain = verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
+                               proof_suite=c.suite, anchors={ROOT},
+                               resolve_status_list=resolve)
+    assert chain.anchor == ROOT
+
+
+def test_verify_badge_recursive_checks_accreditation_status():
+    # End-to-end: a revoked accreditation surfaces through verify_ebsi_badge.
+    c = build_chain(mid_status=_acc_status_entry("3"))
+    resolve = {ACC_STATUS_URL: _acc_status_vc(3)}.__getitem__
+    with pytest.raises(AccreditationRevoked):
+        verify_ebsi_badge(c.token, resolver=c.resolver, proof_suite=c.suite,
+                          trust_anchors={ROOT}, resolve_status_list=resolve)

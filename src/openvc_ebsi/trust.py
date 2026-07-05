@@ -11,23 +11,25 @@ the library honest about where trust actually comes from.
 
 What each hop checks (defence in depth):
 
-  * a non-revoked accreditation exists (authorising the credential's types at the
-    first hop; any non-revoked accreditation at higher hops — per-hop type
-    scoping is a documented refinement);
-  * the accreditation VC-JWT's ``iss`` equals the ``accreditedBy`` DID it claims;
-  * that VC-JWT's signature verifies against the accreditor's *resolved* key;
-  * the accreditation's subject is the DID being accredited at this hop.
-
-Not yet covered (see docs/ROADMAP.md): status-list revocation of the
-accreditations themselves, and strict per-hop ``accreditedFor`` delegation
-subset checks.
+  * **Delegation scoping.** The leaf must be accredited for (at least one of) the
+    credential's types; the intersection becomes the *delegated scope*. Every
+    accreditor above it must be accredited for a **superset** of that scope — a
+    TAO cannot vouch for a type it was never authorised to accredit.
+  * **Signature & identity.** The accreditation VC-JWT's ``iss`` equals the
+    ``accreditedBy`` DID it names, its signature verifies against that
+    accreditor's *resolved* key, and its subject is the DID being accredited.
+  * **Revocation (optional).** With a ``resolve_status_list`` the accreditation's
+    own ``credentialStatus`` is checked too — a revoked accreditation breaks the
+    chain, not just a TIR ``revoked`` role.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from openvc.did.base import DidResolutionError
 from openvc.proof.vc_jwt import ProofError, VcJwtProofSuite
+from openvc.status import ResolveStatusList, check_credential_status
 
 from .http import HttpNotFound
 from .models import Accreditation, IssuerRecord
@@ -39,6 +41,7 @@ DEFAULT_MAX_DEPTH = 6
 class TrustChainError(Exception): ...
 class NoTrustedAnchor(TrustChainError): ...
 class AccreditationInvalid(TrustChainError): ...
+class AccreditationRevoked(TrustChainError): ...
 
 
 @dataclass(frozen=True)
@@ -53,22 +56,29 @@ class TrustChain:
     subject: str                 # the leaf issuer the walk started from
     anchor: str                  # the trusted RootTAO the chain terminated at
     hops: tuple[TrustHop, ...]   # leaf -> ... -> anchor, in order
+    scope: frozenset[str]        # the delegated credential types the chain vouches for
 
 
 def _pick_accreditation(
-    record: IssuerRecord, credential_types: list[str] | None
+    record: IssuerRecord, needed: set[str], *, leaf: bool
 ) -> Accreditation | None:
-    """First non-revoked accreditation that authorises the wanted types (or any
-    non-revoked one when *credential_types* is None, for higher hops)."""
+    """A non-revoked accreditation authorising *needed*.
+
+    At the leaf its ``accreditedFor`` must **intersect** *needed* (the issuer is
+    authorised for at least one of the credential's types); above the leaf it
+    must be a **superset** of the delegated scope (the accreditor can delegate
+    everything beneath it).
+    """
     if not record.has_attributes:
         return None
-    wanted = set(credential_types) if credential_types is not None else None
     for acc in record.accreditations:
         if acc.is_revoked:
             continue
-        if wanted is None:
-            return acc
-        if not acc.credential_types or (wanted & set(acc.credential_types)):
+        authorised = set(acc.credential_types)
+        if leaf:
+            if authorised & needed:
+                return acc
+        elif needed <= authorised:
             return acc
     return None
 
@@ -76,9 +86,10 @@ def _pick_accreditation(
 def _verify_accreditation(
     acc: Accreditation, *, subject: str, accreditor: str,
     resolver: DidEbsiResolver, proof_suite: VcJwtProofSuite,
-) -> None:
+) -> dict[str, Any]:
     """Verify the accreditation VC-JWT was signed by *accreditor* and issued for
-    *subject*. Raises :class:`AccreditationInvalid` on any inconsistency."""
+    *subject*; return its verified credential (the ``vc`` object). Raises
+    :class:`AccreditationInvalid` on any inconsistency."""
     if not acc.credential_jwt:
         raise AccreditationInvalid(
             f"no raw accreditation token for {subject!r}; cannot verify its proof")
@@ -107,6 +118,7 @@ def _verify_accreditation(
     if verified.subject and verified.subject != subject:
         raise AccreditationInvalid(
             f"accreditation subject {verified.subject!r} != accredited DID {subject!r}")
+    return verified.credential
 
 
 def verify_trust_chain(
@@ -117,23 +129,24 @@ def verify_trust_chain(
     proof_suite: VcJwtProofSuite,
     anchors: set[str],
     max_depth: int = DEFAULT_MAX_DEPTH,
+    resolve_status_list: ResolveStatusList | None = None,
 ) -> TrustChain:
     """Walk ``subject_did`` up to a trusted RootTAO in *anchors*.
 
     Returns the verified :class:`TrustChain` on success; raises
-    :class:`NoTrustedAnchor` if no anchor is reached within *max_depth* hops (or
-    the issuer has no usable accreditation), or :class:`AccreditationInvalid` if
-    any accreditation on the path fails its signature/consistency checks.
+    :class:`NoTrustedAnchor` (no reachable anchor / no accreditation for the
+    delegated scope), :class:`AccreditationInvalid` (a bad signature/identity on
+    the path), or :class:`AccreditationRevoked` (an accreditation revoked via its
+    own status list, when *resolve_status_list* is given).
     """
     if subject_did in anchors:                       # the leaf is itself an anchor
-        return TrustChain(subject=subject_did, anchor=subject_did, hops=())
+        return TrustChain(subject=subject_did, anchor=subject_did, hops=(),
+                          scope=frozenset(credential_types))
 
     hops: list[TrustHop] = []
     current = subject_did
     seen = {current}
-    # Only the leaf hop is scoped to the credential's types; higher hops just
-    # need to be accredited (registered + non-revoked).
-    wanted: list[str] | None = credential_types
+    scope: set[str] | None = None                    # delegated types, fixed at the leaf
 
     for _ in range(max_depth):
         try:
@@ -143,29 +156,42 @@ def verify_trust_chain(
             # rather than a leaked 404. (At the leaf, the issuer isn't registered.)
             raise NoTrustedAnchor(
                 f"{current!r} is not in the Trusted Issuers Registry") from exc
-        acc = _pick_accreditation(record, wanted)
+
+        is_leaf = scope is None
+        needed = set(credential_types) if is_leaf else scope
+        assert needed is not None
+        acc = _pick_accreditation(record, needed, leaf=is_leaf)
         if acc is None:
             raise NoTrustedAnchor(
-                f"{current!r} has no valid accreditation"
-                + (f" for types {wanted}" if wanted is not None else ""))
+                f"{current!r} has no valid accreditation for "
+                + ("the credential's types" if is_leaf
+                   else f"the delegated types {sorted(needed)}"))
 
         accreditor = acc.tao
         if not accreditor:
             raise AccreditationInvalid(
                 f"accreditation for {current!r} names no accreditor (accreditedBy)")
 
-        _verify_accreditation(acc, subject=current, accreditor=accreditor,
-                              resolver=resolver, proof_suite=proof_suite)
+        vc = _verify_accreditation(acc, subject=current, accreditor=accreditor,
+                                   resolver=resolver, proof_suite=proof_suite)
+        if resolve_status_list is not None:
+            status = check_credential_status(vc, resolve_status_list=resolve_status_list)
+            if status.revoked:
+                raise AccreditationRevoked(
+                    f"the accreditation for {current!r} is revoked via its status list")
+
+        if is_leaf:                                  # fix the delegated scope
+            scope = set(acc.credential_types) & set(credential_types)
         hops.append(TrustHop(subject=current, accreditor=accreditor, accreditation=acc))
 
         if accreditor in anchors:                    # reached the trust root
-            return TrustChain(subject=subject_did, anchor=accreditor, hops=tuple(hops))
+            return TrustChain(subject=subject_did, anchor=accreditor,
+                              hops=tuple(hops), scope=frozenset(scope or ()))
         if accreditor in seen:
             raise TrustChainError(f"accreditation cycle detected at {accreditor!r}")
 
         seen.add(accreditor)
         current = accreditor
-        wanted = None                                # higher hops: any accreditation
 
     raise NoTrustedAnchor(
         f"no trusted anchor within {max_depth} hops from {subject_did!r}")
