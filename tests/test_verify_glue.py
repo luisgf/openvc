@@ -12,6 +12,7 @@ import pytest
 
 from openvc.keys import P256SigningKey
 from openvc.proof.vc_jwt import SignatureInvalid, VcJwtProofSuite
+from openvc.status import CredentialRevoked, encode_bitstring, set_status_bit
 from openvc_ebsi.http import HttpNotFound
 from openvc_ebsi.verify import (
     IssuerNotTrusted,
@@ -19,6 +20,30 @@ from openvc_ebsi.verify import (
     verify_ebsi_badge,
 )
 from openvc_ebsi.versioning import DidEbsiResolver, TirV5
+
+STATUS_URL = "https://issuer.example/status/1"
+
+
+def _status_entry(index: str = "17") -> dict:
+    return {
+        "id": f"{STATUS_URL}#{index}",
+        "type": "BitstringStatusListEntry",
+        "statusPurpose": "revocation",
+        "statusListIndex": index,
+        "statusListCredential": STATUS_URL,
+    }
+
+
+def _status_vc(*set_indices: int, purpose: str = "revocation") -> dict:
+    bits = bytearray(32)
+    for i in set_indices:
+        set_status_bit(bits, i, 1)
+    return {
+        "type": ["VerifiableCredential", "BitstringStatusListCredential"],
+        "credentialSubject": {"statusPurpose": purpose,
+                              "encodedList": encode_bitstring(bytes(bits))},
+    }
+
 
 BASE = "https://api-pilot.ebsi.eu"
 ISSUER = "did:ebsi:zIssuerAAAAAAAAAAAAAAAAA"
@@ -39,7 +64,8 @@ class StubFetch:
             raise HttpNotFound("no stub route", url=url) from None
 
 
-def _badge_token(suite: VcJwtProofSuite, sk: P256SigningKey) -> str:
+def _badge_token(suite: VcJwtProofSuite, sk: P256SigningKey,
+                 credential_status: dict | None = None) -> str:
     credential = {
         "@context": ["https://www.w3.org/2018/credentials/v1"],
         "id": "urn:uuid:badge-1",
@@ -47,6 +73,8 @@ def _badge_token(suite: VcJwtProofSuite, sk: P256SigningKey) -> str:
         "issuer": ISSUER,
         "credentialSubject": {"id": "did:key:z6MkSubject", "achievement": {"name": "T"}},
     }
+    if credential_status is not None:
+        credential["credentialStatus"] = credential_status
     return suite.sign(credential, signing_key=sk)
 
 
@@ -69,14 +97,15 @@ def _accreditation_token(suite: VcJwtProofSuite, *, issuer_type: str,
 
 def _make(*, has_attributes: bool = True, issuer_type: str = "TI",
           accredited_for: tuple[str, ...] = ("OpenBadgeCredential",),
-          publish_key: P256SigningKey | None = None, badge_kid: str | None = None):
+          publish_key: P256SigningKey | None = None, badge_kid: str | None = None,
+          credential_status: dict | None = None):
     """Build (token, resolver) for a scenario. ``publish_key`` overrides the key
     the DID document publishes (for the wrong-key case); ``badge_kid`` overrides
     the kid the badge is signed with (for the VM-not-found case)."""
     suite = VcJwtProofSuite()
     kid = badge_kid or f"{ISSUER}#key-1"
     sk = P256SigningKey.generate(kid=kid)
-    token = _badge_token(suite, sk)
+    token = _badge_token(suite, sk, credential_status)
 
     published = publish_key or sk
     did_doc = {
@@ -161,3 +190,31 @@ def test_wrong_published_key_fails_signature():
     token, resolver, suite = _make(publish_key=P256SigningKey.generate(kid=f"{ISSUER}#key-1"))
     with pytest.raises(SignatureInvalid):
         verify_ebsi_badge(token, resolver=resolver, proof_suite=suite)
+
+
+# --------------------------------------------------------------------------- #
+# revocation wiring (resolve_status_list)
+# --------------------------------------------------------------------------- #
+
+def test_revoked_credential_raises():
+    token, resolver, suite = _make(credential_status=_status_entry("17"))
+    resolve = {STATUS_URL: _status_vc(17)}.__getitem__          # bit 17 set
+    with pytest.raises(CredentialRevoked):
+        verify_ebsi_badge(token, resolver=resolver, proof_suite=suite,
+                          resolve_status_list=resolve)
+
+
+def test_non_revoked_credential_carries_status():
+    token, resolver, suite = _make(credential_status=_status_entry("17"))
+    resolve = {STATUS_URL: _status_vc(3)}.__getitem__           # bit 17 clear
+    result = verify_ebsi_badge(token, resolver=resolver, proof_suite=suite,
+                               resolve_status_list=resolve)
+    assert result.status is not None
+    assert result.status.revoked is False
+    assert result.trusted is True
+
+
+def test_status_not_checked_without_resolver():
+    token, resolver, suite = _make(credential_status=_status_entry("17"))
+    result = verify_ebsi_badge(token, resolver=resolver, proof_suite=suite)
+    assert result.status is None            # opt-in: no resolver, no check

@@ -19,6 +19,10 @@ not here).
   verifying every accreditation's signature against the accreditor's resolved
   key, up to a caller-supplied trusted RootTAO anchor. Wired into
   `verify_ebsi_badge` via `trust_anchors`.
+- **Status-list revocation** (`openvc.status`) — W3C Bitstring Status List bit
+  codec (gzip + base64url, MSB-first) + `credentialStatus` parsing +
+  `check_credential_status`. Wired into `verify_ebsi_badge` via
+  `resolve_status_list` (a set revocation bit raises `CredentialRevoked`).
 
 ## Next
 
@@ -28,9 +32,9 @@ not here).
    hop to the credential's types; higher hops only require a valid accreditation.
    Refine to enforce that each accreditor's `accreditedFor` is a superset of what
    it delegates, and status-list-check the accreditations themselves.
-2. **Status-list revocation** (`openvc/status/`) — Bitstring / Token Status List,
-   shared by any VC profile. Then wire it as the final step of `verify_ebsi_badge`
-   (follow the issuer's status proxy from the TIR).
+2. **Token Status List (IETF)** — the other status encoding (1/2/4/8-bit
+   statuses, CBOR/JWT), behind the same `openvc.status` interface as the W3C
+   Bitstring list.
 3. **Recorded golden fixtures.** Replace the representative inline fixtures in the
    TIR-v5 test with real recorded conformance responses, turning the adapter tests
    into true drift alarms.

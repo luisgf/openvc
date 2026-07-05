@@ -25,6 +25,12 @@ from typing import Any
 
 from openvc.did.base import DidResolutionError
 from openvc.proof.vc_jwt import VcJwtProofSuite, VerifiedCredential
+from openvc.status import (
+    CredentialRevoked,
+    ResolveStatusList,
+    StatusResult,
+    check_credential_status,
+)
 
 from .models import Accreditation, IssuerRecord
 from .trust import TrustChain, TrustChainError, verify_trust_chain
@@ -54,6 +60,7 @@ class VerifiedEbsiBadge:
     issuer_record: IssuerRecord | None
     verified: VerifiedCredential           # the raw proof-suite result
     chain: TrustChain | None = None        # the recursive path, if walked
+    status: StatusResult | None = None     # revocation check, if resolve given
 
 
 def _credential_types(credential: dict[str, Any]) -> list[str]:
@@ -94,6 +101,7 @@ def verify_ebsi_badge(
     expected_types: list[str] | None = None,
     require_trust: bool = True,
     trust_anchors: set[str] | None = None,
+    resolve_status_list: ResolveStatusList | None = None,
     audience: str | None = None,
 ) -> VerifiedEbsiBadge:
     """Verify an EBSI-issued VC-JWT badge end to end.
@@ -111,6 +119,12 @@ def verify_ebsi_badge(
     level: :class:`IssuerNotTrusted`; recursive: a
     :class:`~openvc_ebsi.trust.TrustChainError`) or is returned with
     ``trusted=False``.
+
+    ``resolve_status_list`` (if given) enables revocation checking: it must fetch
+    and **verify** a status-list credential URL and return it as a dict. A set
+    revocation bit raises :class:`~openvc.status.CredentialRevoked` regardless of
+    ``require_trust`` — a revoked credential is invalid. The check runs only after
+    the signature verifies.
     """
     # 1) select the key to resolve (UNTRUSTED peek).
     issuer_hint, kid = proof_suite.peek_issuer(token)
@@ -155,6 +169,15 @@ def verify_ebsi_badge(
                 f"issuer {verified.issuer!r} has no valid accreditation for "
                 f"types {cred_types}")
 
+    # 6) revocation — a set revocation bit invalidates the credential outright.
+    status: StatusResult | None = None
+    if resolve_status_list is not None:
+        status = check_credential_status(
+            verified.credential, resolve_status_list=resolve_status_list)
+        if status.revoked:
+            raise CredentialRevoked(
+                f"credential {verified.credential.get('id')!r} is revoked")
+
     return VerifiedEbsiBadge(
         credential=verified.credential,
         issuer=verified.issuer,
@@ -164,4 +187,5 @@ def verify_ebsi_badge(
         issuer_record=record,
         verified=verified,
         chain=chain,
+        status=status,
     )
