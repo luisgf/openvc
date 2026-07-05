@@ -27,18 +27,23 @@ builds on. It never imports anything upward.
 ## Layout
 
 ```
-src/openvc/           core — knows nothing about EBSI or badges
-    keys.py           Ed25519 (EdDSA) & P-256 (ES256) SigningKey backends
-    proof/vc_jwt.py   VcJwtProofSuite: peek / verify / sign
-    did/base.py       DidDocument, resolver protocol, W3C parser, registry
-    did/did_key.py    offline did:key (Ed25519, P-256)
-    did/did_web.py    did:web -> https -> fetch (fetch is injected)
-    fetch.py          stdlib SSRF-guarded https JSON fetch for did:web
-src/openvc_ebsi/      optional EBSI plugin (read-only); depends on openvc only
-    http.py           EbsiHttpClient: TTL cache, retries, host allow-list
-    versioning.py     DID Registry / TIR version adapters + DidEbsiResolver
-    verify.py         verify_ebsi_badge: signature + issuer trust check
-    models.py         Accreditation, IssuerRecord (version-agnostic domain)
+src/openvc/                core — knows nothing about EBSI or badges
+    keys.py                Ed25519 (EdDSA) & P-256 (ES256) SigningKey backends
+    multibase.py           base58btc multibase + multicodec varint
+    proof/vc_jwt.py        VcJwtProofSuite: peek / verify / sign
+    proof/data_integrity.py DataIntegrityProofSuite: eddsa-rdfc-2022 (needs pyld)
+    proof/contexts/        bundled JSON-LD contexts + offline document loader
+    did/base.py            DidDocument, resolver protocol, W3C parser, registry
+    did/did_key.py         offline did:key (Ed25519, P-256)
+    did/did_web.py         did:web -> https -> fetch (fetch is injected)
+    fetch.py               SSRF- + DNS-rebinding-safe https JSON fetch for did:web
+    status/                W3C Bitstring Status List (revocation/suspension)
+src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
+    http.py                EbsiHttpClient: TTL cache, retries, host allow-list
+    versioning.py          DID Registry / TIR version adapters + DidEbsiResolver
+    trust.py               recursive TI->TAO->RootTAO trust-chain verification
+    verify.py              verify_ebsi_badge: signature + trust + revocation
+    models.py              Accreditation, IssuerRecord (version-agnostic domain)
 ```
 
 **Dependency rule:** `openvc` imports nothing upward. `openvc_ebsi` depends on
@@ -47,9 +52,10 @@ src/openvc_ebsi/      optional EBSI plugin (read-only); depends on openvc only
 ## Install
 
 ```sh
-pip install openvc            # core: sign/verify VC-JWT, did:key, did:web
-pip install "openvc[ebsi]"    # + the EBSI registry client (httpx)
-pip install -e ".[all]"       # everything + dev tools (from a checkout)
+pip install openvc                    # core: VC-JWT, did:key, did:web, status list
+pip install "openvc[ebsi]"            # + the EBSI registry client (httpx)
+pip install "openvc[data-integrity]"  # + eddsa-rdfc-2022 Data Integrity (pyld)
+pip install -e ".[all]"               # everything + dev tools (from a checkout)
 ```
 
 ## Quick start
@@ -106,12 +112,14 @@ with for_ebsi("pilot") as http:
 
 ## Status
 
-Alpha. The proof suite, key backends, DID resolution (`did:key`, `did:web`,
-`did:ebsi` read), the EBSI registry client, and the issuer-trust glue are
-implemented and tested offline; an opt-in live EBSI smoke test runs against the
-pilot/conformance environments. See [docs/ROADMAP.md](docs/ROADMAP.md) for what
-is next (status-list revocation, the full recursive TAO→RootTAO chain walk, a
-Data Integrity proof suite, recorded golden fixtures).
+Alpha. Both proof suites (VC-JWT and eddsa-rdfc-2022 Data Integrity — the latter
+verified byte-for-byte against the official W3C vc-di-eddsa vector), the key
+backends, DID resolution (`did:key`, `did:web`, `did:ebsi` read), the EBSI
+registry client, the recursive TI→TAO→RootTAO trust chain, and W3C Bitstring
+Status List revocation are implemented and tested offline; an opt-in live EBSI
+smoke test runs against the pilot/conformance environments. See
+[docs/ROADMAP.md](docs/ROADMAP.md) for what is next (recorded golden fixtures,
+Token Status List, per-hop delegation scoping, PyPI publish).
 
 `did:ebsi` write/onboarding (JSON-RPC + OID4VP) is **out of scope** — this is a
 verifier/issuer library, not a node operator.

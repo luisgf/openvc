@@ -26,6 +26,10 @@ not here).
 - **DNS-rebinding-safe `did:web` fetch** — the connection is pinned to the
   validated IP (resolve → validate → connect to that IP) while TLS SNI, cert
   validation and Host use the hostname, closing the TOCTOU window.
+- **Data Integrity proof suite** (`openvc.proof.data_integrity`) —
+  eddsa-rdfc-2022 embedded proofs (RDF canonicalization via pyld, offline
+  bundled contexts), the second profile alongside VC-JWT. Verified byte-for-byte
+  against the official W3C vc-di-eddsa test vector.
 
 ## Next
 
@@ -41,10 +45,8 @@ not here).
 3. **Recorded golden fixtures.** Replace the representative inline fixtures in the
    TIR-v5 test with real recorded conformance responses, turning the adapter tests
    into true drift alarms.
-4. **Data Integrity proof suite** (`openvc/proof/data_integrity.py`) — the second
-   profile behind the same interface as `VcJwtProofSuite` (eddsa-rdfc-2022).
-   Needs a JSON-LD canonicalization dependency (pyld), so it lands behind an
-   optional extra.
+4. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the
+   same `DataIntegrityProofSuite` interface (larger; no rush).
 5. **Packaging/CI polish** — publish a placeholder to PyPI (`openvc` is free),
    coverage reporting, and a live-EBSI job gated behind a schedule.
 
