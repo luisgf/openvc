@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']          # pushing a vX.Y.Z tag builds, tests, and publishes
   pull_request:
   workflow_dispatch:
 
@@ -39,3 +40,33 @@ jobs:
       # (OPENVC_EBSI_LIVE=1) so CI never depends on an external service.
       - name: Test (pytest)
         run: pytest -q
+
+  publish:
+    name: Publish to PyPI
+    # Fires only when a vX.Y.Z tag is pushed, and only if the whole test matrix
+    # passed. Uses PyPI Trusted Publishing (OIDC) — no API token in the repo.
+    # PREREQUISITE: configure openvc's trusted publisher on PyPI (this repo +
+    # this workflow + the `pypi` environment) before the first tag push.
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
