@@ -53,15 +53,19 @@ not here).
   Data Integrity cryptosuite with selective disclosure: issuer base proof →
   holder derived proof (reveal chosen JSON pointers) → verify, with HMAC-blinded
   blank nodes and a hand-rolled CBOR proof value (checked against RFC 8949).
-  Round-trip + tamper/over-disclosure tested.
+  Round-trip + tamper/over-disclosure tested, and **interop-validated against the
+  official W3C `vc-di-ecdsa` vectors** (`tests/fixtures/ecdsa_sd/`): `verify`
+  accepts reference-produced derived proofs, and our issuer-side canonical N-Quads
+  and `proofHash`/`mandatoryHash` match the recorded intermediates byte for byte.
 
 ## Next
 
-1. **Interop: ecdsa-sd-2023 vs the W3C vectors.** Validate byte-level
-   interoperability against the official vc-di-ecdsa test suite — the round-trip
-   suite proves internal consistency; this proves it matches other implementations
-   (ECDSA is randomised, so there is no fixed proof value to reproduce as with the
-   eddsa-rdfc-2022 vector).
+The queued proof / status / EBSI / interop work is done. The next milestones are
+downstream-driven:
+
+1. **Consume `openvc-core` from a real OB 3.0 / EUDI backend** — the true test of
+   the core extraction, and the feedback that hardens the API toward 1.0.
+2. **ecdsa-sd-2023 P-384** and further cryptosuites, if demand appears.
 
 ## Deliberately out of scope
 

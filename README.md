@@ -148,7 +148,8 @@ print(result.claims["given_name"], result.key_bound)
 
 Alpha. The proof suites (VC-JWT, SD-JWT VC, and Data Integrity —
 `eddsa-rdfc-2022`, verified byte-for-byte against the official W3C vc-di-eddsa
-vector, plus the selective-disclosure `ecdsa-sd-2023`), the key
+vector, plus the selective-disclosure `ecdsa-sd-2023`, interop-validated against
+the official W3C vc-di-ecdsa vectors), the key
 backends, DID resolution (`did:key`, `did:web`, `did:ebsi` read), the EBSI
 registry client (verified against recorded pilot fixtures and a live smoke test),
 the recursive TI→TAO→RootTAO trust chain (with per-hop delegation scoping and
@@ -156,8 +157,7 @@ revocation of the accreditations themselves), and status-list revocation in both
 the W3C Bitstring and IETF Token Status List encodings are implemented and tested
 offline. See
 [the roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md) for
-what is next (byte-level interop validation of `ecdsa-sd-2023` against the W3C
-test vectors).
+what is next.
 
 `did:ebsi` write/onboarding (JSON-RPC + OID4VP) is **out of scope** — this is a
 verifier/issuer library, not a node operator.

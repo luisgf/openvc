@@ -17,10 +17,12 @@ derived proof:
 mandatoryIndexes])``. Blank-node labels are blinded with HMAC-SHA256; per-statement
 signatures use an ephemeral proof-scoped P-256 key.
 
-Status: round-trip tested (base -> derive -> verify, plus tamper / over-disclosure
-rejection). Byte-level interop against the official W3C vectors is the remaining
-validation step — ECDSA signatures are randomised, so unlike ``eddsa-rdfc-2022``
-correctness cannot be shown by reproducing a fixed proof value.
+Status: interop-validated against the official W3C ``vc-di-ecdsa`` test vectors —
+``verify`` accepts reference-produced derived proofs, and the issuer-side
+canonical N-Quads and ``proofHash`` / ``mandatoryHash`` match the recorded
+intermediates byte for byte (``tests/fixtures/ecdsa_sd/``). ECDSA signatures are
+randomised, so — unlike ``eddsa-rdfc-2022`` — interop is shown this way rather
+than by reproducing a fixed proof value.
 
 This module reuses the P-256 backend and the SSRF-safe offline canonicalization of
 the other suites; it needs the ``[data-integrity]`` extra (pyld). CBOR is a small
