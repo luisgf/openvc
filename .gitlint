@@ -1,0 +1,18 @@
+# Conventional-commits convention for openvc, enforced by gitlint.
+# See CONTRIBUTING.md for the rationale and the full type vocabulary.
+#
+# Format:  type(optional-scope)!: subject
+#   changelog-worthy types: feat, fix, security, perf
+#   silent types:           docs, chore, ci, test, refactor, build, style
+#   "!" or a "BREAKING CHANGE:" body trailer marks a breaking change.
+
+[general]
+# A short commit needs no body, and body line length is not enforced: the
+# convention is about a parseable type-prefixed title, not body prose wrapping.
+ignore=body-is-missing, body-max-line-length
+
+[title-match-regex]
+regex=^(feat|fix|security|perf|docs|chore|ci|test|refactor|build|style)(\([a-z0-9.-]+\))?!?: .+
+
+[title-max-length]
+line-length=80
