@@ -1,13 +1,15 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "openvc"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Generic, HSM-friendly Verifiable Credentials core — VC-JWT proofs and DID resolution (key/web) — with an optional read-only EBSI plugin."
 readme = "README.md"
-license = { text = "LGPL-3.0-or-later" }
+# PEP 639 SPDX expression + explicit license files (both GPL and LGPL texts).
+license = "LGPL-3.0-or-later"
+license-files = ["COPYING", "COPYING.LESSER"]
 authors = [
     { name = "Luis González Fernández", email = "luisgf@luisgf.es" },
 ]
@@ -26,7 +28,6 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Security :: Cryptography",
     "Topic :: Software Development :: Libraries :: Python Modules",
-    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
 ]
 # The core is deliberately dependency-light: signatures (cryptography) and the
 # VC-JWT envelope (PyJWT). did:web can be resolved with the stdlib-only fetch in
@@ -42,19 +43,28 @@ ebsi = ["httpx>=0.27"]
 # The Data Integrity proof suite (eddsa-rdfc-2022) needs a JSON-LD processor for
 # RDF canonicalization; VC-JWT and everything else work without it.
 data-integrity = ["pyld>=2.0.4"]
-dev = ["pytest>=8", "mypy>=1.8", "flake8>=7"]
+dev = ["pytest>=8", "mypy>=1.8", "flake8>=7", "gitlint>=0.19"]
 all = ["openvc[ebsi,data-integrity,dev]"]
 
 [project.urls]
 Homepage = "https://github.com/luisgf/openvc"
 Source = "https://github.com/luisgf/openvc"
+Changelog = "https://github.com/luisgf/openvc/blob/main/CHANGELOG.md"
+
+# Single source of truth for the version: openvc.__version__ (in src/openvc/__init__.py).
+[tool.setuptools.dynamic]
+version = { attr = "openvc.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Ship the bundled JSON-LD contexts the Data Integrity canonicalizer serves
-# offline (see openvc/proof/contexts/__init__.py).
+# Ship the PEP 561 markers (so downstream type checkers use our annotations) and
+# the bundled JSON-LD contexts the Data Integrity canonicalizer serves offline
+# (openvc/proof/contexts/__init__.py). openvc and openvc_ebsi are separate
+# top-level packages, so each needs its own py.typed.
 [tool.setuptools.package-data]
+"openvc" = ["py.typed"]
+"openvc_ebsi" = ["py.typed"]
 "openvc.proof.contexts" = ["*.json"]
 
 [tool.pytest.ini_options]
