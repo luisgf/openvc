@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openvc"
+version = "0.1.0.dev0"
+description = "Generic, HSM-friendly Verifiable Credentials core — VC-JWT proofs and DID resolution (key/web) — with an optional read-only EBSI plugin."
+readme = "README.md"
+license = { text = "LGPL-3.0-or-later" }
+authors = [
+    { name = "Luis González Fernández", email = "luisgf@luisgf.es" },
+]
+requires-python = ">=3.10"
+keywords = [
+    "verifiable-credentials", "vc-jwt", "w3c-vc", "did", "did-key", "did-web",
+    "did-ebsi", "ebsi", "es256", "eddsa", "ed25519", "cryptography", "jose",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+]
+# The core is deliberately dependency-light: signatures (cryptography) and the
+# VC-JWT envelope (PyJWT). did:web can be resolved with the stdlib-only fetch in
+# openvc.fetch; no HTTP client is required for the core.
+dependencies = [
+    "cryptography>=42",
+    "pyjwt>=2.8",
+]
+
+[project.optional-dependencies]
+# The EBSI plugin's HTTP client (registry reads) uses httpx.
+ebsi = ["httpx>=0.27"]
+dev = ["pytest>=8", "mypy>=1.8", "flake8>=7"]
+all = ["openvc[ebsi,dev]"]
+
+[project.urls]
+Homepage = "https://github.com/luisgf/openvc"
+Source = "https://github.com/luisgf/openvc"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+# httpx ships types, but only installed with the [ebsi] extra; ignore when absent.
+[[tool.mypy.overrides]]
+module = ["httpx", "httpx.*"]
+ignore_missing_imports = true

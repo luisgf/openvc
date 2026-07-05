@@ -1,0 +1,7 @@
+[flake8]
+max-line-length = 100
+# E203: whitespace before ':' (conflicts with black-style slices)
+# E701/E704: one-line class/def bodies — used intentionally for the tiny
+#            `class SomeError(Exception): ...` marker exceptions and Protocols.
+extend-ignore = E203, E701, E704
+exclude = .git, __pycache__, .venv, .venv-*, build, dist

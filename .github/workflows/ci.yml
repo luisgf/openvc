@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (core + ebsi + dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+
+      - name: Lint (flake8)
+        run: flake8 src tests
+
+      - name: Type check (mypy)
+        run: mypy
+
+      # Offline tier only: the live EBSI smoke test stays opt-in
+      # (OPENVC_EBSI_LIVE=1) so CI never depends on an external service.
+      - name: Test (pytest)
+        run: pytest -q
