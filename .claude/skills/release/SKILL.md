@@ -70,7 +70,7 @@ STEP 6.
   **never `git add -A`** (it would stage `.claude/` local state or stray files).
 - After STEP 1 fixes the version, assert the release does not already exist: tag
   `vX.Y.Z` absent locally and on `origin`, and the version **not already on PyPI**
-  (`curl -s -o /dev/null -w '%{http_code}' https://pypi.org/pypi/openvc/X.Y.Z/json`
+  (`curl -s -o /dev/null -w '%{http_code}' https://pypi.org/pypi/openvc-core/X.Y.Z/json`
   must be `404`). If any exist, this is a resume — see RECOVERY.
 
 ## STEP 1 — DETERMINE THE VERSION
@@ -143,7 +143,7 @@ If anything is red: **STOP**, report, do not proceed. Never tag a red tree.
 - Watch the tag's CI run: `gh run list --workflow=ci.yml --limit 5` → the entry
   whose head ref is `vX.Y.Z`; `gh run watch <id> --exit-status`. Require every
   matrix job **and** the Publish job = success.
-- Confirm live: poll `https://pypi.org/pypi/openvc/X.Y.Z/json` until HTTP `200`
+- Confirm live: poll `https://pypi.org/pypi/openvc-core/X.Y.Z/json` until HTTP `200`
   (Fastly CDN can lag; the per-version endpoint is authoritative).
 
 ## STEP 8 — GITHUB RELEASE

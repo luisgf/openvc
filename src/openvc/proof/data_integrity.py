@@ -62,7 +62,7 @@ def _require_pyld() -> Any:
     except ImportError as exc:                       # pragma: no cover - env dependent
         raise DataIntegrityError(
             "Data Integrity needs the pyld JSON-LD processor: "
-            "pip install 'openvc[data-integrity]'") from exc
+            "pip install 'openvc-core[data-integrity]'") from exc
     return jsonld
 
 

@@ -4,7 +4,7 @@ Documentation anti-drift checks for openvc (used by the /release skill, STEP 2).
 
 Mechanical, fail-fast checks that catch the drift a human reads past:
 
-  1. Every pip extra named in README.md / CONTRIBUTING.md (openvc[...] or .[...])
+  1. Every pip extra named in README.md / CONTRIBUTING.md (openvc-core[...] or .[...])
      actually exists in pyproject [project.optional-dependencies].
   2. openvc.__version__ matches the top CHANGELOG "## [X.Y.Z]" heading.
   3. Every import / from-import in a README ```python block resolves — the symbol
@@ -56,7 +56,7 @@ def check_extras(extras: set[str]) -> list[str]:
         p = ROOT / doc
         if not p.exists():
             continue
-        for m in re.findall(r"(?:openvc|\.)\[([a-z0-9,\s-]+)\]", p.read_text()):
+        for m in re.findall(r"(?:openvc(?:-core)?|\.)\[([a-z0-9,\s-]+)\]", p.read_text()):
             for name in (n.strip() for n in m.split(",")):
                 if name and name not in extras:
                     problems.append(f"{doc}: extra [{name}] is not in pyproject "

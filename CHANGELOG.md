@@ -35,5 +35,7 @@ optional read-only EBSI plugin.
 - PEP 561 typed (`py.typed`), single-source `openvc.__version__`, PEP 639 SPDX
   license metadata (LGPL-3.0-or-later). Core install depends only on
   `cryptography` + `pyjwt`; `httpx` and `pyld` are optional extras.
+- Published on PyPI as the **`openvc-core`** distribution; the import package
+  stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
 [0.1.0]: https://github.com/luisgf/openvc/releases/tag/v0.1.0

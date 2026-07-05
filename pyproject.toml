@@ -3,7 +3,7 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openvc"
+name = "openvc-core"
 dynamic = ["version"]
 description = "Generic, HSM-friendly Verifiable Credentials core — VC-JWT proofs and DID resolution (key/web) — with an optional read-only EBSI plugin."
 readme = "README.md"
@@ -45,7 +45,7 @@ ebsi = ["httpx>=0.27"]
 # RDF canonicalization; VC-JWT and everything else work without it.
 data-integrity = ["pyld>=2.0.4"]
 dev = ["pytest>=8", "mypy>=1.8", "flake8>=7", "gitlint>=0.19"]
-all = ["openvc[ebsi,data-integrity,dev]"]
+all = ["openvc-core[ebsi,data-integrity,dev]"]
 
 [project.urls]
 Homepage = "https://github.com/luisgf/openvc"

@@ -52,11 +52,14 @@ src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc o
 
 ## Install
 
+The PyPI distribution is **`openvc-core`**; the Python import package is
+**`openvc`** — so `pip install openvc-core`, then `import openvc`.
+
 ```sh
-pip install openvc                    # core: VC-JWT, did:key, did:web, status list
-pip install "openvc[ebsi]"            # + the EBSI registry client (httpx)
-pip install "openvc[data-integrity]"  # + eddsa-rdfc-2022 Data Integrity (pyld)
-pip install -e ".[all]"               # everything + dev tools (from a checkout)
+pip install openvc-core                    # core: VC-JWT, did:key, did:web, status list
+pip install "openvc-core[ebsi]"            # + the EBSI registry client (httpx)
+pip install "openvc-core[data-integrity]"  # + eddsa-rdfc-2022 Data Integrity (pyld)
+pip install -e ".[all]"                    # everything + dev tools (from a checkout)
 ```
 
 ## Quick start
