@@ -4,6 +4,18 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-07-05
+
+### Added
+
+- **ecdsa-sd-2023 is now interop-validated against the official W3C `vc-di-ecdsa`
+  test vectors** (`tests/fixtures/ecdsa_sd/`): `verify` accepts reference-produced
+  derived proofs, and the issuer-side HMAC-relabeled canonical N-Quads and the
+  `proofHash` / `mandatoryHash` match the recorded intermediates byte for byte.
+  No code change from 0.3.0 — this ships the validation and drops the
+  "interop pending" caveat from the docs (ECDSA is randomised, so interop is
+  shown this way rather than by reproducing a fixed proof value).
+
 ## [0.3.0] — 2026-07-05
 
 ### Added
@@ -85,6 +97,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[0.3.1]: https://github.com/luisgf/openvc/releases/tag/v0.3.1
 [0.3.0]: https://github.com/luisgf/openvc/releases/tag/v0.3.0
 [0.2.1]: https://github.com/luisgf/openvc/releases/tag/v0.2.1
 [0.2.0]: https://github.com/luisgf/openvc/releases/tag/v0.2.0
