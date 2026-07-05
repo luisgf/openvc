@@ -38,7 +38,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     did/did_key.py         offline did:key (Ed25519, P-256)
     did/did_web.py         did:web -> https -> fetch (fetch is injected)
     fetch.py               SSRF- + DNS-rebinding-safe https JSON fetch for did:web
-    status/                W3C Bitstring Status List (revocation/suspension)
+    status/                status lists — W3C Bitstring + IETF Token Status List
 src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
     http.py                EbsiHttpClient: TTL cache, retries, host allow-list
     versioning.py          DID Registry / TIR version adapters + DidEbsiResolver
@@ -119,13 +119,14 @@ with for_ebsi("pilot") as http:
 Alpha. Both proof suites (VC-JWT and eddsa-rdfc-2022 Data Integrity — the latter
 verified byte-for-byte against the official W3C vc-di-eddsa vector), the key
 backends, DID resolution (`did:key`, `did:web`, `did:ebsi` read), the EBSI
-registry client, the recursive TI→TAO→RootTAO trust chain, and W3C Bitstring
-Status List revocation (with per-hop delegation scoping and revocation of the
-accreditations themselves) are implemented and tested offline; an opt-in live
+registry client, the recursive TI→TAO→RootTAO trust chain (with per-hop
+delegation scoping and revocation of the accreditations themselves), and
+status-list revocation in both the W3C Bitstring and IETF Token Status List
+encodings are implemented and tested offline; an opt-in live
 EBSI smoke test runs against the pilot/conformance environments. See
 [the roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md) for
-what is next (recorded golden fixtures, Token Status List, ecdsa-sd-2023, PyPI
-publish).
+what is next (recorded golden fixtures, ecdsa-sd-2023, coverage, and a scheduled
+live-EBSI job).
 
 `did:ebsi` write/onboarding (JSON-RPC + OID4VP) is **out of scope** — this is a
 verifier/issuer library, not a node operator.

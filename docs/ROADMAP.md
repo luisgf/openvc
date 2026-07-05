@@ -33,19 +33,20 @@ not here).
   eddsa-rdfc-2022 embedded proofs (RDF canonicalization via pyld, offline
   bundled contexts), the second profile alongside VC-JWT. Verified byte-for-byte
   against the official W3C vc-di-eddsa test vector.
+- **IETF Token Status List** (`openvc.status.token_status_list`) — the second
+  status encoding behind the same `openvc.status` interface: 1/2/4/8-bit
+  LSB-first statuses with DEFLATE/zlib, `status`-claim reference parsing, and
+  `check_token_status` (VALID / INVALID → revoked / SUSPENDED → suspended).
 
 ## Next
 
-1. **Token Status List (IETF)** — the other status encoding (1/2/4/8-bit
-   statuses, CBOR/JWT), behind the same `openvc.status` interface as the W3C
-   Bitstring list.
-2. **Recorded golden fixtures.** Replace the representative inline fixtures in the
+1. **Recorded golden fixtures.** Replace the representative inline fixtures in the
    TIR-v5 test with real recorded conformance responses, turning the adapter tests
    into true drift alarms.
-3. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the
+2. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the
    same `DataIntegrityProofSuite` interface (larger; no rush).
-4. **Packaging/CI polish** — publish to PyPI (`openvc` is free), coverage
-   reporting, and a live-EBSI job gated behind a schedule.
+3. **Packaging/CI polish** — coverage reporting and a live-EBSI job gated behind a
+   schedule. (Published to PyPI as `openvc-core`; the core install is free.)
 
 ## Deliberately out of scope
 

@@ -4,6 +4,16 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — unreleased
+
+### Added
+
+- **IETF Token Status List** (`openvc.status.token_status_list`) — the second
+  status-list encoding, behind the same `openvc.status` interface as the W3C
+  Bitstring list: multi-bit statuses (1/2/4/8 bits, LSB-first) with DEFLATE/zlib
+  compression, `status`-claim reference parsing, and `check_token_status`
+  (VALID / INVALID → revoked / SUSPENDED → suspended) over an injected resolver.
+
 ## [0.1.0] — 2026-07-05
 
 First public release: a generic, HSM-friendly Verifiable Credentials core with an
@@ -38,4 +48,5 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[0.2.0]: https://github.com/luisgf/openvc/releases/tag/v0.2.0
 [0.1.0]: https://github.com/luisgf/openvc/releases/tag/v0.1.0
