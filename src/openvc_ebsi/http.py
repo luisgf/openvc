@@ -30,6 +30,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from openvc import __version__
+
 # Hosts per EBSI environment (used to seed the SSRF allow-list).
 EBSI_HOSTS: dict[str, str] = {
     "pilot": "api-pilot.ebsi.eu",
@@ -117,7 +119,7 @@ class EbsiHttpClient:
         cache_ttl_s: float = 300.0,
         retry: RetryPolicy | None = None,
         verify_tls: bool = True,
-        user_agent: str = "openvc/0.1 (+ebsi-verifier)",
+        user_agent: str = f"openvc-core/{__version__}",
     ) -> None:
         self._allowed = {h.lower() for h in allowed_hosts}
         # ADR-0001 D2: EBSI sends no Cache-Control/ETag, so freshness is OUR call.
