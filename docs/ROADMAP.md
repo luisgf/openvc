@@ -23,6 +23,9 @@ not here).
   codec (gzip + base64url, MSB-first) + `credentialStatus` parsing +
   `check_credential_status`. Wired into `verify_ebsi_badge` via
   `resolve_status_list` (a set revocation bit raises `CredentialRevoked`).
+- **DNS-rebinding-safe `did:web` fetch** — the connection is pinned to the
+  validated IP (resolve → validate → connect to that IP) while TLS SNI, cert
+  validation and Host use the hostname, closing the TOCTOU window.
 
 ## Next
 
@@ -40,10 +43,9 @@ not here).
    into true drift alarms.
 4. **Data Integrity proof suite** (`openvc/proof/data_integrity.py`) — the second
    profile behind the same interface as `VcJwtProofSuite` (eddsa-rdfc-2022).
-5. **DNS-rebinding hardening** for `openvc.fetch` — pin the connection to the
-   validated IP (resolve-then-connect) to close the TOCTOU window the current
-   resolve-time check documents.
-6. **Packaging/CI polish** — publish a placeholder to PyPI (`openvc` is free),
+   Needs a JSON-LD canonicalization dependency (pyld), so it lands behind an
+   optional extra.
+5. **Packaging/CI polish** — publish a placeholder to PyPI (`openvc` is free),
    coverage reporting, and a live-EBSI job gated behind a schedule.
 
 ## Deliberately out of scope

@@ -8,24 +8,24 @@ private / loopback / link-local / reserved / multicast address (the cloud
 metadata endpoint 169.254.169.254 is link-local, so it is covered), and refuses
 HTTP redirects — a common SSRF pivot.
 
-Dependency-light on purpose: pure stdlib (urllib + socket + ipaddress), so the
-core needs no HTTP client. Pass ``https_json_fetch`` wherever a ``Fetch`` is
-expected, or use ``default_did_web_resolver()``.
+DNS-rebinding is closed, not just documented: the connection is **pinned to the
+validated IP** (we resolve, validate every resolved address, then open the TCP
+socket to that exact IP) while TLS SNI, certificate validation, and the Host
+header still use the hostname. So an attacker who flips DNS between the check and
+the connect cannot redirect us to an internal address — we never re-resolve.
 
-Residual risk (documented, not yet closed): the host is validated at resolve
-time and urllib then connects by name, leaving a TOCTOU window a DNS-rebinding
-attacker could exploit. Pinning the connection to the validated IP closes it and
-is tracked in docs/ROADMAP.md; for resolving well-known issuer domains this
-check is already a substantial guard.
+Dependency-light on purpose: pure stdlib (http.client + ssl + socket +
+ipaddress). Pass ``https_json_fetch`` wherever a ``Fetch`` is expected, or use
+``default_did_web_resolver()``.
 """
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import socket
+import ssl
 from typing import Any
-from urllib import request as urlrequest
-from urllib.error import URLError
 from urllib.parse import urlparse
 
 from .did.base import DidResolutionError
@@ -33,6 +33,7 @@ from .did.did_web import DidWebResolver
 
 DEFAULT_TIMEOUT_S = 10.0
 MAX_RESPONSE_BYTES = 1_048_576  # 1 MiB — DID documents are small; bound memory.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
 class UnsafeUrlError(DidResolutionError):
@@ -48,29 +49,50 @@ def _ip_is_forbidden(ip_str: str) -> bool:
     )
 
 
-def _assert_public_host(host: str, port: int) -> None:
-    """Resolve *host* and reject if ANY resolved address is SSRF-sensitive."""
+def _resolve_public_ips(host: str, port: int) -> list[str]:
+    """Resolve *host* and return its addresses, raising if ANY is SSRF-sensitive
+    (fail closed: one bad address rejects the host)."""
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise UnsafeUrlError(f"cannot resolve host {host!r}: {exc}") from exc
-    if not infos:
+    ips = [str(info[4][0]) for info in infos]
+    if not ips:
         raise UnsafeUrlError(f"host {host!r} did not resolve")
-    for info in infos:
-        addr = str(info[4][0])
+    for addr in ips:
         if _ip_is_forbidden(addr):
             raise UnsafeUrlError(
                 f"host {host!r} resolves to blocked address {addr}")
+    return ips
 
 
-class _NoRedirect(urlrequest.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        raise UnsafeUrlError("HTTP redirects are not followed (SSRF guard)")
+def _https_get(
+    hostname: str, ip: str, port: int, target: str, *,
+    timeout: float, max_bytes: int,
+) -> tuple[int, bytes]:
+    """GET *target* over https, TCP-pinned to *ip* but with TLS SNI, certificate
+    validation and Host header for *hostname*. Returns (status, body). Reads at
+    most ``max_bytes + 1`` so the caller can detect oversize."""
+    context = ssl.create_default_context()
+    conn = http.client.HTTPSConnection(hostname, port, timeout=timeout, context=context)
 
+    def _connect_to_validated_ip(address: Any, timeout: Any = None,
+                                 source_address: Any = None) -> socket.socket:
+        # Ignore the (hostname, port) address http.client would use; connect to
+        # the IP we validated. wrap_socket still uses hostname for SNI + cert.
+        return socket.create_connection((ip, port), timeout=timeout,
+                                        source_address=source_address)
 
-def _build_opener() -> urlrequest.OpenerDirector:
-    # Factored out so tests can substitute the transport without real network.
-    return urlrequest.build_opener(_NoRedirect)
+    setattr(conn, "_create_connection", _connect_to_validated_ip)
+    try:
+        conn.request("GET", target, headers={
+            "Accept": "application/did+ld+json, application/json"})
+        resp = conn.getresponse()
+        return resp.status, resp.read(max_bytes + 1)
+    except (OSError, http.client.HTTPException) as exc:
+        raise DidResolutionError(f"fetch failed for https://{hostname}{target}: {exc}") from exc
+    finally:
+        conn.close()
 
 
 def https_json_fetch(
@@ -81,8 +103,8 @@ def https_json_fetch(
 ) -> dict[str, Any]:
     """Fetch *url* as JSON with the SSRF guards above. Returns the parsed object.
 
-    Raises :class:`UnsafeUrlError` for a disallowed scheme/host/address (a
-    subclass of :class:`~openvc.did.base.DidResolutionError`), and
+    Raises :class:`UnsafeUrlError` for a disallowed scheme/host/address or a
+    redirect (a subclass of :class:`~openvc.did.base.DidResolutionError`), and
     ``DidResolutionError`` for transport / oversize / non-JSON failures.
     """
     parsed = urlparse(url)
@@ -90,18 +112,19 @@ def https_json_fetch(
         raise UnsafeUrlError(f"only https is allowed, got scheme {parsed.scheme!r}")
     if not parsed.hostname:
         raise UnsafeUrlError("URL has no host")
-    _assert_public_host(parsed.hostname, parsed.port or 443)
+    port = parsed.port or 443
+    ip = _resolve_public_ips(parsed.hostname, port)[0]
 
-    req = urlrequest.Request(
-        url, headers={"Accept": "application/did+ld+json, application/json"})
-    try:
-        with _build_opener().open(req, timeout=timeout_s) as resp:
-            raw = resp.read(max_bytes + 1)
-    except UnsafeUrlError:
-        raise                                    # our own guard, keep the type
-    except URLError as exc:
-        raise DidResolutionError(f"fetch failed for {url!r}: {exc}") from exc
+    target = parsed.path or "/"
+    if parsed.query:
+        target += "?" + parsed.query
 
+    status, raw = _https_get(parsed.hostname, ip, port, target,
+                             timeout=timeout_s, max_bytes=max_bytes)
+    if status in _REDIRECT_STATUSES:
+        raise UnsafeUrlError(f"redirect ({status}) not followed (SSRF guard)")
+    if status != 200:
+        raise DidResolutionError(f"unexpected status {status} for {url!r}")
     if len(raw) > max_bytes:
         raise DidResolutionError(f"response exceeds {max_bytes} bytes")
     try:

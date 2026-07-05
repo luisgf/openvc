@@ -56,62 +56,69 @@ def test_rejects_host_resolving_to_private(monkeypatch):
         https_json_fetch("https://internal.evil.example/.well-known/did.json")
 
 
-def test_refuses_redirects():
-    with pytest.raises(UnsafeUrlError, match="redirect"):
-        fetch._NoRedirect().redirect_request(
-            None, None, 302, "Found", {}, "https://elsewhere.example/")
-
-
 # --------------------------------------------------------------------------- #
 # Happy path (transport monkeypatched — no real network)
 # --------------------------------------------------------------------------- #
 
-class _FakeResp:
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-
-    def __enter__(self) -> "_FakeResp":
-        return self
-
-    def __exit__(self, *exc: object) -> bool:
-        return False
-
-    def read(self, n: int = -1) -> bytes:
-        return self._data
-
-
-class _FakeOpener:
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-
-    def open(self, req, timeout=None):        # noqa: ANN001 - test double
-        return _FakeResp(self._data)
+PUBLIC_IP = "93.184.216.34"
 
 
 def _allow_public(monkeypatch):
     monkeypatch.setattr(
         fetch.socket, "getaddrinfo",
-        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))])
+        lambda *a, **k: [(2, 1, 6, "", (PUBLIC_IP, 443))])
+
+
+def _stub_get(monkeypatch, status: int, body: bytes, *, capture: list | None = None):
+    def _fake(hostname, ip, port, target, *, timeout, max_bytes):
+        if capture is not None:
+            capture.append((hostname, ip, port, target))
+        return status, body
+    monkeypatch.setattr(fetch, "_https_get", _fake)
+
+
+def test_refuses_redirects(monkeypatch):
+    _allow_public(monkeypatch)
+    _stub_get(monkeypatch, 302, b"")
+    with pytest.raises(UnsafeUrlError, match="redirect"):
+        https_json_fetch("https://issuer.example/.well-known/did.json")
 
 
 def test_happy_path_returns_json(monkeypatch):
     _allow_public(monkeypatch)
-    monkeypatch.setattr(fetch, "_build_opener",
-                        lambda: _FakeOpener(b'{"id": "did:web:issuer.example"}'))
+    _stub_get(monkeypatch, 200, b'{"id": "did:web:issuer.example"}')
     doc = https_json_fetch("https://issuer.example/.well-known/did.json")
     assert doc == {"id": "did:web:issuer.example"}
 
 
+def test_connection_is_pinned_to_validated_ip(monkeypatch):
+    # The GET must target the IP we validated, not re-resolve the hostname
+    # (this is what closes the DNS-rebinding window).
+    _allow_public(monkeypatch)
+    seen: list = []
+    _stub_get(monkeypatch, 200, b"{}", capture=seen)
+    https_json_fetch("https://issuer.example/.well-known/did.json")
+    assert seen and seen[0][1] == PUBLIC_IP        # (hostname, ip, port, target)
+    assert seen[0][0] == "issuer.example"
+
+
+def test_unexpected_status_rejected(monkeypatch):
+    _allow_public(monkeypatch)
+    _stub_get(monkeypatch, 500, b"boom")
+    with pytest.raises(DidResolutionError, match="status 500"):
+        https_json_fetch("https://issuer.example/.well-known/did.json")
+
+
 def test_non_json_body_rejected(monkeypatch):
     _allow_public(monkeypatch)
-    monkeypatch.setattr(fetch, "_build_opener", lambda: _FakeOpener(b"<html/>"))
+    _stub_get(monkeypatch, 200, b"<html/>")
     with pytest.raises(DidResolutionError, match="not JSON"):
         https_json_fetch("https://issuer.example/.well-known/did.json")
 
 
 def test_oversize_body_rejected(monkeypatch):
     _allow_public(monkeypatch)
-    monkeypatch.setattr(fetch, "_build_opener", lambda: _FakeOpener(b"x" * 50))
+    _stub_get(monkeypatch, 200, b"x" * 50)
     with pytest.raises(DidResolutionError, match="exceeds"):
         https_json_fetch("https://issuer.example/.well-known/did.json", max_bytes=10)
 
@@ -126,8 +133,7 @@ def test_default_did_web_resolver_is_wired(monkeypatch):
     assert resolver.supports("did:web:issuer.example")
 
     _allow_public(monkeypatch)
-    monkeypatch.setattr(
-        fetch, "_build_opener",
-        lambda: _FakeOpener(b'{"id": "did:web:issuer.example", "verificationMethod": []}'))
+    _stub_get(monkeypatch, 200,
+              b'{"id": "did:web:issuer.example", "verificationMethod": []}')
     doc = resolver.resolve("did:web:issuer.example")
     assert doc.id == "did:web:issuer.example"
