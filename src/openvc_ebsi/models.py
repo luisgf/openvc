@@ -26,6 +26,10 @@ class Accreditation:
     tao: str | None               # DID that accredited this issuer
     root_tao: str | None
     credential_types: tuple[str, ...] = ()   # what this accreditation authorises
+    # The raw accreditation VC-JWT (the TIR revision `body`), kept so the trust
+    # walker can VERIFY the accreditation's signature against the accreditor's
+    # resolved key — the parsed fields above are untrusted until it does.
+    credential_jwt: str | None = None
 
     @property
     def is_revoked(self) -> bool:

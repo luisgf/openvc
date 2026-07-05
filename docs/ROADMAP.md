@@ -14,15 +14,20 @@ not here).
 - **SSRF-guarded stdlib https fetch** for `did:web` (`openvc.fetch`) — https-only,
   blocks private/loopback/link-local/reserved ranges, refuses redirects.
 - **`verify_ebsi_badge`** glue — peek → resolve → key select → signature/temporal
-  verify → single-level issuer trust check over the TIR accreditations.
+  verify → issuer trust over the TIR accreditations.
+- **Recursive trust chain** (`openvc_ebsi.trust`) — walk `TI → TAO → RootTAO`,
+  verifying every accreditation's signature against the accreditor's resolved
+  key, up to a caller-supplied trusted RootTAO anchor. Wired into
+  `verify_ebsi_badge` via `trust_anchors`.
 
 ## Next
 
-1. **Recursive trust chain.** `verify.py` currently checks the issuer's own
-   accreditation (non-revoked, authorises the credential type). Extend it to walk
-   `TI → TAO → RootTAO`, resolving and verifying each accreditation up to a
-   trusted RootTAO anchor. The domain model (`Accreditation.tao/root_tao`) already
-   carries the links.
+1. **Per-hop delegation scoping (chain refinement).** The recursive chain
+   (`openvc_ebsi.trust.verify_trust_chain`, wired via `verify_ebsi_badge`'s
+   `trust_anchors`) verifies each accreditation's signature and scopes the *leaf*
+   hop to the credential's types; higher hops only require a valid accreditation.
+   Refine to enforce that each accreditor's `accreditedFor` is a superset of what
+   it delegates, and status-list-check the accreditations themselves.
 2. **Status-list revocation** (`openvc/status/`) — Bitstring / Token Status List,
    shared by any VC profile. Then wire it as the final step of `verify_ebsi_badge`
    (follow the issuer's status proxy from the TIR).

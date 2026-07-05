@@ -107,6 +107,7 @@ class TirV4(TirAdapter):
                 tao=a.get("tao"),
                 root_tao=a.get("rootTao"),
                 credential_types=self._types_from_body(a.get("body"), decode),
+                credential_jwt=a.get("body"),
             )
             for a in raw.get("attributes", [])
         ]
@@ -150,6 +151,7 @@ class TirV5(TirAdapter):
                     tao=subject.get("accreditedBy"),
                     root_tao=subject.get("rootTao"),
                     credential_types=tuple(subject.get("accreditedFor", []) or []),
+                    credential_jwt=body,
                 ))
         return IssuerRecord(did=did, has_attributes=has_attrs, accreditations=tuple(accs))
 

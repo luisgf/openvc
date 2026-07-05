@@ -27,6 +27,7 @@ from openvc.did.base import DidResolutionError
 from openvc.proof.vc_jwt import VcJwtProofSuite, VerifiedCredential
 
 from .models import Accreditation, IssuerRecord
+from .trust import TrustChain, TrustChainError, verify_trust_chain
 from .versioning import DidEbsiResolver
 
 
@@ -37,7 +38,14 @@ class IssuerNotTrusted(EbsiVerificationError): ...
 
 @dataclass(frozen=True)
 class VerifiedEbsiBadge:
-    """The result of a successful (or trust-optional) EBSI verification."""
+    """The result of a successful (or trust-optional) EBSI verification.
+
+    In single-level mode (no ``trust_anchors``) ``issuer_record`` +
+    ``accreditation`` describe the check and ``chain`` is None. In recursive mode
+    (``trust_anchors`` given) ``chain`` carries the full verified path and
+    ``accreditation`` is the leaf hop's; ``issuer_record`` is None (the chain is
+    the richer artifact).
+    """
     credential: dict[str, Any]
     issuer: str
     subject: str | None
@@ -45,6 +53,7 @@ class VerifiedEbsiBadge:
     accreditation: Accreditation | None    # the one that granted trust, if any
     issuer_record: IssuerRecord | None
     verified: VerifiedCredential           # the raw proof-suite result
+    chain: TrustChain | None = None        # the recursive path, if walked
 
 
 def _credential_types(credential: dict[str, Any]) -> list[str]:
@@ -84,14 +93,24 @@ def verify_ebsi_badge(
     proof_suite: VcJwtProofSuite,
     expected_types: list[str] | None = None,
     require_trust: bool = True,
+    trust_anchors: set[str] | None = None,
     audience: str | None = None,
 ) -> VerifiedEbsiBadge:
     """Verify an EBSI-issued VC-JWT badge end to end.
 
-    ``expected_types`` (if given) are asserted to be present in the credential.
-    Trust is always evaluated against the TIR; ``require_trust`` only controls
-    whether an untrusted issuer raises :class:`IssuerNotTrusted` or is returned
-    with ``trusted=False``.
+    ``expected_types`` (if given) are asserted present in the credential.
+
+    Trust modes:
+
+    * ``trust_anchors`` **omitted** — single-level check: the issuer itself holds
+      a non-revoked accreditation for the credential's types.
+    * ``trust_anchors`` **given** — the full recursive chain is walked and every
+      accreditation's signature verified, up to a trusted RootTAO in that set.
+
+    ``require_trust`` controls only whether an untrusted result raises (single
+    level: :class:`IssuerNotTrusted`; recursive: a
+    :class:`~openvc_ebsi.trust.TrustChainError`) or is returned with
+    ``trusted=False``.
     """
     # 1) select the key to resolve (UNTRUSTED peek).
     issuer_hint, kid = proof_suite.peek_issuer(token)
@@ -112,14 +131,29 @@ def verify_ebsi_badge(
         token, public_key_jwk=vm.public_key_jwk,
         expected_types=expected_types, audience=audience)
 
-    # 5) issuer trust in the TIR (uses the reconciled issuer, not the peeked one).
-    record = resolver.issuer_record(verified.issuer)
-    accreditation = evaluate_issuer_trust(record, _credential_types(verified.credential))
-    trusted = accreditation is not None
-    if require_trust and not trusted:
-        raise IssuerNotTrusted(
-            f"issuer {verified.issuer!r} has no valid accreditation for "
-            f"types {_credential_types(verified.credential)}")
+    # 5) issuer trust — recursive chain if anchors were supplied, else single level.
+    cred_types = _credential_types(verified.credential)
+    chain: TrustChain | None = None
+    record: IssuerRecord | None = None
+    if trust_anchors is not None:
+        try:
+            chain = verify_trust_chain(
+                verified.issuer, cred_types, resolver=resolver,
+                proof_suite=proof_suite, anchors=trust_anchors)
+        except TrustChainError:
+            if require_trust:
+                raise
+            chain = None
+        trusted = chain is not None
+        accreditation = chain.hops[0].accreditation if (chain and chain.hops) else None
+    else:
+        record = resolver.issuer_record(verified.issuer)
+        accreditation = evaluate_issuer_trust(record, cred_types)
+        trusted = accreditation is not None
+        if require_trust and not trusted:
+            raise IssuerNotTrusted(
+                f"issuer {verified.issuer!r} has no valid accreditation for "
+                f"types {cred_types}")
 
     return VerifiedEbsiBadge(
         credential=verified.credential,
@@ -129,4 +163,5 @@ def verify_ebsi_badge(
         accreditation=accreditation,
         issuer_record=record,
         verified=verified,
+        chain=chain,
     )
