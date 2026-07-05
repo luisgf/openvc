@@ -13,6 +13,14 @@ All notable changes to **openvc** are documented here. The format follows
   Bitstring list: multi-bit statuses (1/2/4/8 bits, LSB-first) with DEFLATE/zlib
   compression, `status`-claim reference parsing, and `check_token_status`
   (VALID / INVALID → revoked / SUSPENDED → suspended) over an injected resolver.
+- **SD-JWT VC** (`openvc.proof.sd_jwt`) — the third proof profile (the format
+  EUDI/ARF converges on), alongside VC-JWT and Data Integrity. `SdJwtVcProofSuite`
+  covers issuance (salted disclosures + `_sd` digests, decoys, `cnf` holder
+  binding), holder presentation (a Key Binding JWT over `aud` / `nonce` /
+  `sd_hash`), and verification (recursive unpacking of nested + array disclosures
+  with the algorithm allow-list and unreferenced/duplicate/overwrite defences). A
+  verified credential's `status` claim is checked via the Token Status List. Pure
+  JOSE — no new dependency.
 
 ## [0.1.0] — 2026-07-05
 

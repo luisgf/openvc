@@ -37,6 +37,10 @@ not here).
   status encoding behind the same `openvc.status` interface: 1/2/4/8-bit
   LSB-first statuses with DEFLATE/zlib, `status`-claim reference parsing, and
   `check_token_status` (VALID / INVALID → revoked / SUSPENDED → suspended).
+- **SD-JWT VC** (`openvc.proof.sd_jwt`) — the third proof profile (EUDI/ARF's
+  format): `SdJwtVcProofSuite` issuance (disclosures + `_sd` digests, decoys,
+  `cnf` binding), holder Key Binding JWT presentation, and verification with
+  recursive nested/array unpacking and the selective-disclosure defences.
 
 ## Next
 

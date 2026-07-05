@@ -1,8 +1,9 @@
 # openvc
 
 A small, dependency-light **Verifiable Credentials core** for Python: sign and
-verify credentials in both proof formats — **VC-JWT** (JOSE) and **Data
-Integrity** (`eddsa-rdfc-2022`) — resolve **DIDs** (`did:key`, `did:web`), check
+verify credentials in three proof formats — **VC-JWT** (JOSE), **SD-JWT VC**
+(selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022`) — resolve
+**DIDs** (`did:key`, `did:web`), check
 **status-list** revocation, and — via an optional plugin — verify against the
 **EBSI** trust registries. Designed so private keys can live behind an
 **HSM/Vault** and never enter the process.
@@ -32,6 +33,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     keys.py                Ed25519 (EdDSA) & P-256 (ES256) SigningKey backends
     multibase.py           base58btc multibase + multicodec varint
     proof/vc_jwt.py        VcJwtProofSuite: peek / verify / sign
+    proof/sd_jwt.py        SdJwtVcProofSuite: issue / present (key binding) / verify
     proof/data_integrity.py DataIntegrityProofSuite: eddsa-rdfc-2022 (needs pyld)
     proof/contexts/        bundled JSON-LD contexts + offline document loader
     did/base.py            DidDocument, resolver protocol, W3C parser, registry
@@ -114,10 +116,37 @@ with for_ebsi("pilot") as http:
     print(result.trusted, result.issuer)
 ```
 
+SD-JWT VC — issue with selective disclosure, then verify a holder presentation
+(the holder proves possession of the `cnf` key and reveals only what it chooses):
+
+```python
+from openvc.keys import Ed25519SigningKey
+from openvc.proof.sd_jwt import SdJwtVcProofSuite
+
+issuer = Ed25519SigningKey.generate(kid="did:web:issuer.example#key-1")
+holder = Ed25519SigningKey.generate(kid="did:key:zHolder#0")
+suite = SdJwtVcProofSuite()
+
+sd_jwt = suite.issue(
+    {"iss": "did:web:issuer.example", "vct": "https://credentials.example/id",
+     "given_name": "Ada", "age": 36},
+    signing_key=issuer, disclosable=["given_name", "age"],
+    holder_jwk=holder.public_jwk(),
+)
+presentation = suite.create_presentation(
+    sd_jwt, holder_key=holder, audience="https://verifier.example", nonce="n-123")
+
+result = suite.verify(
+    presentation, public_key_jwk=issuer.public_jwk(),
+    audience="https://verifier.example", nonce="n-123", require_key_binding=True)
+print(result.claims["given_name"], result.key_bound)
+```
+
 ## Status
 
-Alpha. Both proof suites (VC-JWT and eddsa-rdfc-2022 Data Integrity — the latter
-verified byte-for-byte against the official W3C vc-di-eddsa vector), the key
+Alpha. The three proof suites (VC-JWT, SD-JWT VC, and eddsa-rdfc-2022 Data
+Integrity — the last verified byte-for-byte against the official W3C vc-di-eddsa
+vector), the key
 backends, DID resolution (`did:key`, `did:web`, `did:ebsi` read), the EBSI
 registry client, the recursive TI→TAO→RootTAO trust chain (with per-hop
 delegation scoping and revocation of the accreditations themselves), and
