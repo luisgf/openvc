@@ -78,6 +78,16 @@ The DID Registry returns the DID document without a `didDocument` wrapper. The
 parser's `raw.get("didDocument", raw)` fallback already handles this — confirmed
 against a live response.
 
+### D10 — Accept both `application/json` and `application/did+ld+json`
+The DID Registry content-negotiates: it serves `application/did+ld+json` and
+returns **406** to a bare `Accept: application/json` (the TIR is fine with
+`application/json`). The original probes used curl's default `Accept: */*` and so
+saw 200, masking this. The client now sends
+`Accept: application/json, application/did+ld+json, */*;q=0.1` — every body is
+parsed as JSON regardless of media type. Discovered while capturing the recorded
+golden fixtures and fixed in `openvc_ebsi.http`; a live instance of the "re-probe
+periodically" caveat below.
+
 ## Consequences
 
 - Caching correctness is now **our** responsibility; a too-long TTL risks serving a

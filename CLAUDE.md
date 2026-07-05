@@ -4,12 +4,22 @@ Guidance for Claude Code working in this repository.
 
 ## What this project is
 
-`openvc` is a standalone, dependency-light **Verifiable Credentials core**:
-VC-JWT proofs, key backends (HSM-friendly), and DID resolution — plus an optional
-read-only **EBSI** plugin. It is *not* an Open Badges library; a badge issuer is a
-downstream consumer. Read `docs/SESSION-HANDOFF.md` for the design history and
-`docs/adr/ADR-0001-ebsi-http-client.md` for the EBSI HTTP/caching decisions and
-the live evidence behind them. `docs/ROADMAP.md` tracks what is next.
+`openvc` is a standalone, dependency-light **Verifiable Credentials core** for
+Python. It signs and verifies credentials in three proof formats — **VC-JWT**
+(JOSE), **SD-JWT VC** (selective disclosure), and **Data Integrity**
+(`eddsa-rdfc-2022` + the selective-disclosure `ecdsa-sd-2023`) — resolves **DIDs**
+(`did:key`, `did:web`, `did:ebsi`), and checks **status-list** revocation (W3C
+Bitstring + IETF Token Status List), all HSM-friendly. Plus an optional read-only
+**EBSI** plugin. It is *not* an Open Badges library; a badge issuer is a
+downstream consumer.
+
+**Distribution vs import:** published on PyPI as **`openvc-core`** (bare `openvc`
+collides with `opencv` under PyPI's typo guard); the import package stays
+**`openvc`** — `pip install openvc-core`, then `import openvc`.
+
+`docs/ROADMAP.md` tracks what is done/next;
+`docs/adr/ADR-0001-ebsi-http-client.md` records the EBSI HTTP/caching decisions.
+`docs/SESSION-HANDOFF.md` is an early, now-historical design snapshot.
 
 Two packages, one repo:
 
@@ -40,6 +50,20 @@ imports from `openvc`, never the reverse.
   `did:web` uses the separate general fetch in `openvc.fetch`, which blocks
   private/loopback/link-local ranges. Never resolve `did:web` through the EBSI
   client (its allow-list would reject every legitimate host).
+- **Three proof suites, one key layer.** VC-JWT and SD-JWT VC are JOSE (they share
+  the `{ES256, EdDSA}` allow-list and the `SigningKey` backends); Data Integrity
+  has two cryptosuites — `eddsa-rdfc-2022` (Ed25519, whole document) and
+  `ecdsa-sd-2023` (P-256 selective disclosure). A new proof format is one module
+  behind the same key/verify primitives, not a fork.
+- **Status lists: two encodings, one interface.** `openvc.status` exposes the W3C
+  Bitstring and the IETF Token Status List codecs behind one shape.
+- **Golden fixtures are the drift alarm.** Conformance is pinned by recorded real
+  vectors (W3C vc-di-eddsa / vc-di-ecdsa, EBSI pilot), not synthetic shapes. eddsa
+  reproduces a fixed proof byte-for-byte; ecdsa-sd is randomised, so its interop
+  is shown by verifying reference proofs and matching the intermediates.
+- **Dependency-light stays.** Core is `cryptography` + `pyjwt` only; `pyld` and
+  `httpx` live behind extras and CBOR is hand-rolled (`ecdsa_sd`) — do not add a
+  runtime dependency casually.
 
 ## Running tests
 
