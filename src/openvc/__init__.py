@@ -2,4 +2,4 @@
 
 # Single source of truth for the version (pyproject reads it by AST — keep it a
 # plain string literal). The /release skill bumps this line.
-__version__ = "0.2.1"
+__version__ = "0.3.0.dev0"

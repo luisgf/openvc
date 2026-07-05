@@ -49,11 +49,19 @@ not here).
 - **CI hardening** — a coverage gate (`--cov-fail-under=80`), a scheduled
   live-EBSI drift alarm (`.github/workflows/live-ebsi.yml`), Dependabot (pip +
   actions), and Node-24 action versions. Published to PyPI as `openvc-core`.
+- **ecdsa-sd-2023 selective disclosure** (`openvc.proof.ecdsa_sd`) — the P-256
+  Data Integrity cryptosuite with selective disclosure: issuer base proof →
+  holder derived proof (reveal chosen JSON pointers) → verify, with HMAC-blinded
+  blank nodes and a hand-rolled CBOR proof value (checked against RFC 8949).
+  Round-trip + tamper/over-disclosure tested.
 
 ## Next
 
-1. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the
-   same `DataIntegrityProofSuite` interface (larger; no rush).
+1. **Interop: ecdsa-sd-2023 vs the W3C vectors.** Validate byte-level
+   interoperability against the official vc-di-ecdsa test suite — the round-trip
+   suite proves internal consistency; this proves it matches other implementations
+   (ECDSA is randomised, so there is no fixed proof value to reproduce as with the
+   eddsa-rdfc-2022 vector).
 
 ## Deliberately out of scope
 

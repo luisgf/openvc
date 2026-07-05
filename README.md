@@ -2,8 +2,9 @@
 
 A small, dependency-light **Verifiable Credentials core** for Python: sign and
 verify credentials in three proof formats — **VC-JWT** (JOSE), **SD-JWT VC**
-(selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022`) — resolve
-**DIDs** (`did:key`, `did:web`), check
+(selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022` and the
+selective-disclosure `ecdsa-sd-2023`) — resolve **DIDs** (`did:key`, `did:web`),
+check
 **status-list** revocation, and — via an optional plugin — verify against the
 **EBSI** trust registries. Designed so private keys can live behind an
 **HSM/Vault** and never enter the process.
@@ -35,6 +36,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     proof/vc_jwt.py        VcJwtProofSuite: peek / verify / sign
     proof/sd_jwt.py        SdJwtVcProofSuite: issue / present (key binding) / verify
     proof/data_integrity.py DataIntegrityProofSuite: eddsa-rdfc-2022 (needs pyld)
+    proof/ecdsa_sd.py      EcdsaSdProofSuite: ecdsa-sd-2023 selective disclosure
     proof/contexts/        bundled JSON-LD contexts + offline document loader
     did/base.py            DidDocument, resolver protocol, W3C parser, registry
     did/did_key.py         offline did:key (Ed25519, P-256)
@@ -144,18 +146,18 @@ print(result.claims["given_name"], result.key_bound)
 
 ## Status
 
-Alpha. The three proof suites (VC-JWT, SD-JWT VC, and eddsa-rdfc-2022 Data
-Integrity — the last verified byte-for-byte against the official W3C vc-di-eddsa
-vector), the key
+Alpha. The proof suites (VC-JWT, SD-JWT VC, and Data Integrity —
+`eddsa-rdfc-2022`, verified byte-for-byte against the official W3C vc-di-eddsa
+vector, plus the selective-disclosure `ecdsa-sd-2023`), the key
 backends, DID resolution (`did:key`, `did:web`, `did:ebsi` read), the EBSI
-registry client, the recursive TI→TAO→RootTAO trust chain (with per-hop
-delegation scoping and revocation of the accreditations themselves), and
-status-list revocation in both the W3C Bitstring and IETF Token Status List
-encodings are implemented and tested offline; an opt-in live
-EBSI smoke test runs against the pilot/conformance environments. See
+registry client (verified against recorded pilot fixtures and a live smoke test),
+the recursive TI→TAO→RootTAO trust chain (with per-hop delegation scoping and
+revocation of the accreditations themselves), and status-list revocation in both
+the W3C Bitstring and IETF Token Status List encodings are implemented and tested
+offline. See
 [the roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md) for
-what is next (recorded golden fixtures, ecdsa-sd-2023, coverage, and a scheduled
-live-EBSI job).
+what is next (byte-level interop validation of `ecdsa-sd-2023` against the W3C
+test vectors).
 
 `did:ebsi` write/onboarding (JSON-RPC + OID4VP) is **out of scope** — this is a
 verifier/issuer library, not a node operator.
