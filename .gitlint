@@ -3,7 +3,7 @@
 #
 # Format:  type(optional-scope)!: subject
 #   changelog-worthy types: feat, fix, security, perf
-#   silent types:           docs, chore, ci, test, refactor, build, style
+#   silent types:           docs, chore, ci, test, refactor, build, style, release
 #   "!" or a "BREAKING CHANGE:" body trailer marks a breaking change.
 
 [general]
@@ -12,7 +12,7 @@
 ignore=body-is-missing, body-max-line-length
 
 [title-match-regex]
-regex=^(feat|fix|security|perf|docs|chore|ci|test|refactor|build|style)(\([a-z0-9.-]+\))?!?: .+
+regex=^(feat|fix|security|perf|docs|chore|ci|test|refactor|build|style|release)(\([a-z0-9.-]+\))?!?: .+
 
 [title-max-length]
 line-length=80

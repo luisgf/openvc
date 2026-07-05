@@ -34,7 +34,8 @@ type(optional-scope): subject
 ```
 
 - **Types:** `feat`, `fix`, `security`, `perf` (changelog-worthy); `docs`,
-  `chore`, `ci`, `test`, `refactor`, `build`, `style` (silent).
+  `chore`, `ci`, `test`, `refactor`, `build`, `style`, `release` (silent —
+  `release: vX.Y.Z` is what the /release runbook commits).
 - **Scope** (optional): a lowercase area, e.g. `feat(ebsi):`, `feat(proof):`,
   `fix(fetch):`.
 - **Subject:** imperative, lower-case, no trailing period; title ≤ 80 chars.
