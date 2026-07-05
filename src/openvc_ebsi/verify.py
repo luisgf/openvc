@@ -9,14 +9,16 @@ Wires the pieces the other modules expose into one call:
       -> verify signature + temporal claims + VC-JWT reconciliation (proof suite)
       -> check issuer trust in the TIR   (a non-revoked accreditation for the type)
 
-Scope, stated honestly:
+Trust has two modes (see ``verify_ebsi_badge``):
 
-* **Trust is single-level here.** It confirms the *issuer itself* holds a valid,
-  non-revoked accreditation authorising the credential's type(s). The recursive
-  ``TI -> TAO -> RootTAO`` walk up to a trusted anchor is the next step (the
-  domain model already carries ``tao``/``root_tao`` for it) — see docs/ROADMAP.md.
-* **Revocation of the credential** (status list) is not checked yet; it waits on
-  the ``openvc/status`` package. This verifies signature + issuer trust only.
+* **Single level** (default) — the *issuer itself* must hold a valid, non-revoked
+  accreditation authorising the credential's type(s).
+* **Recursive** (pass ``trust_anchors``) — the full ``TI -> TAO -> RootTAO`` chain
+  is walked and every accreditation's signature verified, up to a trusted anchor
+  (:mod:`openvc_ebsi.trust`).
+
+Credential revocation is checked too when a ``resolve_status_list`` is supplied
+(a set revocation bit raises :class:`~openvc.status.CredentialRevoked`).
 """
 from __future__ import annotations
 

@@ -210,8 +210,8 @@ class DidEbsiResolver:
             raw, base=self._base, did=did, fetch=self._get, decode=self._decode,
         )
 
-    # verify_trust_chain(), is_trusted(), etc. are UNCHANGED: they operate purely
-    # on IssuerRecord / Accreditation, so no API version can reach them.
+    # The trust-chain logic (openvc_ebsi.trust.verify_trust_chain) operates purely
+    # on IssuerRecord / Accreditation, so no API version can reach it.
 
 
 # --------------------------------------------------------------------------- #

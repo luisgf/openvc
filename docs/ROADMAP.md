@@ -42,10 +42,10 @@ not here).
 2. **Recorded golden fixtures.** Replace the representative inline fixtures in the
    TIR-v5 test with real recorded conformance responses, turning the adapter tests
    into true drift alarms.
-4. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the
+3. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the
    same `DataIntegrityProofSuite` interface (larger; no rush).
-5. **Packaging/CI polish** — publish a placeholder to PyPI (`openvc` is free),
-   coverage reporting, and a live-EBSI job gated behind a schedule.
+4. **Packaging/CI polish** — publish to PyPI (`openvc` is free), coverage
+   reporting, and a live-EBSI job gated behind a schedule.
 
 ## Deliberately out of scope
 

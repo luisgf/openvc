@@ -1,10 +1,11 @@
 # openvc
 
 A small, dependency-light **Verifiable Credentials core** for Python: sign and
-verify **VC-JWT** credentials, resolve **DIDs** (`did:key`, `did:web`), and — via
-an optional plugin — read the **EBSI** registries (DID Registry + Trusted Issuers
-Registry). Designed so private keys can live behind an **HSM/Vault** and never
-enter the process.
+verify credentials in both proof formats — **VC-JWT** (JOSE) and **Data
+Integrity** (`eddsa-rdfc-2022`) — resolve **DIDs** (`did:key`, `did:web`), check
+**status-list** revocation, and — via an optional plugin — verify against the
+**EBSI** trust registries. Designed so private keys can live behind an
+**HSM/Vault** and never enter the process.
 
 It is intentionally *not* an Open Badges library: `openvc` is the generic VC
 machinery that a badge issuer (or an EBSI verifier, or a EUDI wallet backend)
@@ -116,10 +117,12 @@ Alpha. Both proof suites (VC-JWT and eddsa-rdfc-2022 Data Integrity — the latt
 verified byte-for-byte against the official W3C vc-di-eddsa vector), the key
 backends, DID resolution (`did:key`, `did:web`, `did:ebsi` read), the EBSI
 registry client, the recursive TI→TAO→RootTAO trust chain, and W3C Bitstring
-Status List revocation are implemented and tested offline; an opt-in live EBSI
-smoke test runs against the pilot/conformance environments. See
-[docs/ROADMAP.md](docs/ROADMAP.md) for what is next (recorded golden fixtures,
-Token Status List, per-hop delegation scoping, PyPI publish).
+Status List revocation (with per-hop delegation scoping and revocation of the
+accreditations themselves) are implemented and tested offline; an opt-in live
+EBSI smoke test runs against the pilot/conformance environments. See
+[the roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md) for
+what is next (recorded golden fixtures, Token Status List, ecdsa-sd-2023, PyPI
+publish).
 
 `did:ebsi` write/onboarding (JSON-RPC + OID4VP) is **out of scope** — this is a
 verifier/issuer library, not a node operator.
@@ -132,7 +135,16 @@ pytest                        # offline: deterministic, no network
 OPENVC_EBSI_LIVE=1 pytest     # also the opt-in live EBSI smoke test
 ```
 
+## Project
+
+- [Roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md)
+- [Changelog](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md)
+- [Contributing](https://github.com/luisgf/openvc/blob/main/CONTRIBUTING.md)
+  (dev setup, checks, and the commit convention)
+- [Security policy](https://github.com/luisgf/openvc/blob/main/SECURITY.md)
+
 ## License
 
 LGPL-3.0-or-later. Copyright © 2026 Luis González Fernández.
-See [COPYING.LESSER](COPYING.LESSER) and [COPYING](COPYING).
+See [COPYING.LESSER](https://github.com/luisgf/openvc/blob/main/COPYING.LESSER)
+and [COPYING](https://github.com/luisgf/openvc/blob/main/COPYING).
