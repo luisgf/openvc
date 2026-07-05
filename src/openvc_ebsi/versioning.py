@@ -45,6 +45,24 @@ Fetch = Callable[[str], dict[str, Any]]          # GET a URL -> JSON
 DecodeJwt = Callable[[str], dict[str, Any]]      # VC-JWT body -> claims (proof suite)
 
 
+def _flatten_accredited_for(accredited_for: Any) -> tuple[str, ...]:
+    """The credential types an accreditation authorises.
+
+    EBSI v5 encodes ``accreditedFor`` as objects ``{schemaId, types: [...]}``;
+    older shapes used a plain list of type strings. Accept both and flatten to a
+    deduped tuple of type strings — the domain model only cares about the types.
+    """
+    if not isinstance(accredited_for, list):
+        return ()
+    types: list[str] = []
+    for entry in accredited_for:
+        if isinstance(entry, str):
+            types.append(entry)
+        elif isinstance(entry, dict):
+            types.extend(t for t in entry.get("types", []) if isinstance(t, str))
+    return tuple(dict.fromkeys(types))           # dedupe, preserve first-seen order
+
+
 # --------------------------------------------------------------------------- #
 # DID Registry adapters
 # --------------------------------------------------------------------------- #
@@ -118,7 +136,7 @@ class TirV4(TirAdapter):
         if not body:
             return ()
         subject = decode(body).get("vc", {}).get("credentialSubject", {})
-        return tuple(subject.get("accreditedFor", []) or [])
+        return _flatten_accredited_for(subject.get("accreditedFor"))
 
 
 class TirV5(TirAdapter):
@@ -142,15 +160,20 @@ class TirV5(TirAdapter):
                 if not href:
                     continue
                 revision = fetch(href)                    # extra hop, v5-specific
-                body = revision.get("body")
+                # v5 nests the accreditation under `attribute`: the signed VC-JWT
+                # is `attribute.body`, and issuerType/tao/rootTao sit on the
+                # `attribute` object itself — NOT in the VC credentialSubject
+                # (whose `accreditedFor` carries the authorised types).
+                attribute = revision.get("attribute") or {}
+                body = attribute.get("body")
                 claims = decode(body) if body else {}
                 subject = claims.get("vc", {}).get("credentialSubject", {})
                 accs.append(Accreditation(
-                    attribute_id=item.get("id", ""),
-                    issuer_type=subject.get("issuerType", ""),
-                    tao=subject.get("accreditedBy"),
-                    root_tao=subject.get("rootTao"),
-                    credential_types=tuple(subject.get("accreditedFor", []) or []),
+                    attribute_id=item.get("id", "") or attribute.get("hash", ""),
+                    issuer_type=attribute.get("issuerType", ""),
+                    tao=attribute.get("tao"),
+                    root_tao=attribute.get("rootTao"),
+                    credential_types=_flatten_accredited_for(subject.get("accreditedFor")),
                     credential_jwt=body,
                 ))
         return IssuerRecord(did=did, has_attributes=has_attrs, accreditations=tuple(accs))

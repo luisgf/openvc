@@ -1,0 +1,44 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/did/v1",
+    "https://w3id.org/security/suites/jws-2020/v1"
+  ],
+  "assertionMethod": [
+    "did:ebsi:zZeKyEJfUTGwajhNyNX928z#So1HIRt0Kqf0_BSwqv4VMNgkax3mCF9IjcQJwMnB3bs"
+  ],
+  "authentication": [
+    "did:ebsi:zZeKyEJfUTGwajhNyNX928z#RqnJsdrEXgSMJgCdlxFGya2oLmVEP1zz0Jo-VMFqq6E",
+    "did:ebsi:zZeKyEJfUTGwajhNyNX928z#So1HIRt0Kqf0_BSwqv4VMNgkax3mCF9IjcQJwMnB3bs"
+  ],
+  "capabilityInvocation": [
+    "did:ebsi:zZeKyEJfUTGwajhNyNX928z#RqnJsdrEXgSMJgCdlxFGya2oLmVEP1zz0Jo-VMFqq6E"
+  ],
+  "controller": [
+    "did:ebsi:zZeKyEJfUTGwajhNyNX928z"
+  ],
+  "id": "did:ebsi:zZeKyEJfUTGwajhNyNX928z",
+  "verificationMethod": [
+    {
+      "controller": "did:ebsi:zZeKyEJfUTGwajhNyNX928z",
+      "id": "did:ebsi:zZeKyEJfUTGwajhNyNX928z#RqnJsdrEXgSMJgCdlxFGya2oLmVEP1zz0Jo-VMFqq6E",
+      "publicKeyJwk": {
+        "crv": "secp256k1",
+        "kty": "EC",
+        "x": "wBmAchcZfv7IIWzLdSPysdT_33r02KH18nJM_r01pig",
+        "y": "MABWTgJIKuObHLi8G8ta_OoUpqwBShoKlbT2_PcEybI"
+      },
+      "type": "JsonWebKey2020"
+    },
+    {
+      "controller": "did:ebsi:zZeKyEJfUTGwajhNyNX928z",
+      "id": "did:ebsi:zZeKyEJfUTGwajhNyNX928z#So1HIRt0Kqf0_BSwqv4VMNgkax3mCF9IjcQJwMnB3bs",
+      "publicKeyJwk": {
+        "crv": "P-256",
+        "kty": "EC",
+        "x": "AfLzzSLO_rH1n7fIJsGS9AUyZXCql78npwshtYE0Rf4",
+        "y": "vVoDE_-A4Yptu0oelJD2OYdTARMF52lSQXc2IqiwIMQ"
+      },
+      "type": "JsonWebKey2020"
+    }
+  ]
+}

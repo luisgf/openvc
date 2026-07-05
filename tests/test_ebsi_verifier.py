@@ -14,20 +14,31 @@ Two tiers, by design:
     conformance environment. Skipped by default so CI never depends on an
     external service whose data rotates.
 
-Replace the inline fixtures with RECORDED real responses from conformance to turn
-the adapter tests into true golden-fixture tests. The shapes here follow the v5
-responses but are representative, not verbatim.
+The TIR v5 adapter and DID-document checks run against GOLDEN FIXTURES recorded
+verbatim from the pilot registry (tests/fixtures/ebsi/) — real wire shapes, so a
+future EBSI change breaks a test rather than a user. Recording them caught two
+real bugs: a 406 from the DID Registry's content negotiation, and the v5
+`attribute.body` nesting the adapter had wrong.
 """
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 import pytest
 
+from openvc.did.base import parse_did_document
 from openvc.keys import P256SigningKey
 from openvc.proof.vc_jwt import VcJwtProofSuite
-from openvc_ebsi.http import EbsiHttpClient, HttpForbiddenHost, HttpNotFound, for_ebsi
+from openvc_ebsi.http import (
+    EBSI_BASE,
+    EbsiHttpClient,
+    HttpForbiddenHost,
+    HttpNotFound,
+    for_ebsi,
+)
 from openvc_ebsi.versioning import DidEbsiResolver, TirV5
 
 PILOT_BASE = "https://api-pilot.ebsi.eu"
@@ -114,55 +125,77 @@ def test_verify_rejects_wrong_key() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Offline: TIR v5 adapter contract test — the multi-hop flow
+# Offline: golden fixtures — TIR v5 + DID doc, recorded verbatim from pilot
 # --------------------------------------------------------------------------- #
 
-def test_tir_v5_parses_trust_chain() -> None:
-    issuer_did = "did:ebsi:zIssuerAAAAAAAAAAAAAAAAA"
-    tao_did = "did:ebsi:zTAOBBBBBBBBBBBBBBBBBBB"
-    root_did = "did:ebsi:zRootCCCCCCCCCCCCCCCCCC"
+FIXTURES = Path(__file__).parent / "fixtures" / "ebsi"
+
+
+def _load(name: str) -> dict:
+    return json.loads((FIXTURES / name).read_text())
+
+
+def _recorded_tir_routes() -> tuple[str, str, dict[str, dict]]:
+    """The recorded TIR v5 multi-hop as a URL -> response map (verbatim pilot)."""
+    issuer = _load("tir_v5_issuer.json")
+    attributes = _load("tir_v5_attributes.json")
+    revisions = _load("tir_v5_revisions.json")
+    did = issuer["did"]
+    issuer_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}"
+    routes: dict[str, dict] = {issuer_url: issuer, issuer["attributes"]: attributes}
+    for item in attributes["items"]:
+        routes[item["href"]] = revisions[item["id"]]
+    return did, issuer["attributes"], routes
+
+
+def test_didr_v5_parses_recorded_document() -> None:
+    doc = parse_did_document(_load("didr_v5_identifiers.json"))
+    assert doc.id == "did:ebsi:zZeKyEJfUTGwajhNyNX928z"
+    assert doc.verification_methods, "recorded DID document has no verification methods"
+
+
+def test_tir_v5_golden_issuer_record() -> None:
     suite = VcJwtProofSuite()
-
-    # The accreditation body is itself a VC-JWT; sign one so peek_claims can read it.
-    accreditation = {
-        "id": "urn:uuid:acc-1",
-        "type": ["VerifiableCredential", "VerifiableAttestation",
-                 "VerifiableAccreditation", "VerifiableAccreditationToAttest"],
-        "issuer": tao_did,
-        "credentialSubject": {
-            "id": issuer_did,
-            "issuerType": "TI",
-            "accreditedBy": tao_did,
-            "rootTao": root_did,
-            "accreditedFor": ["OpenBadgeCredential"],
-        },
-    }
-    body = suite.sign(accreditation, signing_key=P256SigningKey.generate(kid=f"{tao_did}#k"))
-
-    issuer_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{issuer_did}"
-    attrs_url = f"{issuer_url}/attributes"
-    revision_url = f"{attrs_url}/447867baf/revisions/4ec707f1d"
-
-    routes = {
-        issuer_url: {"did": issuer_did, "hasAttributes": True},
-        attrs_url: {"items": [{"id": "447867baf", "href": revision_url}]},
-        revision_url: {"body": body},
-    }
+    did, attributes_url, routes = _recorded_tir_routes()
     fetch = StubFetch(routes)
-    resolver = DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, tir=TirV5())
+    resolver = DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, tir=TirV5(), base=PILOT_BASE)
 
-    rec = resolver.issuer_record(issuer_did)
-    assert rec.has_attributes
-    assert len(rec.accreditations) == 1
+    rec = resolver.issuer_record(did)
+    assert rec.has_attributes and len(rec.accreditations) == 3
     acc = rec.accreditations[0]
-    assert acc.issuer_type == "TI"
-    assert acc.tao == tao_did
-    assert acc.root_tao == root_did
-    assert "OpenBadgeCredential" in acc.credential_types
-    assert not acc.is_revoked
+    assert acc.issuer_type == "RootTAO"                    # from attribute.issuerType
+    assert acc.tao == did and acc.root_tao == did          # (from the attribute wrapper)
+    assert "VerifiableAuthorisationForTrustChain" in acc.credential_types  # accreditedFor[].types
+    assert acc.credential_jwt                              # extracted from attribute.body
 
-    # proves the v5 multi-hop happened: issuer -> attributes -> revision
-    assert fetch.calls == [issuer_url, attrs_url, revision_url]
+    # the v5 multi-hop: issuer -> attributes -> one revision per listed item
+    assert fetch.calls[0] == f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}"
+    assert fetch.calls[1] == attributes_url
+    assert len(fetch.calls) == 2 + 3
+
+
+def test_tir_v5_recorded_accreditation_signature_verifies() -> None:
+    # Real ES256: a recorded accreditation verifies against the recorded DID
+    # document's key — the whole pilot pipeline, frozen (did+ld+json parse -> key
+    # selection -> signature verification of a genuine EBSI accreditation).
+    suite = VcJwtProofSuite()
+    did, _, routes = _recorded_tir_routes()
+    resolver = DidEbsiResolver(StubFetch(routes), decode_jwt=suite.peek_claims,
+                               tir=TirV5(), base=PILOT_BASE)
+    acc = resolver.issuer_record(did).accreditations[0]
+    doc = parse_did_document(_load("didr_v5_identifiers.json"))
+
+    _, kid = suite.peek_issuer(acc.credential_jwt)
+    vm = doc.key_by_kid(kid)
+    assert vm is not None
+    verified = suite.verify(acc.credential_jwt, public_key_jwk=vm.public_key_jwk)
+    assert verified.issuer == did
+    assert "VerifiableAccreditation" in verified.credential.get("type", [])
+
+
+def test_tir_v5_issuer_404_is_problem_json() -> None:
+    problem = _load("tir_v5_issuer_404_problem.json")      # RFC 7807 (ADR-0001 D7)
+    assert problem["status"] == 404 and problem["title"] and problem["detail"]
 
 
 # --------------------------------------------------------------------------- #
@@ -185,15 +218,16 @@ def test_ssrf_guard_blocks_foreign_and_plaintext_hosts() -> None:
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.skipif(os.getenv("OPENVC_EBSI_LIVE") != "1", reason="live EBSI test is opt-in")
-def test_live_resolve_conformance() -> None:
-    # Confirm the DID + paths against hub.ebsi.eu; conformance data rotates.
+def test_live_resolve() -> None:
+    # Smoke-test real DID resolution — exercises the did+ld+json content
+    # negotiation the offline tests can't. Defaults to the pilot registry + a known
+    # pilot DID; override with OPENVC_EBSI_ENV / OPENVC_EBSI_DID.
+    env = os.getenv("OPENVC_EBSI_ENV", "pilot")
     did = os.getenv("OPENVC_EBSI_DID", "did:ebsi:zZeKyEJfUTGwajhNyNX928z")
     suite = VcJwtProofSuite()
-    with for_ebsi("conformance") as http:
-        resolver = DidEbsiResolver(
-            http.get_json, decode_jwt=suite.peek_claims,
-            base="https://api-conformance.ebsi.eu",
-        )
+    with for_ebsi(env) as http:
+        resolver = DidEbsiResolver(http.get_json, decode_jwt=suite.peek_claims,
+                                   base=EBSI_BASE[env])
         doc = resolver.resolve(did)
         assert doc.id == did
         assert doc.verification_methods, "expected at least one verification method"

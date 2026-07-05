@@ -4,6 +4,20 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — unreleased
+
+### Fixed
+
+- **EBSI DID resolution and the TIR trust chain now work against the real v5
+  API.** The HTTP client accepted only `application/json`, which the DID Registry
+  rejects with `406` (it content-negotiates `application/did+ld+json`); it now
+  accepts both. The TIR v5 adapter also read the accreditation from the wrong
+  place — the signed body is nested under `attribute.body`, and
+  `issuerType`/`tao`/`rootTao` sit on the `attribute` wrapper (not the
+  `credentialSubject`, whose `accreditedFor` is a list of `{schemaId, types}`
+  objects rather than type strings). Both were caught by new golden fixtures
+  recorded verbatim from the pilot registry (`tests/fixtures/ebsi/`).
+
 ## [0.2.0] — 2026-07-05
 
 ### Added
@@ -56,5 +70,6 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[0.2.1]: https://github.com/luisgf/openvc/releases/tag/v0.2.1
 [0.2.0]: https://github.com/luisgf/openvc/releases/tag/v0.2.0
 [0.1.0]: https://github.com/luisgf/openvc/releases/tag/v0.1.0

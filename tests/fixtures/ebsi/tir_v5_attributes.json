@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "href": "https://api-pilot.ebsi.eu/trusted-issuers-registry/v5/issuers/did:ebsi:zZeKyEJfUTGwajhNyNX928z/attributes/cf89e47e260eda53bb199096ca97347790c84d2c8a5f2ce3f411eaba14d0003e",
+      "id": "cf89e47e260eda53bb199096ca97347790c84d2c8a5f2ce3f411eaba14d0003e"
+    },
+    {
+      "href": "https://api-pilot.ebsi.eu/trusted-issuers-registry/v5/issuers/did:ebsi:zZeKyEJfUTGwajhNyNX928z/attributes/053e8d314e6068475bdd4a0f3c634aae513e567911f2fefca9aee4e25fc7fbaa",
+      "id": "053e8d314e6068475bdd4a0f3c634aae513e567911f2fefca9aee4e25fc7fbaa"
+    },
+    {
+      "href": "https://api-pilot.ebsi.eu/trusted-issuers-registry/v5/issuers/did:ebsi:zZeKyEJfUTGwajhNyNX928z/attributes/3f16eddc313e9d1a00729db54918d531030c98894ec0d96e2ebe0cb29477481e",
+      "id": "3f16eddc313e9d1a00729db54918d531030c98894ec0d96e2ebe0cb29477481e"
+    }
+  ],
+  "links": {
+    "first": "https://api-pilot.ebsi.eu/trusted-issuers-registry/v5/issuers/did:ebsi:zZeKyEJfUTGwajhNyNX928z/attributes?page[after]=1&page[size]=10",
+    "last": "https://api-pilot.ebsi.eu/trusted-issuers-registry/v5/issuers/did:ebsi:zZeKyEJfUTGwajhNyNX928z/attributes?page[after]=1&page[size]=10",
+    "next": "https://api-pilot.ebsi.eu/trusted-issuers-registry/v5/issuers/did:ebsi:zZeKyEJfUTGwajhNyNX928z/attributes?page[after]=1&page[size]=10",
+    "prev": "https://api-pilot.ebsi.eu/trusted-issuers-registry/v5/issuers/did:ebsi:zZeKyEJfUTGwajhNyNX928z/attributes?page[after]=1&page[size]=10"
+  },
+  "pageSize": 10,
+  "self": "https://api-pilot.ebsi.eu/trusted-issuers-registry/v5/issuers/did:ebsi:zZeKyEJfUTGwajhNyNX928z/attributes?page[after]=1&page[size]=10",
+  "total": 3
+}

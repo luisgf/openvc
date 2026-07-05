@@ -78,18 +78,17 @@ def _badge_token(suite: VcJwtProofSuite, sk: P256SigningKey,
     return suite.sign(credential, signing_key=sk)
 
 
-def _accreditation_token(suite: VcJwtProofSuite, *, issuer_type: str,
+def _accreditation_token(suite: VcJwtProofSuite, *,
                          accredited_for: tuple[str, ...]) -> str:
+    # Real v5 credentialSubject: id + accreditedFor objects. issuerType/tao/rootTao
+    # live on the TIR `attribute` wrapper (see _make), not here.
     acc = {
         "id": "urn:uuid:acc-1",
         "type": ["VerifiableCredential", "VerifiableAccreditationToAttest"],
         "issuer": TAO,
         "credentialSubject": {
             "id": ISSUER,
-            "issuerType": issuer_type,
-            "accreditedBy": TAO,
-            "rootTao": ROOT,
-            "accreditedFor": list(accredited_for),
+            "accreditedFor": [{"types": list(accredited_for)}],
         },
     }
     return suite.sign(acc, signing_key=P256SigningKey.generate(kid=f"{TAO}#k"))
@@ -128,9 +127,10 @@ def _make(*, has_attributes: bool = True, issuer_type: str = "TI",
     if has_attributes:
         routes[issuer_url] = {"did": ISSUER, "hasAttributes": True, "attributes": attrs_url}
         routes[attrs_url] = {"items": [{"id": "aa", "href": revision_url}]}
-        routes[revision_url] = {
-            "body": _accreditation_token(suite, issuer_type=issuer_type,
-                                         accredited_for=accredited_for)}
+        routes[revision_url] = {"did": ISSUER, "attribute": {
+            "body": _accreditation_token(suite, accredited_for=accredited_for),
+            "issuerType": issuer_type, "tao": TAO, "rootTao": ROOT, "hash": "aa",
+        }}
     else:
         routes[issuer_url] = {"did": ISSUER, "hasAttributes": False}
 

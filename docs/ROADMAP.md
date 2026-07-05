@@ -41,15 +41,17 @@ not here).
   format): `SdJwtVcProofSuite` issuance (disclosures + `_sd` digests, decoys,
   `cnf` binding), holder Key Binding JWT presentation, and verification with
   recursive nested/array unpacking and the selective-disclosure defences.
+- **Recorded golden EBSI fixtures** — real pilot DID Registry v5 + TIR v5
+  responses recorded verbatim (`tests/fixtures/ebsi/`) drive the adapter tests,
+  and a recorded accreditation's ES256 signature verifies against the recorded
+  DID document. Recording them caught (and fixed) a `406` content-negotiation bug
+  and a wrong TIR v5 `attribute.body` mapping.
 
 ## Next
 
-1. **Recorded golden fixtures.** Replace the representative inline fixtures in the
-   TIR-v5 test with real recorded conformance responses, turning the adapter tests
-   into true drift alarms.
-2. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the
+1. **ecdsa-sd-2023 selective disclosure** — the third cryptosuite, behind the
    same `DataIntegrityProofSuite` interface (larger; no rush).
-3. **Packaging/CI polish** — coverage reporting and a live-EBSI job gated behind a
+2. **Packaging/CI polish** — coverage reporting and a live-EBSI job gated behind a
    schedule. (Published to PyPI as `openvc-core`; the core install is free.)
 
 ## Deliberately out of scope

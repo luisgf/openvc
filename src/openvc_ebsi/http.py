@@ -129,7 +129,13 @@ class EbsiHttpClient:
             timeout=httpx.Timeout(timeout_s),
             verify=verify_tls,
             follow_redirects=False,           # avoid redirect-based SSRF
-            headers={"User-Agent": user_agent, "Accept": "application/json"},
+            # The DID Registry content-negotiates: it serves application/did+ld+json
+            # and returns 406 to a bare "application/json". Accept both (plus a
+            # low-priority wildcard) — every body is parsed as JSON regardless.
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "application/json, application/did+ld+json, */*;q=0.1",
+            },
         )
 
     # -- the Fetch capability --------------------------------------------- #

@@ -78,18 +78,17 @@ def _did_doc(did: str, sk: P256SigningKey) -> dict:
 
 
 def _accreditation(suite, signer: P256SigningKey, *, subject: str,
-                   accredited_by: str, issuer_type: str, accredited_for: tuple[str, ...],
+                   accredited_by: str, accredited_for: tuple[str, ...],
                    credential_status: dict | None = None) -> str:
+    # Real v5 credentialSubject: id + accreditedFor objects. issuerType/tao/rootTao
+    # live on the TIR `attribute` wrapper (see _tir_routes), not here.
     acc = {
         "id": f"urn:uuid:acc-{subject[-4:]}",
         "type": ["VerifiableCredential", "VerifiableAccreditationToAttest"],
         "issuer": accredited_by,
         "credentialSubject": {
             "id": subject,
-            "issuerType": issuer_type,
-            "accreditedBy": accredited_by,
-            "rootTao": ROOT,
-            "accreditedFor": list(accredited_for),
+            "accreditedFor": [{"types": list(accredited_for)}],
         },
     }
     if credential_status is not None:
@@ -97,13 +96,18 @@ def _accreditation(suite, signer: P256SigningKey, *, subject: str,
     return suite.sign(acc, signing_key=signer)
 
 
-def _tir_routes(base_issuer_url: str, body_token: str, tag: str) -> dict:
+def _tir_routes(base_issuer_url: str, body_token: str, tag: str, *,
+                issuer_type: str, tao: str, subject: str) -> dict:
     attrs = f"{base_issuer_url}/attributes"
     rev = f"{attrs}/{tag}/revisions/r1"
     return {
         base_issuer_url: {"hasAttributes": True, "attributes": attrs},
         attrs: {"items": [{"id": tag, "href": rev}]},
-        rev: {"body": body_token},
+        # v5 nests the signed body and the role metadata under `attribute`.
+        rev: {"did": subject, "attribute": {
+            "body": body_token, "hash": tag,
+            "issuerType": issuer_type, "tao": tao, "rootTao": ROOT,
+        }},
     }
 
 
@@ -127,10 +131,9 @@ def build_chain(*, mid_issuer_type: str = "TAO",
     token = suite.sign(badge, signing_key=leaf_sk)
 
     leaf_acc = _accreditation(suite, mid_sk, subject=LEAF, accredited_by=MID,
-                              issuer_type="TI", accredited_for=TYPES)
+                              accredited_for=TYPES)
     mid_acc = _accreditation(suite, root_sk, subject=MID, accredited_by=ROOT,
-                             issuer_type=mid_issuer_type, accredited_for=mid_accredited_for,
-                             credential_status=mid_status)
+                             accredited_for=mid_accredited_for, credential_status=mid_status)
 
     tir = f"{BASE}/trusted-issuers-registry/v5/issuers"
     routes: dict[str, dict] = {
@@ -138,8 +141,10 @@ def build_chain(*, mid_issuer_type: str = "TAO",
         f"{BASE}/did-registry/v5/identifiers/{MID}": _did_doc(MID, mid_sk),
         f"{BASE}/did-registry/v5/identifiers/{ROOT}": _did_doc(ROOT, root_sk),
     }
-    routes.update(_tir_routes(f"{tir}/{LEAF}", leaf_acc, "leaf"))
-    routes.update(_tir_routes(f"{tir}/{MID}", mid_acc, "mid"))
+    routes.update(_tir_routes(f"{tir}/{LEAF}", leaf_acc, "leaf",
+                              issuer_type="TI", tao=MID, subject=LEAF))
+    routes.update(_tir_routes(f"{tir}/{MID}", mid_acc, "mid",
+                              issuer_type=mid_issuer_type, tao=ROOT, subject=MID))
 
     fetch = StubFetch(routes)
     resolver = DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, tir=TirV5())
