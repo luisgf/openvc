@@ -96,6 +96,13 @@ not here).
 - **Library-wide `OpenvcError` root** (`openvc.errors`) — one base above every
   error family, so `except OpenvcError` catches any openvc failure (additive; the
   per-area roots are unchanged). *(In the next release.)*
+- **`credentialSchema` validation (W3C VC JSON Schema)** (`openvc.schema`) — the
+  pipeline validates a credential against the `JsonSchema` it declares when the
+  caller opts in with `resolve_credential_schema=` (a mismatch raises
+  `SchemaValidationError`); `policy.require_schema` makes a declared-but-unchecked
+  schema fail-closed. The `jsonschema` processor is the optional `[schema]` extra.
+  Remote `$ref` is off and `JsonSchemaCredential` is not yet validated (raises
+  `UnsupportedSchemaType`). *(In the next release.)*
 
 ## Next
 

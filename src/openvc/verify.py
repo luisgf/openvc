@@ -54,6 +54,11 @@ from typing import Any, Sequence, Union
 
 from .errors import OpenvcError
 from .proof._verify_common import DEFAULT_LEEWAY_S
+from .schema import (
+    SchemaUnavailable,
+    SchemaValidationResult,
+    validate_credential_schema,
+)
 from .status import (
     CredentialRevoked,
     CredentialSuspended,
@@ -109,9 +114,12 @@ class VerificationPolicy:
     """What to assert beyond the signature. All fields have safe defaults.
 
     ``require_status`` is **True** by default (fail-closed): a credential that
-    declares a status but is verified without a resolver is rejected. ``now``
-    pins the evaluation instant for Data Integrity temporal checks (the JOSE
-    suites use the current time)."""
+    declares a status but is verified without a resolver is rejected.
+    ``require_schema`` is **False** by default (opt-in): ``credentialSchema`` is
+    validated only when a ``resolve_credential_schema`` fetch is supplied; set it
+    True to reject a credential that declares a schema but is verified without
+    one. ``now`` pins the evaluation instant for Data Integrity temporal checks
+    (the JOSE suites use the current time)."""
     leeway_s: int = DEFAULT_LEEWAY_S
     expected_types: Sequence[str] | None = None
     expected_vct: str | None = None
@@ -120,6 +128,7 @@ class VerificationPolicy:
     require_key_binding: bool = False
     proof_purpose: str = "assertionMethod"
     require_status: bool = True
+    require_schema: bool = False
     now: datetime | None = None
 
 
@@ -133,6 +142,7 @@ class VerificationResult:
     claims: dict[str, Any] | None = None       # full JWT/SD-JWT claim set, if any
     key_bound: bool | None = None              # SD-JWT: a valid KB-JWT verified
     status: Union[StatusResult, TokenStatusResult, None] = None
+    schema: SchemaValidationResult | None = None  # credentialSchema validation, if run
     raw: Any = None                            # the underlying suite result
 
 
@@ -224,6 +234,7 @@ def verify_credential(
     resolver: Any = None,
     resolve_status_list: Any = None,
     resolve_status_list_token: Any = None,
+    resolve_credential_schema: Any = None,
     jwt_vc_issuer_fetch: Any = None,
     x5c_trust_anchors: Any = None,
     extra_contexts: Any = None,
@@ -243,6 +254,11 @@ def verify_credential(
     ``iss`` before its leaf key is used (see :mod:`openvc.x5c`). *resolve_status_list*
     fetches and **verifies** a W3C status-list credential (VC-JWT / Data Integrity);
     *resolve_status_list_token* the same for an IETF status-list token (SD-JWT).
+    *resolve_credential_schema* opts into **JSON Schema validation**: when the
+    credential declares a ``credentialSchema`` (``JsonSchema`` type), its schema is
+    fetched with this callable (pass :func:`openvc.fetch.https_json_fetch`) and the
+    credential validated against it — omit it and the schema is not checked unless
+    ``policy.require_schema`` is set (see :mod:`openvc.schema`).
     *extra_contexts* is passed to the Data Integrity canonicaliser for offline
     non-bundled contexts.
     """
@@ -258,6 +274,7 @@ def verify_credential(
             _unwrap_enveloped(credential), policy=policy, resolver=resolver,
             resolve_status_list=resolve_status_list,
             resolve_status_list_token=resolve_status_list_token,
+            resolve_credential_schema=resolve_credential_schema,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             x5c_trust_anchors=x5c_trust_anchors,
             extra_contexts=extra_contexts, _depth=_depth + 1)
@@ -265,21 +282,23 @@ def verify_credential(
     if fmt == FORMAT_VC_JWT:
         return _verify_vc_jwt(
             credential, policy, resolver, resolve_status_list,
-            resolve_status_list_token, jwt_vc_issuer_fetch, x5c_trust_anchors)
+            resolve_status_list_token, resolve_credential_schema,
+            jwt_vc_issuer_fetch, x5c_trust_anchors)
     if fmt == FORMAT_SD_JWT_VC:
         return _verify_sd_jwt(
             credential, policy, resolver, resolve_status_list,
-            resolve_status_list_token, jwt_vc_issuer_fetch, x5c_trust_anchors)
+            resolve_status_list_token, resolve_credential_schema,
+            jwt_vc_issuer_fetch, x5c_trust_anchors)
     return _verify_data_integrity(
         credential, fmt, policy, resolver, resolve_status_list,
-        resolve_status_list_token, extra_contexts)
+        resolve_status_list_token, resolve_credential_schema, extra_contexts)
 
 
 # -- per-format handlers ---------------------------------------------------- #
 
 def _verify_vc_jwt(token, policy, resolver, resolve_status_list,
-                   resolve_status_list_token, jwt_vc_issuer_fetch,
-                   x5c_trust_anchors) -> VerificationResult:
+                   resolve_status_list_token, resolve_credential_schema,
+                   jwt_vc_issuer_fetch, x5c_trust_anchors) -> VerificationResult:
     from .proof.vc_jwt import VcJwtProofSuite
 
     suite = VcJwtProofSuite(leeway_s=policy.leeway_s)
@@ -293,14 +312,16 @@ def _verify_vc_jwt(token, policy, resolver, resolve_status_list,
     # W3C status is in the vc object; an IETF `status` claim is in the JWT payload
     status = _check_status(verified.credential, verified.claims, policy,
                            resolve_status_list, resolve_status_list_token)
+    schema = _check_schema(verified.credential, policy, resolve_credential_schema)
     return VerificationResult(
         format=FORMAT_VC_JWT, credential=verified.credential, claims=verified.claims,
-        issuer=verified.issuer, subject=verified.subject, status=status, raw=verified)
+        issuer=verified.issuer, subject=verified.subject, status=status,
+        schema=schema, raw=verified)
 
 
 def _verify_sd_jwt(sd_jwt, policy, resolver, resolve_status_list,
-                   resolve_status_list_token, jwt_vc_issuer_fetch,
-                   x5c_trust_anchors) -> VerificationResult:
+                   resolve_status_list_token, resolve_credential_schema,
+                   jwt_vc_issuer_fetch, x5c_trust_anchors) -> VerificationResult:
     from .proof.sd_jwt import SdJwtVcProofSuite
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
@@ -315,15 +336,18 @@ def _verify_sd_jwt(sd_jwt, policy, resolver, resolve_status_list,
     # the disclosed claims may carry either a W3C credentialStatus or an IETF status
     status = _check_status(verified.claims, verified.claims, policy,
                            resolve_status_list, resolve_status_list_token)
+    # SD-JWT: only disclosed claims are visible; a withheld credentialSchema cannot
+    # be validated (same selective-disclosure caveat as status).
+    schema = _check_schema(verified.claims, policy, resolve_credential_schema)
     return VerificationResult(
         format=FORMAT_SD_JWT_VC, credential=verified.claims, claims=verified.claims,
         issuer=verified.issuer, subject=_as_str(verified.claims.get("sub")),
-        key_bound=verified.key_bound, status=status, raw=verified)
+        key_bound=verified.key_bound, status=status, schema=schema, raw=verified)
 
 
 def _verify_data_integrity(
     doc, fmt, policy, resolver, resolve_status_list, resolve_status_list_token,
-    extra_contexts,
+    resolve_credential_schema, extra_contexts,
 ) -> VerificationResult:
     if fmt == FORMAT_DI_ECDSA_SD:
         from .proof.ecdsa_sd import EcdsaSdProofSuite
@@ -341,9 +365,10 @@ def _verify_data_integrity(
     # too so a (non-conformant) token `status` on one is not silently skipped
     status = _check_status(verified.credential, verified.credential, policy,
                            resolve_status_list, resolve_status_list_token)
+    schema = _check_schema(verified.credential, policy, resolve_credential_schema)
     return VerificationResult(
         format=fmt, credential=verified.credential, issuer=verified.issuer,
-        subject=verified.subject, status=status, raw=verified)
+        subject=verified.subject, status=status, schema=schema, raw=verified)
 
 
 # -- shared helpers --------------------------------------------------------- #
@@ -480,6 +505,33 @@ def _check_status(
                 "(set policy.require_status=False to skip)")
 
     return result
+
+
+def _check_schema(
+    credential: dict[str, Any],
+    policy: VerificationPolicy,
+    resolve_credential_schema: Any,
+) -> SchemaValidationResult | None:
+    """Validate the credential against its declared ``credentialSchema`` (opt-in).
+
+    Runs only when *resolve_credential_schema* is supplied. When the credential
+    declares a schema but none is supplied, this is fail-closed **only** if
+    ``policy.require_schema`` is set (schema conformance is data-shape, not a
+    revocation gate — see :mod:`openvc.schema`); otherwise the schema is left
+    unchecked. A malformed ``credentialSchema`` shape is not inspected unless the
+    caller opted in, so a credential that merely carries one does not break
+    verification for callers who never asked for schema validation."""
+    if not credential.get("credentialSchema"):
+        return None
+    if resolve_credential_schema is None:
+        if policy.require_schema:
+            raise SchemaUnavailable(
+                "credential declares a credentialSchema but no "
+                "resolve_credential_schema was given "
+                "(set policy.require_schema=False to skip)")
+        return None
+    return validate_credential_schema(
+        credential, resolve_credential_schema=resolve_credential_schema)
 
 
 def _fail_closed(policy: VerificationPolicy, declared: str, resolver_arg: str) -> None:

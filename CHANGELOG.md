@@ -4,6 +4,31 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — unreleased
+
+### Added
+
+- **`credentialSchema` validation (W3C VC JSON Schema)** (`openvc.schema`) — the
+  verification pipeline can now validate a credential against the JSON Schema it
+  declares. Pass `resolve_credential_schema=` to `verify_credential` (e.g.
+  `openvc.fetch.https_json_fetch`) and each declared `JsonSchema` is fetched and the
+  whole credential validated against it; a mismatch raises `SchemaValidationError`.
+  It is **opt-in** — schema conformance is a data-shape check, not a revocation gate
+  — so it runs only when a resolver is supplied; set
+  `VerificationPolicy.require_schema=True` to reject a credential that *declares* a
+  schema but is verified without one (symmetric with `require_status`). Once opted
+  in, every sub-step is fail-closed: an unreachable schema, a resource that is not a
+  valid JSON Schema, a resource without `$schema` (which the spec says MUST NOT be
+  processed), or an unsupported type all raise. The JSON Schema processor is the new
+  optional `[schema]` extra (`jsonschema>=4.18`), imported lazily; without it a
+  credential that needs validation raises `SchemaBackendUnavailable`. Remote `$ref`
+  resolution is off — a non-fetching `referencing` registry is wired, so a remote
+  `$ref` fails closed with no network call instead of letting `jsonschema` fetch an
+  attacker-named URL (SSRF). `JsonSchemaCredential` is recognised but raises
+  `UnsupportedSchemaType` for now. Schemas are untrusted input: `pattern` keywords
+  run on Python's backtracking regex, so point `resolve_credential_schema` at hosts
+  you trust (documented in `openvc.schema`).
+
 ## [0.7.1] — 2026-07-06
 
 ### Fixed
@@ -254,6 +279,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[0.8.0]: https://github.com/luisgf/openvc/releases/tag/v0.8.0
 [0.7.1]: https://github.com/luisgf/openvc/releases/tag/v0.7.1
 [0.7.0]: https://github.com/luisgf/openvc/releases/tag/v0.7.0
 [0.6.0]: https://github.com/luisgf/openvc/releases/tag/v0.6.0
