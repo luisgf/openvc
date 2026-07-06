@@ -261,6 +261,12 @@ def verify_credential(
     ``policy.require_schema`` is set (see :mod:`openvc.schema`).
     *extra_contexts* is passed to the Data Integrity canonicaliser for offline
     non-bundled contexts.
+
+    The status/schema resolvers are caller-injected, so ``openvc.fetch``'s SSRF
+    guard protects those issuer-named URLs only if you pass a guarded fetch. Use the
+    blessed defaults in :mod:`openvc.resolvers` (which fetch through the guarded
+    https fetch and verify the fetched status list) for the safe drop-in; a custom
+    resolver opts out of the guard.
     """
     policy = policy or VerificationPolicy()
     resolver = resolver if resolver is not None else default_resolver()
