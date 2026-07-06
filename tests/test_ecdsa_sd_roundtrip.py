@@ -10,6 +10,7 @@ tracked separately.
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 
 import pytest
 
@@ -17,9 +18,12 @@ pytest.importorskip("pyld")
 
 from openvc.keys import P256SigningKey  # noqa: E402
 from openvc.proof.ecdsa_sd import (  # noqa: E402
+    CredentialExpired,
     EcdsaSdProofSuite,
     SignatureInvalid,
 )
+
+UTC = timezone.utc
 
 VC2 = "https://www.w3.org/ns/credentials/v2"
 KID = "did:key:zDnaeykfoobar#zDnaeykfoobar"
@@ -142,3 +146,40 @@ def test_multiple_selective_pointers():
     result = suite.verify(derived, public_key_jwk=sk.public_jwk())
     assert result.credential["credentialSubject"]["name"] == "Ada Lovelace"
     assert result.credential["credentialSubject"]["birthDate"] == "1815-12-10"
+
+
+# --------------------------------------------------------------------------- #
+# Temporal validity — the disclosed subset is held to the credential's window
+# --------------------------------------------------------------------------- #
+
+def _issue_dated(sk, *, valid_from: str, valid_until: str):
+    cred = _credential()
+    cred["validFrom"] = valid_from
+    cred["validUntil"] = valid_until
+    # reveal the window so the verifier can actually see and enforce it
+    return EcdsaSdProofSuite().add_base_proof(
+        cred, signing_key=sk, verification_method=KID,
+        mandatory_pointers=["/issuer", "/validFrom", "/validUntil"])
+
+
+def test_expired_derived_proof_does_not_verify():
+    sk = P256SigningKey.generate(kid=KID)
+    suite = EcdsaSdProofSuite()
+    base = _issue_dated(sk, valid_from="2024-01-01T00:00:00Z",
+                        valid_until="2025-01-01T00:00:00Z")   # past
+    derived = suite.derive_proof(base, selective_pointers=[])
+    with pytest.raises(CredentialExpired):
+        suite.verify(derived, public_key_jwk=sk.public_jwk())
+
+
+def test_now_pins_the_evaluation_instant():
+    sk = P256SigningKey.generate(kid=KID)
+    suite = EcdsaSdProofSuite()
+    base = _issue_dated(sk, valid_from="2020-01-01T00:00:00Z",
+                        valid_until="2021-01-01T00:00:00Z")
+    derived = suite.derive_proof(base, selective_pointers=[])
+    result = suite.verify(derived, public_key_jwk=sk.public_jwk(),
+                          now=datetime(2020, 6, 1, tzinfo=UTC))
+    assert result.credential["issuer"] == "did:example:issuer"
+    with pytest.raises(CredentialExpired):
+        suite.verify(derived, public_key_jwk=sk.public_jwk())

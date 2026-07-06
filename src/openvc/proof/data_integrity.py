@@ -30,6 +30,17 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from ..multibase import decode_multibase, encode_multibase
+from ._verify_common import (
+    DEFAULT_LEEWAY_S,
+    CredentialExpired,
+    CredentialNotYetValid,
+    KeyResolutionError,
+    MalformedTimestamp,
+    ProofPurposeMismatch,
+    check_proof_purpose,
+    check_validity_window,
+    resolve_verification_key,
+)
 from .contexts import DocumentLoaderError, document_loader
 from .vc_jwt import ProofError, SigningKey
 
@@ -42,6 +53,15 @@ class DataIntegrityError(ProofError): ...
 class UnsupportedCryptosuite(DataIntegrityError): ...
 class ProofMalformed(DataIntegrityError): ...
 class SignatureInvalid(DataIntegrityError): ...
+
+
+# The post-signature policy failures verify() may raise beyond signature/format
+# errors, re-exported here so callers catch them from the suite they use. All
+# share the ProofError base, so one `except ProofError` still catches everything.
+POLICY_ERRORS = (
+    CredentialExpired, CredentialNotYetValid, MalformedTimestamp,
+    ProofPurposeMismatch, KeyResolutionError,
+)
 
 
 @dataclass(frozen=True)
@@ -101,6 +121,9 @@ def _unsecured(document: dict[str, Any]) -> dict[str, Any]:
 class DataIntegrityProofSuite:
     """Sign and verify credentials with an embedded eddsa-rdfc-2022 proof."""
 
+    def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S) -> None:
+        self._leeway = leeway_s
+
     def add_proof(
         self,
         credential: dict[str, Any],
@@ -148,11 +171,27 @@ class DataIntegrityProofSuite:
         secured: dict[str, Any],
         *,
         public_key_jwk: dict[str, Any] | None = None,
+        resolver: Any = None,
+        expected_proof_purpose: str | None = "assertionMethod",
+        now: datetime | None = None,
         extra_contexts: Mapping[str, dict] | None = None,
     ) -> VerifiedDataIntegrity:
-        """Verify the embedded proof. With *public_key_jwk* the proof must verify
-        against that operator-trusted key; without it, the key is resolved from
-        the proof's ``verificationMethod`` (did:key, offline)."""
+        """Verify the embedded proof end to end.
+
+        Key selection: with *public_key_jwk* the proof must verify against that
+        operator-trusted key; otherwise the key is resolved from the proof's
+        ``verificationMethod`` — via *resolver* (a ``DidResolver`` /
+        ``DidResolverRegistry``, e.g. to reach ``did:web``) when given, falling
+        back to offline ``did:key``. A resolved key must be authorized by the DID
+        document for *expected_proof_purpose*.
+
+        Policy (checked after the signature verifies): the proof's
+        ``proofPurpose`` must equal *expected_proof_purpose* (pass ``None`` to
+        skip), and the credential's validity window
+        (``validFrom``/``validUntil`` or ``issuanceDate``/``expirationDate``) plus
+        the proof's ``expires`` must contain *now* (default: current time) within
+        the suite's leeway.
+        """
         proof = secured.get("proof")
         if not isinstance(proof, dict):
             raise ProofMalformed("credential has no proof object")
@@ -174,11 +213,19 @@ class DataIntegrityProofSuite:
         proof_config["@context"] = secured.get("@context")
 
         loader = document_loader(extra_contexts)
-        data = _hash_data(_unsecured(secured), proof_config, loader)
+        unsecured = _unsecured(secured)
+        data = _hash_data(unsecured, proof_config, loader)
 
-        jwk = public_key_jwk or self._resolve_key(proof.get("verificationMethod"))
+        jwk = public_key_jwk or resolve_verification_key(
+            proof.get("verificationMethod"),
+            proof_purpose=proof.get("proofPurpose"),
+            resolver=resolver,
+        )
         if not _verify_ed25519(jwk, data, signature):
             raise SignatureInvalid("Data Integrity proof does not verify")
+
+        check_proof_purpose(proof, expected_proof_purpose)
+        check_validity_window(unsecured, proof, now=now, leeway_s=self._leeway)
 
         issuer = secured.get("issuer")
         issuer = issuer.get("id") if isinstance(issuer, dict) else issuer
@@ -186,23 +233,6 @@ class DataIntegrityProofSuite:
         subject_id = subject.get("id") if isinstance(subject, dict) else None
         return VerifiedDataIntegrity(
             credential=secured, issuer=issuer, subject=subject_id, proof=proof)
-
-    @staticmethod
-    def _resolve_key(verification_method: Any) -> dict[str, Any]:
-        if not isinstance(verification_method, str) or not verification_method:
-            raise ProofMalformed("proof has no verificationMethod to resolve")
-        did = verification_method.split("#", 1)[0]
-        if not did.startswith("did:key:"):
-            raise DataIntegrityError(
-                f"cannot resolve {verification_method!r} offline "
-                f"(only did:key without an injected public_key_jwk)")
-        from ..did.did_key import DidKeyResolver
-        doc = DidKeyResolver().resolve(did)
-        vm = doc.key_by_kid(verification_method)
-        if vm is None:
-            raise ProofMalformed(
-                f"verificationMethod {verification_method!r} not in the did:key document")
-        return vm.public_key_jwk
 
 
 def _verify_ed25519(jwk: dict[str, Any], data: bytes, signature: bytes) -> bool:

@@ -14,6 +14,7 @@ See `tests/fixtures/ecdsa_sd/README.md` for provenance.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,12 @@ from openvc.proof.ecdsa_sd import EcdsaSdProofSuite, SignatureInvalid  # noqa: E
 FX = Path(__file__).parent / "fixtures" / "ecdsa_sd"
 CITIZENSHIP = "https://w3id.org/citizenship/v4rc1"
 EXAMPLES = ["prc", "employ"]
+
+# The reference vectors carry fixed validity windows (the `prc` PermanentResident
+# credential is validUntil 2025-12-16, already past), so pin the evaluation
+# instant inside both windows: conformance is about the crypto, not the wall
+# clock, and must not silently start failing when a fixture's window lapses.
+AS_OF = datetime(2025, 6, 1, tzinfo=timezone.utc)
 
 
 @pytest.fixture(scope="module")
@@ -42,7 +49,7 @@ def _load(example: str, name: str) -> dict:
 def test_verifies_w3c_reference_derived_proof(example, extra_contexts):
     reveal = _load(example, "derivedRevealDocument.json")
     # No injected key: the P-256 verificationMethod resolves via did:key.
-    result = EcdsaSdProofSuite().verify(reveal, extra_contexts=extra_contexts)
+    result = EcdsaSdProofSuite().verify(reveal, now=AS_OF, extra_contexts=extra_contexts)
     assert result.proof["cryptosuite"] == "ecdsa-sd-2023"
     assert result.issuer and result.issuer.startswith("did:key:")
 

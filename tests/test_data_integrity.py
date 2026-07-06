@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -19,15 +19,21 @@ pytest.importorskip("pyld")
 
 from cryptography.hazmat.primitives.asymmetric import ed25519  # noqa: E402
 
+from openvc.did.base import DidResolutionError, parse_did_document  # noqa: E402
 from openvc.keys import Ed25519SigningKey  # noqa: E402
 from openvc.multibase import decode_multibase, read_varint  # noqa: E402
 from openvc.proof.contexts import DocumentLoaderError  # noqa: E402
 from openvc.proof.data_integrity import (  # noqa: E402
+    CredentialExpired,
+    CredentialNotYetValid,
     DataIntegrityProofSuite,
     ProofMalformed,
+    ProofPurposeMismatch,
     SignatureInvalid,
     UnsupportedCryptosuite,
 )
+
+UTC = timezone.utc
 
 FX = Path(__file__).parent / "fixtures" / "vc_di_eddsa"
 VC2 = "https://www.w3.org/ns/credentials/v2"
@@ -163,3 +169,118 @@ def test_unbundled_context_fails_closed():
     with pytest.raises(DocumentLoaderError):
         DataIntegrityProofSuite().add_proof(cred, signing_key=sk,
                                             verification_method=sk.kid)
+
+
+# --------------------------------------------------------------------------- #
+# Temporal validity — a signed-but-expired proof must NOT verify (the fields are
+# integrity-protected, so these run on genuinely signed credentials)
+# --------------------------------------------------------------------------- #
+
+def _signed(cred: dict) -> tuple:
+    sk = Ed25519SigningKey.generate(kid="did:key:z#z")
+    signed = DataIntegrityProofSuite().add_proof(
+        cred, signing_key=sk, verification_method=sk.kid)
+    return signed, sk
+
+
+def test_expired_credential_does_not_verify():
+    cred = _credential()
+    cred["validUntil"] = "2025-01-01T00:00:00Z"              # past (today is 2026)
+    signed, sk = _signed(cred)
+    with pytest.raises(CredentialExpired):
+        DataIntegrityProofSuite().verify(signed, public_key_jwk=sk.public_jwk())
+
+
+def test_not_yet_valid_credential_does_not_verify():
+    cred = _credential()
+    cred["validFrom"] = "2099-01-01T00:00:00Z"              # future
+    signed, sk = _signed(cred)
+    with pytest.raises(CredentialNotYetValid):
+        DataIntegrityProofSuite().verify(signed, public_key_jwk=sk.public_jwk())
+
+
+def test_now_pins_the_evaluation_instant():
+    cred = _credential()
+    cred["validFrom"] = "2020-01-01T00:00:00Z"
+    cred["validUntil"] = "2021-01-01T00:00:00Z"            # expired relative to today
+    signed, sk = _signed(cred)
+    suite = DataIntegrityProofSuite()
+    # verifies "as of" a time inside the window ...
+    result = suite.verify(signed, public_key_jwk=sk.public_jwk(),
+                          now=datetime(2020, 6, 1, tzinfo=UTC))
+    assert result.issuer == "did:example:issuer"
+    # ... but not at the current wall-clock time.
+    with pytest.raises(CredentialExpired):
+        suite.verify(signed, public_key_jwk=sk.public_jwk())
+
+
+def test_leeway_tolerates_a_just_expired_credential():
+    cred = _credential()
+    cred["validUntil"] = "2026-01-01T00:00:00Z"
+    signed, sk = _signed(cred)
+    at = datetime(2026, 1, 1, 0, 0, 30, tzinfo=UTC)        # 30 s past expiry
+    DataIntegrityProofSuite(leeway_s=60).verify(
+        signed, public_key_jwk=sk.public_jwk(), now=at)     # within leeway -> OK
+    with pytest.raises(CredentialExpired):
+        DataIntegrityProofSuite(leeway_s=0).verify(
+            signed, public_key_jwk=sk.public_jwk(), now=at)
+
+
+# --------------------------------------------------------------------------- #
+# proofPurpose + DID verification-relationship binding via an injected resolver
+# --------------------------------------------------------------------------- #
+
+def _resolver(did: str, vm_id: str, jwk: dict, relationships: dict):
+    raw = {
+        "id": did,
+        "verificationMethod": [
+            {"id": vm_id, "type": "JsonWebKey2020", "controller": did, "publicKeyJwk": jwk}
+        ],
+        **relationships,
+    }
+    doc = parse_did_document(raw)
+
+    class _R:
+        def supports(self, d: str) -> bool:
+            return d == did
+
+        def resolve(self, d: str):
+            if d != did:
+                raise DidResolutionError(f"unknown {d!r}")
+            return doc
+
+    return _R()
+
+
+def test_proof_purpose_mismatch_rejected():
+    cred = _credential()
+    sk = Ed25519SigningKey.generate(kid="did:key:z#z")
+    signed = DataIntegrityProofSuite().add_proof(
+        cred, signing_key=sk, verification_method=sk.kid,
+        proof_purpose="authentication")
+    with pytest.raises(ProofPurposeMismatch):     # default expects assertionMethod
+        DataIntegrityProofSuite().verify(signed, public_key_jwk=sk.public_jwk())
+
+
+def test_did_web_verifies_via_injected_resolver():
+    did = "did:web:issuer.example"
+    vm_id = f"{did}#assert"
+    sk = Ed25519SigningKey.generate(kid=vm_id)
+    suite = DataIntegrityProofSuite()
+    signed = suite.add_proof(_credential(), signing_key=sk, verification_method=vm_id)
+    resolver = _resolver(did, vm_id, sk.public_jwk(), {"assertionMethod": [vm_id]})
+    result = suite.verify(signed, resolver=resolver)
+    assert result.issuer == "did:example:issuer"
+
+
+def test_did_web_key_not_authorized_for_assertion_rejected():
+    did = "did:web:issuer.example"
+    vm_id = f"{did}#auth"
+    sk = Ed25519SigningKey.generate(kid=vm_id)
+    suite = DataIntegrityProofSuite()
+    signed = suite.add_proof(_credential(), signing_key=sk, verification_method=vm_id)
+    # the key is registered for authentication only; the assertion proof must fail
+    resolver = _resolver(did, vm_id, sk.public_jwk(),
+                         {"authentication": [vm_id], "assertionMethod": []})
+    with pytest.raises(ProofPurposeMismatch):
+        suite.verify(signed, resolver=resolver)

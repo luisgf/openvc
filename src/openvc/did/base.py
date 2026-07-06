@@ -11,8 +11,16 @@ did:web and did:ebsi alike, so they belong in the core.)
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+# The W3C verification relationships a proofPurpose can name. Captured so a
+# verifier can bind a key to the purpose it is authorized for (a proof claiming
+# `assertionMethod` must be signed by a key the document lists under it).
+RELATIONSHIP_KEYS = (
+    "assertionMethod", "authentication", "keyAgreement",
+    "capabilityInvocation", "capabilityDelegation",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -36,6 +44,10 @@ class DidDocument:
     id: str
     verification_methods: list[VerificationMethod]
     raw: dict[str, Any]
+    # {relationship -> [verificationMethod id, ...]} for the relationships the
+    # document actually declares. A relationship absent from this mapping was not
+    # declared by the document (distinct from declared-but-empty).
+    relationships: dict[str, list[str]] = field(default_factory=dict)
 
     def key_by_kid(self, kid: str | None) -> VerificationMethod | None:
         """Match on the full verificationMethod id or its fragment (a JWS `kid`
@@ -47,6 +59,25 @@ class DidDocument:
             (vm for vm in self.verification_methods if vm.id == kid or vm.kid == fragment),
             None,
         )
+
+    def key_for_purpose(
+        self, kid: str | None, proof_purpose: str
+    ) -> VerificationMethod | None:
+        """Like :meth:`key_by_kid`, but authorized for *proof_purpose*.
+
+        If the document declares that relationship, the method must be referenced
+        by it (returns None otherwise — the key exists but is not usable for this
+        purpose). If the document does not declare the relationship at all, the
+        binding cannot be enforced and the matched key is returned as-is."""
+        vm = self.key_by_kid(kid)
+        if vm is None:
+            return None
+        refs = self.relationships.get(proof_purpose)
+        if refs is None:                       # relationship not declared -> lenient
+            return vm
+        if any(ref == vm.id or ref.split("#", 1)[-1] == vm.kid for ref in refs):
+            return vm
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -68,6 +99,18 @@ class DidResolver(Protocol):
 # Shared W3C DID-document parser (used by did:web and the EBSI DID Registry)
 # --------------------------------------------------------------------------- #
 
+def _relationship_refs(doc: dict[str, Any], key: str) -> list[str]:
+    """The verificationMethod ids a relationship references. Entries may be a bare
+    id string or an embedded verification-method object (we take its `id`)."""
+    refs: list[str] = []
+    for item in doc.get(key, []):
+        if isinstance(item, str):
+            refs.append(item)
+        elif isinstance(item, dict) and isinstance(item.get("id"), str):
+            refs.append(item["id"])
+    return refs
+
+
 def parse_did_document(raw: dict[str, Any]) -> DidDocument:
     """Parse a W3C DID document. Tolerates a `didDocument` wrapper or a bare doc
     (the EBSI DID Registry returns it bare, as application/did+ld+json)."""
@@ -82,7 +125,13 @@ def parse_did_document(raw: dict[str, Any]) -> DidDocument:
         for vm in doc.get("verificationMethod", [])
         if "publicKeyJwk" in vm
     ]
-    return DidDocument(id=doc.get("id", ""), verification_methods=vms, raw=doc)
+    relationships = {
+        key: _relationship_refs(doc, key) for key in RELATIONSHIP_KEYS if key in doc
+    }
+    return DidDocument(
+        id=doc.get("id", ""), verification_methods=vms, raw=doc,
+        relationships=relationships,
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -42,6 +42,17 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from ..keys import P256SigningKey, verify_signature
+from ._verify_common import (
+    DEFAULT_LEEWAY_S,
+    CredentialExpired,
+    CredentialNotYetValid,
+    KeyResolutionError,
+    MalformedTimestamp,
+    ProofPurposeMismatch,
+    check_proof_purpose,
+    check_validity_window,
+    resolve_verification_key,
+)
 from .contexts import document_loader
 from .vc_jwt import ProofError, SigningKey
 
@@ -281,6 +292,15 @@ class ProofMalformed(EcdsaSdError): ...
 class SignatureInvalid(EcdsaSdError): ...
 
 
+# The post-signature policy failures verify() may raise beyond signature/format
+# errors, re-exported here so callers catch them from the suite they use. All
+# share the ProofError base, so one `except ProofError` still catches everything.
+POLICY_ERRORS = (
+    CredentialExpired, CredentialNotYetValid, MalformedTimestamp,
+    ProofPurposeMismatch, KeyResolutionError,
+)
+
+
 # --------------------------------------------------------------------------- #
 # JSON-LD transform: skolemize -> canonicalize -> HMAC relabel (di-sd-primitives)
 # --------------------------------------------------------------------------- #
@@ -476,6 +496,9 @@ class EcdsaSdProofSuite:
     """Issue (base), derive (holder), and verify ecdsa-sd-2023 selective-disclosure
     Data Integrity proofs over P-256."""
 
+    def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S) -> None:
+        self._leeway = leeway_s
+
     def add_base_proof(
         self,
         credential: dict[str, Any],
@@ -488,7 +511,14 @@ class EcdsaSdProofSuite:
         extra_contexts: Mapping[str, dict] | None = None,
     ) -> dict[str, Any]:
         """Issuer side: sign each statement so a holder can later disclose a subset.
-        *mandatory_pointers* are always revealed. Needs an ES256 (P-256) key."""
+        *mandatory_pointers* are always revealed. Needs an ES256 (P-256) key.
+
+        Security note: the verifier's validity-window check can only see what the
+        holder discloses. If this credential carries ``validFrom`` / ``validUntil``
+        (or ``issuanceDate`` / ``expirationDate``) and you want a verifier to
+        enforce them, include those pointers here — otherwise a holder may withhold
+        the window from the derived proof and expiry goes unchecked. The W3C
+        reference vectors mark the validity window mandatory for this reason."""
         if signing_key.alg != "ES256":
             raise UnsupportedCryptosuite(
                 f"ecdsa-sd-2023 requires an ES256 (P-256) key, got {signing_key.alg!r}")
@@ -598,10 +628,22 @@ class EcdsaSdProofSuite:
         derived: dict[str, Any],
         *,
         public_key_jwk: dict[str, Any] | None = None,
+        resolver: Any = None,
+        expected_proof_purpose: str | None = "assertionMethod",
+        now: datetime | None = None,
         extra_contexts: Mapping[str, dict] | None = None,
     ) -> VerifiedSdCredential:
         """Verify a derived proof: the issuer's base signature over the mandatory
-        statements, and the per-statement signatures over each disclosed one."""
+        statements, and the per-statement signatures over each disclosed one.
+
+        Key selection and policy match :meth:`DataIntegrityProofSuite.verify`:
+        *public_key_jwk* pins an operator-trusted key, else the P-256
+        ``verificationMethod`` resolves via *resolver* (falling back to offline
+        ``did:key``) and must be authorized for *expected_proof_purpose*. After
+        the signatures verify, the proof's ``proofPurpose`` and the disclosed
+        credential's validity window (with the suite's leeway, evaluated at *now*)
+        are enforced — a derived proof only reveals a subset, so these bounds are
+        checked against whatever the holder disclosed."""
         proof = derived.get("proof")
         if not isinstance(proof, dict):
             raise ProofMalformed("credential has no proof object")
@@ -623,7 +665,11 @@ class EcdsaSdProofSuite:
         mandatory_hash = _sha256_lines(mandatory_lines)
         to_verify = proof_hash + parsed["public_key"] + mandatory_hash
 
-        issuer_jwk = public_key_jwk or self._resolve_key(proof.get("verificationMethod"))
+        issuer_jwk = public_key_jwk or resolve_verification_key(
+            proof.get("verificationMethod"),
+            proof_purpose=proof.get("proofPurpose"),
+            resolver=resolver,
+        )
         if not verify_signature(alg="ES256", public_jwk=issuer_jwk,
                                 signing_input=to_verify, signature=parsed["base_signature"]):
             raise SignatureInvalid("base signature does not verify")
@@ -636,25 +682,12 @@ class EcdsaSdProofSuite:
                                     signing_input=(line + "\n").encode("utf-8"), signature=sig):
                 raise SignatureInvalid("a disclosed statement signature does not verify")
 
+        check_proof_purpose(proof, expected_proof_purpose)
+        check_validity_window(unsecured, proof, now=now, leeway_s=self._leeway)
+
         issuer = unsecured.get("issuer")
         issuer = issuer.get("id") if isinstance(issuer, dict) else issuer
         subj = unsecured.get("credentialSubject")
         subject = subj.get("id") if isinstance(subj, dict) else None
         return VerifiedSdCredential(
             credential=derived, issuer=issuer, subject=subject, proof=proof)
-
-    @staticmethod
-    def _resolve_key(verification_method: Any) -> dict[str, Any]:
-        if not isinstance(verification_method, str) or not verification_method:
-            raise ProofMalformed("proof has no verificationMethod to resolve")
-        did = verification_method.split("#", 1)[0]
-        if not did.startswith("did:key:"):
-            raise EcdsaSdError(
-                f"cannot resolve {verification_method!r} offline "
-                f"(only did:key without an injected public_key_jwk)")
-        from ..did.did_key import DidKeyResolver
-        doc = DidKeyResolver().resolve(did)
-        vm = doc.key_by_kid(verification_method)
-        if vm is None:
-            raise ProofMalformed(f"verificationMethod {verification_method!r} not resolvable")
-        return vm.public_key_jwk
