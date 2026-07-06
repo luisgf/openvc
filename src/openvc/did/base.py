@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from ..errors import OpenvcError
+
 # The W3C verification relationships a proofPurpose can name. Captured so a
 # verifier can bind a key to the purpose it is authorized for (a proof claiming
 # `assertionMethod` must be signed by a key the document lists under it).
@@ -84,7 +86,7 @@ class DidDocument:
 # Errors + protocol
 # --------------------------------------------------------------------------- #
 
-class DidError(Exception): ...
+class DidError(OpenvcError): ...
 class UnsupportedDidMethod(DidError): ...
 class DidResolutionError(DidError): ...
 

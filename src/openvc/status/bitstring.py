@@ -18,8 +18,10 @@ from __future__ import annotations
 import base64
 import gzip
 
+from ..errors import OpenvcError
 
-class StatusListError(Exception):
+
+class StatusListError(OpenvcError):
     """The encodedList could not be decoded, or an index is out of range."""
 
 

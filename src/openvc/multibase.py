@@ -6,12 +6,14 @@ handy for decoding did:key / multibase key material. Pure stdlib.
 """
 from __future__ import annotations
 
+from .errors import OpenvcError
+
 # base58btc (Bitcoin) alphabet.
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _B58_INDEX = {c: i for i, c in enumerate(_B58)}
 
 
-class MultibaseError(Exception):
+class MultibaseError(OpenvcError):
     """Malformed multibase / base58 / varint input."""
 
 

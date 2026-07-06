@@ -34,12 +34,13 @@ from openvc.status import (
     check_credential_status,
 )
 
+from .errors import EbsiError
 from .models import Accreditation, IssuerRecord
 from .trust import TrustChain, TrustChainError, verify_trust_chain
 from .versioning import DidEbsiResolver
 
 
-class EbsiVerificationError(Exception): ...
+class EbsiVerificationError(EbsiError): ...
 class VerificationMethodNotFound(EbsiVerificationError): ...
 class IssuerNotTrusted(EbsiVerificationError): ...
 

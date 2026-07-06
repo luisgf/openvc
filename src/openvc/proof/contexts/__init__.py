@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from ...errors import OpenvcError
+
 _DIR = Path(__file__).parent
 
 # url -> bundled file. Kept deliberately small; callers inject the rest.
@@ -23,7 +25,7 @@ _BUNDLED_FILES: dict[str, Path] = {
 }
 
 
-class DocumentLoaderError(Exception):
+class DocumentLoaderError(OpenvcError):
     """A context was requested that is neither bundled nor injected."""
 
 

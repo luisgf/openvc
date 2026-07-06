@@ -21,13 +21,15 @@ from __future__ import annotations
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
+from .errors import OpenvcError
+
 # Fetch an https URL -> its parsed JSON object (e.g. openvc.fetch.https_json_fetch).
 Fetch = Callable[[str], dict]
 
 _WELL_KNOWN = "/.well-known/jwt-vc-issuer"
 
 
-class JwtVcIssuerError(Exception):
+class JwtVcIssuerError(OpenvcError):
     """The issuer metadata could not be resolved, did not match, or has no key."""
 
 

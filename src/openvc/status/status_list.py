@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ..errors import OpenvcError
 from .bitstring import decode_bitstring, get_status_bit
 
 # Fetch+verify a status-list credential URL -> the status-list VC as a dict.
@@ -27,11 +28,11 @@ PURPOSE_REVOCATION = "revocation"
 PURPOSE_SUSPENSION = "suspension"
 
 
-class CredentialRevoked(Exception):
+class CredentialRevoked(OpenvcError):
     """Raised by verifiers that treat a set revocation bit as a hard failure."""
 
 
-class CredentialSuspended(Exception):
+class CredentialSuspended(OpenvcError):
     """Raised by verifiers that treat a set suspension bit as a hard failure
     (a suspended credential is temporarily invalid — not currently usable)."""
 

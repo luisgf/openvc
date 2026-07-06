@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Sequence, Union
 
+from .errors import OpenvcError
 from .proof._verify_common import DEFAULT_LEEWAY_S
 from .status import (
     CredentialRevoked,
@@ -84,7 +85,7 @@ _CRYPTOSUITE_FORMAT = {
 # Errors
 # --------------------------------------------------------------------------- #
 
-class VerificationError(Exception):
+class VerificationError(OpenvcError):
     """A pipeline-level failure (not a proof-signature failure)."""
 
 

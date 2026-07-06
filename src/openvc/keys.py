@@ -33,10 +33,12 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
     encode_dss_signature,
 )
 
+from .errors import OpenvcError
+
 P256_COORD_BYTES = 32  # a P-256 coordinate / scalar is 32 bytes
 
 
-class KeyBackendError(Exception): ...
+class KeyBackendError(OpenvcError): ...
 class InvalidKey(KeyBackendError): ...
 
 

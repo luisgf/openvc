@@ -31,6 +31,7 @@ from openvc.did.base import DidResolutionError
 from openvc.proof.vc_jwt import ProofError, VcJwtProofSuite
 from openvc.status import ResolveStatusList, check_credential_status
 
+from .errors import EbsiError
 from .http import HttpNotFound
 from .models import Accreditation, IssuerRecord
 from .versioning import DidEbsiResolver
@@ -38,7 +39,7 @@ from .versioning import DidEbsiResolver
 DEFAULT_MAX_DEPTH = 6
 
 
-class TrustChainError(Exception): ...
+class TrustChainError(EbsiError): ...
 class NoTrustedAnchor(TrustChainError): ...
 class AccreditationInvalid(TrustChainError): ...
 class AccreditationRevoked(TrustChainError): ...

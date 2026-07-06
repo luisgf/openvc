@@ -30,8 +30,10 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 from urllib.parse import urlparse
 
+from .errors import OpenvcError
 
-class X5cError(Exception):
+
+class X5cError(OpenvcError):
     """The x5c chain is malformed, does not validate, is not bound to the issuer,
     or has an unusable key."""
 

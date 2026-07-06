@@ -6,6 +6,15 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Library-wide `OpenvcError` root** (`openvc.errors`). Every error openvc raises
+  now descends from `OpenvcError`, so one `except OpenvcError` catches any openvc
+  failure; the EBSI plugin's errors share an `EbsiError` root (itself an
+  `OpenvcError`). Purely additive — the per-area roots (`ProofError`, `DidError`,
+  `StatusListError`, `VerificationError`, …) and every specific error still exist
+  and are still catchable individually.
+
 ### Security
 
 - **SD-JWT temporal check fails closed on a malformed `exp`/`nbf`.** A present but

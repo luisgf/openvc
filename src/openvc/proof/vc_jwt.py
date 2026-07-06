@@ -32,6 +32,8 @@ from typing import Any, Protocol, runtime_checkable
 import jwt as pyjwt
 from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
+from ..errors import OpenvcError
+
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
@@ -63,7 +65,7 @@ class SigningKey(Protocol):
 # Errors
 # --------------------------------------------------------------------------- #
 
-class ProofError(Exception): ...
+class ProofError(OpenvcError): ...
 class UnsupportedAlgorithm(ProofError): ...
 class MalformedToken(ProofError): ...
 class SignatureInvalid(ProofError): ...

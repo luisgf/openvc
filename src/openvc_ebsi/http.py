@@ -32,6 +32,8 @@ import httpx
 
 from openvc import __version__
 
+from .errors import EbsiError
+
 # Hosts per EBSI environment (used to seed the SSRF allow-list).
 EBSI_HOSTS: dict[str, str] = {
     "pilot": "api-pilot.ebsi.eu",
@@ -44,7 +46,7 @@ EBSI_BASE: dict[str, str] = {env: f"https://{host}" for env, host in EBSI_HOSTS.
 # Errors
 # --------------------------------------------------------------------------- #
 
-class HttpError(Exception):
+class HttpError(EbsiError):
     def __init__(self, message: str, *, status: int | None = None, url: str | None = None):
         super().__init__(message)
         self.status = status

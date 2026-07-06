@@ -5,6 +5,7 @@
 __version__ = "0.6.0"
 
 # The one-call verification pipeline is the headline API (see openvc.verify).
+from .errors import OpenvcError  # noqa: E402
 from .verify import (  # noqa: E402
     VerificationError,
     VerificationPolicy,
@@ -14,6 +15,7 @@ from .verify import (  # noqa: E402
 
 __all__ = [
     "__version__",
+    "OpenvcError",
     "verify_credential",
     "VerificationPolicy",
     "VerificationResult",
