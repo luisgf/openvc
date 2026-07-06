@@ -26,3 +26,6 @@ htmlcov/
 # Claude Code local state — project instructions and skills kept local only
 .claude/
 CLAUDE.md
+
+# mkdocs build output
+/site/

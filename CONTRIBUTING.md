@@ -19,6 +19,16 @@ gitlint                       # commit-message convention (see below)
 
 CI runs the same on Python 3.10–3.14.
 
+## Docs
+
+The API reference is generated from docstrings with mkdocs + mkdocstrings:
+
+```sh
+pip install -e ".[docs]"
+mkdocs serve                  # live preview at http://127.0.0.1:8000
+mkdocs build --strict         # what CI runs before publishing to gh-pages
+```
+
 ## Architecture invariant (do not break)
 
 `openvc` (the core) imports **nothing upward**: it must not import from

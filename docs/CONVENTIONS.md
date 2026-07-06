@@ -6,7 +6,8 @@ does. New code must follow the rules below; the **Known deviations** at the end 
 grandfathered and tracked for normalisation toward 1.0.
 
 This is the naming contract. For the architecture invariant (core imports nothing
-upward) and the commit convention, see [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+upward) and the commit convention, see
+[`CONTRIBUTING.md`](https://github.com/luisgf/openvc/blob/main/CONTRIBUTING.md).
 
 ## Casing (PEP 8)
 
