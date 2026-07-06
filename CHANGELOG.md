@@ -8,6 +8,14 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Added
 
+- **VP-JWT holder presentations** (`openvc.proof.vp_jwt`) — a holder wraps
+  credentials in a `vp` object and signs it, binding the presentation to a verifier
+  (`aud`) and a one-time challenge (`nonce`). `VpJwtProofSuite.verify` checks the
+  holder signature and temporal claims, enforces `aud`/`nonce` (replay protection),
+  and **cascade-verifies every embedded credential** through
+  `verify_credential` — so a presentation is accepted only when the holder is
+  authentic and each credential in it verifies. The holder key is resolved via an
+  injected resolver or pinned.
 - **Library-wide `OpenvcError` root** (`openvc.errors`). Every error openvc raises
   now descends from `OpenvcError`, so one `except OpenvcError` catches any openvc
   failure; the EBSI plugin's errors share an `EbsiError` root (itself an
