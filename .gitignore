@@ -22,3 +22,7 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Claude Code local state — project instructions and skills kept local only
+.claude/
+CLAUDE.md
