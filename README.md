@@ -43,6 +43,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     did/did_web.py         did:web -> https -> fetch (fetch is injected)
     fetch.py               SSRF- + DNS-rebinding-safe https JSON fetch for did:web
     status/                status lists — W3C Bitstring + IETF Token Status List (check + issue)
+    verify.py              verify_credential: one-call pipeline over every format
 src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
     http.py                EbsiHttpClient: TTL cache, retries, host allow-list
     versioning.py          DID Registry / TIR version adapters + DidEbsiResolver
@@ -68,8 +69,26 @@ pip install -e ".[all]"                    # everything + dev tools (from a chec
 
 ## Quick start
 
-Issue and verify a VC-JWT with an in-process key (swap for an HSM backend in
-production):
+Verify a credential in **any** format with the one-call pipeline — the format is
+detected (VC-JWT / SD-JWT VC / Data Integrity / enveloped), the issuer key resolved
+(`did:key`, `did:web`), and the policy enforced. Status is **fail-closed** by
+default: a credential that declares a status is rejected unless you supply a
+resolver (or opt out with `require_status=False`).
+
+```python
+from openvc import verify_credential, VerificationPolicy
+
+# `credential` is a VC-JWT / SD-JWT string, or a Data Integrity / enveloped dict
+result = verify_credential(
+    credential,
+    policy=VerificationPolicy(expected_types=["VerifiableCredential"]),
+    resolve_status_list=fetch_verified_status_list,   # needed if it declares status
+)
+print(result.format, result.issuer, result.subject)
+```
+
+Or drive a single suite directly. Issue and verify a VC-JWT with an in-process key
+(swap for an HSM backend in production):
 
 ```python
 from openvc.keys import P256SigningKey
@@ -156,7 +175,9 @@ the recursive TI→TAO→RootTAO trust chain (with per-hop delegation scoping an
 revocation of the accreditations themselves), and status-list revocation in both
 the W3C Bitstring and IETF Token Status List encodings — checked *and* issued —
 are implemented and tested offline. Data Integrity verification also enforces the
-credential's validity window and `proofPurpose`, not just the signature. See
+credential's validity window and `proofPurpose`, not just the signature. A generic
+`verify_credential` pipeline ties them together — format detection, key resolution,
+and fail-closed status/type policy in one call. See
 [the roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md) for
 what is next.
 
