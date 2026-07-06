@@ -36,7 +36,9 @@ from ._verify_common import (
     CredentialNotYetValid,
     KeyResolutionError,
     MalformedTimestamp,
+    PresentationBindingError,
     ProofPurposeMismatch,
+    check_presentation_binding,
     check_proof_purpose,
     check_validity_window,
     resolve_verification_key,
@@ -60,7 +62,7 @@ class SignatureInvalid(DataIntegrityError): ...
 # share the ProofError base, so one `except ProofError` still catches everything.
 POLICY_ERRORS = (
     CredentialExpired, CredentialNotYetValid, MalformedTimestamp,
-    ProofPurposeMismatch, KeyResolutionError,
+    ProofPurposeMismatch, KeyResolutionError, PresentationBindingError,
 )
 
 
@@ -131,13 +133,17 @@ class DataIntegrityProofSuite:
         signing_key: SigningKey,
         verification_method: str,
         proof_purpose: str = "assertionMethod",
+        challenge: str | None = None,
+        domain: str | None = None,
         created: datetime | None = None,
         extra_contexts: Mapping[str, dict] | None = None,
     ) -> dict[str, Any]:
         """Return a copy of *credential* secured with a Data Integrity proof.
 
         *verification_method* is embedded verbatim (a did:key / did:web URL a
-        verifier can resolve). The input is not mutated.
+        verifier can resolve). For a presentation proof (``proof_purpose=
+        "authentication"``) pass *challenge* / *domain* to bind it to a verifier
+        session; both are covered by the signature. The input is not mutated.
         """
         if signing_key.alg != _ED25519_ALG:
             raise UnsupportedCryptosuite(
@@ -155,6 +161,10 @@ class DataIntegrityProofSuite:
             "verificationMethod": verification_method,
             "proofPurpose": proof_purpose,
         }
+        if challenge is not None:
+            proof["challenge"] = challenge
+        if domain is not None:
+            proof["domain"] = domain
         proof_config = dict(proof)
         proof_config["@context"] = credential["@context"]
 
@@ -173,6 +183,8 @@ class DataIntegrityProofSuite:
         public_key_jwk: dict[str, Any] | None = None,
         resolver: Any = None,
         expected_proof_purpose: str | None = "assertionMethod",
+        expected_challenge: str | None = None,
+        expected_domain: str | None = None,
         now: datetime | None = None,
         extra_contexts: Mapping[str, dict] | None = None,
     ) -> VerifiedDataIntegrity:
@@ -225,6 +237,8 @@ class DataIntegrityProofSuite:
             raise SignatureInvalid("Data Integrity proof does not verify")
 
         check_proof_purpose(proof, expected_proof_purpose)
+        check_presentation_binding(
+            proof, expected_challenge=expected_challenge, expected_domain=expected_domain)
         check_validity_window(unsecured, proof, now=now, leeway_s=self._leeway)
 
         issuer = secured.get("issuer")

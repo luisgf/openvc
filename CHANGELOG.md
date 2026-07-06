@@ -8,6 +8,12 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Added
 
+- **Presentation binding for Data Integrity** (`challenge` / `domain`).
+  `DataIntegrityProofSuite.add_proof` accepts `challenge=` / `domain=` (for an
+  `authentication`-purpose proof), and `verify` enforces them via
+  `expected_challenge=` / `expected_domain=` (domain may be a string or a list),
+  binding a presentation proof to a verifier session against replay. Both are part
+  of the signed proof config, so they are tamper-proof.
 - **VP-JWT holder presentations** (`openvc.proof.vp_jwt`) — a holder wraps
   credentials in a `vp` object and signs it, binding the presentation to a verifier
   (`aud`) and a one-time challenge (`nonce`). `VpJwtProofSuite.verify` checks the

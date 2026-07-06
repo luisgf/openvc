@@ -27,6 +27,7 @@ from openvc.proof.data_integrity import (  # noqa: E402
     CredentialExpired,
     CredentialNotYetValid,
     DataIntegrityProofSuite,
+    PresentationBindingError,
     ProofMalformed,
     ProofPurposeMismatch,
     SignatureInvalid,
@@ -284,3 +285,52 @@ def test_did_web_key_not_authorized_for_assertion_rejected():
                          {"authentication": [vm_id], "assertionMethod": []})
     with pytest.raises(ProofPurposeMismatch):
         suite.verify(signed, resolver=resolver)
+
+
+# --------------------------------------------------------------------------- #
+# Presentation binding — challenge / domain on an authentication proof
+# --------------------------------------------------------------------------- #
+
+def _signed_auth(challenge=None, domain=None):
+    sk = Ed25519SigningKey.generate(kid="did:key:z#z")
+    signed = DataIntegrityProofSuite().add_proof(
+        _credential(), signing_key=sk, verification_method=sk.kid,
+        proof_purpose="authentication", challenge=challenge, domain=domain)
+    return signed, sk
+
+
+def test_presentation_challenge_domain_roundtrip():
+    signed, sk = _signed_auth(challenge="c1", domain="https://verifier.example")
+    result = DataIntegrityProofSuite().verify(
+        signed, public_key_jwk=sk.public_jwk(), expected_proof_purpose="authentication",
+        expected_challenge="c1", expected_domain="https://verifier.example")
+    assert result.proof["challenge"] == "c1"
+
+
+def test_presentation_wrong_challenge_or_domain_rejected():
+    signed, sk = _signed_auth(challenge="c1", domain="https://verifier.example")
+    suite = DataIntegrityProofSuite()
+    with pytest.raises(PresentationBindingError):
+        suite.verify(signed, public_key_jwk=sk.public_jwk(),
+                     expected_proof_purpose="authentication", expected_challenge="replayed")
+    with pytest.raises(PresentationBindingError):
+        suite.verify(signed, public_key_jwk=sk.public_jwk(),
+                     expected_proof_purpose="authentication",
+                     expected_domain="https://attacker.example")
+
+
+def test_presentation_domain_may_be_a_list():
+    signed, sk = _signed_auth(challenge="c1", domain=["https://a.example", "https://b.example"])
+    result = DataIntegrityProofSuite().verify(
+        signed, public_key_jwk=sk.public_jwk(), expected_proof_purpose="authentication",
+        expected_challenge="c1", expected_domain="https://b.example")
+    assert result.proof["domain"] == ["https://a.example", "https://b.example"]
+
+
+def test_presentation_challenge_is_integrity_protected():
+    # challenge/domain are part of the signed proof config — tampering breaks the sig
+    signed, sk = _signed_auth(challenge="c1", domain="https://verifier.example")
+    signed["proof"]["challenge"] = "TAMPERED"
+    with pytest.raises(SignatureInvalid):
+        DataIntegrityProofSuite().verify(
+            signed, public_key_jwk=sk.public_jwk(), expected_proof_purpose="authentication")

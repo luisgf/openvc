@@ -38,6 +38,7 @@ class CredentialExpired(ProofError): ...
 class MalformedTimestamp(ProofError): ...
 class ProofPurposeMismatch(ProofError): ...
 class KeyResolutionError(ProofError): ...
+class PresentationBindingError(ProofError): ...
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -123,6 +124,28 @@ def check_proof_purpose(proof: dict[str, Any], expected: str | None) -> None:
     actual = proof.get("proofPurpose")
     if actual != expected:
         raise ProofPurposeMismatch(f"proofPurpose {actual!r} != expected {expected!r}")
+
+
+def check_presentation_binding(
+    proof: dict[str, Any], *,
+    expected_challenge: str | None,
+    expected_domain: str | None,
+) -> None:
+    """For an ``authentication`` (presentation) proof, bind it to this session and
+    audience: the proof's ``challenge`` must equal *expected_challenge* and its
+    ``domain`` must include *expected_domain* (anti-replay). Both are integrity-
+    protected (part of the signed proof config). ``domain`` may be a string or a
+    list; ``None`` on either expectation skips that check."""
+    if expected_challenge is not None and proof.get("challenge") != expected_challenge:
+        raise PresentationBindingError(
+            f"proof challenge {proof.get('challenge')!r} != expected {expected_challenge!r}")
+    if expected_domain is not None:
+        domain = proof.get("domain")
+        ok = domain == expected_domain or (
+            isinstance(domain, list) and expected_domain in domain)
+        if not ok:
+            raise PresentationBindingError(
+                f"proof domain {domain!r} does not include expected {expected_domain!r}")
 
 
 def resolve_verification_key(
