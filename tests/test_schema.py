@@ -280,14 +280,36 @@ def test_validate_array_all_applied_and_one_failing():
 # Pipeline integration — verify_credential(resolve_credential_schema=...)
 # --------------------------------------------------------------------------- #
 
+def _registry(did, vm_id, jwk):
+    """A minimal in-test DID registry (self-contained: no cross-test import)."""
+    from openvc.did.base import DidResolutionError, parse_did_document
+    doc = parse_did_document({
+        "id": did,
+        "verificationMethod": [
+            {"id": vm_id, "type": "JsonWebKey2020", "controller": did, "publicKeyJwk": jwk}],
+        "assertionMethod": [vm_id],
+        "authentication": [vm_id],
+    })
+
+    class _Reg:
+        def supports(self, d):
+            return d == did
+
+        def resolve(self, d):
+            if d != did:
+                raise DidResolutionError(f"unknown DID {d!r}")
+            return doc
+
+    return _Reg()
+
+
 def _signed(cred):
     from openvc.keys import P256SigningKey
     from openvc.proof.vc_jwt import VcJwtProofSuite
     vm = "did:web:issuer.example#key-1"
     sk = P256SigningKey.generate(kid=vm)
     token = VcJwtProofSuite().sign(cred, signing_key=sk)
-    from tests.test_verify_pipeline import _Registry
-    return token, _Registry().add("did:web:issuer.example", vm, sk.public_jwk())
+    return token, _registry("did:web:issuer.example", vm, sk.public_jwk())
 
 
 def test_pipeline_validates_when_resolver_given():
