@@ -96,6 +96,7 @@ class VpJwtProofSuite:
         nonce: str,
         holder_key_jwk: dict[str, Any] | None = None,
         resolver: Any = None,
+        expected_holder: str | None = None,
         require_holder_binding: bool = False,
         **credential_verify_kwargs: Any,
     ) -> VerifiedPresentation:
@@ -114,7 +115,17 @@ class VpJwtProofSuite:
         ``require_holder_binding=True`` to additionally require every embedded
         credential's ``credentialSubject.id`` to equal the holder, so a presenter
         cannot pass off a credential issued to someone else as their own. (Off by
-        default to match ``SdJwtVcProofSuite``'s ``require_key_binding``.)"""
+        default to match ``SdJwtVcProofSuite``'s ``require_key_binding``.) The
+        holder's identity is authenticated only in resolver mode (the key is
+        resolved *from* ``iss``); with a **pinned** ``holder_key_jwk`` the ``iss``
+        is signer-supplied, so *expected_holder* must be given to bind and to trust
+        the returned holder. *expected_holder*, if set, requires ``iss`` to equal
+        it. *audience* and *nonce* are required and must be non-empty — VP-JWT has
+        no unbound mode."""
+        if not audience or not nonce:
+            raise ClaimsInvalid("VP-JWT verify requires a non-empty audience and nonce")
+
+        pinned = holder_key_jwk is not None
         if holder_key_jwk is None:
             holder_key_jwk = self._resolve_holder_key(vp_jwt, resolver)
         header, claims = verify_compact(vp_jwt, public_key_jwk=holder_key_jwk)
@@ -128,8 +139,20 @@ class VpJwtProofSuite:
         if not isinstance(vp, dict):
             raise ClaimsInvalid("VP-JWT has no `vp` object")
         holder = claims.get("iss") or vp.get("holder")
-        if vp.get("holder") and holder and vp.get("holder") != holder:
+        if not isinstance(holder, str) or not holder:
+            raise ClaimsInvalid("VP-JWT has no holder (iss / vp.holder)")
+        if vp.get("holder") and vp.get("holder") != holder:
             raise ClaimsInvalid("vp.holder does not match iss")
+        if expected_holder is not None and holder != expected_holder:
+            raise ClaimsInvalid(f"holder {holder!r} != expected {expected_holder!r}")
+
+        # binding is sound only against an AUTHENTICATED holder: resolver mode binds
+        # iss to the key; a pinned key does not, so it needs expected_holder (checked
+        # up front, before the cascade even runs)
+        if require_holder_binding and pinned and expected_holder is None:
+            raise ClaimsInvalid(
+                "require_holder_binding with a pinned holder key needs "
+                "expected_holder to authenticate the presenter")
 
         from ..verify import verify_credential
         raw = vp.get("verifiableCredential", [])
@@ -140,14 +163,13 @@ class VpJwtProofSuite:
 
         if require_holder_binding:
             for result in results:
-                if result.subject != holder:
+                if not result.subject or result.subject != holder:
                     raise ClaimsInvalid(
                         f"credential subject {result.subject!r} is not the holder "
                         f"{holder!r} (holder binding required)")
 
         return VerifiedPresentation(
-            holder=holder if isinstance(holder, str) else None,
-            credentials=results, claims=claims, vp=vp)
+            holder=holder, credentials=results, claims=claims, vp=vp)
 
     # -- internals --------------------------------------------------------- #
 

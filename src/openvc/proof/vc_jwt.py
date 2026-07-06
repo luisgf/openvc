@@ -215,7 +215,8 @@ class VcJwtProofSuite:
         now = int(time.time())
         issuer = credential.get("issuer")
         issuer = issuer.get("id") if isinstance(issuer, dict) else issuer
-        subject = (credential.get("credentialSubject") or {}).get("id")
+        cs = credential.get("credentialSubject")
+        subject = cs.get("id") if isinstance(cs, dict) else None   # may be a list of subjects
 
         payload: dict[str, Any] = {
             "iss": issuer,
@@ -257,7 +258,8 @@ class VcJwtProofSuite:
             raise ClaimsInvalid(f"iss {iss!r} != vc.issuer {vc_issuer!r}")
 
         sub = claims.get("sub")
-        vc_sub = (vc.get("credentialSubject") or {}).get("id")
+        cs = vc.get("credentialSubject")
+        vc_sub = cs.get("id") if isinstance(cs, dict) else None   # may be a list of subjects
         if sub and vc_sub and sub != vc_sub:
             raise ClaimsInvalid(f"sub {sub!r} != credentialSubject.id {vc_sub!r}")
 

@@ -121,6 +121,68 @@ def test_holder_binding_accepts_credential_issued_to_the_holder():
     assert result.holder == HOLDER
 
 
+def test_empty_or_none_audience_or_nonce_rejected():
+    vp, reg, _ = _setup()
+    for over in ({"audience": None}, {"nonce": None}, {"audience": ""}, {"nonce": ""}):
+        with pytest.raises(ClaimsInvalid, match="audience|nonce"):
+            _verify(vp, reg, **over)
+
+
+def test_expected_holder_mismatch_rejected():
+    vp, reg, _ = _setup()
+    with pytest.raises(ClaimsInvalid, match="holder"):
+        _verify(vp, reg, expected_holder="did:web:someone.else")
+
+
+def test_holder_binding_with_pinned_key_needs_expected_holder():
+    vp, reg, hk = _setup()
+    # pinned key + require_holder_binding, no expected_holder -> iss is unauthenticated
+    with pytest.raises(ClaimsInvalid, match="expected_holder"):
+        VpJwtProofSuite().verify(
+            vp, audience=AUD, nonce=NONCE, holder_key_jwk=hk.public_jwk(),
+            require_holder_binding=True, policy=VerificationPolicy(require_status=False))
+    # with expected_holder it is sound and passes (subject == holder == expected)
+    result = VpJwtProofSuite().verify(
+        vp, audience=AUD, nonce=NONCE, holder_key_jwk=hk.public_jwk(), resolver=reg,
+        expected_holder=HOLDER, require_holder_binding=True,
+        policy=VerificationPolicy(require_status=False))
+    assert result.holder == HOLDER
+
+
+def test_holder_binding_rejects_subjectless_credential():
+    ik = P256SigningKey.generate(kid=ISSUER_VM)
+    hk = Ed25519SigningKey.generate(kid=HOLDER_VM)
+    reg = _Registry().add(ISSUER, ISSUER_VM, ik.public_jwk())
+    reg.add(HOLDER, HOLDER_VM, hk.public_jwk())
+    no_subject = {
+        "@context": [VC2], "id": "urn:uuid:9", "type": ["VerifiableCredential"],
+        "issuer": ISSUER, "credentialSubject": {"name": "Ada"},   # no id
+    }
+    vp = VpJwtProofSuite().sign(
+        [VcJwtProofSuite().sign(no_subject, signing_key=ik)],
+        holder_key=hk, audience=AUD, nonce=NONCE)
+    with pytest.raises(ClaimsInvalid, match="holder"):
+        _verify(vp, reg, require_holder_binding=True)
+
+
+def test_list_valued_credential_subject_does_not_crash():
+    # a VC with multiple subjects must not crash the cascade with a raw AttributeError
+    ik = P256SigningKey.generate(kid=ISSUER_VM)
+    hk = Ed25519SigningKey.generate(kid=HOLDER_VM)
+    reg = _Registry().add(ISSUER, ISSUER_VM, ik.public_jwk())
+    reg.add(HOLDER, HOLDER_VM, hk.public_jwk())
+    multi = {
+        "@context": [VC2], "id": "urn:uuid:8", "type": ["VerifiableCredential"],
+        "issuer": ISSUER,
+        "credentialSubject": [{"id": "did:example:a"}, {"id": "did:example:b"}],
+    }
+    vp = VpJwtProofSuite().sign(
+        [VcJwtProofSuite().sign(multi, signing_key=ik)],
+        holder_key=hk, audience=AUD, nonce=NONCE)
+    result = _verify(vp, reg)                        # verifies without crashing
+    assert result.credentials[0].subject is None     # ambiguous multi-subject -> None
+
+
 def test_holder_binding_rejects_a_third_party_credential():
     ik = P256SigningKey.generate(kid=ISSUER_VM)
     hk = Ed25519SigningKey.generate(kid=HOLDER_VM)
