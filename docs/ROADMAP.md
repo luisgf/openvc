@@ -57,15 +57,40 @@ not here).
   official W3C `vc-di-ecdsa` vectors** (`tests/fixtures/ecdsa_sd/`): `verify`
   accepts reference-produced derived proofs, and our issuer-side canonical N-Quads
   and `proofHash`/`mandatoryHash` match the recorded intermediates byte for byte.
+- **Downstream OB 3.0 consumer** — `openbadgeslib` consumes `openvc-core` from
+  PyPI in its own repository. That work (Open Badges models, image baking, and
+  the API feedback that hardens the core toward 1.0) is tracked there, not here.
+- **Data Integrity validity + purpose enforcement** (`openvc.proof`) — the two
+  Data Integrity suites verified only the signature; `verify()` now also enforces
+  the credential's validity window (`validFrom`/`validUntil`,
+  `issuanceDate`/`expirationDate`, proof `expires`, with configurable leeway and a
+  `now` pin) and `proofPurpose`, and binds the key to the DID document's
+  verification relationship. An injectable `resolver=` makes `did:web` work with
+  embedded proofs. Shared checks live in `openvc.proof._verify_common`; a
+  present-but-unparseable timestamp fails **closed**. *(In the next release.)*
+- **Status-list issuance** (`openvc.status`) — the issuer-side counterpart to the
+  existing check side: `build_status_list_credential` (unsigned W3C Bitstring VC),
+  `build_status_list_token` / `verify_status_list_token` (IETF `statuslist+jwt`),
+  the `build_status_list_entry` / `build_token_status_reference` pointers, and
+  `new_bitstring`. A generic compact-JWS signer (`openvc.proof._jws`) was lifted
+  out of `VcJwtProofSuite.sign` so a non-VC token signs through the same
+  allow-listed path. *(In the next release.)*
 
 ## Next
 
-The queued proof / status / EBSI / interop work is done. The next milestones are
-downstream-driven:
+The queued proof / status / EBSI / interop work is done and the downstream
+consumer lives in its own repository. What remains, roughly in priority order:
 
-1. **Consume `openvc-core` from a real OB 3.0 / EUDI backend** — the true test of
-   the core extraction, and the feedback that hardens the API toward 1.0.
-2. **ecdsa-sd-2023 P-384** and further cryptosuites, if demand appears.
+1. **A generic verification pipeline** — a single `verify_credential(...)` +
+   `VerificationPolicy` that detects the format (VC-JWT / SD-JWT / Data Integrity /
+   enveloped), resolves the key via a registry, and applies status/temporal/type
+   policy — turning the toolkit into a one-call verifier and becoming the surface
+   to stabilise toward 1.0. The EBSI glue becomes a specialisation of it.
+2. **EUDI issuer-key discovery** — `did:jwk`, SD-JWT VC issuer keys via
+   `/.well-known/jwt-vc-issuer` over the SSRF-guarded fetch, and an `x5c` spike.
+3. **W3C Verifiable Presentations** — `challenge`/`domain` on Data Integrity and
+   VP-JWT, verifying the embedded credentials through the pipeline (demand-driven).
+4. **ecdsa-sd-2023 P-384** and further cryptosuites, if demand appears.
 
 ## Deliberately out of scope
 

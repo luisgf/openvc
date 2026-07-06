@@ -25,6 +25,12 @@ CI runs the same on Python 3.10–3.13.
 `openvc_ebsi` or from any consumer. `openvc_ebsi` depends on `openvc`, never the
 reverse. Keep EBSI/network specifics out of the core.
 
+## Naming conventions
+
+Public names follow the patterns in [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md)
+(class role-suffixes, verb-first functions, the `peek_*` untrusted-inspection
+rule, the error hierarchy). New code should match them.
+
 ## Commit convention
 
 Commits follow **Conventional Commits**, enforced by `gitlint` (`.gitlint`):

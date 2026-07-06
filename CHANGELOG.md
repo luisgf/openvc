@@ -4,6 +4,57 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **Data Integrity proofs now enforce the credential's validity window.** Both
+  cryptosuites (`eddsa-rdfc-2022`, `ecdsa-sd-2023`) verified only the signature,
+  so a signed-but-**expired** credential — or one not yet valid — verified as
+  valid. `verify()` now checks `validFrom`/`validUntil` (VCDM 2.0) and
+  `issuanceDate`/`expirationDate` (VCDM 1.1), plus the proof's optional
+  `expires`, against the current time within a 60 s default leeway. **Behaviour
+  change:** credentials outside their validity window that used to pass will now
+  raise `CredentialExpired` / `CredentialNotYetValid`. A new `now=` parameter
+  pins the evaluation instant (deterministic conformance / "as of" audits), and
+  the leeway is configurable via the suite constructor (`leeway_s=`). A
+  present-but-unreadable timestamp **fails closed** (`MalformedTimestamp`)
+  instead of being skipped, and fractional seconds of any precision parse
+  correctly (older Python's stricter `fromisoformat` no longer causes a silent
+  expiry bypass). This brings Data Integrity to parity with the VC-JWT / SD-JWT
+  suites, which already enforced `exp`/`nbf`.
+- **Data Integrity proofs now enforce `proofPurpose` and DID
+  verification-relationship binding.** `verify()` requires the proof's
+  `proofPurpose` to match an expected value (default `assertionMethod`), and —
+  when the key is resolved from a DID document rather than an injected JWK — that
+  the `verificationMethod` is actually authorized by the document for that
+  purpose. A `did:web` document that separates an assertion key from an
+  authentication key now rejects a proof signed by the wrong one, instead of
+  accepting any key it lists.
+
+### Added
+
+- **Injectable DID resolver for Data Integrity verification.** `verify()` takes a
+  `resolver=` (a `DidResolver` / `DidResolverRegistry`), so `did:web` (and any
+  registered method) now works with embedded proofs; offline `did:key` remains
+  the no-argument fallback. `DidDocument` now captures the W3C verification
+  relationships (`assertionMethod`, `authentication`, …) via `key_for_purpose`.
+- **Status-list issuance** (`openvc.status`) — the issuer-side counterpart to the
+  existing check side, so an issuer can revoke using only openvc.
+  `build_status_list_credential` assembles an (unsigned) W3C
+  `BitstringStatusListCredential` to sign with any suite;
+  `build_status_list_token` / `verify_status_list_token` build and verify an IETF
+  status-list token (`typ: statuslist+jwt`); `build_status_list_entry` and
+  `build_token_status_reference` produce the pointer each issued credential/token
+  carries; and `new_bitstring` allocates a zeroed W3C list (mirroring
+  `new_status_list`). Round-trip tested both ways — build → sign → revoke an index
+  → the check detects it — for VC-JWT and Data Integrity issuance.
+- **Generic compact-JWS signer** (`openvc.proof._jws`) — the compact-JWS assembly
+  was lifted out of `VcJwtProofSuite.sign` into `sign_compact` / `verify_compact`
+  / `parse_compact`, so a non-VC token (the status-list token) signs through the
+  same allow-listed `{ES256, EdDSA}` `SigningKey` path. `VcJwtProofSuite.sign` now
+  delegates to it; its output is byte-for-byte unchanged.
+
 ## [0.3.1] — 2026-07-05
 
 ### Added

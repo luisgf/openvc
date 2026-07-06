@@ -4,7 +4,7 @@ A small, dependency-light **Verifiable Credentials core** for Python: sign and
 verify credentials in three proof formats — **VC-JWT** (JOSE), **SD-JWT VC**
 (selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022` and the
 selective-disclosure `ecdsa-sd-2023`) — resolve **DIDs** (`did:key`, `did:web`),
-check
+issue and check
 **status-list** revocation, and — via an optional plugin — verify against the
 **EBSI** trust registries. Designed so private keys can live behind an
 **HSM/Vault** and never enter the process.
@@ -42,7 +42,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     did/did_key.py         offline did:key (Ed25519, P-256)
     did/did_web.py         did:web -> https -> fetch (fetch is injected)
     fetch.py               SSRF- + DNS-rebinding-safe https JSON fetch for did:web
-    status/                status lists — W3C Bitstring + IETF Token Status List
+    status/                status lists — W3C Bitstring + IETF Token Status List (check + issue)
 src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
     http.py                EbsiHttpClient: TTL cache, retries, host allow-list
     versioning.py          DID Registry / TIR version adapters + DidEbsiResolver
@@ -154,8 +154,9 @@ backends, DID resolution (`did:key`, `did:web`, `did:ebsi` read), the EBSI
 registry client (verified against recorded pilot fixtures and a live smoke test),
 the recursive TI→TAO→RootTAO trust chain (with per-hop delegation scoping and
 revocation of the accreditations themselves), and status-list revocation in both
-the W3C Bitstring and IETF Token Status List encodings are implemented and tested
-offline. See
+the W3C Bitstring and IETF Token Status List encodings — checked *and* issued —
+are implemented and tested offline. Data Integrity verification also enforces the
+credential's validity window and `proofPurpose`, not just the signature. See
 [the roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md) for
 what is next.
 
