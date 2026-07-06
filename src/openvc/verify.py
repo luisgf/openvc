@@ -223,17 +223,22 @@ def verify_credential(
     resolver: Any = None,
     resolve_status_list: Any = None,
     resolve_status_list_token: Any = None,
+    jwt_vc_issuer_fetch: Any = None,
     extra_contexts: Any = None,
     _depth: int = 0,
 ) -> VerificationResult:
     """Verify a credential in any supported format against *policy*.
 
-    *resolver* (a ``DidResolver`` / ``DidResolverRegistry``) resolves the issuer
-    key; it defaults to :func:`default_resolver` (offline ``did:key`` +
-    SSRF-guarded ``did:web``). *resolve_status_list* fetches and **verifies** a W3C
-    status-list credential (for VC-JWT / Data Integrity); *resolve_status_list_token*
-    does the same for an IETF status-list token (SD-JWT). *extra_contexts* is passed
-    to the Data Integrity canonicaliser for offline non-bundled contexts.
+    *resolver* (a ``DidResolver`` / ``DidResolverRegistry``) resolves a DID issuer
+    key; it defaults to :func:`default_resolver` (offline ``did:key`` / ``did:jwk``
+    + SSRF-guarded ``did:web``). *jwt_vc_issuer_fetch* opts into **https issuer**
+    key discovery: when a JOSE credential's ``iss`` is an https URL, its key is
+    resolved from ``/.well-known/jwt-vc-issuer`` using this fetch callable (pass
+    :func:`openvc.fetch.https_json_fetch` for the SSRF-guarded one) — omit it and an
+    https issuer raises. *resolve_status_list* fetches and **verifies** a W3C
+    status-list credential (VC-JWT / Data Integrity); *resolve_status_list_token*
+    the same for an IETF status-list token (SD-JWT). *extra_contexts* is passed to
+    the Data Integrity canonicaliser for offline non-bundled contexts.
     """
     policy = policy or VerificationPolicy()
     resolver = resolver if resolver is not None else default_resolver()
@@ -247,14 +252,17 @@ def verify_credential(
             _unwrap_enveloped(credential), policy=policy, resolver=resolver,
             resolve_status_list=resolve_status_list,
             resolve_status_list_token=resolve_status_list_token,
+            jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             extra_contexts=extra_contexts, _depth=_depth + 1)
 
     if fmt == FORMAT_VC_JWT:
         return _verify_vc_jwt(
-            credential, policy, resolver, resolve_status_list, resolve_status_list_token)
+            credential, policy, resolver, resolve_status_list,
+            resolve_status_list_token, jwt_vc_issuer_fetch)
     if fmt == FORMAT_SD_JWT_VC:
         return _verify_sd_jwt(
-            credential, policy, resolver, resolve_status_list, resolve_status_list_token)
+            credential, policy, resolver, resolve_status_list,
+            resolve_status_list_token, jwt_vc_issuer_fetch)
     return _verify_data_integrity(
         credential, fmt, policy, resolver, resolve_status_list,
         resolve_status_list_token, extra_contexts)
@@ -263,12 +271,12 @@ def verify_credential(
 # -- per-format handlers ---------------------------------------------------- #
 
 def _verify_vc_jwt(token, policy, resolver, resolve_status_list,
-                   resolve_status_list_token) -> VerificationResult:
+                   resolve_status_list_token, jwt_vc_issuer_fetch) -> VerificationResult:
     from .proof.vc_jwt import VcJwtProofSuite
 
     suite = VcJwtProofSuite(leeway_s=policy.leeway_s)
     iss, kid = suite.peek_issuer(token)
-    jwk = _resolve_jose_key(resolver, iss, kid)
+    jwk = _resolve_jose_key(resolver, iss, kid, jwt_vc_issuer_fetch)
     verified = suite.verify(token, public_key_jwk=jwk, audience=policy.audience)
     _check_types(verified.credential, policy.expected_types)
     # W3C status is in the vc object; an IETF `status` claim is in the JWT payload
@@ -280,12 +288,12 @@ def _verify_vc_jwt(token, policy, resolver, resolve_status_list,
 
 
 def _verify_sd_jwt(sd_jwt, policy, resolver, resolve_status_list,
-                   resolve_status_list_token) -> VerificationResult:
+                   resolve_status_list_token, jwt_vc_issuer_fetch) -> VerificationResult:
     from .proof.sd_jwt import SdJwtVcProofSuite
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
     iss, kid = suite.peek_issuer(sd_jwt)
-    jwk = _resolve_jose_key(resolver, iss, kid)
+    jwk = _resolve_jose_key(resolver, iss, kid, jwt_vc_issuer_fetch)
     verified = suite.verify(
         sd_jwt, public_key_jwk=jwk, audience=policy.audience, nonce=policy.nonce,
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct)
@@ -325,8 +333,26 @@ def _verify_data_integrity(
 
 # -- shared helpers --------------------------------------------------------- #
 
-def _resolve_jose_key(resolver: Any, iss: str, kid: str | None) -> dict[str, Any]:
+def _resolve_jose_key(
+    resolver: Any, iss: str, kid: str | None, jwt_vc_issuer_fetch: Any = None
+) -> dict[str, Any]:
     from .did.base import DidError
+
+    # an https issuer is resolved via /.well-known/jwt-vc-issuer (opt-in), never
+    # through the DID registry
+    if iss.startswith("https://"):
+        if jwt_vc_issuer_fetch is None:
+            raise KeyResolutionFailed(
+                f"issuer {iss!r} is an https URL; pass jwt_vc_issuer_fetch "
+                "(e.g. openvc.fetch.https_json_fetch) to resolve its key")
+        from .jwt_vc_issuer import JwtVcIssuerError, resolve_jwt_vc_issuer_key
+        try:
+            return resolve_jwt_vc_issuer_key(iss, kid, fetch=jwt_vc_issuer_fetch)
+        # DidError covers the injected fetch's own SSRF / transport failures
+        except (JwtVcIssuerError, DidError) as exc:
+            raise KeyResolutionFailed(
+                f"could not resolve issuer key for {iss!r}: {exc}") from exc
+
     try:
         doc = resolver.resolve(iss)
     except DidError as exc:

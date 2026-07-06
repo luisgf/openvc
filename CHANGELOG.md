@@ -13,6 +13,14 @@ All notable changes to **openvc** are documented here. The format follows
   Offline like `did:key`; a `did:jwk` encoding a private key (with `d`) is refused.
   Registered in the pipeline's `default_resolver`, so `verify_credential` resolves
   `did:jwk` issuers out of the box.
+- **HTTPS issuer-key discovery** (`openvc.jwt_vc_issuer`) — for a JOSE credential
+  whose `iss` is an https URL, the issuer's signing key is resolved from
+  `/.well-known/jwt-vc-issuer` (draft-ietf-oauth-sd-jwt-vc), verifying the
+  metadata's `issuer` equals the `iss` (anti-substitution), supporting inline
+  `jwks` or a `jwks_uri`, and selecting the key by `kid`. Opt-in in the pipeline
+  via `verify_credential(..., jwt_vc_issuer_fetch=https_json_fetch)` (pass the
+  SSRF-guarded fetch); an https issuer without it fails closed. Private keys in the
+  JWKS are refused.
 
 ## [0.5.0] — 2026-07-06
 
