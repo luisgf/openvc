@@ -4,6 +4,20 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] — unreleased
+
+### Security
+
+- **Bounded status-list decompression (compression-bomb defense)** — `decode_bitstring`
+  (gzip) and `decode_status_list` (zlib) now cap the decompressed output at 16 MiB and
+  fail closed with `StatusListError` instead of inflating unbounded. A status list is
+  fetched from an issuer-named URL through a **caller-injected** resolver, so
+  `openvc.fetch`'s 1 MiB wire cap never protected this path (and that cap is on the
+  *compressed* size); a ~1 KB `encodedList` / `lst` could inflate to gigabytes and OOM
+  the verifier during the routine revocation check every credential's status
+  dereferences. Decode now reads incrementally and never materialises past the ceiling.
+  ([#2](https://github.com/luisgf/openvc/issues/2))
+
 ## [0.8.0] — 2026-07-06
 
 ### Added
@@ -279,6 +293,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[0.8.1]: https://github.com/luisgf/openvc/releases/tag/v0.8.1
 [0.8.0]: https://github.com/luisgf/openvc/releases/tag/v0.8.0
 [0.7.1]: https://github.com/luisgf/openvc/releases/tag/v0.7.1
 [0.7.0]: https://github.com/luisgf/openvc/releases/tag/v0.7.0

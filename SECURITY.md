@@ -37,6 +37,13 @@ Areas most relevant to security, and how the library is designed to fail closed:
   allow-list; unlisted contexts fail closed rather than being fetched.
 - **Private keys** sign through the `SigningKey` protocol, so an HSM/Vault backend
   can keep key material out of the process.
+- **Resource bounds.** `openvc.fetch` caps a response at 1 MiB, and status-list
+  decode caps the *decompressed* bitstring at 16 MiB, failing closed with
+  `StatusListError` — a gzip/zlib compression bomb in an issuer-controlled
+  `encodedList` / `lst` cannot inflate to an OOM. **Caveat:** status-list and
+  `credentialSchema` fetches use a **caller-injected** resolver, so the
+  `openvc.fetch` SSRF guard applies only if you pass it (e.g.
+  `openvc.fetch.https_json_fetch`); a custom resolver opts out of that guard.
 
 If you believe any of these controls can be bypassed, that is exactly the kind of
 report we want.

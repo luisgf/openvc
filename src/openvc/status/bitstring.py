@@ -19,6 +19,7 @@ import base64
 import gzip
 
 from ..errors import OpenvcError
+from ._decompress import DecompressionBomb, gunzip_bounded
 
 
 class StatusListError(OpenvcError):
@@ -42,9 +43,11 @@ def decode_bitstring(encoded_list: str) -> bytes:
     except (ValueError, TypeError) as exc:
         raise StatusListError(f"encodedList is not valid base64url: {exc}") from exc
     try:
-        return gzip.decompress(compressed)
+        return gunzip_bounded(compressed)
     except (OSError, EOFError) as exc:
         raise StatusListError(f"encodedList is not valid gzip: {exc}") from exc
+    except DecompressionBomb as exc:
+        raise StatusListError(f"encodedList decompresses too large: {exc}") from exc
 
 
 def encode_bitstring(bits: bytes) -> str:
