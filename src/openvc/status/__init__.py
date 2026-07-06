@@ -26,6 +26,7 @@ from .issue import (
 )
 from .status_list import (
     CredentialRevoked,
+    CredentialSuspended,
     ResolveStatusList,
     StatusEntry,
     StatusEntryResult,
@@ -58,6 +59,7 @@ __all__ = [
     "new_bitstring",
     "set_status_bit",
     "CredentialRevoked",
+    "CredentialSuspended",
     "ResolveStatusList",
     "StatusEntry",
     "StatusEntryResult",

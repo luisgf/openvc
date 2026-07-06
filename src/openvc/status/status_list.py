@@ -28,7 +28,12 @@ PURPOSE_SUSPENSION = "suspension"
 
 
 class CredentialRevoked(Exception):
-    """Raised by verifiers that treat a set status bit as a hard failure."""
+    """Raised by verifiers that treat a set revocation bit as a hard failure."""
+
+
+class CredentialSuspended(Exception):
+    """Raised by verifiers that treat a set suspension bit as a hard failure
+    (a suspended credential is temporarily invalid — not currently usable)."""
 
 
 @dataclass(frozen=True)

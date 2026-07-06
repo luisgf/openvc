@@ -4,6 +4,38 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Generic verification pipeline** (`openvc.verify`) — one call,
+  `verify_credential`, that verifies a credential in any supported format against
+  a `VerificationPolicy`, returning a unified `VerificationResult`. It detects the
+  format (VC-JWT / SD-JWT VC / Data Integrity `eddsa-rdfc-2022` + `ecdsa-sd-2023` /
+  an enveloped VCDM 2.0 credential, which it unwraps), resolves the issuer key via
+  a `DidResolverRegistry` (JOSE formats peek the untrusted `iss`/`kid`; Data
+  Integrity resolves the proof's `verificationMethod`), verifies through the
+  matching suite, and applies policy: expected type(s)/`vct`, audience and
+  holder-binding for SD-JWT, `proofPurpose`, and status. Exported from the package
+  root (`openvc.verify_credential`). The EBSI glue becomes a specialisation of this
+  shape.
+
+### Security
+
+- **Status checking in the pipeline is fail-closed and format-agnostic.** Both
+  status conventions — the W3C `credentialStatus` and the IETF token `status`
+  reference — are checked for every format, so a status declared in the shape that
+  does not match the proof format is not silently skipped. A declared status with
+  no resolver raises `StatusUnavailable` (opt out with `require_status=False`); a
+  resolved *revoked* status raises `CredentialRevoked` and a *suspended* one the
+  new `CredentialSuspended`.
+- **Data Integrity issuer binding.** The pipeline accepts an embedded-proof
+  credential only when the proof's `verificationMethod` is controlled by the
+  credential's `issuer` (same DID), closing a forge-any-issuer gap where a signer
+  could name an arbitrary issuer and sign with their own key (`IssuerBindingError`).
+  Delegated cross-DID trust remains the job of a specialised verifier
+  (`verify_ebsi_badge`).
+
 ## [0.4.0] — 2026-07-06
 
 ### Security

@@ -75,22 +75,25 @@ not here).
   `new_bitstring`. A generic compact-JWS signer (`openvc.proof._jws`) was lifted
   out of `VcJwtProofSuite.sign` so a non-VC token signs through the same
   allow-listed path. *(In the next release.)*
+- **Generic verification pipeline** (`openvc.verify`) — one `verify_credential(...)`
+  + `VerificationPolicy` that detects the format (VC-JWT / SD-JWT VC / Data
+  Integrity / enveloped VCDM 2.0), resolves the issuer key via a registry, verifies
+  through the matching suite, and applies status/type/purpose policy — the one-call
+  verifier and the surface to stabilise toward 1.0. Status is fail-closed and checks
+  both the W3C and IETF conventions for every format; Data Integrity binds the
+  proof key to the issuer DID. The EBSI glue is a specialisation of it.
+  *(In the next release.)*
 
 ## Next
 
 The queued proof / status / EBSI / interop work is done and the downstream
 consumer lives in its own repository. What remains, roughly in priority order:
 
-1. **A generic verification pipeline** — a single `verify_credential(...)` +
-   `VerificationPolicy` that detects the format (VC-JWT / SD-JWT / Data Integrity /
-   enveloped), resolves the key via a registry, and applies status/temporal/type
-   policy — turning the toolkit into a one-call verifier and becoming the surface
-   to stabilise toward 1.0. The EBSI glue becomes a specialisation of it.
-2. **EUDI issuer-key discovery** — `did:jwk`, SD-JWT VC issuer keys via
+1. **EUDI issuer-key discovery** — `did:jwk`, SD-JWT VC issuer keys via
    `/.well-known/jwt-vc-issuer` over the SSRF-guarded fetch, and an `x5c` spike.
-3. **W3C Verifiable Presentations** — `challenge`/`domain` on Data Integrity and
+2. **W3C Verifiable Presentations** — `challenge`/`domain` on Data Integrity and
    VP-JWT, verifying the embedded credentials through the pipeline (demand-driven).
-4. **ecdsa-sd-2023 P-384** and further cryptosuites, if demand appears.
+3. **ecdsa-sd-2023 P-384** and further cryptosuites, if demand appears.
 
 ## Deliberately out of scope
 
