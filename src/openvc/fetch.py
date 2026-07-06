@@ -95,18 +95,11 @@ def _https_get(
         conn.close()
 
 
-def https_json_fetch(
-    url: str,
-    *,
-    timeout_s: float = DEFAULT_TIMEOUT_S,
-    max_bytes: int = MAX_RESPONSE_BYTES,
-) -> dict[str, Any]:
-    """Fetch *url* as JSON with the SSRF guards above. Returns the parsed object.
-
-    Raises :class:`UnsafeUrlError` for a disallowed scheme/host/address or a
-    redirect (a subclass of :class:`~openvc.did.base.DidResolutionError`), and
-    ``DidResolutionError`` for transport / oversize / non-JSON failures.
-    """
+def _https_fetch_guarded(
+    url: str, *, timeout_s: float, max_bytes: int,
+) -> bytes:
+    """Fetch *url* over https with the SSRF guards above and return the raw body.
+    Shared by :func:`https_json_fetch` and :func:`https_text_fetch`."""
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise UnsafeUrlError(f"only https is allowed, got scheme {parsed.scheme!r}")
@@ -127,13 +120,47 @@ def https_json_fetch(
         raise DidResolutionError(f"unexpected status {status} for {url!r}")
     if len(raw) > max_bytes:
         raise DidResolutionError(f"response exceeds {max_bytes} bytes")
+    return raw
+
+
+def https_json_fetch(
+    url: str,
+    *,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+) -> dict[str, Any]:
+    """Fetch *url* as a JSON object with the SSRF guards above. Returns the parsed
+    object.
+
+    Raises :class:`UnsafeUrlError` for a disallowed scheme/host/address or a
+    redirect (a subclass of :class:`~openvc.did.base.DidResolutionError`), and
+    ``DidResolutionError`` for transport / oversize / non-JSON failures.
+    """
+    raw = _https_fetch_guarded(url, timeout_s=timeout_s, max_bytes=max_bytes)
     try:
         data = json.loads(raw)
     except (ValueError, json.JSONDecodeError) as exc:
         raise DidResolutionError(f"response is not JSON: {exc}") from exc
     if not isinstance(data, dict):
-        raise DidResolutionError("DID document must be a JSON object")
+        raise DidResolutionError("response must be a JSON object")
     return data
+
+
+def https_text_fetch(
+    url: str,
+    *,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+) -> str:
+    """Fetch *url* as UTF-8 text with the same SSRF guards as :func:`https_json_fetch`.
+
+    For resources that are not JSON objects — a compact-JWS status-list credential
+    (VC-JWT) or an IETF ``statuslist+jwt`` token. Raises the same error family."""
+    raw = _https_fetch_guarded(url, timeout_s=timeout_s, max_bytes=max_bytes)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DidResolutionError(f"response is not UTF-8 text: {exc}") from exc
 
 
 def default_did_web_resolver() -> DidWebResolver:

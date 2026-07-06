@@ -4,6 +4,22 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — unreleased
+
+### Added
+
+- **Blessed SSRF-guarded default resolvers** (`openvc.resolvers`) — the status and
+  schema fetch paths in `verify_credential` are caller-injected, so `openvc.fetch`'s
+  SSRF guard protected them only if the integrator wired it. New factories make the
+  secure path the easy path: `default_credential_schema_resolver`,
+  `default_status_list_resolver` (W3C Bitstring) and `default_status_list_token_resolver`
+  (IETF) fetch through the guarded https fetch and, for status, **verify** the fetched
+  list through the pipeline before trusting it (a fetched-but-unverified status list
+  would let a forged one clear revocation). A companion `openvc.fetch.https_text_fetch`
+  adds a guarded text fetch for the JWS-shaped status resources. A custom resolver
+  still opts out of the guard (documented in SECURITY.md).
+  ([#3](https://github.com/luisgf/openvc/issues/3))
+
 ## [0.8.1] — 2026-07-06
 
 ### Security
@@ -293,6 +309,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[0.9.0]: https://github.com/luisgf/openvc/releases/tag/v0.9.0
 [0.8.1]: https://github.com/luisgf/openvc/releases/tag/v0.8.1
 [0.8.0]: https://github.com/luisgf/openvc/releases/tag/v0.8.0
 [0.7.1]: https://github.com/luisgf/openvc/releases/tag/v0.7.1

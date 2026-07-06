@@ -42,8 +42,11 @@ Areas most relevant to security, and how the library is designed to fail closed:
   `StatusListError` — a gzip/zlib compression bomb in an issuer-controlled
   `encodedList` / `lst` cannot inflate to an OOM. **Caveat:** status-list and
   `credentialSchema` fetches use a **caller-injected** resolver, so the
-  `openvc.fetch` SSRF guard applies only if you pass it (e.g.
-  `openvc.fetch.https_json_fetch`); a custom resolver opts out of that guard.
+  `openvc.fetch` SSRF guard applies only if you pass it. Use the blessed defaults in
+  `openvc.resolvers` (`default_status_list_resolver`,
+  `default_status_list_token_resolver`, `default_credential_schema_resolver`) — they
+  fetch through the guarded https fetch and, for status, verify the fetched list
+  before trusting it. A custom resolver deliberately opts out of that guard.
 
 If you believe any of these controls can be bypassed, that is exactly the kind of
 report we want.
