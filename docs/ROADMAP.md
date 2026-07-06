@@ -83,17 +83,20 @@ not here).
   both the W3C and IETF conventions for every format; Data Integrity binds the
   proof key to the issuer DID. The EBSI glue is a specialisation of it.
   *(In the next release.)*
+- **EUDI issuer-key discovery** — `did:jwk` (`openvc.did.did_jwk`), SD-JWT VC issuer
+  keys via `/.well-known/jwt-vc-issuer` (`openvc.jwt_vc_issuer`, anti-substitution +
+  SSRF-guarded fetch), and X.509 `x5c` chain trust (`openvc.x5c`, path validation +
+  SAN issuer binding, EC P-256 leaf). The last two are opt-in in the pipeline.
+  *(In the next release; raised the `cryptography` floor to `>=45`.)*
 
 ## Next
 
 The queued proof / status / EBSI / interop work is done and the downstream
 consumer lives in its own repository. What remains, roughly in priority order:
 
-1. **EUDI issuer-key discovery** — `did:jwk`, SD-JWT VC issuer keys via
-   `/.well-known/jwt-vc-issuer` over the SSRF-guarded fetch, and an `x5c` spike.
-2. **W3C Verifiable Presentations** — `challenge`/`domain` on Data Integrity and
+1. **W3C Verifiable Presentations** — `challenge`/`domain` on Data Integrity and
    VP-JWT, verifying the embedded credentials through the pipeline (demand-driven).
-3. **ecdsa-sd-2023 P-384** and further cryptosuites, if demand appears.
+2. **ecdsa-sd-2023 P-384** and further cryptosuites, if demand appears.
 
 ## Deliberately out of scope
 
