@@ -99,3 +99,8 @@ class DidKeyResolver:
             id=did, verification_methods=[vm], raw=raw_doc,
             relationships={"authentication": [vm_id], "assertionMethod": [vm_id]},
         )
+
+
+__all__ = [
+    "DidKeyResolver",
+]

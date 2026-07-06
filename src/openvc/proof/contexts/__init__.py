@@ -54,3 +54,10 @@ def document_loader(
         return {"contextUrl": None, "documentUrl": url, "document": document}
 
     return _loader
+
+
+__all__ = [
+    "DocumentLoaderError",
+    "bundled_contexts",
+    "document_loader",
+]

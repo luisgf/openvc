@@ -152,3 +152,16 @@ class DidResolverRegistry:
             if r.supports(did):
                 return r.resolve(did)
         raise UnsupportedDidMethod(f"no resolver for {did!r}")
+
+
+__all__ = [
+    "DidDocument",
+    "DidError",
+    "DidResolutionError",
+    "DidResolver",
+    "DidResolverRegistry",
+    "RELATIONSHIP_KEYS",
+    "UnsupportedDidMethod",
+    "VerificationMethod",
+    "parse_did_document",
+]

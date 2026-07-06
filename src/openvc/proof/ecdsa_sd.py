@@ -699,3 +699,31 @@ serialize_base_proof = encode_base_proof
 serialize_derived_proof = encode_derived_proof
 parse_base_proof = decode_base_proof
 parse_derived_proof = decode_derived_proof
+
+
+__all__ = [
+    "BASE_PROOF_HEADER",
+    "CRYPTOSUITE",
+    "CredentialExpired",
+    "CredentialNotYetValid",
+    "DERIVED_PROOF_HEADER",
+    "EcdsaSdError",
+    "EcdsaSdProofSuite",
+    "KeyResolutionError",
+    "MalformedTimestamp",
+    "POLICY_ERRORS",
+    "PROOF_TYPE",
+    "ProofMalformed",
+    "ProofPurposeMismatch",
+    "ProofValueMalformed",
+    "SignatureInvalid",
+    "UnsupportedCryptosuite",
+    "VerifiedSdCredential",
+    "decode_base_proof",
+    "decode_cbor",
+    "decode_derived_proof",
+    "encode_base_proof",
+    "encode_cbor",
+    "encode_derived_proof",
+    "p256_multikey_to_jwk",
+]

@@ -14,3 +14,8 @@ from __future__ import annotations
 
 class OpenvcError(Exception):
     """Base class for every exception raised by openvc and its plugins."""
+
+
+__all__ = [
+    "OpenvcError",
+]

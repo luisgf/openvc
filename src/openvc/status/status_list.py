@@ -132,3 +132,15 @@ def check_credential_status(
         elif is_set and entry.purpose == PURPOSE_SUSPENSION:
             suspended = True
     return StatusResult(revoked=revoked, suspended=suspended, entries=tuple(results))
+
+
+__all__ = [
+    "CredentialRevoked",
+    "CredentialSuspended",
+    "ResolveStatusList",
+    "StatusEntry",
+    "StatusEntryResult",
+    "StatusResult",
+    "check_credential_status",
+    "parse_status_entries",
+]

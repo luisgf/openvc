@@ -46,3 +46,46 @@ class MalformedToken(ProofError):
 
 class ClaimsInvalid(ProofError):
     """A required claim is missing, malformed, or does not satisfy policy."""
+
+
+# Post-signature policy failures, shared by every suite's verify() (the checks live
+# in openvc.proof._verify_common; the classes live here as the canonical home).
+class CredentialExpired(ProofError):
+    """The credential's validity window has ended (validUntil / expirationDate / proof expires)."""
+
+
+class CredentialNotYetValid(ProofError):
+    """The credential's validity window has not started (validFrom / issuanceDate)."""
+
+
+class MalformedTimestamp(ProofError):
+    """A validity timestamp is present but not a parseable date-time (fails closed)."""
+
+
+class ProofPurposeMismatch(ProofError):
+    """The proof's proofPurpose is not the expected one (e.g. assertionMethod)."""
+
+
+class KeyResolutionError(ProofError):
+    """The proof's verificationMethod key could not be resolved."""
+
+
+class PresentationBindingError(ProofError):
+    """A presentation proof's challenge / domain does not match what the verifier expects."""
+
+
+__all__ = [
+    "ClaimsInvalid",
+    "CredentialExpired",
+    "CredentialNotYetValid",
+    "KeyResolutionError",
+    "MalformedTimestamp",
+    "MalformedToken",
+    "PresentationBindingError",
+    "ProofError",
+    "ProofMalformed",
+    "ProofPurposeMismatch",
+    "SignatureInvalid",
+    "UnsupportedAlgorithm",
+    "UnsupportedCryptosuite",
+]

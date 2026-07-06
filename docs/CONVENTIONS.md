@@ -9,6 +9,37 @@ This is the naming contract. For the architecture invariant (core imports nothin
 upward) and the commit convention, see
 [`CONTRIBUTING.md`](https://github.com/luisgf/openvc/blob/main/CONTRIBUTING.md).
 
+## Public surface & stability
+
+Every public module declares an explicit `__all__` — that list *is* the module's
+public surface, and toward 1.0 it is the frozen, SemVer-protected API.
+
+**Where to import.** The one-call pipeline and the signing primitives are at the
+package root:
+
+```python
+from openvc import (verify_credential, VerificationPolicy, VerificationResult,
+                    VerificationError, OpenvcError,
+                    Ed25519SigningKey, P256SigningKey, SigningKey)
+```
+
+Everything else is imported from its module and is equally stable API: proof suites
+from `openvc.proof.<suite>` (`vc_jwt`, `sd_jwt`, `data_integrity`, `ecdsa_sd`,
+`vp_jwt`); the **shared proof-error taxonomy** — `ProofError`, its leaves, and the
+policy errors (`CredentialExpired`, `ProofPurposeMismatch`, …) — from the canonical
+`openvc.proof.errors`; DID resolution from `openvc.did.base` and the concrete
+resolvers from `openvc.did.did_key` / `did_jwk` / `did_web`; keys from `openvc.keys`;
+status-list check/issue from `openvc.status` (prefer it over the codec submodules);
+schema validation from `openvc.schema`; the SSRF-guarded drop-ins from
+`openvc.resolvers` and `openvc.fetch`. The `openvc.proof` package re-exports nothing
+(`__all__ = []`) — import each suite from its submodule.
+
+**Internal (no stability guarantee, may change without a major bump):** any
+leading-underscore module or name — `openvc.proof._verify_common`, `openvc.proof._jws`,
+`openvc.status._decompress`, and every `_name`. Do not import from these paths; the
+policy errors and `check_*` verbs `_verify_common` defines are stable only via
+`openvc.proof.errors` (errors) and the suites (checks).
+
 ## Casing (PEP 8)
 
 - Classes and type aliases: `PascalCase` (`VcJwtProofSuite`, `ResolveStatusList`).

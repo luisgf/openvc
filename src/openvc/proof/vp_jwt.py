@@ -211,3 +211,9 @@ class VpJwtProofSuite:
         ok = aud == expected or (isinstance(aud, list) and expected in aud)
         if not ok:
             raise ClaimsInvalid(f"aud {aud!r} != expected verifier {expected!r}")
+
+
+__all__ = [
+    "VerifiedPresentation",
+    "VpJwtProofSuite",
+]

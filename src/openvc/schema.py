@@ -292,3 +292,20 @@ def validate_credential_schema(
         applied.append(ref.id)
 
     return SchemaValidationResult(validated=bool(applied), schemas=tuple(applied))
+
+
+__all__ = [
+    "CredentialSchemaRef",
+    "ResolveCredentialSchema",
+    "SCHEMA_TYPE_JSON",
+    "SCHEMA_TYPE_JSON_CREDENTIAL",
+    "SchemaBackendUnavailable",
+    "SchemaError",
+    "SchemaResolutionError",
+    "SchemaUnavailable",
+    "SchemaValidationError",
+    "SchemaValidationResult",
+    "UnsupportedSchemaType",
+    "parse_credential_schemas",
+    "validate_credential_schema",
+]

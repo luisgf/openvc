@@ -263,3 +263,22 @@ def _verify_ed25519(jwk: dict[str, Any], data: bytes, signature: bytes) -> bool:
         return True
     except InvalidSignature:
         return False
+
+
+__all__ = [
+    "CRYPTOSUITE",
+    "CredentialExpired",
+    "CredentialNotYetValid",
+    "DataIntegrityError",
+    "DataIntegrityProofSuite",
+    "KeyResolutionError",
+    "MalformedTimestamp",
+    "POLICY_ERRORS",
+    "PROOF_TYPE",
+    "PresentationBindingError",
+    "ProofMalformed",
+    "ProofPurposeMismatch",
+    "SignatureInvalid",
+    "UnsupportedCryptosuite",
+    "VerifiedDataIntegrity",
+]

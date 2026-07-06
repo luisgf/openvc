@@ -3,3 +3,6 @@
 Each suite lives in its own submodule and is imported directly, e.g.
 ``from openvc.proof.sd_jwt import SdJwtVcProofSuite``.
 """
+
+
+__all__: list[str] = []
