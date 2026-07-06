@@ -1,0 +1,2438 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A dependency-light Verifiable Credentials core for Python">
+      
+      
+      
+      
+        <link rel="prev" href="../dids-keys/">
+      
+      
+        <link rel="next" href="../discovery/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Status lists - openvc</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#status-lists" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="openvc" class="md-header__button md-logo" aria-label="openvc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            openvc
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Status lists
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/luisgf/openvc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    luisgf/openvc
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="openvc" class="md-nav__button md-logo" aria-label="openvc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    openvc
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/luisgf/openvc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    luisgf/openvc
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verification pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proofs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Proof suites
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dids-keys/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DIDs & keys
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status lists
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status lists
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checking
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openvc.status.status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        status_list
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="status_list">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.status_list.CredentialRevoked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CredentialRevoked
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.status_list.CredentialSuspended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CredentialSuspended
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.status_list.parse_status_entries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        parse_status_entries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.status_list.check_credential_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check_credential_status
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        token_status_list
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="token_status_list">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.decode_status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        decode_status_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.encode_status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        encode_status_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.new_status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        new_status_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.get_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_status
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.set_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        set_status
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.parse_token_status_ref" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        parse_token_status_ref
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.check_token_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check_token_status
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#issuing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Issuing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openvc.status.issue" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        issue
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="issue">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.build_status_list_credential" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_status_list_credential
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.build_status_list_entry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_status_list_entry
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.build_status_list_token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_status_list_token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.verify_status_list_token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        verify_status_list_token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.build_token_status_reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_token_status_reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../discovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Issuer-key discovery
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Errors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../CONVENTIONS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conventions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design decisions
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design decisions
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/ADR-0001-ebsi-http-client/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-0001 — EBSI HTTP client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checking
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openvc.status.status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        status_list
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="status_list">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.status_list.CredentialRevoked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CredentialRevoked
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.status_list.CredentialSuspended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CredentialSuspended
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.status_list.parse_status_entries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        parse_status_entries
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.status_list.check_credential_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check_credential_status
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        token_status_list
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="token_status_list">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.decode_status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        decode_status_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.encode_status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        encode_status_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.new_status_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        new_status_list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.get_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_status
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.set_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        set_status
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.parse_token_status_ref" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        parse_token_status_ref
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.token_status_list.check_token_status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        check_token_status
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#issuing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Issuing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#openvc.status.issue" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        issue
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="issue">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.build_status_list_credential" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_status_list_credential
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.build_status_list_entry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_status_list_entry
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.build_status_list_token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_status_list_token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.verify_status_list_token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        verify_status_list_token
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openvc.status.issue.build_token_status_reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_token_status_reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="status-lists">Status lists</h1>
+<p>Two encodings behind one interface — W3C Bitstring and IETF Token Status List —
+plus the issuer-side builders.</p>
+<h2 id="checking">Checking</h2>
+
+
+<div class="doc doc-object doc-module">
+
+
+
+<h2 id="openvc.status.status_list" class="doc doc-heading">
+            <code>openvc.status.status_list</code>
+
+
+</h2>
+
+    <div class="doc doc-contents first">
+
+        <p>openvc.status.status_list — check a credential's <code>credentialStatus</code> against a
+Bitstring Status List credential.</p>
+<p>Transport- and proof-agnostic by design: the caller injects
+<code>resolve_status_list</code> — a function that fetches the status-list credential URL
+and returns the <strong>verified</strong> status-list VC as a dict (its signature is the
+caller's concern, since the proof format and the SSRF policy for that host are
+too). This module then parses the entry, decodes the bitstring, and reads the
+bit. So it stays pure stdlib and reusable by any VC profile (OB 3.0, EBSI, EUDI).</p>
+<p>Supports <code>BitstringStatusListEntry</code> and the older <code>StatusList2021Entry</code> —
+same field names, same bit encoding.</p>
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openvc.status.status_list.CredentialRevoked" class="doc doc-heading">
+            <code>CredentialRevoked</code>
+
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="OpenvcError (openvc.errors.OpenvcError)" href="../errors/#openvc.errors.OpenvcError">OpenvcError</a></code></p>
+
+
+
+        <p>Raised by verifiers that treat a set revocation bit as a hard failure.</p>
+
+
+
+
+
+
+
+
+              <details class="mkdocstrings-source">
+                <summary>Source code in <code>src/openvc/status/status_list.py</code></summary>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">31</span>
+<span class="normal">32</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CredentialRevoked</span><span class="p">(</span><span class="n">OpenvcError</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Raised by verifiers that treat a set revocation bit as a hard failure.&quot;&quot;&quot;</span>
+</code></pre></div></td></tr></table></div>
+              </details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="openvc.status.status_list.CredentialSuspended" class="doc doc-heading">
+            <code>CredentialSuspended</code>
+
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="OpenvcError (openvc.errors.OpenvcError)" href="../errors/#openvc.errors.OpenvcError">OpenvcError</a></code></p>
+
+
+
+        <p>Raised by verifiers that treat a set suspension bit as a hard failure
+(a suspended credential is temporarily invalid — not currently usable).</p>
+
+
+
+
+
+
+
+
+              <details class="mkdocstrings-source">
+                <summary>Source code in <code>src/openvc/status/status_list.py</code></summary>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">35</span>
+<span class="normal">36</span>
+<span class="normal">37</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CredentialSuspended</span><span class="p">(</span><span class="n">OpenvcError</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Raised by verifiers that treat a set suspension bit as a hard failure</span>
+<span class="sd">    (a suspended credential is temporarily invalid — not currently usable).&quot;&quot;&quot;</span>
+</code></pre></div></td></tr></table></div>
+              </details>
+
+    </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.status_list.parse_status_entries" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">parse_status_entries</span><span class="p">(</span><span class="n">credential</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Parse the credential's <code>credentialStatus</code> into typed entries. Entries
+whose type is not a recognised status-list entry are skipped (a credential
+may carry unrelated status types).</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/status_list.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">72</span>
+<span class="normal">73</span>
+<span class="normal">74</span>
+<span class="normal">75</span>
+<span class="normal">76</span>
+<span class="normal">77</span>
+<span class="normal">78</span>
+<span class="normal">79</span>
+<span class="normal">80</span>
+<span class="normal">81</span>
+<span class="normal">82</span>
+<span class="normal">83</span>
+<span class="normal">84</span>
+<span class="normal">85</span>
+<span class="normal">86</span>
+<span class="normal">87</span>
+<span class="normal">88</span>
+<span class="normal">89</span>
+<span class="normal">90</span>
+<span class="normal">91</span>
+<span class="normal">92</span>
+<span class="normal">93</span>
+<span class="normal">94</span>
+<span class="normal">95</span>
+<span class="normal">96</span>
+<span class="normal">97</span>
+<span class="normal">98</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">parse_status_entries</span><span class="p">(</span><span class="n">credential</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">StatusEntry</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Parse the credential&#39;s ``credentialStatus`` into typed entries. Entries</span>
+<span class="sd">    whose type is not a recognised status-list entry are skipped (a credential</span>
+<span class="sd">    may carry unrelated status types).&quot;&quot;&quot;</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">.bitstring</span><span class="w"> </span><span class="kn">import</span> <span class="n">StatusListError</span>
+    <span class="n">entries</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">StatusEntry</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">raw</span> <span class="ow">in</span> <span class="n">_as_entry_list</span><span class="p">(</span><span class="n">credential</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;credentialStatus&quot;</span><span class="p">)):</span>
+        <span class="n">types</span> <span class="o">=</span> <span class="n">raw</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;type&quot;</span><span class="p">,</span> <span class="p">[])</span>
+        <span class="n">types</span> <span class="o">=</span> <span class="p">[</span><span class="n">types</span><span class="p">]</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">types</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="k">else</span> <span class="n">types</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">_ENTRY_TYPES</span><span class="o">.</span><span class="n">intersection</span><span class="p">(</span><span class="n">types</span><span class="p">):</span>
+            <span class="k">continue</span>
+        <span class="n">url</span> <span class="o">=</span> <span class="n">raw</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;statusListCredential&quot;</span><span class="p">)</span>
+        <span class="n">index</span> <span class="o">=</span> <span class="n">raw</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;statusListIndex&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">url</span> <span class="ow">or</span> <span class="n">index</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span>
+                <span class="s2">&quot;status entry needs statusListCredential and statusListIndex&quot;</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">index_int</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">index</span><span class="p">)</span>         <span class="c1"># the spec encodes the index as a string</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">TypeError</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">)</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;invalid statusListIndex </span><span class="si">{</span><span class="n">index</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
+        <span class="n">entries</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">StatusEntry</span><span class="p">(</span>
+            <span class="n">status_list_credential</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">url</span><span class="p">),</span>
+            <span class="n">index</span><span class="o">=</span><span class="n">index_int</span><span class="p">,</span>
+            <span class="n">purpose</span><span class="o">=</span><span class="n">raw</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;statusPurpose&quot;</span><span class="p">,</span> <span class="n">PURPOSE_REVOCATION</span><span class="p">),</span>
+            <span class="n">entry_type</span><span class="o">=</span><span class="nb">next</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="n">_ENTRY_TYPES</span><span class="o">.</span><span class="n">intersection</span><span class="p">(</span><span class="n">types</span><span class="p">))),</span>
+        <span class="p">))</span>
+    <span class="k">return</span> <span class="n">entries</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.status_list.check_credential_status" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">check_credential_status</span><span class="p">(</span><span class="n">credential</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">resolve_status_list</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Resolve each status-list credential the credential references and read its
+bit. Returns a :class:<code>StatusResult</code>; never raises on a <em>set</em> bit (that is a
+verifier policy decision) — only on malformed data or a resolve failure.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/status_list.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">117</span>
+<span class="normal">118</span>
+<span class="normal">119</span>
+<span class="normal">120</span>
+<span class="normal">121</span>
+<span class="normal">122</span>
+<span class="normal">123</span>
+<span class="normal">124</span>
+<span class="normal">125</span>
+<span class="normal">126</span>
+<span class="normal">127</span>
+<span class="normal">128</span>
+<span class="normal">129</span>
+<span class="normal">130</span>
+<span class="normal">131</span>
+<span class="normal">132</span>
+<span class="normal">133</span>
+<span class="normal">134</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">check_credential_status</span><span class="p">(</span>
+    <span class="n">credential</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">resolve_status_list</span><span class="p">:</span> <span class="n">ResolveStatusList</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">StatusResult</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Resolve each status-list credential the credential references and read its</span>
+<span class="sd">    bit. Returns a :class:`StatusResult`; never raises on a *set* bit (that is a</span>
+<span class="sd">    verifier policy decision) — only on malformed data or a resolve failure.&quot;&quot;&quot;</span>
+    <span class="n">results</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">StatusEntryResult</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">revoked</span> <span class="o">=</span> <span class="n">suspended</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="k">for</span> <span class="n">entry</span> <span class="ow">in</span> <span class="n">parse_status_entries</span><span class="p">(</span><span class="n">credential</span><span class="p">):</span>
+        <span class="n">status_vc</span> <span class="o">=</span> <span class="n">resolve_status_list</span><span class="p">(</span><span class="n">entry</span><span class="o">.</span><span class="n">status_list_credential</span><span class="p">)</span>
+        <span class="n">bits</span> <span class="o">=</span> <span class="n">decode_bitstring</span><span class="p">(</span><span class="n">_encoded_list</span><span class="p">(</span><span class="n">status_vc</span><span class="p">,</span> <span class="n">entry</span><span class="p">))</span>
+        <span class="n">is_set</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">get_status_bit</span><span class="p">(</span><span class="n">bits</span><span class="p">,</span> <span class="n">entry</span><span class="o">.</span><span class="n">index</span><span class="p">))</span>
+        <span class="n">results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">StatusEntryResult</span><span class="p">(</span><span class="n">entry</span><span class="o">=</span><span class="n">entry</span><span class="p">,</span> <span class="n">is_set</span><span class="o">=</span><span class="n">is_set</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">is_set</span> <span class="ow">and</span> <span class="n">entry</span><span class="o">.</span><span class="n">purpose</span> <span class="o">==</span> <span class="n">PURPOSE_REVOCATION</span><span class="p">:</span>
+            <span class="n">revoked</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="k">elif</span> <span class="n">is_set</span> <span class="ow">and</span> <span class="n">entry</span><span class="o">.</span><span class="n">purpose</span> <span class="o">==</span> <span class="n">PURPOSE_SUSPENSION</span><span class="p">:</span>
+            <span class="n">suspended</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="k">return</span> <span class="n">StatusResult</span><span class="p">(</span><span class="n">revoked</span><span class="o">=</span><span class="n">revoked</span><span class="p">,</span> <span class="n">suspended</span><span class="o">=</span><span class="n">suspended</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="nb">tuple</span><span class="p">(</span><span class="n">results</span><span class="p">))</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-module">
+
+
+
+<h2 id="openvc.status.token_status_list" class="doc doc-heading">
+            <code>openvc.status.token_status_list</code>
+
+
+</h2>
+
+    <div class="doc doc-contents first">
+
+        <p>openvc.status.token_status_list — IETF Token Status List
+(draft-ietf-oauth-status-list).</p>
+<p>The second status-list encoding, alongside the W3C Bitstring list in
+<code>openvc.status.bitstring</code>. The differences that matter:</p>
+<ul>
+<li><strong>Multi-bit statuses.</strong> Each referenced token gets <code>bits</code> in {1, 2, 4, 8},
+  so a status is a value (0-255, constrained by <code>bits</code>), not just a set/clear
+  bit. <code>0x00</code> = VALID, <code>0x01</code> = INVALID (revoked), <code>0x02</code> = SUSPENDED; the
+  rest are application-specific.</li>
+<li><strong>LSB-first packing.</strong> Index 0 occupies the <em>lowest</em> <code>bits</code> bits of byte 0
+  (the W3C list is MSB-first); index 1 the next <code>bits</code> up, and so on.</li>
+<li><strong>DEFLATE/zlib</strong> compression (the W3C list uses gzip).</li>
+</ul>
+<p>A referenced token points at a status list with a <code>status</code> claim
+<code>{"status_list": {"idx": N, "uri": "..."}}</code>; the status list token at that URI
+carries <code>{"status_list": {"bits": B, "lst": "&lt;base64url zlib&gt;"}}</code>. As with the
+W3C flow, resolving and <em>verifying</em> that token (its proof and the SSRF policy for
+its host) is the caller's concern — injected as <code>resolve_status_list_token</code> —
+so this module stays pure stdlib and proof-agnostic.</p>
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.token_status_list.decode_status_list" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">decode_status_list</span><span class="p">(</span><span class="n">lst</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>base64url-decode then zlib-inflate a <code>lst</code> value into the packed bytes.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/token_status_list.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">49</span>
+<span class="normal">50</span>
+<span class="normal">51</span>
+<span class="normal">52</span>
+<span class="normal">53</span>
+<span class="normal">54</span>
+<span class="normal">55</span>
+<span class="normal">56</span>
+<span class="normal">57</span>
+<span class="normal">58</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">decode_status_list</span><span class="p">(</span><span class="n">lst</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bytes</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;base64url-decode then zlib-inflate a ``lst`` value into the packed bytes.&quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">compressed</span> <span class="o">=</span> <span class="n">base64</span><span class="o">.</span><span class="n">urlsafe_b64decode</span><span class="p">(</span><span class="n">lst</span> <span class="o">+</span> <span class="s2">&quot;=&quot;</span> <span class="o">*</span> <span class="p">(</span><span class="o">-</span><span class="nb">len</span><span class="p">(</span><span class="n">lst</span><span class="p">)</span> <span class="o">%</span> <span class="mi">4</span><span class="p">))</span>
+    <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">)</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;lst is not valid base64url: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">zlib</span><span class="o">.</span><span class="n">decompress</span><span class="p">(</span><span class="n">compressed</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">zlib</span><span class="o">.</span><span class="n">error</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;lst is not valid zlib/DEFLATE: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.token_status_list.encode_status_list" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">encode_status_list</span><span class="p">(</span><span class="n">data</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>zlib-deflate then base64url (unpadded) — the inverse of
+:func:<code>decode_status_list</code>, for issuers and tests. zlib output is
+deterministic for a fixed level, so no mtime dance is needed.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/token_status_list.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">61</span>
+<span class="normal">62</span>
+<span class="normal">63</span>
+<span class="normal">64</span>
+<span class="normal">65</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">encode_status_list</span><span class="p">(</span><span class="n">data</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;zlib-deflate then base64url (unpadded) — the inverse of</span>
+<span class="sd">    :func:`decode_status_list`, for issuers and tests. zlib output is</span>
+<span class="sd">    deterministic for a fixed level, so no mtime dance is needed.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">base64</span><span class="o">.</span><span class="n">urlsafe_b64encode</span><span class="p">(</span><span class="n">zlib</span><span class="o">.</span><span class="n">compress</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="mi">9</span><span class="p">))</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="sa">b</span><span class="s2">&quot;=&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;ascii&quot;</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.token_status_list.new_status_list" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">new_status_list</span><span class="p">(</span><span class="n">size</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bits</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>A zeroed (all-VALID) packed list holding at least <em>size</em> statuses of
+<em>bits</em> each.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/token_status_list.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">68</span>
+<span class="normal">69</span>
+<span class="normal">70</span>
+<span class="normal">71</span>
+<span class="normal">72</span>
+<span class="normal">73</span>
+<span class="normal">74</span>
+<span class="normal">75</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">new_status_list</span><span class="p">(</span><span class="n">size</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bits</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bytearray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;A zeroed (all-VALID) packed list holding at least *size* statuses of</span>
+<span class="sd">    *bits* each.&quot;&quot;&quot;</span>
+    <span class="n">_check_bits</span><span class="p">(</span><span class="n">bits</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">size</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;size must be non-negative, got </span><span class="si">{</span><span class="n">size</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">per_byte</span> <span class="o">=</span> <span class="mi">8</span> <span class="o">//</span> <span class="n">bits</span>
+    <span class="k">return</span> <span class="nb">bytearray</span><span class="p">((</span><span class="n">size</span> <span class="o">+</span> <span class="n">per_byte</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">//</span> <span class="n">per_byte</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.token_status_list.get_status" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">get_status</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">index</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bits</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return the status value at <em>index</em> for a list packed <em>bits</em> per status
+(LSB-first). Raises for a bad <em>bits</em> or an out-of-range index.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/token_status_list.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">78</span>
+<span class="normal">79</span>
+<span class="normal">80</span>
+<span class="normal">81</span>
+<span class="normal">82</span>
+<span class="normal">83</span>
+<span class="normal">84</span>
+<span class="normal">85</span>
+<span class="normal">86</span>
+<span class="normal">87</span>
+<span class="normal">88</span>
+<span class="normal">89</span>
+<span class="normal">90</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_status</span><span class="p">(</span><span class="n">data</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">,</span> <span class="n">index</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bits</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return the status value at *index* for a list packed *bits* per status</span>
+<span class="sd">    (LSB-first). Raises for a bad *bits* or an out-of-range index.&quot;&quot;&quot;</span>
+    <span class="n">_check_bits</span><span class="p">(</span><span class="n">bits</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">index</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;status index must be non-negative, got </span><span class="si">{</span><span class="n">index</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">per_byte</span> <span class="o">=</span> <span class="mi">8</span> <span class="o">//</span> <span class="n">bits</span>
+    <span class="n">byte_index</span><span class="p">,</span> <span class="n">pos</span> <span class="o">=</span> <span class="nb">divmod</span><span class="p">(</span><span class="n">index</span><span class="p">,</span> <span class="n">per_byte</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">byte_index</span> <span class="o">&gt;=</span> <span class="nb">len</span><span class="p">(</span><span class="n">data</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;status index </span><span class="si">{</span><span class="n">index</span><span class="si">}</span><span class="s2"> out of range for a </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">data</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">per_byte</span><span class="si">}</span><span class="s2">-status list&quot;</span><span class="p">)</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="n">bits</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="n">byte_index</span><span class="p">]</span> <span class="o">&gt;&gt;</span> <span class="p">(</span><span class="n">pos</span> <span class="o">*</span> <span class="n">bits</span><span class="p">))</span> <span class="o">&amp;</span> <span class="n">mask</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.token_status_list.set_status" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">set_status</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">index</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bits</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Set the status value at <em>index</em> in-place (LSB-first). For issuers and
+tests. Raises if <em>value</em> does not fit in <em>bits</em>.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/token_status_list.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 93</span>
+<span class="normal"> 94</span>
+<span class="normal"> 95</span>
+<span class="normal"> 96</span>
+<span class="normal"> 97</span>
+<span class="normal"> 98</span>
+<span class="normal"> 99</span>
+<span class="normal">100</span>
+<span class="normal">101</span>
+<span class="normal">102</span>
+<span class="normal">103</span>
+<span class="normal">104</span>
+<span class="normal">105</span>
+<span class="normal">106</span>
+<span class="normal">107</span>
+<span class="normal">108</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_status</span><span class="p">(</span><span class="n">data</span><span class="p">:</span> <span class="nb">bytearray</span><span class="p">,</span> <span class="n">index</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">value</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bits</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Set the status value at *index* in-place (LSB-first). For issuers and</span>
+<span class="sd">    tests. Raises if *value* does not fit in *bits*.&quot;&quot;&quot;</span>
+    <span class="n">_check_bits</span><span class="p">(</span><span class="n">bits</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">index</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;status index must be non-negative, got </span><span class="si">{</span><span class="n">index</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="n">bits</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">value</span> <span class="o">&lt;=</span> <span class="n">mask</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;status value </span><span class="si">{</span><span class="n">value</span><span class="si">}</span><span class="s2"> does not fit in </span><span class="si">{</span><span class="n">bits</span><span class="si">}</span><span class="s2"> bit(s)&quot;</span><span class="p">)</span>
+    <span class="n">per_byte</span> <span class="o">=</span> <span class="mi">8</span> <span class="o">//</span> <span class="n">bits</span>
+    <span class="n">byte_index</span><span class="p">,</span> <span class="n">pos</span> <span class="o">=</span> <span class="nb">divmod</span><span class="p">(</span><span class="n">index</span><span class="p">,</span> <span class="n">per_byte</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">byte_index</span> <span class="o">&gt;=</span> <span class="nb">len</span><span class="p">(</span><span class="n">data</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;status index </span><span class="si">{</span><span class="n">index</span><span class="si">}</span><span class="s2"> out of range for a </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">data</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">per_byte</span><span class="si">}</span><span class="s2">-status list&quot;</span><span class="p">)</span>
+    <span class="n">shift</span> <span class="o">=</span> <span class="n">pos</span> <span class="o">*</span> <span class="n">bits</span>
+    <span class="n">data</span><span class="p">[</span><span class="n">byte_index</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="n">byte_index</span><span class="p">]</span> <span class="o">&amp;</span> <span class="o">~</span><span class="p">(</span><span class="n">mask</span> <span class="o">&lt;&lt;</span> <span class="n">shift</span><span class="p">))</span> <span class="o">|</span> <span class="p">(</span><span class="n">value</span> <span class="o">&lt;&lt;</span> <span class="n">shift</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.token_status_list.parse_token_status_ref" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">parse_token_status_ref</span><span class="p">(</span><span class="n">claims</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Parse a referenced token's <code>status.status_list</code> reference, or <code>None</code> if
+the token carries no status-list reference. Raises on a malformed reference.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/token_status_list.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">135</span>
+<span class="normal">136</span>
+<span class="normal">137</span>
+<span class="normal">138</span>
+<span class="normal">139</span>
+<span class="normal">140</span>
+<span class="normal">141</span>
+<span class="normal">142</span>
+<span class="normal">143</span>
+<span class="normal">144</span>
+<span class="normal">145</span>
+<span class="normal">146</span>
+<span class="normal">147</span>
+<span class="normal">148</span>
+<span class="normal">149</span>
+<span class="normal">150</span>
+<span class="normal">151</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">parse_token_status_ref</span><span class="p">(</span><span class="n">claims</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">TokenStatusRef</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Parse a referenced token&#39;s ``status.status_list`` reference, or ``None`` if</span>
+<span class="sd">    the token carries no status-list reference. Raises on a malformed reference.&quot;&quot;&quot;</span>
+    <span class="n">status</span> <span class="o">=</span> <span class="n">claims</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;status&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">status</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">None</span>
+    <span class="n">ref</span> <span class="o">=</span> <span class="n">status</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;status_list&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ref</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">None</span>
+    <span class="n">uri</span> <span class="o">=</span> <span class="n">ref</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;uri&quot;</span><span class="p">)</span>
+    <span class="n">idx</span> <span class="o">=</span> <span class="n">ref</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;idx&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">uri</span> <span class="ow">or</span> <span class="n">idx</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="s2">&quot;status_list reference needs both uri and idx&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">idx</span><span class="p">,</span> <span class="nb">int</span><span class="p">)</span> <span class="ow">or</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">idx</span><span class="p">,</span> <span class="nb">bool</span><span class="p">)</span> <span class="ow">or</span> <span class="n">idx</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;status_list idx must be a non-negative integer, got </span><span class="si">{</span><span class="n">idx</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">TokenStatusRef</span><span class="p">(</span><span class="n">uri</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">uri</span><span class="p">),</span> <span class="n">index</span><span class="o">=</span><span class="n">idx</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.token_status_list.check_token_status" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">check_token_status</span><span class="p">(</span><span class="n">claims</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">resolve_status_list_token</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Resolve the status list token a referenced token points at and read its
+status.</p>
+<p>Returns <code>None</code> if the token carries no status-list reference. Never raises
+on a non-VALID status — turning INVALID/SUSPENDED into a hard failure is the
+verifier's policy — only on malformed data or a resolve failure.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/token_status_list.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">167</span>
+<span class="normal">168</span>
+<span class="normal">169</span>
+<span class="normal">170</span>
+<span class="normal">171</span>
+<span class="normal">172</span>
+<span class="normal">173</span>
+<span class="normal">174</span>
+<span class="normal">175</span>
+<span class="normal">176</span>
+<span class="normal">177</span>
+<span class="normal">178</span>
+<span class="normal">179</span>
+<span class="normal">180</span>
+<span class="normal">181</span>
+<span class="normal">182</span>
+<span class="normal">183</span>
+<span class="normal">184</span>
+<span class="normal">185</span>
+<span class="normal">186</span>
+<span class="normal">187</span>
+<span class="normal">188</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">check_token_status</span><span class="p">(</span>
+    <span class="n">claims</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">resolve_status_list_token</span><span class="p">:</span> <span class="n">ResolveStatusListToken</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">TokenStatusResult</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Resolve the status list token a referenced token points at and read its</span>
+<span class="sd">    status.</span>
+
+<span class="sd">    Returns ``None`` if the token carries no status-list reference. Never raises</span>
+<span class="sd">    on a non-VALID status — turning INVALID/SUSPENDED into a hard failure is the</span>
+<span class="sd">    verifier&#39;s policy — only on malformed data or a resolve failure.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">ref</span> <span class="o">=</span> <span class="n">parse_token_status_ref</span><span class="p">(</span><span class="n">claims</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">ref</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">None</span>
+    <span class="n">token_claims</span> <span class="o">=</span> <span class="n">resolve_status_list_token</span><span class="p">(</span><span class="n">ref</span><span class="o">.</span><span class="n">uri</span><span class="p">)</span>
+    <span class="n">bits</span><span class="p">,</span> <span class="n">lst</span> <span class="o">=</span> <span class="n">_status_list_claim</span><span class="p">(</span><span class="n">token_claims</span><span class="p">)</span>
+    <span class="n">value</span> <span class="o">=</span> <span class="n">get_status</span><span class="p">(</span><span class="n">decode_status_list</span><span class="p">(</span><span class="n">lst</span><span class="p">),</span> <span class="n">ref</span><span class="o">.</span><span class="n">index</span><span class="p">,</span> <span class="n">bits</span><span class="o">=</span><span class="n">bits</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">TokenStatusResult</span><span class="p">(</span>
+        <span class="n">ref</span><span class="o">=</span><span class="n">ref</span><span class="p">,</span>
+        <span class="n">status</span><span class="o">=</span><span class="n">value</span><span class="p">,</span>
+        <span class="n">revoked</span><span class="o">=</span><span class="n">value</span> <span class="o">==</span> <span class="n">STATUS_INVALID</span><span class="p">,</span>
+        <span class="n">suspended</span><span class="o">=</span><span class="n">value</span> <span class="o">==</span> <span class="n">STATUS_SUSPENDED</span><span class="p">,</span>
+    <span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="issuing">Issuing</h2>
+
+
+<div class="doc doc-object doc-module">
+
+
+
+<h2 id="openvc.status.issue" class="doc doc-heading">
+            <code>openvc.status.issue</code>
+
+
+</h2>
+
+    <div class="doc doc-contents first">
+
+        <p>openvc.status.issue — issuer-side status-list construction.</p>
+<p>The check side (:func:<code>~openvc.status.status_list.check_credential_status</code>,
+:func:<code>~openvc.status.token_status_list.check_token_status</code>) <em>reads</em> a status
+list; this is the other half — building the artifacts an issuer publishes and
+updates in order to revoke:</p>
+<ul>
+<li>:func:<code>build_status_list_credential</code> — a W3C <strong>BitstringStatusListCredential</strong>
+  (the VC that wraps an <code>encodedList</code>), returned UNSIGNED so the caller secures
+  it with whichever proof suite it already uses (<code>VcJwtProofSuite.sign</code> or
+  <code>DataIntegrityProofSuite.add_proof</code>): the status list is an ordinary VC.</li>
+<li>:func:<code>build_status_list_token</code> / :func:<code>verify_status_list_token</code> — an IETF
+  <strong>status-list token</strong> (<code>typ: statuslist+jwt</code>), signed and verified through the
+  shared JOSE path (allow-listed <code>{ES256, EdDSA}</code>).</li>
+<li>:func:<code>build_status_list_entry</code> / :func:<code>build_token_status_reference</code> — the tiny
+  pointer an issuer embeds in each <em>issued</em> credential/token so a verifier knows
+  which list bit to read.</li>
+</ul>
+<p>A revocation flow: allocate a list (:func:<code>~openvc.status.bitstring.new_bitstring</code>
+or :func:<code>~openvc.status.token_status_list.new_status_list</code>), set the revoked
+indices (<code>set_status_bit</code> / <code>set_status</code>), build + sign the artifact, serve it
+at the URL the credentials point at, and re-issue it when a revocation changes.</p>
+<p>This is the only :mod:<code>openvc.status</code> module that touches :mod:<code>openvc.proof</code> (to
+sign/verify the token); the codecs and the check side stay pure stdlib.</p>
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.issue.build_status_list_credential" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">build_status_list_credential</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> <span class="nb">id</span><span class="p">,</span> <span class="n">issuer</span><span class="p">,</span> <span class="n">bitstring</span><span class="p">,</span> <span class="n">status_purpose</span><span class="o">=</span><span class="s1">&#39;revocation&#39;</span><span class="p">,</span> <span class="n">valid_from</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">valid_until</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">subject_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">contexts</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Build an UNSIGNED W3C <code>BitstringStatusListCredential</code> wrapping <em>bitstring</em>.</p>
+<p><em>id</em> is the URL a credential's <code>statusListCredential</code> points at; <em>bitstring</em>
+is the raw bits (from :func:<code>~openvc.status.bitstring.new_bitstring</code> +
+<code>set_status_bit</code>). <em>status_purpose</em> must match the entries that reference this
+list. The result is a plain VC — <strong>sign it</strong> with any suite before publishing.
+The inputs are not mutated.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/issue.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 61</span>
+<span class="normal"> 62</span>
+<span class="normal"> 63</span>
+<span class="normal"> 64</span>
+<span class="normal"> 65</span>
+<span class="normal"> 66</span>
+<span class="normal"> 67</span>
+<span class="normal"> 68</span>
+<span class="normal"> 69</span>
+<span class="normal"> 70</span>
+<span class="normal"> 71</span>
+<span class="normal"> 72</span>
+<span class="normal"> 73</span>
+<span class="normal"> 74</span>
+<span class="normal"> 75</span>
+<span class="normal"> 76</span>
+<span class="normal"> 77</span>
+<span class="normal"> 78</span>
+<span class="normal"> 79</span>
+<span class="normal"> 80</span>
+<span class="normal"> 81</span>
+<span class="normal"> 82</span>
+<span class="normal"> 83</span>
+<span class="normal"> 84</span>
+<span class="normal"> 85</span>
+<span class="normal"> 86</span>
+<span class="normal"> 87</span>
+<span class="normal"> 88</span>
+<span class="normal"> 89</span>
+<span class="normal"> 90</span>
+<span class="normal"> 91</span>
+<span class="normal"> 92</span>
+<span class="normal"> 93</span>
+<span class="normal"> 94</span>
+<span class="normal"> 95</span>
+<span class="normal"> 96</span>
+<span class="normal"> 97</span>
+<span class="normal"> 98</span>
+<span class="normal"> 99</span>
+<span class="normal">100</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">build_status_list_credential</span><span class="p">(</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="nb">id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">issuer</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">bitstring</span><span class="p">:</span> <span class="nb">bytes</span> <span class="o">|</span> <span class="nb">bytearray</span><span class="p">,</span>
+    <span class="n">status_purpose</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;revocation&quot;</span><span class="p">,</span>
+    <span class="n">valid_from</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">valid_until</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">subject_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">ttl</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">contexts</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build an UNSIGNED W3C ``BitstringStatusListCredential`` wrapping *bitstring*.</span>
+
+<span class="sd">    *id* is the URL a credential&#39;s ``statusListCredential`` points at; *bitstring*</span>
+<span class="sd">    is the raw bits (from :func:`~openvc.status.bitstring.new_bitstring` +</span>
+<span class="sd">    ``set_status_bit``). *status_purpose* must match the entries that reference this</span>
+<span class="sd">    list. The result is a plain VC — **sign it** with any suite before publishing.</span>
+<span class="sd">    The inputs are not mutated.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">subject</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="n">subject_id</span> <span class="ow">or</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">id</span><span class="si">}</span><span class="s2">#list&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="n">BITSTRING_SUBJECT_TYPE</span><span class="p">,</span>
+        <span class="s2">&quot;statusPurpose&quot;</span><span class="p">:</span> <span class="n">status_purpose</span><span class="p">,</span>
+        <span class="s2">&quot;encodedList&quot;</span><span class="p">:</span> <span class="n">encode_bitstring</span><span class="p">(</span><span class="nb">bytes</span><span class="p">(</span><span class="n">bitstring</span><span class="p">)),</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="n">ttl</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">subject</span><span class="p">[</span><span class="s2">&quot;ttl&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">ttl</span>
+    <span class="n">credential</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;@context&quot;</span><span class="p">:</span> <span class="nb">list</span><span class="p">(</span><span class="n">contexts</span><span class="p">)</span> <span class="k">if</span> <span class="n">contexts</span> <span class="k">else</span> <span class="p">[</span><span class="n">_VC2_CONTEXT</span><span class="p">],</span>
+        <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="nb">id</span><span class="p">,</span>
+        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;VerifiableCredential&quot;</span><span class="p">,</span> <span class="n">BITSTRING_CREDENTIAL_TYPE</span><span class="p">],</span>
+        <span class="s2">&quot;issuer&quot;</span><span class="p">:</span> <span class="n">issuer</span><span class="p">,</span>
+        <span class="s2">&quot;credentialSubject&quot;</span><span class="p">:</span> <span class="n">subject</span><span class="p">,</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="n">valid_from</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">credential</span><span class="p">[</span><span class="s2">&quot;validFrom&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_iso</span><span class="p">(</span><span class="n">valid_from</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">valid_until</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">credential</span><span class="p">[</span><span class="s2">&quot;validUntil&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_iso</span><span class="p">(</span><span class="n">valid_until</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">credential</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.issue.build_status_list_entry" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">build_status_list_entry</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> <span class="n">status_list_credential</span><span class="p">,</span> <span class="n">index</span><span class="p">,</span> <span class="n">status_purpose</span><span class="o">=</span><span class="s1">&#39;revocation&#39;</span><span class="p">,</span> <span class="nb">id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Build a <code>BitstringStatusListEntry</code> for a credential's <code>credentialStatus</code>.</p>
+<p>Add the return value to each credential you issue; toggling the same <em>index</em> in
+the published list (:func:<code>build_status_list_credential</code>) then flips that
+credential's status. <em>status_purpose</em> must match the list's.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/issue.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">103</span>
+<span class="normal">104</span>
+<span class="normal">105</span>
+<span class="normal">106</span>
+<span class="normal">107</span>
+<span class="normal">108</span>
+<span class="normal">109</span>
+<span class="normal">110</span>
+<span class="normal">111</span>
+<span class="normal">112</span>
+<span class="normal">113</span>
+<span class="normal">114</span>
+<span class="normal">115</span>
+<span class="normal">116</span>
+<span class="normal">117</span>
+<span class="normal">118</span>
+<span class="normal">119</span>
+<span class="normal">120</span>
+<span class="normal">121</span>
+<span class="normal">122</span>
+<span class="normal">123</span>
+<span class="normal">124</span>
+<span class="normal">125</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">build_status_list_entry</span><span class="p">(</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">status_list_credential</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">index</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">status_purpose</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;revocation&quot;</span><span class="p">,</span>
+    <span class="nb">id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build a ``BitstringStatusListEntry`` for a credential&#39;s ``credentialStatus``.</span>
+
+<span class="sd">    Add the return value to each credential you issue; toggling the same *index* in</span>
+<span class="sd">    the published list (:func:`build_status_list_credential`) then flips that</span>
+<span class="sd">    credential&#39;s status. *status_purpose* must match the list&#39;s.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">index</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;status index must be non-negative, got </span><span class="si">{</span><span class="n">index</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">entry</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="n">BITSTRING_ENTRY_TYPE</span><span class="p">,</span>
+        <span class="s2">&quot;statusPurpose&quot;</span><span class="p">:</span> <span class="n">status_purpose</span><span class="p">,</span>
+        <span class="s2">&quot;statusListIndex&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">index</span><span class="p">),</span>          <span class="c1"># the spec encodes the index as a string</span>
+        <span class="s2">&quot;statusListCredential&quot;</span><span class="p">:</span> <span class="n">status_list_credential</span><span class="p">,</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="nb">id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">entry</span><span class="p">[</span><span class="s2">&quot;id&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">id</span>
+    <span class="k">return</span> <span class="n">entry</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.issue.build_status_list_token" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">build_status_list_token</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> <span class="n">signing_key</span><span class="p">,</span> <span class="n">uri</span><span class="p">,</span> <span class="n">status_list</span><span class="p">,</span> <span class="n">bits</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">issued_at</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">expires</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">issuer</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Build and sign an IETF status-list token (<code>typ: statuslist+jwt</code>).</p>
+<p><em>uri</em> (the <code>sub</code> claim, the list's own URL) is what a referenced token's
+<code>status.status_list.uri</code> points at; <em>status_list</em> is the packed multi-bit
+list (from :func:<code>~openvc.status.token_status_list.new_status_list</code> +
+<code>set_status</code>). Signed via the allow-listed <code>{ES256, EdDSA}</code> path, so an
+HSM/Vault key works. <em>issued_at</em> / <em>expires</em> accept a datetime or epoch int.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/issue.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">132</span>
+<span class="normal">133</span>
+<span class="normal">134</span>
+<span class="normal">135</span>
+<span class="normal">136</span>
+<span class="normal">137</span>
+<span class="normal">138</span>
+<span class="normal">139</span>
+<span class="normal">140</span>
+<span class="normal">141</span>
+<span class="normal">142</span>
+<span class="normal">143</span>
+<span class="normal">144</span>
+<span class="normal">145</span>
+<span class="normal">146</span>
+<span class="normal">147</span>
+<span class="normal">148</span>
+<span class="normal">149</span>
+<span class="normal">150</span>
+<span class="normal">151</span>
+<span class="normal">152</span>
+<span class="normal">153</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span>
+<span class="normal">163</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">build_status_list_token</span><span class="p">(</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">signing_key</span><span class="p">:</span> <span class="n">SigningKey</span><span class="p">,</span>
+    <span class="n">uri</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">status_list</span><span class="p">:</span> <span class="nb">bytes</span> <span class="o">|</span> <span class="nb">bytearray</span><span class="p">,</span>
+    <span class="n">bits</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="n">issued_at</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">expires</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">ttl</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">issuer</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build and sign an IETF status-list token (``typ: statuslist+jwt``).</span>
+
+<span class="sd">    *uri* (the ``sub`` claim, the list&#39;s own URL) is what a referenced token&#39;s</span>
+<span class="sd">    ``status.status_list.uri`` points at; *status_list* is the packed multi-bit</span>
+<span class="sd">    list (from :func:`~openvc.status.token_status_list.new_status_list` +</span>
+<span class="sd">    ``set_status``). Signed via the allow-listed ``{ES256, EdDSA}`` path, so an</span>
+<span class="sd">    HSM/Vault key works. *issued_at* / *expires* accept a datetime or epoch int.&quot;&quot;&quot;</span>
+    <span class="n">_check_bits</span><span class="p">(</span><span class="n">bits</span><span class="p">)</span>
+    <span class="n">payload</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;sub&quot;</span><span class="p">:</span> <span class="n">uri</span><span class="p">,</span>
+        <span class="s2">&quot;iat&quot;</span><span class="p">:</span> <span class="n">_epoch</span><span class="p">(</span><span class="n">issued_at</span><span class="p">)</span> <span class="k">if</span> <span class="n">issued_at</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="nb">int</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()),</span>
+        <span class="s2">&quot;status_list&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;bits&quot;</span><span class="p">:</span> <span class="n">bits</span><span class="p">,</span> <span class="s2">&quot;lst&quot;</span><span class="p">:</span> <span class="n">encode_status_list</span><span class="p">(</span><span class="nb">bytes</span><span class="p">(</span><span class="n">status_list</span><span class="p">))},</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="n">issuer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">payload</span><span class="p">[</span><span class="s2">&quot;iss&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">issuer</span>
+    <span class="k">if</span> <span class="n">expires</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">payload</span><span class="p">[</span><span class="s2">&quot;exp&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_epoch</span><span class="p">(</span><span class="n">expires</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">ttl</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">payload</span><span class="p">[</span><span class="s2">&quot;ttl&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">ttl</span>
+    <span class="n">header</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;typ&quot;</span><span class="p">:</span> <span class="n">STATUS_LIST_JWT_TYP</span><span class="p">,</span> <span class="s2">&quot;alg&quot;</span><span class="p">:</span> <span class="n">signing_key</span><span class="o">.</span><span class="n">alg</span><span class="p">,</span> <span class="s2">&quot;kid&quot;</span><span class="p">:</span> <span class="n">signing_key</span><span class="o">.</span><span class="n">kid</span><span class="p">}</span>
+    <span class="k">return</span> <span class="n">sign_compact</span><span class="p">(</span><span class="n">header</span><span class="p">,</span> <span class="n">payload</span><span class="p">,</span> <span class="n">signing_key</span><span class="o">=</span><span class="n">signing_key</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.issue.verify_status_list_token" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">verify_status_list_token</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">public_key_jwk</span><span class="p">,</span> <span class="n">expected_uri</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">leeway_s</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">now</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Verify a status-list token and return its claims.</p>
+<p>Allow-lists the algorithm, requires <code>typ: statuslist+jwt</code>, verifies the
+signature, checks <code>exp</code> (within <em>leeway_s</em>), and — when <em>expected_uri</em> is
+given — that <code>sub</code> equals the URL it was fetched from (the IETF anti-swap
+check). The returned dict carries the <code>status_list</code> member, so it can be
+handed straight to :func:<code>~openvc.status.token_status_list.check_token_status</code>
+as the resolver's result.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/issue.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">166</span>
+<span class="normal">167</span>
+<span class="normal">168</span>
+<span class="normal">169</span>
+<span class="normal">170</span>
+<span class="normal">171</span>
+<span class="normal">172</span>
+<span class="normal">173</span>
+<span class="normal">174</span>
+<span class="normal">175</span>
+<span class="normal">176</span>
+<span class="normal">177</span>
+<span class="normal">178</span>
+<span class="normal">179</span>
+<span class="normal">180</span>
+<span class="normal">181</span>
+<span class="normal">182</span>
+<span class="normal">183</span>
+<span class="normal">184</span>
+<span class="normal">185</span>
+<span class="normal">186</span>
+<span class="normal">187</span>
+<span class="normal">188</span>
+<span class="normal">189</span>
+<span class="normal">190</span>
+<span class="normal">191</span>
+<span class="normal">192</span>
+<span class="normal">193</span>
+<span class="normal">194</span>
+<span class="normal">195</span>
+<span class="normal">196</span>
+<span class="normal">197</span>
+<span class="normal">198</span>
+<span class="normal">199</span>
+<span class="normal">200</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">verify_status_list_token</span><span class="p">(</span>
+    <span class="n">token</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">public_key_jwk</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="n">expected_uri</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">leeway_s</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">60</span><span class="p">,</span>
+    <span class="n">now</span><span class="p">:</span> <span class="n">datetime</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Verify a status-list token and return its claims.</span>
+
+<span class="sd">    Allow-lists the algorithm, requires ``typ: statuslist+jwt``, verifies the</span>
+<span class="sd">    signature, checks ``exp`` (within *leeway_s*), and — when *expected_uri* is</span>
+<span class="sd">    given — that ``sub`` equals the URL it was fetched from (the IETF anti-swap</span>
+<span class="sd">    check). The returned dict carries the ``status_list`` member, so it can be</span>
+<span class="sd">    handed straight to :func:`~openvc.status.token_status_list.check_token_status`</span>
+<span class="sd">    as the resolver&#39;s result.&quot;&quot;&quot;</span>
+    <span class="n">header</span><span class="p">,</span> <span class="n">claims</span> <span class="o">=</span> <span class="n">verify_compact</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="n">public_key_jwk</span><span class="o">=</span><span class="n">public_key_jwk</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;typ&quot;</span><span class="p">)</span> <span class="o">!=</span> <span class="n">STATUS_LIST_JWT_TYP</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;unexpected token typ </span><span class="si">{</span><span class="n">header</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;typ&#39;</span><span class="p">)</span><span class="si">!r}</span><span class="s2">, want </span><span class="si">{</span><span class="n">STATUS_LIST_JWT_TYP</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">expected_uri</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">claims</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;sub&quot;</span><span class="p">)</span> <span class="o">!=</span> <span class="n">expected_uri</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;status list token sub </span><span class="si">{</span><span class="n">claims</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;sub&#39;</span><span class="p">)</span><span class="si">!r}</span><span class="s2"> != expected </span><span class="si">{</span><span class="n">expected_uri</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="n">exp</span> <span class="o">=</span> <span class="n">claims</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;exp&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">exp</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># exp is a NumericDate (RFC 7519); a present-but-non-numeric exp fails</span>
+        <span class="c1"># CLOSED — skipping it would let a stale/superseded list be accepted (the</span>
+        <span class="c1"># same fail-open bug openvc.proof._verify_common is written to avoid).</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exp</span><span class="p">,</span> <span class="nb">bool</span><span class="p">)</span> <span class="ow">or</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exp</span><span class="p">,</span> <span class="p">(</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;status list token exp must be a numeric timestamp, got </span><span class="si">{</span><span class="n">exp</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">instant</span> <span class="o">=</span> <span class="n">_epoch</span><span class="p">(</span><span class="n">now</span><span class="p">)</span> <span class="k">if</span> <span class="n">now</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="nb">int</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">())</span>
+        <span class="k">if</span> <span class="n">instant</span> <span class="o">-</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">leeway_s</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">exp</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="s2">&quot;status list token has expired&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">claims</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="openvc.status.issue.build_token_status_reference" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">build_token_status_reference</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> <span class="n">uri</span><span class="p">,</span> <span class="n">index</span><span class="p">)</span></code>
+
+</h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Build the <code>status</code> claim a referenced token carries to point at an IETF
+status-list token — merge it into the token's claims when you issue it.</p>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/openvc/status/issue.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">203</span>
+<span class="normal">204</span>
+<span class="normal">205</span>
+<span class="normal">206</span>
+<span class="normal">207</span>
+<span class="normal">208</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">build_token_status_reference</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> <span class="n">uri</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">index</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build the ``status`` claim a referenced token carries to point at an IETF</span>
+<span class="sd">    status-list token — merge it into the token&#39;s claims when you issue it.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">index</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">StatusListError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;status index must be non-negative, got </span><span class="si">{</span><span class="n">index</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;status_list&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;idx&quot;</span><span class="p">:</span> <span class="n">index</span><span class="p">,</span> <span class="s2">&quot;uri&quot;</span><span class="p">:</span> <span class="n">uri</span><span class="p">}}}</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
