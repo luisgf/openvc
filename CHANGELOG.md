@@ -4,6 +4,16 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`did:jwk` resolver** (`openvc.did.did_jwk`) — the self-contained method whose
+  identifier is a base64url-encoded public JWK (common in EUDI / OID4VC stacks).
+  Offline like `did:key`; a `did:jwk` encoding a private key (with `d`) is refused.
+  Registered in the pipeline's `default_resolver`, so `verify_credential` resolves
+  `did:jwk` issuers out of the box.
+
 ## [0.5.0] — 2026-07-06
 
 ### Added

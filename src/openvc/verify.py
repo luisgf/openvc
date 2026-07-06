@@ -140,13 +140,16 @@ class VerificationResult:
 # --------------------------------------------------------------------------- #
 
 def default_resolver():
-    """A :class:`DidResolverRegistry` with the offline ``did:key`` resolver and the
-    SSRF-guarded ``did:web`` resolver — the pipeline's default when none is passed.
-    (``did:web`` only reaches the network when a ``did:web`` DID is resolved.)"""
+    """A :class:`DidResolverRegistry` with the offline ``did:key`` and ``did:jwk``
+    resolvers and the SSRF-guarded ``did:web`` resolver — the pipeline's default
+    when none is passed. (``did:web`` only reaches the network when a ``did:web``
+    DID is resolved.)"""
     from .did.base import DidResolverRegistry
+    from .did.did_jwk import DidJwkResolver
     from .did.did_key import DidKeyResolver
     from .fetch import default_did_web_resolver
-    return DidResolverRegistry([DidKeyResolver(), default_did_web_resolver()])
+    return DidResolverRegistry(
+        [DidKeyResolver(), DidJwkResolver(), default_did_web_resolver()])
 
 
 # --------------------------------------------------------------------------- #
