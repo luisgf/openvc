@@ -27,6 +27,7 @@ import zlib
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ._decompress import DecompressionBomb, inflate_bounded
 from .bitstring import StatusListError
 
 # IETF status values (draft-ietf-oauth-status-list, "Status Types").
@@ -53,9 +54,11 @@ def decode_status_list(lst: str) -> bytes:
     except (ValueError, TypeError) as exc:
         raise StatusListError(f"lst is not valid base64url: {exc}") from exc
     try:
-        return zlib.decompress(compressed)
+        return inflate_bounded(compressed)
     except zlib.error as exc:
         raise StatusListError(f"lst is not valid zlib/DEFLATE: {exc}") from exc
+    except DecompressionBomb as exc:
+        raise StatusListError(f"lst decompresses too large: {exc}") from exc
 
 
 def encode_status_list(data: bytes) -> str:
