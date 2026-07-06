@@ -39,7 +39,7 @@ description: >
   `[tool.setuptools.dynamic]`), so bumping that one line is the whole version
   change.
 - **Publishing is CI-driven, tag-triggered.** Pushing a `vX.Y.Z` tag runs
-  `.github/workflows/ci.yml`: the test matrix (3.10–3.13) then the **Publish to
+  `.github/workflows/ci.yml`: the test matrix (3.10–3.14) then the **Publish to
   PyPI** job via `pypa/gh-action-pypi-publish` using **Trusted Publishing (OIDC)**
   — no API token. The tag push *is* the publish; it is the single irreversible,
   outward-facing act.

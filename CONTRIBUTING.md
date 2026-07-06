@@ -17,7 +17,7 @@ mypy                          # type check (strict-ish; the code is fully typed)
 gitlint                       # commit-message convention (see below)
 ```
 
-CI runs the same on Python 3.10–3.13.
+CI runs the same on Python 3.10–3.14.
 
 ## Architecture invariant (do not break)
 
