@@ -41,15 +41,14 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from ..keys import KeyBackendError, verify_signature
-from .vc_jwt import (
-    ALLOWED_ALGS,
+from .errors import (
     ClaimsInvalid,
     MalformedToken,
     ProofError,
     SignatureInvalid,
-    SigningKey,
     UnsupportedAlgorithm,
 )
+from .vc_jwt import ALLOWED_ALGS, SigningKey
 
 DEFAULT_LEEWAY_S = 60
 _HASHES = {"sha-256": hashlib.sha256, "sha-384": hashlib.sha384, "sha-512": hashlib.sha512}

@@ -39,7 +39,7 @@ when the proof's ``verificationMethod`` is controlled by the credential's
 arbitrary issuer with their own key (:class:`IssuerBindingError`).
 
 Errors: a proof/temporal/purpose failure raises a
-:class:`~openvc.proof.vc_jwt.ProofError` subclass (shared by every suite); a
+:class:`~openvc.proof.errors.ProofError` subclass (shared by every suite); a
 pipeline-level failure (unknown format, key resolution, type mismatch, missing
 status resolver) raises a :class:`VerificationError` subclass; a revoked
 credential raises :class:`~openvc.status.CredentialRevoked`.

@@ -4,6 +4,38 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — unreleased
+
+The first stable release — a frozen, documented public surface. This heading
+accumulates the [1.0 — Stabilize](https://github.com/luisgf/openvc/milestone/2)
+milestone; it ships once that work is complete.
+
+### Changed
+
+- **BREAKING: unified proof-error taxonomy** (openvc.proof.errors). `ProofError`
+  moved out of the `openvc.proof.vc_jwt` format module into a new
+  `openvc.proof.errors` module (still re-exported from `vc_jwt` for now), and the
+  leaf errors that mean the same thing across suites — `SignatureInvalid`,
+  `ProofMalformed`, `UnsupportedCryptosuite` (and `UnsupportedAlgorithm`,
+  `MalformedToken`, `ClaimsInvalid`) — are now **single shared classes** there
+  instead of one-per-suite, so `except SignatureInvalid` (imported from any suite
+  path) catches whichever suite raised it. The suite roots `SdJwtError`,
+  `EcdsaSdError` / `ProofValueMalformed` and `DataIntegrityError` stay for genuinely
+  suite-specific failures. **Migration:** `except ProofError` and
+  `except SignatureInvalid` are unaffected; `except DataIntegrityError` /
+  `except EcdsaSdError` no longer catch a signature or proof-malformed failure (those
+  are now shared under `ProofError`) — catch `ProofError` or the specific leaf.
+  ([#4](https://github.com/luisgf/openvc/issues/4))
+
+### Deprecated
+
+- **Verb-last `openvc.proof.ecdsa_sd` codec names.** `cbor_encode`/`cbor_decode`,
+  `serialize_base_proof`/`parse_base_proof` and
+  `serialize_derived_proof`/`parse_derived_proof` are now deprecated aliases of the
+  verb-first `encode_cbor`/`decode_cbor`, `encode_base_proof`/`decode_base_proof` and
+  `encode_derived_proof`/`decode_derived_proof`; the old names will be removed in a
+  future release. ([#5](https://github.com/luisgf/openvc/issues/5))
+
 ## [0.9.0] — 2026-07-06
 
 ### Added
@@ -309,6 +341,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.0.0]: https://github.com/luisgf/openvc/releases/tag/v1.0.0
 [0.9.0]: https://github.com/luisgf/openvc/releases/tag/v0.9.0
 [0.8.1]: https://github.com/luisgf/openvc/releases/tag/v0.8.1
 [0.8.0]: https://github.com/luisgf/openvc/releases/tag/v0.8.0

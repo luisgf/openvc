@@ -54,7 +54,8 @@ from ._verify_common import (
     resolve_verification_key,
 )
 from .contexts import document_loader
-from .vc_jwt import ProofError, SigningKey
+from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
+from .vc_jwt import SigningKey
 
 BASE_PROOF_HEADER = bytes((0xD9, 0x5D, 0x00))
 DERIVED_PROOF_HEADER = bytes((0xD9, 0x5D, 0x01))
@@ -107,7 +108,7 @@ def _cbor_head(major: int, n: int) -> bytes:
     return bytes((mt | 27,)) + n.to_bytes(8, "big")
 
 
-def cbor_encode(obj: Any) -> bytes:
+def encode_cbor(obj: Any) -> bytes:
     if isinstance(obj, bool):                       # bool is an int subclass — reject
         raise EcdsaSdError("CBOR: booleans are not part of the proof-value shape")
     if isinstance(obj, int):
@@ -120,12 +121,12 @@ def cbor_encode(obj: Any) -> bytes:
         raw = obj.encode("utf-8")
         return _cbor_head(3, len(raw)) + raw
     if isinstance(obj, list):
-        return _cbor_head(4, len(obj)) + b"".join(cbor_encode(x) for x in obj)
+        return _cbor_head(4, len(obj)) + b"".join(encode_cbor(x) for x in obj)
     if isinstance(obj, dict):
         # canonical: keys sorted ascending (all keys are unsigned ints here).
         items = sorted(obj.items())
         return _cbor_head(5, len(items)) + b"".join(
-            cbor_encode(k) + cbor_encode(v) for k, v in items)
+            encode_cbor(k) + encode_cbor(v) for k, v in items)
     raise EcdsaSdError(f"CBOR: unsupported type {type(obj).__name__}")
 
 
@@ -173,7 +174,7 @@ def _cbor_dec(data: bytes, i: int) -> tuple[Any, int]:
     raise ProofValueMalformed(f"CBOR: unsupported major type {major}")
 
 
-def cbor_decode(data: bytes) -> Any:
+def decode_cbor(data: bytes) -> Any:
     obj, i = _cbor_dec(data, 0)
     if i != len(data):
         raise ProofValueMalformed("CBOR: trailing bytes after the top-level item")
@@ -241,20 +242,20 @@ def decompress_label_map(compressed: dict[int, bytes]) -> dict[str, str]:
 # proof-value serialization
 # --------------------------------------------------------------------------- #
 
-def serialize_base_proof(
+def encode_base_proof(
     *, base_signature: bytes, public_key: bytes, hmac_key: bytes,
     signatures: list[bytes], mandatory_pointers: list[str],
 ) -> str:
-    body = cbor_encode(
+    body = encode_cbor(
         [base_signature, public_key, hmac_key, signatures, mandatory_pointers])
     return _mb_encode(BASE_PROOF_HEADER + body)
 
 
-def parse_base_proof(proof_value: str) -> dict[str, Any]:
+def decode_base_proof(proof_value: str) -> dict[str, Any]:
     raw = _mb_decode(proof_value)
     if not raw.startswith(BASE_PROOF_HEADER):
         raise ProofValueMalformed("not an ecdsa-sd-2023 base proof (bad header)")
-    parts = cbor_decode(raw[len(BASE_PROOF_HEADER):])
+    parts = decode_cbor(raw[len(BASE_PROOF_HEADER):])
     if not isinstance(parts, list) or len(parts) != 5:
         raise ProofValueMalformed("base proof must decode to a 5-element array")
     base_signature, public_key, hmac_key, signatures, mandatory_pointers = parts
@@ -263,21 +264,21 @@ def parse_base_proof(proof_value: str) -> dict[str, Any]:
             "mandatory_pointers": mandatory_pointers}
 
 
-def serialize_derived_proof(
+def encode_derived_proof(
     *, base_signature: bytes, public_key: bytes, signatures: list[bytes],
     label_map: dict[str, str], mandatory_indexes: list[int],
 ) -> str:
-    body = cbor_encode([
+    body = encode_cbor([
         base_signature, public_key, signatures,
         compress_label_map(label_map), mandatory_indexes])
     return _mb_encode(DERIVED_PROOF_HEADER + body)
 
 
-def parse_derived_proof(proof_value: str) -> dict[str, Any]:
+def decode_derived_proof(proof_value: str) -> dict[str, Any]:
     raw = _mb_decode(proof_value)
     if not raw.startswith(DERIVED_PROOF_HEADER):
         raise ProofValueMalformed("not an ecdsa-sd-2023 derived proof (bad header)")
-    parts = cbor_decode(raw[len(DERIVED_PROOF_HEADER):])
+    parts = decode_cbor(raw[len(DERIVED_PROOF_HEADER):])
     if not isinstance(parts, list) or len(parts) != 5:
         raise ProofValueMalformed("derived proof must decode to a 5-element array")
     base_signature, public_key, signatures, compressed_map, mandatory_indexes = parts
@@ -285,11 +286,6 @@ def parse_derived_proof(proof_value: str) -> dict[str, Any]:
             "signatures": signatures,
             "label_map": decompress_label_map(compressed_map),
             "mandatory_indexes": mandatory_indexes}
-
-
-class UnsupportedCryptosuite(EcdsaSdError): ...
-class ProofMalformed(EcdsaSdError): ...
-class SignatureInvalid(EcdsaSdError): ...
 
 
 # The post-signature policy failures verify() may raise beyond signature/format
@@ -551,7 +547,7 @@ class EcdsaSdProofSuite:
         signatures = [ephemeral.sign((ln + "\n").encode("utf-8")) for ln in non_mandatory]
         base_signature = signing_key.sign(proof_hash + public_key + mandatory_hash)
 
-        proof_value = serialize_base_proof(
+        proof_value = encode_base_proof(
             base_signature=base_signature, public_key=public_key, hmac_key=hmac_key,
             signatures=signatures, mandatory_pointers=mandatory)
         secured = copy.deepcopy(credential)
@@ -569,7 +565,7 @@ class EcdsaSdProofSuite:
         proof = secured.get("proof")
         if not isinstance(proof, dict) or proof.get("cryptosuite") != CRYPTOSUITE:
             raise UnsupportedCryptosuite("not an ecdsa-sd-2023 base proof")
-        base = parse_base_proof(proof["proofValue"])
+        base = decode_base_proof(proof["proofValue"])
         hmac_key = base["hmac_key"]
         mandatory = list(base["mandatory_pointers"])
         combined = mandatory + [p for p in selective_pointers if p not in mandatory]
@@ -600,7 +596,7 @@ class EcdsaSdProofSuite:
                 raise EcdsaSdError("a disclosed statement has no matching base signature")
             filtered_sigs.append(sig_by_line[ln])
 
-        proof_value = serialize_derived_proof(
+        proof_value = encode_derived_proof(
             base_signature=base["base_signature"], public_key=base["public_key"],
             signatures=filtered_sigs, label_map=reveal_map,
             mandatory_indexes=list(reveal_mandatory_idx))
@@ -649,7 +645,7 @@ class EcdsaSdProofSuite:
             raise ProofMalformed("credential has no proof object")
         if proof.get("cryptosuite") != CRYPTOSUITE:
             raise UnsupportedCryptosuite(f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
-        parsed = parse_derived_proof(proof["proofValue"])
+        parsed = decode_derived_proof(proof["proofValue"])
 
         loader = document_loader(extra_contexts)
         unsecured = {k: v for k, v in derived.items() if k != "proof"}
@@ -691,3 +687,15 @@ class EcdsaSdProofSuite:
         subject = subj.get("id") if isinstance(subj, dict) else None
         return VerifiedSdCredential(
             credential=derived, issuer=issuer, subject=subject, proof=proof)
+
+
+# --------------------------------------------------------------------------- #
+# Deprecated verb-last aliases (CONVENTIONS #2). Prefer the verb-first
+# encode_*/decode_* names above; these will be removed in a future release.
+# --------------------------------------------------------------------------- #
+cbor_encode = encode_cbor
+cbor_decode = decode_cbor
+serialize_base_proof = encode_base_proof
+serialize_derived_proof = encode_derived_proof
+parse_base_proof = decode_base_proof
+parse_derived_proof = decode_derived_proof

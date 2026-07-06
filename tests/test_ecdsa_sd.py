@@ -14,17 +14,17 @@ from openvc.keys import P256SigningKey
 from openvc.proof.ecdsa_sd import (
     EcdsaSdError,
     ProofValueMalformed,
-    cbor_decode,
-    cbor_encode,
+    decode_cbor,
+    encode_cbor,
     compress_label_map,
     decompress_label_map,
     hmac_label,
     p256_multikey_to_jwk,
     p256_public_multikey,
-    parse_base_proof,
-    parse_derived_proof,
-    serialize_base_proof,
-    serialize_derived_proof,
+    decode_base_proof,
+    decode_derived_proof,
+    encode_base_proof,
+    encode_derived_proof,
 )
 
 
@@ -49,31 +49,31 @@ from openvc.proof.ecdsa_sd import (
     ({1: b"\x02"}, b"\xa1\x01\x41\x02"),
 ])
 def test_cbor_matches_rfc8949(value, encoded):
-    assert cbor_encode(value) == encoded
-    assert cbor_decode(encoded) == value
+    assert encode_cbor(value) == encoded
+    assert decode_cbor(encoded) == value
 
 
 def test_cbor_map_keys_are_canonically_sorted():
-    assert cbor_encode({2: b"b", 1: b"a", 10: b"c"}) == \
+    assert encode_cbor({2: b"b", 1: b"a", 10: b"c"}) == \
         b"\xa3\x01\x41a\x02\x41b\x0a\x41c"
 
 
 def test_cbor_rejects_bool_and_negative():
     with pytest.raises(EcdsaSdError):
-        cbor_encode(True)
+        encode_cbor(True)
     with pytest.raises(EcdsaSdError):
-        cbor_encode(-1)
+        encode_cbor(-1)
 
 
 def test_cbor_rejects_trailing_bytes():
     with pytest.raises(ProofValueMalformed):
-        cbor_decode(b"\x00\x00")
+        decode_cbor(b"\x00\x00")
 
 
 def test_cbor_roundtrip_proof_shape():
     shape = [b"\x00" * 64, b"\x8024" + b"\x03" * 33, b"k" * 32,
              [b"s" * 64, b"t" * 64], ["/credentialSubject/id", "/type"]]
-    assert cbor_decode(cbor_encode(shape)) == shape
+    assert decode_cbor(encode_cbor(shape)) == shape
 
 
 # --------------------------------------------------------------------------- #
@@ -121,14 +121,14 @@ def test_label_map_compress_roundtrip():
 
 def test_base_proof_value_roundtrip():
     key = b"\x44" * 32
-    pv = serialize_base_proof(
+    pv = encode_base_proof(
         base_signature=b"\x01" * 64,
         public_key=p256_public_multikey(P256SigningKey.generate(kid="k").public_jwk()),
         hmac_key=key,
         signatures=[b"\x02" * 64, b"\x03" * 64],
         mandatory_pointers=["/issuer", "/validFrom"])
     assert pv.startswith("u2V0A") or pv.startswith("u")   # multibase 'u' + header
-    parsed = parse_base_proof(pv)
+    parsed = decode_base_proof(pv)
     assert parsed["base_signature"] == b"\x01" * 64
     assert parsed["hmac_key"] == key
     assert parsed["signatures"] == [b"\x02" * 64, b"\x03" * 64]
@@ -138,13 +138,13 @@ def test_base_proof_value_roundtrip():
 def test_derived_proof_value_roundtrip():
     key = b"\x55" * 32
     label_map = {"c14n0": hmac_label(key, "c14n0"), "c14n1": hmac_label(key, "c14n1")}
-    pv = serialize_derived_proof(
+    pv = encode_derived_proof(
         base_signature=b"\x01" * 64,
         public_key=p256_public_multikey(P256SigningKey.generate(kid="k").public_jwk()),
         signatures=[b"\x02" * 64],
         label_map=label_map,
         mandatory_indexes=[0, 3, 5])
-    parsed = parse_derived_proof(pv)
+    parsed = decode_derived_proof(pv)
     assert parsed["base_signature"] == b"\x01" * 64
     assert parsed["signatures"] == [b"\x02" * 64]
     assert parsed["label_map"] == label_map
@@ -153,6 +153,6 @@ def test_derived_proof_value_roundtrip():
 
 def test_parse_rejects_wrong_header():
     with pytest.raises(ProofValueMalformed):
-        parse_base_proof(serialize_derived_proof(
+        decode_base_proof(encode_derived_proof(
             base_signature=b"", public_key=b"", signatures=[],
             label_map={}, mandatory_indexes=[]))

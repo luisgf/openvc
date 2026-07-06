@@ -13,7 +13,7 @@ The VC-JWT / SD-JWT suites do their own temporal check via the JWT ``exp``/``nbf
 claims; this module is the Data Integrity equivalent, so a proof embedded in the
 credential's JSON is held to the same temporal and purpose rules.
 
-Every error here subclasses :class:`~openvc.proof.vc_jwt.ProofError`, so a caller
+Every error here subclasses :class:`~openvc.proof.errors.ProofError`, so a caller
 can catch the whole verification-failure family with one ``except``.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .vc_jwt import ProofError
+from .errors import ProofError
 
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
 
