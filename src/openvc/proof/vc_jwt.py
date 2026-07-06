@@ -222,9 +222,10 @@ class VcJwtProofSuite:
             "iss": issuer,
             "nbf": now,
             "iat": now,
-            "jti": credential.get("id"),
             "vc": credential,
         }
+        if credential.get("id") is not None:      # a null jti fails RFC 7519 (must be a string)
+            payload["jti"] = credential["id"]
         if subject:
             payload["sub"] = subject
         if expires_in_s is not None:

@@ -4,6 +4,17 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Signing a VC-JWT for a credential without an `id` no longer emits a null `jti`**
+  (which RFC 7519 / PyJWT reject on verification), so an id-less credential now
+  round-trips.
+- **`VpJwtProofSuite.verify` defaults its resolver** to the offline
+  `did:key`/`did:jwk` + SSRF-guarded `did:web` registry (like `verify_credential`),
+  instead of requiring a resolver when the holder key is not pinned.
+
 ## [0.7.0] — 2026-07-06
 
 ### Added

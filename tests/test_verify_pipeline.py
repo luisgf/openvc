@@ -146,6 +146,18 @@ def test_key_resolution_failure():
         verify_credential(token, resolver=_Registry())      # empty registry
 
 
+def test_vc_jwt_without_id_verifies():
+    # a credential with no `id` must still yield a verifiable token (no null jti,
+    # which RFC 7519 / PyJWT reject)
+    sk = P256SigningKey.generate(kid=VM)
+    cred = _cred()
+    del cred["id"]
+    token = VcJwtProofSuite().sign(cred, signing_key=sk)
+    reg = _Registry().add(ISS, VM, sk.public_jwk())
+    result = verify_credential(token, resolver=reg)
+    assert result.issuer == ISS and "jti" not in result.claims
+
+
 # --------------------------------------------------------------------------- #
 # Status policy (fail-closed by default)
 # --------------------------------------------------------------------------- #

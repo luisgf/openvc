@@ -125,6 +125,12 @@ class VpJwtProofSuite:
         if not audience or not nonce:
             raise ClaimsInvalid("VP-JWT verify requires a non-empty audience and nonce")
 
+        # the resolver serves both the holder key and the cascade; default it (like
+        # verify_credential) unless the holder key is pinned
+        if holder_key_jwk is None and resolver is None:
+            from ..verify import default_resolver
+            resolver = default_resolver()
+
         pinned = holder_key_jwk is not None
         if holder_key_jwk is None:
             holder_key_jwk = self._resolve_holder_key(vp_jwt, resolver)
