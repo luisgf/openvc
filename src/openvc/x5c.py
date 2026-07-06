@@ -136,3 +136,9 @@ def resolve_x5c_key(
 
     _check_issuer_binding(leaf, iss)
     return _leaf_public_jwk(leaf)
+
+
+__all__ = [
+    "X5cError",
+    "resolve_x5c_key",
+]

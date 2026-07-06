@@ -455,3 +455,13 @@ class SdJwtVcProofSuite:
         if claims.get("sd_hash") != expected:
             raise ClaimsInvalid("KB-JWT sd_hash does not match the presented disclosures")
         return True
+
+
+__all__ = [
+    "SdJwtError",
+    "SdJwtVcProofSuite",
+    "VerifiedSdJwt",
+    "disclosure_digest",
+    "make_array_disclosure",
+    "make_object_disclosure",
+]

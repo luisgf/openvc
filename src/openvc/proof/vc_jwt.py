@@ -276,3 +276,16 @@ class VcJwtProofSuite:
         missing = [t for t in expected if t not in types]
         if missing:
             raise ClaimsInvalid(f"credential missing required type(s): {missing}")
+
+
+__all__ = [
+    "ALLOWED_ALGS",
+    "ClaimsInvalid",
+    "MalformedToken",
+    "ProofError",
+    "SignatureInvalid",
+    "SigningKey",
+    "UnsupportedAlgorithm",
+    "VcJwtProofSuite",
+    "VerifiedCredential",
+]

@@ -100,3 +100,10 @@ def _as_credential(raw: str) -> Any:
     except (ValueError, json.JSONDecodeError):
         return text
     return obj if isinstance(obj, dict) else text
+
+
+__all__ = [
+    "default_credential_schema_resolver",
+    "default_status_list_resolver",
+    "default_status_list_token_resolver",
+]

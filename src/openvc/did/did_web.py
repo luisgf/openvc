@@ -52,3 +52,9 @@ class DidWebResolver:
         if segments:
             return f"https://{host}/" + "/".join(segments) + "/did.json"
         return f"https://{host}/.well-known/did.json"
+
+
+__all__ = [
+    "DidWebResolver",
+    "Fetch",
+]

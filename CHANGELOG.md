@@ -10,6 +10,19 @@ The first stable release — a frozen, documented public surface. This heading
 accumulates the [1.0 — Stabilize](https://github.com/luisgf/openvc/milestone/2)
 milestone; it ships once that work is complete.
 
+### Added
+
+- **Demarcated public API surface.** Every public module now declares an explicit
+  `__all__` — the frozen, SemVer-protected surface toward 1.0. The two signing
+  backends and the `SigningKey` protocol join the package root
+  (`from openvc import Ed25519SigningKey, P256SigningKey, SigningKey`, alongside
+  `verify_credential` & co.). The shared policy errors (`CredentialExpired`,
+  `ProofPurposeMismatch`, …) now have a canonical home in `openvc.proof.errors`
+  (re-exported from `_verify_common` and the suites for back-compat), so the whole
+  proof-error taxonomy imports from one place. `docs/CONVENTIONS.md` gains a
+  "Public surface & stability" section documenting where to import stable names and
+  which paths are internal. ([#6](https://github.com/luisgf/openvc/issues/6))
+
 ### Changed
 
 - **BREAKING: unified proof-error taxonomy** (openvc.proof.errors). `ProofError`

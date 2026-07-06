@@ -81,3 +81,13 @@ def set_status_bit(bits: bytearray, index: int, value: int) -> None:
         bits[byte_index] |= mask
     else:
         bits[byte_index] &= ~mask
+
+
+__all__ = [
+    "StatusListError",
+    "decode_bitstring",
+    "encode_bitstring",
+    "get_status_bit",
+    "new_bitstring",
+    "set_status_bit",
+]

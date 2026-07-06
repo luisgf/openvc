@@ -551,3 +551,23 @@ def _fail_closed(policy: VerificationPolicy, declared: str, resolver_arg: str) -
 
 def _as_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
+
+
+__all__ = [
+    "FORMAT_DI_ECDSA_SD",
+    "FORMAT_DI_EDDSA",
+    "FORMAT_ENVELOPED",
+    "FORMAT_SD_JWT_VC",
+    "FORMAT_VC_JWT",
+    "IssuerBindingError",
+    "KeyResolutionFailed",
+    "StatusUnavailable",
+    "TypeMismatch",
+    "UnknownCredentialFormat",
+    "VerificationError",
+    "VerificationPolicy",
+    "VerificationResult",
+    "default_resolver",
+    "detect_format",
+    "verify_credential",
+]

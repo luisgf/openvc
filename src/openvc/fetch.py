@@ -168,3 +168,13 @@ def default_did_web_resolver() -> DidWebResolver:
     fetch — the batteries-included way to resolve did:web offline of any HTTP
     client dependency."""
     return DidWebResolver(https_json_fetch)
+
+
+__all__ = [
+    "DEFAULT_TIMEOUT_S",
+    "MAX_RESPONSE_BYTES",
+    "UnsafeUrlError",
+    "default_did_web_resolver",
+    "https_json_fetch",
+    "https_text_fetch",
+]

@@ -206,3 +206,13 @@ def build_token_status_reference(*, uri: str, index: int) -> dict[str, Any]:
     if index < 0:
         raise StatusListError(f"status index must be non-negative, got {index}")
     return {"status": {"status_list": {"idx": index, "uri": uri}}}
+
+
+__all__ = [
+    "STATUS_LIST_JWT_TYP",
+    "build_status_list_credential",
+    "build_status_list_entry",
+    "build_status_list_token",
+    "build_token_status_reference",
+    "verify_status_list_token",
+]

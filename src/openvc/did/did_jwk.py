@@ -56,3 +56,8 @@ class DidJwkResolver:
         }
         return DidDocument(
             id=did, verification_methods=[vm], raw=raw_doc, relationships=relationships)
+
+
+__all__ = [
+    "DidJwkResolver",
+]

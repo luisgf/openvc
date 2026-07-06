@@ -80,3 +80,11 @@ def resolve_jwt_vc_issuer_key(iss: str, kid: str | None, *, fetch: Fetch) -> dic
     if not isinstance(keys, list) or not keys:
         raise JwtVcIssuerError("issuer JWKS has no `keys` array")
     return _select_key(keys, kid)
+
+
+__all__ = [
+    "Fetch",
+    "JwtVcIssuerError",
+    "jwt_vc_issuer_metadata_url",
+    "resolve_jwt_vc_issuer_key",
+]

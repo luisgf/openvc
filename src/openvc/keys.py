@@ -218,3 +218,13 @@ def signing_key_from_jwk(jwk: dict[str, Any], kid: str):
     if kty == "EC" and crv == "P-256":
         return P256SigningKey.from_jwk(jwk, kid)
     raise InvalidKey(f"unsupported key type kty={kty!r} crv={crv!r}")
+
+
+__all__ = [
+    "Ed25519SigningKey",
+    "InvalidKey",
+    "KeyBackendError",
+    "P256SigningKey",
+    "signing_key_from_jwk",
+    "verify_signature",
+]

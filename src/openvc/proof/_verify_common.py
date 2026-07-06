@@ -22,7 +22,14 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .errors import ProofError
+from .errors import (
+    CredentialExpired,
+    CredentialNotYetValid,
+    KeyResolutionError,
+    MalformedTimestamp,
+    PresentationBindingError,
+    ProofPurposeMismatch,
+)
 
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
 
@@ -33,12 +40,8 @@ DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
 _FRACTION = re.compile(r"\.(\d+)")
 
 
-class CredentialNotYetValid(ProofError): ...
-class CredentialExpired(ProofError): ...
-class MalformedTimestamp(ProofError): ...
-class ProofPurposeMismatch(ProofError): ...
-class KeyResolutionError(ProofError): ...
-class PresentationBindingError(ProofError): ...
+# The policy-error classes now live in openvc.proof.errors (the canonical proof-error
+# home); imported above and re-exported here (and by the suites) for back-compat.
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -201,3 +204,18 @@ def resolve_verification_key(
             f"verificationMethod {verification_method!r} is not authorized for "
             f"proofPurpose {purpose!r}")
     return vm.public_key_jwk
+
+
+__all__ = [
+    "CredentialExpired",
+    "CredentialNotYetValid",
+    "DEFAULT_LEEWAY_S",
+    "KeyResolutionError",
+    "MalformedTimestamp",
+    "PresentationBindingError",
+    "ProofPurposeMismatch",
+    "check_presentation_binding",
+    "check_proof_purpose",
+    "check_validity_window",
+    "resolve_verification_key",
+]

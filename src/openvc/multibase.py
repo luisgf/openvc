@@ -65,3 +65,13 @@ def read_varint(data: bytes) -> tuple[int, int]:
             return result, i + 1
         shift += 7
     raise MultibaseError("truncated multicodec varint")
+
+
+__all__ = [
+    "MultibaseError",
+    "b58btc_decode",
+    "b58btc_encode",
+    "decode_multibase",
+    "encode_multibase",
+    "read_varint",
+]
