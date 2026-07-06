@@ -13,7 +13,16 @@ from .bitstring import (
     decode_bitstring,
     encode_bitstring,
     get_status_bit,
+    new_bitstring,
     set_status_bit,
+)
+from .issue import (
+    STATUS_LIST_JWT_TYP,
+    build_status_list_credential,
+    build_status_list_entry,
+    build_status_list_token,
+    build_token_status_reference,
+    verify_status_list_token,
 )
 from .status_list import (
     CredentialRevoked,
@@ -46,6 +55,7 @@ __all__ = [
     "decode_bitstring",
     "encode_bitstring",
     "get_status_bit",
+    "new_bitstring",
     "set_status_bit",
     "CredentialRevoked",
     "ResolveStatusList",
@@ -68,4 +78,11 @@ __all__ = [
     "new_status_list",
     "parse_token_status_ref",
     "set_status",
+    # issuer-side construction
+    "build_status_list_credential",
+    "build_status_list_entry",
+    "build_status_list_token",
+    "verify_status_list_token",
+    "build_token_status_reference",
+    "STATUS_LIST_JWT_TYP",
 ]

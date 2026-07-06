@@ -86,10 +86,6 @@ class VerifiedCredential:
 # Helpers
 # --------------------------------------------------------------------------- #
 
-def _b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
 def _b64url_decode(segment: str) -> bytes:
     padding = "=" * (-len(segment) % 4)
     return base64.urlsafe_b64decode(segment + padding)
@@ -211,11 +207,9 @@ class VcJwtProofSuite:
         """Wrap a VCDM credential in a VC-JWT, signing via the key backend.
 
         The raw signature is produced by `signing_key.sign(...)`, so an HSM/Vault
-        backend keeps the private key out of this process entirely.
+        backend keeps the private key out of this process entirely. The algorithm
+        is allow-listed by the shared compact-JWS assembler before signing.
         """
-        if signing_key.alg not in ALLOWED_ALGS:
-            raise UnsupportedAlgorithm(f"key alg {signing_key.alg!r} not permitted")
-
         now = int(time.time())
         issuer = credential.get("issuer")
         issuer = issuer.get("id") if isinstance(issuer, dict) else issuer
@@ -235,13 +229,8 @@ class VcJwtProofSuite:
 
         header = {"alg": signing_key.alg, "typ": "JWT", "kid": signing_key.kid}
 
-        signing_input = (
-            _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
-            + "."
-            + _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
-        )
-        signature = signing_key.sign(signing_input.encode("ascii"))
-        return f"{signing_input}.{_b64url_encode(signature)}"
+        from ._jws import sign_compact          # local import breaks the _jws<->vc_jwt cycle
+        return sign_compact(header, payload, signing_key=signing_key)
 
     # -- internals --------------------------------------------------------- #
 

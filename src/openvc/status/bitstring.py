@@ -23,6 +23,15 @@ class StatusListError(Exception):
     """The encodedList could not be decoded, or an index is out of range."""
 
 
+def new_bitstring(size: int) -> bytearray:
+    """A zeroed bitstring (every status clear) with room for at least *size*
+    single-bit statuses — the issuer-side counterpart to
+    :func:`openvc.status.token_status_list.new_status_list`."""
+    if size < 0:
+        raise StatusListError(f"size must be non-negative, got {size}")
+    return bytearray((size + 7) // 8)
+
+
 def decode_bitstring(encoded_list: str) -> bytes:
     """base64url-decode then GZIP-decompress an ``encodedList`` into raw bits."""
     try:
