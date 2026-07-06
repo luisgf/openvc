@@ -3,8 +3,9 @@
 A small, dependency-light **Verifiable Credentials core** for Python: sign and
 verify credentials in three proof formats — **VC-JWT** (JOSE), **SD-JWT VC**
 (selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022` and the
-selective-disclosure `ecdsa-sd-2023`) — resolve **DIDs** (`did:key`, `did:web`),
-issue and check
+selective-disclosure `ecdsa-sd-2023`) — resolve issuer keys by **DID**
+(`did:key`, `did:jwk`, `did:web`), by **`/.well-known/jwt-vc-issuer`**, or by
+**X.509 `x5c`** chain — issue and check
 **status-list** revocation, and — via an optional plugin — verify against the
 **EBSI** trust registries. Designed so private keys can live behind an
 **HSM/Vault** and never enter the process.
@@ -40,8 +41,11 @@ src/openvc/                core — knows nothing about EBSI or badges
     proof/contexts/        bundled JSON-LD contexts + offline document loader
     did/base.py            DidDocument, resolver protocol, W3C parser, registry
     did/did_key.py         offline did:key (Ed25519, P-256)
+    did/did_jwk.py         offline did:jwk (public-JWK identifier)
     did/did_web.py         did:web -> https -> fetch (fetch is injected)
     fetch.py               SSRF- + DNS-rebinding-safe https JSON fetch for did:web
+    jwt_vc_issuer.py       https issuer keys via /.well-known/jwt-vc-issuer
+    x5c.py                 X.509 x5c chain trust + SAN issuer binding
     status/                status lists — W3C Bitstring + IETF Token Status List (check + issue)
     verify.py              verify_credential: one-call pipeline over every format
 src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
@@ -169,7 +173,9 @@ Alpha. The proof suites (VC-JWT, SD-JWT VC, and Data Integrity —
 `eddsa-rdfc-2022`, verified byte-for-byte against the official W3C vc-di-eddsa
 vector, plus the selective-disclosure `ecdsa-sd-2023`, interop-validated against
 the official W3C vc-di-ecdsa vectors), the key
-backends, DID resolution (`did:key`, `did:web`, `did:ebsi` read), the EBSI
+backends, issuer-key resolution by DID (`did:key`, `did:jwk`, `did:web`,
+`did:ebsi` read), by `/.well-known/jwt-vc-issuer`, and by X.509 `x5c` chain (with
+SAN issuer binding), the EBSI
 registry client (verified against recorded pilot fixtures and a live smoke test),
 the recursive TI→TAO→RootTAO trust chain (with per-hop delegation scoping and
 revocation of the accreditations themselves), and status-list revocation in both
