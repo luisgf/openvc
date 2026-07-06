@@ -389,13 +389,22 @@ class SdJwtVcProofSuite:
             raise SignatureInvalid(f"{what} signature failed")
 
     def _check_temporal(self, claims: dict[str, Any]) -> None:
+        # a present-but-non-numeric exp/nbf fails CLOSED (NumericDate per RFC 7519),
+        # matching the Data Integrity and status-list temporal checks — skipping it
+        # would let a token with a malformed exp bypass its expiry.
         now = int(time.time())
         exp = claims.get("exp")
-        if isinstance(exp, (int, float)) and now > exp + self._leeway:
-            raise ClaimsInvalid("token has expired")
+        if exp is not None:
+            if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+                raise ClaimsInvalid("exp claim must be a numeric timestamp")
+            if now > exp + self._leeway:
+                raise ClaimsInvalid("token has expired")
         nbf = claims.get("nbf")
-        if isinstance(nbf, (int, float)) and now + self._leeway < nbf:
-            raise ClaimsInvalid("token is not yet valid")
+        if nbf is not None:
+            if isinstance(nbf, bool) or not isinstance(nbf, (int, float)):
+                raise ClaimsInvalid("nbf claim must be a numeric timestamp")
+            if now + self._leeway < nbf:
+                raise ClaimsInvalid("token is not yet valid")
 
     def _index_disclosures(self, disclosures: list[str], hash_name: str) -> dict[str, list]:
         by_digest: dict[str, list] = {}

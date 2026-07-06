@@ -4,6 +4,15 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **SD-JWT temporal check fails closed on a malformed `exp`/`nbf`.** A present but
+  non-numeric `exp`/`nbf` was silently skipped; it now raises `ClaimsInvalid`,
+  matching the Data Integrity and status-list temporal checks (a NumericDate per
+  RFC 7519).
+
 ## [0.6.0] — 2026-07-06
 
 ### Added

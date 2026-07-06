@@ -321,3 +321,15 @@ def test_status_claim_checked_via_token_status_list():
     resolve = {list_uri: {"status_list": {"bits": 1, "lst": encode_status_list(bytes(data))}}}
     status = check_token_status(result.claims, resolve_status_list_token=resolve.__getitem__)
     assert status is not None and status.revoked is True
+
+
+def test_non_numeric_exp_fails_closed():
+    # a present-but-non-numeric exp must fail closed, not have its expiry skipped
+    from openvc.proof._jws import sign_compact
+
+    sk = _issuer_key()
+    header = {"alg": sk.alg, "typ": "dc+sd-jwt", "kid": sk.kid}
+    issuer_jwt = sign_compact(
+        header, {"iss": ISSUER, "vct": VCT, "exp": "not-a-date"}, signing_key=sk)
+    with pytest.raises(ClaimsInvalid, match="numeric"):
+        SdJwtVcProofSuite().verify(issuer_jwt + "~", public_key_jwk=sk.public_jwk())
