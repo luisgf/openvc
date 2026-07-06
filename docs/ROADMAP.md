@@ -88,15 +88,21 @@ not here).
   SSRF-guarded fetch), and X.509 `x5c` chain trust (`openvc.x5c`, path validation +
   SAN issuer binding, EC P-256 leaf). The last two are opt-in in the pipeline.
   *(In the next release; raised the `cryptography` floor to `>=45`.)*
+- **W3C Verifiable Presentations** — **VP-JWT** (`openvc.proof.vp_jwt`): a holder
+  signs a `vp` bound to a verifier (`aud`) and challenge (`nonce`), and verify
+  cascade-verifies each embedded credential through the pipeline, with opt-in
+  holder binding — plus **`challenge`/`domain`** on Data Integrity
+  (`authentication` proofs). *(In the next release.)*
+- **Library-wide `OpenvcError` root** (`openvc.errors`) — one base above every
+  error family, so `except OpenvcError` catches any openvc failure (additive; the
+  per-area roots are unchanged). *(In the next release.)*
 
 ## Next
 
-The queued proof / status / EBSI / interop work is done and the downstream
-consumer lives in its own repository. What remains, roughly in priority order:
+The queued proof / status / EBSI / interop / presentation work is done and the
+downstream consumer lives in its own repository. What remains is demand-driven:
 
-1. **W3C Verifiable Presentations** — `challenge`/`domain` on Data Integrity and
-   VP-JWT, verifying the embedded credentials through the pipeline (demand-driven).
-2. **ecdsa-sd-2023 P-384** and further cryptosuites, if demand appears.
+1. **ecdsa-sd-2023 P-384** and further cryptosuites, if demand appears.
 
 ## Deliberately out of scope
 

@@ -38,6 +38,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     proof/sd_jwt.py        SdJwtVcProofSuite: issue / present (key binding) / verify
     proof/data_integrity.py DataIntegrityProofSuite: eddsa-rdfc-2022 (needs pyld)
     proof/ecdsa_sd.py      EcdsaSdProofSuite: ecdsa-sd-2023 selective disclosure
+    proof/vp_jwt.py        VpJwtProofSuite: holder presentations (VP-JWT) + cascade
     proof/contexts/        bundled JSON-LD contexts + offline document loader
     did/base.py            DidDocument, resolver protocol, W3C parser, registry
     did/did_key.py         offline did:key (Ed25519, P-256)
@@ -47,6 +48,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     jwt_vc_issuer.py       https issuer keys via /.well-known/jwt-vc-issuer
     x5c.py                 X.509 x5c chain trust + SAN issuer binding
     status/                status lists — W3C Bitstring + IETF Token Status List (check + issue)
+    errors.py              OpenvcError — the root of every error family
     verify.py              verify_credential: one-call pipeline over every format
 src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
     http.py                EbsiHttpClient: TTL cache, retries, host allow-list
@@ -183,7 +185,10 @@ the W3C Bitstring and IETF Token Status List encodings — checked *and* issued 
 are implemented and tested offline. Data Integrity verification also enforces the
 credential's validity window and `proofPurpose`, not just the signature. A generic
 `verify_credential` pipeline ties them together — format detection, key resolution,
-and fail-closed status/type policy in one call. See
+and fail-closed status/type policy in one call. Holder presentations are covered by
+VP-JWT (`aud`/`nonce` binding + cascade verification of each credential) and Data
+Integrity `challenge`/`domain`. Every error descends from a single `OpenvcError`
+root. See
 [the roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md) for
 what is next.
 
