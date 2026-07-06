@@ -67,14 +67,14 @@ not here).
   `now` pin) and `proofPurpose`, and binds the key to the DID document's
   verification relationship. An injectable `resolver=` makes `did:web` work with
   embedded proofs. Shared checks live in `openvc.proof._verify_common`; a
-  present-but-unparseable timestamp fails **closed**. *(In the next release.)*
+  present-but-unparseable timestamp fails **closed**.
 - **Status-list issuance** (`openvc.status`) — the issuer-side counterpart to the
   existing check side: `build_status_list_credential` (unsigned W3C Bitstring VC),
   `build_status_list_token` / `verify_status_list_token` (IETF `statuslist+jwt`),
   the `build_status_list_entry` / `build_token_status_reference` pointers, and
   `new_bitstring`. A generic compact-JWS signer (`openvc.proof._jws`) was lifted
   out of `VcJwtProofSuite.sign` so a non-VC token signs through the same
-  allow-listed path. *(In the next release.)*
+  allow-listed path.
 - **Generic verification pipeline** (`openvc.verify`) — one `verify_credential(...)`
   + `VerificationPolicy` that detects the format (VC-JWT / SD-JWT VC / Data
   Integrity / enveloped VCDM 2.0), resolves the issuer key via a registry, verifies
@@ -82,27 +82,26 @@ not here).
   verifier and the surface to stabilise toward 1.0. Status is fail-closed and checks
   both the W3C and IETF conventions for every format; Data Integrity binds the
   proof key to the issuer DID. The EBSI glue is a specialisation of it.
-  *(In the next release.)*
 - **EUDI issuer-key discovery** — `did:jwk` (`openvc.did.did_jwk`), SD-JWT VC issuer
   keys via `/.well-known/jwt-vc-issuer` (`openvc.jwt_vc_issuer`, anti-substitution +
   SSRF-guarded fetch), and X.509 `x5c` chain trust (`openvc.x5c`, path validation +
   SAN issuer binding, EC P-256 leaf). The last two are opt-in in the pipeline.
-  *(In the next release; raised the `cryptography` floor to `>=45`.)*
+  *(Raised the `cryptography` floor to `>=45`.)*
 - **W3C Verifiable Presentations** — **VP-JWT** (`openvc.proof.vp_jwt`): a holder
   signs a `vp` bound to a verifier (`aud`) and challenge (`nonce`), and verify
   cascade-verifies each embedded credential through the pipeline, with opt-in
   holder binding — plus **`challenge`/`domain`** on Data Integrity
-  (`authentication` proofs). *(In the next release.)*
+  (`authentication` proofs).
 - **Library-wide `OpenvcError` root** (`openvc.errors`) — one base above every
   error family, so `except OpenvcError` catches any openvc failure (additive; the
-  per-area roots are unchanged). *(In the next release.)*
+  per-area roots are unchanged).
 - **`credentialSchema` validation (W3C VC JSON Schema)** (`openvc.schema`) — the
   pipeline validates a credential against the `JsonSchema` it declares when the
   caller opts in with `resolve_credential_schema=` (a mismatch raises
   `SchemaValidationError`); `policy.require_schema` makes a declared-but-unchecked
   schema fail-closed. The `jsonschema` processor is the optional `[schema]` extra.
   Remote `$ref` is off and `JsonSchemaCredential` is not yet validated (raises
-  `UnsupportedSchemaType`). *(In the next release.)*
+  `UnsupportedSchemaType`).
 
 ## Next
 

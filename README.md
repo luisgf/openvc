@@ -48,6 +48,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     jwt_vc_issuer.py       https issuer keys via /.well-known/jwt-vc-issuer
     x5c.py                 X.509 x5c chain trust + SAN issuer binding
     status/                status lists — W3C Bitstring + IETF Token Status List (check + issue)
+    schema.py              credentialSchema validation (W3C VC JSON Schema, opt-in)
     errors.py              OpenvcError — the root of every error family
     verify.py              verify_credential: one-call pipeline over every format
 src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
