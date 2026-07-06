@@ -21,6 +21,19 @@ All notable changes to **openvc** are documented here. The format follows
   via `verify_credential(..., jwt_vc_issuer_fetch=https_json_fetch)` (pass the
   SSRF-guarded fetch); an https issuer without it fails closed. Private keys in the
   JWKS are refused.
+- **X.509 `x5c` issuer trust** (`openvc.x5c`) — for a JOSE credential whose header
+  carries an `x5c` certificate chain (eIDAS / EUDI document signers), validate the
+  chain to caller-provided trust anchors and return the leaf's key. Path validation
+  (signatures, validity, `basicConstraints`) is done by `cryptography`'s X.509
+  verifier; only the TLS EKU is relaxed. The `iss` must be bound to the leaf via its
+  Subject Alternative Name (URI or DNS-host match), closing a forge-any-issuer gap.
+  Only an EC P-256 leaf is accepted. Opt-in in the pipeline via
+  `verify_credential(..., x5c_trust_anchors=[roots])`.
+
+### Changed
+
+- **Minimum `cryptography` is now `>=45`** (was `>=42`) for the X.509
+  path-validation `ExtensionPolicy` the `x5c` verifier relies on.
 
 ## [0.5.0] — 2026-07-06
 

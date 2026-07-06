@@ -224,6 +224,7 @@ def verify_credential(
     resolve_status_list: Any = None,
     resolve_status_list_token: Any = None,
     jwt_vc_issuer_fetch: Any = None,
+    x5c_trust_anchors: Any = None,
     extra_contexts: Any = None,
     _depth: int = 0,
 ) -> VerificationResult:
@@ -235,10 +236,14 @@ def verify_credential(
     key discovery: when a JOSE credential's ``iss`` is an https URL, its key is
     resolved from ``/.well-known/jwt-vc-issuer`` using this fetch callable (pass
     :func:`openvc.fetch.https_json_fetch` for the SSRF-guarded one) — omit it and an
-    https issuer raises. *resolve_status_list* fetches and **verifies** a W3C
-    status-list credential (VC-JWT / Data Integrity); *resolve_status_list_token*
-    the same for an IETF status-list token (SD-JWT). *extra_contexts* is passed to
-    the Data Integrity canonicaliser for offline non-bundled contexts.
+    https issuer raises. *x5c_trust_anchors* (a sequence of trusted root
+    ``x509.Certificate`` objects) opts into **X.509 issuer trust**: when a JOSE
+    header carries an ``x5c`` chain, it is validated to those anchors and bound to
+    ``iss`` before its leaf key is used (see :mod:`openvc.x5c`). *resolve_status_list*
+    fetches and **verifies** a W3C status-list credential (VC-JWT / Data Integrity);
+    *resolve_status_list_token* the same for an IETF status-list token (SD-JWT).
+    *extra_contexts* is passed to the Data Integrity canonicaliser for offline
+    non-bundled contexts.
     """
     policy = policy or VerificationPolicy()
     resolver = resolver if resolver is not None else default_resolver()
@@ -253,16 +258,17 @@ def verify_credential(
             resolve_status_list=resolve_status_list,
             resolve_status_list_token=resolve_status_list_token,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+            x5c_trust_anchors=x5c_trust_anchors,
             extra_contexts=extra_contexts, _depth=_depth + 1)
 
     if fmt == FORMAT_VC_JWT:
         return _verify_vc_jwt(
             credential, policy, resolver, resolve_status_list,
-            resolve_status_list_token, jwt_vc_issuer_fetch)
+            resolve_status_list_token, jwt_vc_issuer_fetch, x5c_trust_anchors)
     if fmt == FORMAT_SD_JWT_VC:
         return _verify_sd_jwt(
             credential, policy, resolver, resolve_status_list,
-            resolve_status_list_token, jwt_vc_issuer_fetch)
+            resolve_status_list_token, jwt_vc_issuer_fetch, x5c_trust_anchors)
     return _verify_data_integrity(
         credential, fmt, policy, resolver, resolve_status_list,
         resolve_status_list_token, extra_contexts)
@@ -271,12 +277,16 @@ def verify_credential(
 # -- per-format handlers ---------------------------------------------------- #
 
 def _verify_vc_jwt(token, policy, resolver, resolve_status_list,
-                   resolve_status_list_token, jwt_vc_issuer_fetch) -> VerificationResult:
+                   resolve_status_list_token, jwt_vc_issuer_fetch,
+                   x5c_trust_anchors) -> VerificationResult:
     from .proof.vc_jwt import VcJwtProofSuite
 
     suite = VcJwtProofSuite(leeway_s=policy.leeway_s)
     iss, kid = suite.peek_issuer(token)
-    jwk = _resolve_jose_key(resolver, iss, kid, jwt_vc_issuer_fetch)
+    jwk = _resolve_jose_key_with_x5c(
+        token, iss, kid, sd_jwt=False, resolver=resolver,
+        jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+        x5c_trust_anchors=x5c_trust_anchors, now=policy.now)
     verified = suite.verify(token, public_key_jwk=jwk, audience=policy.audience)
     _check_types(verified.credential, policy.expected_types)
     # W3C status is in the vc object; an IETF `status` claim is in the JWT payload
@@ -288,12 +298,16 @@ def _verify_vc_jwt(token, policy, resolver, resolve_status_list,
 
 
 def _verify_sd_jwt(sd_jwt, policy, resolver, resolve_status_list,
-                   resolve_status_list_token, jwt_vc_issuer_fetch) -> VerificationResult:
+                   resolve_status_list_token, jwt_vc_issuer_fetch,
+                   x5c_trust_anchors) -> VerificationResult:
     from .proof.sd_jwt import SdJwtVcProofSuite
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
     iss, kid = suite.peek_issuer(sd_jwt)
-    jwk = _resolve_jose_key(resolver, iss, kid, jwt_vc_issuer_fetch)
+    jwk = _resolve_jose_key_with_x5c(
+        sd_jwt, iss, kid, sd_jwt=True, resolver=resolver,
+        jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+        x5c_trust_anchors=x5c_trust_anchors, now=policy.now)
     verified = suite.verify(
         sd_jwt, public_key_jwk=jwk, audience=policy.audience, nonce=policy.nonce,
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct)
@@ -332,6 +346,28 @@ def _verify_data_integrity(
 
 
 # -- shared helpers --------------------------------------------------------- #
+
+def _resolve_jose_key_with_x5c(
+    token: str, iss: str, kid: str | None, *, sd_jwt: bool, resolver: Any,
+    jwt_vc_issuer_fetch: Any, x5c_trust_anchors: Any, now: Any,
+) -> dict[str, Any]:
+    """Prefer an X.509 ``x5c`` header (validated to *x5c_trust_anchors* and bound to
+    *iss*) when the caller opted into it and the token carries one; otherwise resolve
+    the key from the issuer (DID registry or https well-known)."""
+    if x5c_trust_anchors is not None:
+        from .proof._jws import parse_compact
+        jws = token.split("~", 1)[0] if sd_jwt else token
+        header, _, _, _ = parse_compact(jws)
+        x5c = header.get("x5c")
+        if x5c:
+            from .x5c import X5cError, resolve_x5c_key
+            try:
+                return resolve_x5c_key(x5c, iss, trust_anchors=x5c_trust_anchors, now=now)
+            except X5cError as exc:
+                raise KeyResolutionFailed(
+                    f"x5c key resolution failed for issuer {iss!r}: {exc}") from exc
+    return _resolve_jose_key(resolver, iss, kid, jwt_vc_issuer_fetch)
+
 
 def _resolve_jose_key(
     resolver: Any, iss: str, kid: str | None, jwt_vc_issuer_fetch: Any = None

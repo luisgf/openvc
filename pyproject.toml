@@ -34,7 +34,8 @@ classifiers = [
 # VC-JWT envelope (PyJWT). did:web can be resolved with the stdlib-only fetch in
 # openvc.fetch; no HTTP client is required for the core.
 dependencies = [
-    "cryptography>=42",
+    # >=45 for the X.509 path-validation ExtensionPolicy the x5c verifier relies on
+    "cryptography>=45",
     "pyjwt>=2.8",
 ]
 
