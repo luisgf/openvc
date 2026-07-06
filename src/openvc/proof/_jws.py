@@ -20,13 +20,8 @@ import base64
 import json
 from typing import Any
 
-from .vc_jwt import (
-    ALLOWED_ALGS,
-    MalformedToken,
-    SignatureInvalid,
-    SigningKey,
-    UnsupportedAlgorithm,
-)
+from .errors import MalformedToken, SignatureInvalid, UnsupportedAlgorithm
+from .vc_jwt import ALLOWED_ALGS, SigningKey
 
 
 def b64url_encode(data: bytes) -> str:

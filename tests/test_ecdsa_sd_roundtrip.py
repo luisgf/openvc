@@ -125,13 +125,13 @@ def test_over_disclosure_after_derive_rejected():
 
 
 def test_selective_disclosure_shrinks_the_proof():
-    from openvc.proof.ecdsa_sd import parse_base_proof, parse_derived_proof
+    from openvc.proof.ecdsa_sd import decode_base_proof, decode_derived_proof
     sk = P256SigningKey.generate(kid=KID)
     suite = EcdsaSdProofSuite()
     base = _issue(sk, ["/issuer"])                      # only /issuer mandatory
-    n_base = len(parse_base_proof(base["proof"]["proofValue"])["signatures"])
+    n_base = len(decode_base_proof(base["proof"]["proofValue"])["signatures"])
     derived = suite.derive_proof(base, selective_pointers=["/credentialSubject/name"])
-    n_derived = len(parse_derived_proof(derived["proof"]["proofValue"])["signatures"])
+    n_derived = len(decode_derived_proof(derived["proof"]["proofValue"])["signatures"])
     # withholding statements must carry fewer per-statement signatures than the base.
     assert 0 < n_derived < n_base
     assert suite.verify(derived, public_key_jwk=sk.public_jwk()).issuer == "did:example:issuer"

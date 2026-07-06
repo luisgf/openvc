@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from openvc.did.base import DidResolutionError
-from openvc.proof.vc_jwt import ProofError, VcJwtProofSuite
+from openvc.proof.errors import ProofError
+from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.status import ResolveStatusList, check_credential_status
 
 from .errors import EbsiError

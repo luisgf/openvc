@@ -55,15 +55,25 @@ drive a trust decision.
 
 ## Errors
 
-- **One root error per module**, subclassing `Exception` (or a shared family root):
-  `DidError`, `StatusListError`, `KeyBackendError`, `MultibaseError`,
-  `DocumentLoaderError`, and — shared across every proof suite — `ProofError`.
-- **Leaf errors describe the failure condition** as a noun phrase, not always with
-  an `*Error` suffix: `SignatureInvalid`, `CredentialExpired`,
-  `CredentialNotYetValid`, `MalformedToken`, `ProofPurposeMismatch`,
-  `AccreditationRevoked`.
+- **`OpenvcError` is the library-wide root** (`openvc.errors`) — `except OpenvcError`
+  catches any failure from openvc or its plugins.
+- **One family root per area**, subclassing `OpenvcError`: `DidError`,
+  `StatusListError`, `KeyBackendError`, `MultibaseError`, `DocumentLoaderError`,
+  `SchemaError`, `VerificationError`, and — shared across every proof suite —
+  `ProofError` (canonical home `openvc.proof.errors`).
+- **Shared proof leaves are defined once** in `openvc.proof.errors`
+  (`SignatureInvalid`, `ProofMalformed`, `UnsupportedCryptosuite`,
+  `UnsupportedAlgorithm`, `MalformedToken`, `ClaimsInvalid`) and re-exported from each
+  suite, so `except SignatureInvalid` catches whichever suite raised it.
+  Suite-specific conditions keep their own error under `ProofError`: `SdJwtError`,
+  `EcdsaSdError` / `ProofValueMalformed`, `DataIntegrityError`.
+- **Leaf names describe the failure condition.** Use a plain noun phrase when it
+  itself conveys the failure (`SignatureInvalid`, `CredentialExpired`,
+  `UnsupportedAlgorithm`, `MalformedToken`); add an `*Error` / `*Failed` suffix only
+  when the noun is neutral and would not otherwise read as a failure
+  (`KeyResolutionError`, `DidResolutionError`, `UnsafeUrlError`).
 - A caller can always catch a whole family by its root (`except ProofError`,
-  `except DidError`).
+  `except DidError`, `except OpenvcError`).
 
 ## Constants for wire values
 
@@ -76,28 +86,32 @@ Protocol string/int literals are module constants, not inline strings:
 Real inconsistencies in the current surface. New code should follow the rules
 above, not these; they are tracked for normalisation toward 1.0.
 
-1. **Issuance verb differs per suite** — producing a secured credential is `sign`
-   (VC-JWT), `add_proof` / `add_base_proof` (Data Integrity / ecdsa-sd) and
-   `issue` (SD-JWT). Partly justified by each format's idiom, but it is three
-   names for one conceptual operation.
-2. **A codec pair is verb-last** — `cbor_encode` / `cbor_decode` in
-   `proof/ecdsa_sd` break the verb-first `encode_*` / `decode_*` rule; the
-   proof-value codec also uses the asymmetric `serialize_*` / `parse_*`.
-3. **`build_*` vs `make_*`** — status issuance uses `build_*`; SD-JWT disclosure
+1. **`build_*` vs `make_*`** — status issuance uses `build_*`; SD-JWT disclosure
    construction uses `make_object_disclosure` / `make_array_disclosure`.
-4. **Some factories are noun-first** — `did_registry_adapter`, `tir_adapter`,
+2. **Some factories are noun-first** — `did_registry_adapter`, `tir_adapter`,
    `default_did_web_resolver`, `document_loader`, `bundled_contexts`, `for_ebsi`
    read as noun accessors rather than `build_*` / `make_*`.
-5. **Leaf-error suffix is mixed** — `Unsupported*` (`UnsupportedAlgorithm`,
-   `UnsupportedCryptosuite`, `UnsupportedDidMethod`) coexists with `*Error`
-   (`KeyResolutionError`, `DidResolutionError`, `UnsafeUrlError`).
-6. **Error class names are duplicated across modules** — `SignatureInvalid`,
-   `ProofMalformed` and `UnsupportedCryptosuite` are each defined separately in
-   `vc_jwt`, `data_integrity` and `ecdsa_sd`. They share the `ProofError` base, so
-   `except ProofError` catches all — but `except data_integrity.SignatureInvalid`
-   will **not** catch the `ecdsa_sd` one. Catch by the shared base, or by a
-   suite's own class deliberately.
-7. **No library-wide root exception** — there is no umbrella `OpenvcError`, and the
-   EBSI plugin's families (`EbsiVerificationError`, `TrustChainError`, `HttpError`)
-   descend straight from `Exception` with no shared `EbsiError` root (unlike
-   `ProofError` in the core).
+
+## Accepted (permanent) deviations
+
+Deliberate — justified by the domain idiom, not scheduled for change.
+
+1. **Issuance verb differs per suite** — producing a secured credential is `sign`
+   (VC-JWT), `add_proof` / `add_base_proof` (Data Integrity / ecdsa-sd) and `issue`
+   (SD-JWT). Each matches its format's own spec vocabulary, so it stays.
+
+## Resolved toward 1.0
+
+- **Duplicated proof-error leaf names** (was #6) — `SignatureInvalid`,
+  `ProofMalformed`, `UnsupportedCryptosuite` are now single shared classes in
+  `openvc.proof.errors`, and `ProofError` moved there out of the `vc_jwt` format
+  module. `except SignatureInvalid` now catches every suite.
+- **Verb-last codec pair** (was #2) — `proof/ecdsa_sd` now uses verb-first
+  `encode_cbor` / `decode_cbor` and a symmetric `encode_*` / `decode_*` proof-value
+  pair; the old `cbor_encode` / `serialize_*` / `parse_*` names remain as deprecated
+  aliases for one release.
+- **Mixed leaf-error suffix** (was #5) — the mix is intentional and now documented
+  under **Errors** above (plain noun phrase vs `*Error` for a neutral noun); the
+  current names conform, so no rename.
+- **No library-wide root** (was #7) — `OpenvcError` now exists (`openvc.errors`),
+  with `EbsiError` as the plugin's shared root under it.

@@ -44,17 +44,18 @@ from ._verify_common import (
     resolve_verification_key,
 )
 from .contexts import DocumentLoaderError, document_loader
-from .vc_jwt import ProofError, SigningKey
+from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
+from .vc_jwt import SigningKey
 
 CRYPTOSUITE = "eddsa-rdfc-2022"
 PROOF_TYPE = "DataIntegrityProof"
 _ED25519_ALG = "EdDSA"
 
 
+# The shared leaves (SignatureInvalid / ProofMalformed / UnsupportedCryptosuite) are
+# imported from openvc.proof.errors; DataIntegrityError stays as this suite's own
+# error for Data-Integrity-specific failures (canonicalization, key shape).
 class DataIntegrityError(ProofError): ...
-class UnsupportedCryptosuite(DataIntegrityError): ...
-class ProofMalformed(DataIntegrityError): ...
-class SignatureInvalid(DataIntegrityError): ...
 
 
 # The post-signature policy failures verify() may raise beyond signature/format

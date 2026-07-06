@@ -32,7 +32,15 @@ from typing import Any, Protocol, runtime_checkable
 import jwt as pyjwt
 from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
-from ..errors import OpenvcError
+# The proof error taxonomy lives in openvc.proof.errors; these are re-exported for
+# back-compat (old imports like `from openvc.proof.vc_jwt import SignatureInvalid`).
+from .errors import (  # noqa: F401
+    ClaimsInvalid,
+    MalformedToken,
+    ProofError,
+    SignatureInvalid,
+    UnsupportedAlgorithm,
+)
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -59,17 +67,6 @@ class SigningKey(Protocol):
     @property
     def kid(self) -> str: ...          # verificationMethod id, e.g. did:...#key-1
     def sign(self, signing_input: bytes) -> bytes: ...
-
-
-# --------------------------------------------------------------------------- #
-# Errors
-# --------------------------------------------------------------------------- #
-
-class ProofError(OpenvcError): ...
-class UnsupportedAlgorithm(ProofError): ...
-class MalformedToken(ProofError): ...
-class SignatureInvalid(ProofError): ...
-class ClaimsInvalid(ProofError): ...
 
 
 # --------------------------------------------------------------------------- #

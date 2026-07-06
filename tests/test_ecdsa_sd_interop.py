@@ -59,7 +59,7 @@ def test_issuer_pipeline_matches_w3c_intermediates(example, extra_contexts):
     signed = _load(example, "addSignedSDBase.json")
     proof = signed["proof"]
     doc = {k: v for k, v in signed.items() if k != "proof"}
-    base = m.parse_base_proof(proof["proofValue"])
+    base = m.decode_base_proof(proof["proofValue"])
     loader = document_loader(extra_contexts)
 
     transform = m._transform(doc, base["hmac_key"], loader)
