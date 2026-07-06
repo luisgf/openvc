@@ -205,6 +205,8 @@ OPENVC_EBSI_LIVE=1 pytest     # also the opt-in live EBSI smoke test
 
 ## Project
 
+- [Examples](https://github.com/luisgf/openvc/blob/main/examples/) — runnable
+  scripts for the main flows (pipeline, SD-JWT, Data Integrity, status lists, VP-JWT)
 - [Roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md)
 - [Changelog](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md)
 - [Contributing](https://github.com/luisgf/openvc/blob/main/CONTRIBUTING.md)
