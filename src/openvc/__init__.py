@@ -2,7 +2,7 @@
 
 # Single source of truth for the version (pyproject reads it by AST — keep it a
 # plain string literal). The /release skill bumps this line.
-__version__ = "0.8.1"
+__version__ = "0.9.0"
 
 # The one-call verification pipeline is the headline API (see openvc.verify).
 from .errors import OpenvcError  # noqa: E402
