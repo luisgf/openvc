@@ -1,9 +1,9 @@
 name: docs
 
-# Build the mkdocs site and publish it to the gh-pages branch on every push to
-# main that touches the docs or the documented modules.
-# PREREQUISITE (one-time human setup): enable GitHub Pages for this repo, serving
-# from the `gh-pages` branch. This workflow only creates/updates that branch.
+# Build the mkdocs site and publish it to GitHub Pages via the Actions
+# deployment flow (repo Pages source = "GitHub Actions" / build_type: workflow).
+# No gh-pages branch is involved: the built site is uploaded as a Pages artifact
+# and deployed by actions/deploy-pages.
 on:
   push:
     branches: [main]
@@ -15,11 +15,20 @@ on:
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
+# Least privilege for the Actions Pages deployment: read the repo, write the
+# Pages deployment, and mint the OIDC token deploy-pages needs.
 permissions:
-  contents: write        # push the built site to gh-pages
+  contents: read
+  pages: write
+  id-token: write
+
+# One live deployment at a time; let an in-flight publish finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -34,5 +43,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[docs]"
 
-      - name: Build + deploy to gh-pages
-        run: mkdocs gh-deploy --force --strict
+      - name: Build (strict)
+        run: mkdocs build --strict --site-dir ./site
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
