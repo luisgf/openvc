@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 
 from .cache import batch_resolvers
 from .errors import OpenvcError
+from .observability import logger, span
 from .proof._verify_common import DEFAULT_LEEWAY_S
 from .schema import (
     SchemaUnavailable,
@@ -298,7 +299,26 @@ def verify_credential(
     resolver = resolver if resolver is not None else default_resolver()
 
     fmt = detect_format(credential)
+    logger.debug("verify: format=%s", fmt)
+    with span("openvc.verify_credential", format=fmt):
+        try:
+            result = _verify_by_format(
+                credential, fmt, policy, resolver, resolve_status_list,
+                resolve_status_list_token, resolve_credential_schema,
+                jwt_vc_issuer_fetch, x5c_trust_anchors, extra_contexts, _depth)
+        except OpenvcError as exc:              # which check failed, no secrets
+            logger.info("verify failed: format=%s error=%s", fmt, type(exc).__name__)
+            raise
+        logger.debug("verify ok: format=%s issuer=%s", result.format, result.issuer)
+    return result
 
+
+def _verify_by_format(
+    credential: Any, fmt: str, policy: VerificationPolicy, resolver: Any,
+    resolve_status_list: Any, resolve_status_list_token: Any,
+    resolve_credential_schema: Any, jwt_vc_issuer_fetch: Any, x5c_trust_anchors: Any,
+    extra_contexts: Any, _depth: int,
+) -> VerificationResult:
     if fmt == FORMAT_ENVELOPED:
         if _depth >= 2:
             raise UnknownCredentialFormat("enveloped credential nested too deeply")
@@ -362,14 +382,18 @@ def verify_many(
         jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
     )
     out: list[BatchResult] = []
-    for index, credential in enumerate(credentials):
-        try:
-            result = verify_credential(
-                credential, policy=policy, x5c_trust_anchors=x5c_trust_anchors,
-                extra_contexts=extra_contexts, **shared)
-            out.append(BatchResult(index=index, result=result))
-        except OpenvcError as exc:              # per-credential fail-closed; one bad
-            out.append(BatchResult(index=index, error=exc))  # item never aborts the rest
+    ok_count = 0
+    with span("openvc.verify_many", count=len(credentials)):
+        for index, credential in enumerate(credentials):
+            try:
+                result = verify_credential(
+                    credential, policy=policy, x5c_trust_anchors=x5c_trust_anchors,
+                    extra_contexts=extra_contexts, **shared)
+                out.append(BatchResult(index=index, result=result))
+                ok_count += 1               # counted here so the debug args stay O(1)
+            except OpenvcError as exc:          # per-credential fail-closed; one bad
+                out.append(BatchResult(index=index, error=exc))  # item never aborts the rest
+    logger.debug("verify_many: %d credentials, %d ok", len(out), ok_count)
     return out
 
 

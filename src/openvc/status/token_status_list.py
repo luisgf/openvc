@@ -27,6 +27,7 @@ import zlib
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ..observability import logger, span
 from ._decompress import DecompressionBomb, inflate_bounded
 from .bitstring import StatusListError
 
@@ -180,15 +181,19 @@ def check_token_status(
     ref = parse_token_status_ref(claims)
     if ref is None:
         return None
-    token_claims = resolve_status_list_token(ref.uri)
-    bits, lst = _status_list_claim(token_claims)
-    value = get_status(decode_status_list(lst), ref.index, bits=bits)
-    return TokenStatusResult(
+    with span("openvc.status"):
+        token_claims = resolve_status_list_token(ref.uri)
+        bits, lst = _status_list_claim(token_claims)
+        value = get_status(decode_status_list(lst), ref.index, bits=bits)
+    result = TokenStatusResult(
         ref=ref,
         status=value,
         revoked=value == STATUS_INVALID,
         suspended=value == STATUS_SUSPENDED,
     )
+    logger.debug("token status checked: revoked=%s suspended=%s",
+                 result.revoked, result.suspended)
+    return result
 
 
 __all__ = [

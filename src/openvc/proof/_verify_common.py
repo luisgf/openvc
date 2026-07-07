@@ -22,6 +22,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ..observability import logger, span
 from .errors import (
     CredentialExpired,
     CredentialNotYetValid,
@@ -177,23 +178,25 @@ def resolve_verification_key(
     from ..did.base import DidResolutionError, UnsupportedDidMethod
 
     did = verification_method.split("#", 1)[0]
+    logger.debug("resolve verification method: %s", did)
     doc = None
-    if resolver is not None:
-        supports = getattr(resolver, "supports", None)
-        if supports is None or supports(did):
-            try:
-                doc = resolver.resolve(did)
-            except UnsupportedDidMethod:
-                doc = None
-            except DidResolutionError as exc:
-                raise KeyResolutionError(f"could not resolve {did!r}: {exc}") from exc
-    if doc is None:
-        if not did.startswith("did:key:"):
-            raise KeyResolutionError(
-                f"cannot resolve {verification_method!r} offline "
-                f"(pass a resolver, or an injected public_key_jwk)")
-        from ..did.did_key import DidKeyResolver
-        doc = DidKeyResolver().resolve(did)
+    with span("openvc.resolve", did=did):
+        if resolver is not None:
+            supports = getattr(resolver, "supports", None)
+            if supports is None or supports(did):
+                try:
+                    doc = resolver.resolve(did)
+                except UnsupportedDidMethod:
+                    doc = None
+                except DidResolutionError as exc:
+                    raise KeyResolutionError(f"could not resolve {did!r}: {exc}") from exc
+        if doc is None:
+            if not did.startswith("did:key:"):
+                raise KeyResolutionError(
+                    f"cannot resolve {verification_method!r} offline "
+                    f"(pass a resolver, or an injected public_key_jwk)")
+            from ..did.did_key import DidKeyResolver
+            doc = DidKeyResolver().resolve(did)
 
     purpose = proof_purpose or "assertionMethod"
     vm = doc.key_for_purpose(verification_method, purpose)

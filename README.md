@@ -60,6 +60,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     verify.py              verify_credential / verify_many: one-call pipeline (single / batch)
     openid4vp.py           verify_vp_token: stateless OpenID4VP 1.0 vp_token verifier
     jwe.py                 decrypt_compact: JWE ECDH-ES decrypt for HAIP responses
+    observability.py       opt-in logging.getLogger('openvc') + injectable span hook
 src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
     http.py                EbsiHttpClient: TTL cache, retries, host allow-list
     versioning.py          DID Registry / TIR version adapters + DidEbsiResolver

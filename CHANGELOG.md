@@ -4,6 +4,27 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — unreleased
+
+Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
+
+### Added
+
+- **Optional observability — stdlib logging + an injectable span hook.** New
+  `openvc.observability`: a `logging.getLogger("openvc")` that emits structured events at
+  the **resolve / fetch / status / verify** boundaries, plus `span()` / `set_span_hook()`
+  — a no-op-by-default tracing hook an integrator wires to OpenTelemetry in one line
+  (`set_span_hook(lambda name, attrs: tracer.start_as_current_span(name, attributes=attrs))`).
+  Both are **off by default and dependency-free**: the logger carries only a `NullHandler`
+  (so `import openvc` prints nothing until the app attaches a handler and lowers the level),
+  and the hook is a no-op until installed — no tracing dependency enters core. Events and
+  span attributes carry **public identifiers only** (format, issuer/subject DID, the DID or
+  URL host, a check's outcome); private-key material, token bytes, `proofValue`, SD-JWT
+  disclosures and claim contents are **never** logged. **Observability never changes a
+  verification outcome:** a hook that errors — or one that tries to suppress an exception —
+  can neither break a verification nor turn a fail-closed check (e.g. an unreachable status
+  list) into a fail-open one. ([#25](https://github.com/luisgf/openvc/issues/25))
+
 ## [1.6.0] — 2026-07-07
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
@@ -575,6 +596,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.7.0]: https://github.com/luisgf/openvc/releases/tag/v1.7.0
 [1.6.0]: https://github.com/luisgf/openvc/releases/tag/v1.6.0
 [1.5.0]: https://github.com/luisgf/openvc/releases/tag/v1.5.0
 [1.4.0]: https://github.com/luisgf/openvc/releases/tag/v1.4.0

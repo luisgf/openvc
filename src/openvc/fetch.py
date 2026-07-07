@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 from .did.base import DidResolutionError
 from .did.did_web import DidWebResolver
+from .observability import logger, span
 
 DEFAULT_TIMEOUT_S = 10.0
 MAX_RESPONSE_BYTES = 1_048_576  # 1 MiB — DID documents are small; bound memory.
@@ -106,14 +107,18 @@ def _https_fetch_guarded(
     if not parsed.hostname:
         raise UnsafeUrlError("URL has no host")
     port = parsed.port or 443
+    # Log host + path only — a query string could carry a caller secret, so it is never
+    # logged (nor is any response body).
+    logger.debug("fetch https://%s%s", parsed.hostname, parsed.path or "/")
     ip = _resolve_public_ips(parsed.hostname, port)[0]
 
     target = parsed.path or "/"
     if parsed.query:
         target += "?" + parsed.query
 
-    status, raw = _https_get(parsed.hostname, ip, port, target,
-                             timeout=timeout_s, max_bytes=max_bytes)
+    with span("openvc.fetch", host=parsed.hostname):
+        status, raw = _https_get(parsed.hostname, ip, port, target,
+                                 timeout=timeout_s, max_bytes=max_bytes)
     if status in _REDIRECT_STATUSES:
         raise UnsafeUrlError(f"redirect ({status}) not followed (SSRF guard)")
     if status != 200:

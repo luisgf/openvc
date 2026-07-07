@@ -46,6 +46,7 @@ nav:
       - Status lists: api/status.md
       - Credential schema & type metadata: api/schema.md
       - Issuer-key discovery: api/discovery.md
+      - Observability: api/observability.md
       - Errors: api/errors.md
   - Conventions: CONVENTIONS.md
   - Versioning & deprecation: versioning.md

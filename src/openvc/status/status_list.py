@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..errors import OpenvcError
+from ..observability import logger, span
 from .bitstring import decode_bitstring, get_status_bit
 
 # Fetch+verify a status-list credential URL -> the status-list VC as a dict.
@@ -129,15 +130,18 @@ def check_credential_status(
     verifier policy decision) — only on malformed data or a resolve failure."""
     results: list[StatusEntryResult] = []
     revoked = suspended = False
-    for entry in parse_status_entries(credential):
-        status_vc = resolve_status_list(entry.status_list_credential)
-        bits = decode_bitstring(_encoded_list(status_vc, entry))
-        is_set = bool(get_status_bit(bits, entry.index))
-        results.append(StatusEntryResult(entry=entry, is_set=is_set))
-        if is_set and entry.purpose == PURPOSE_REVOCATION:
-            revoked = True
-        elif is_set and entry.purpose == PURPOSE_SUSPENSION:
-            suspended = True
+    with span("openvc.status"):
+        for entry in parse_status_entries(credential):
+            status_vc = resolve_status_list(entry.status_list_credential)
+            bits = decode_bitstring(_encoded_list(status_vc, entry))
+            is_set = bool(get_status_bit(bits, entry.index))
+            results.append(StatusEntryResult(entry=entry, is_set=is_set))
+            if is_set and entry.purpose == PURPOSE_REVOCATION:
+                revoked = True
+            elif is_set and entry.purpose == PURPOSE_SUSPENSION:
+                suspended = True
+    logger.debug("status checked: revoked=%s suspended=%s entries=%d",
+                 revoked, suspended, len(results))
     return StatusResult(revoked=revoked, suspended=suspended, entries=tuple(results))
 
 
