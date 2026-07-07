@@ -1,8 +1,8 @@
-# Threat model
+# Security model
 
 openvc verifies Verifiable Credentials, handles signing keys, and dereferences
-issuer-named URLs over the network. This page states what it defends, against whom,
-and how — the reference an auditor (or an integrator) starts from. The
+issuer-named URLs over the network. This page states what it defends, against
+whom, and how — the reference an auditor (or an integrator) starts from. The
 per-control hardening notes are in
 [SECURITY.md](https://github.com/luisgf/openvc/blob/main/SECURITY.md).
 
@@ -13,7 +13,7 @@ per-control hardening notes are in
   (a forged/tampered/expired/revoked credential accepted) is the primary harm.
 - **Signing keys.** Private key material. openvc never requires it in-process on the
   signing path — signing goes through the `SigningKey` protocol, so an HSM/Vault/KMS
-  backend keeps keys out of the process.
+  backend keeps keys out of the process (see [Keys & HSM backends](Keys-and-HSM)).
 - **Trust anchors.** The roots a verifier trusts: X.509 `x5c` trust anchors, the
   EBSI RootTAO, the DID documents a resolver returns. Compromise of an anchor is
   out of scope (it is the operator's root of trust) but openvc must not *widen* it.
@@ -38,7 +38,7 @@ Untrusted input crosses into openvc at:
 
 | Attacker capability | Threat | Control |
 |---|---|---|
-| Present a forged / tampered credential | Wrong accept | Signature verification through the matching suite; the `{ES256, EdDSA}` **allow-list runs *before* any crypto** (rejects `alg:none`, RS\*, HS\* — alg-confusion defence); JWS is R‖S, never DER |
+| Present a forged / tampered credential | Wrong accept | Signature verification through the matching suite; the `{ES256, ES384, EdDSA}` **allow-list runs *before* any crypto** (rejects `alg:none`, RS\*, HS\* — alg-confusion defence); JWS is R‖S, never DER |
 | Name an arbitrary issuer but sign with own key | Impersonation | **Issuer binding** — a Data Integrity proof's `verificationMethod` must be controlled by the credential's `issuer` DID; VC-JWT reconciles the JWT envelope with the embedded credential; x5c binds the leaf SAN to `iss` |
 | Serve a malicious document at a fetched URL | **SSRF** (reach internal hosts / cloud metadata) | `openvc.fetch`: https-only, blocks private/loopback/link-local/reserved/multicast IPs, refuses redirects, **pins the connection to the validated IP** (closes DNS-rebinding). Status/schema fetches use the same guard via the blessed `openvc.resolvers` defaults |
 | Ship a tiny highly-compressible status list | **Decompression bomb** (OOM DoS) | Status decode caps the *decompressed* output at 16 MiB and fails closed (`StatusListError`), reading incrementally so a bomb is never materialised |

@@ -1,0 +1,1 @@
+📖 Published automatically from the [`wiki/` directory](https://github.com/luisgf/openvc/tree/main/wiki) of the main repository — **edits made directly on the wiki are overwritten by the next sync**. To change a page, open a PR against `wiki/`. Every `python` block on these pages is executed by CI. · [API reference](https://luisgf.github.io/openvc/) · LGPL-3.0-or-later

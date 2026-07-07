@@ -1,7 +1,9 @@
 # Versioning & deprecation policy
 
 openvc follows [Semantic Versioning](https://semver.org). This page is the contract:
-what "stable" covers, and how change is signalled.
+what "stable" covers, and how change is signalled. It has been in full effect
+since **1.0.0** (during `0.x`, minor versions could break — each break was
+called out in the [CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md)).
 
 ## What a version bump means
 
@@ -18,7 +20,8 @@ Given a released `MAJOR.MINOR.PATCH`:
 
 The **stable public API** is every name in a public module's `__all__`, reached from
 its documented import path (see *Public surface & stability* in
-[CONVENTIONS](CONVENTIONS.md)). Concretely:
+[CONVENTIONS](https://github.com/luisgf/openvc/blob/main/docs/CONVENTIONS.md)).
+Concretely:
 
 - the package-root re-exports (`from openvc import verify_credential, …`);
 - every non-underscore module and the names in its `__all__`;
@@ -47,9 +50,3 @@ Currently deprecated (removable at the next MAJOR): the verb-last
 `serialize_base_proof`/`parse_base_proof`,
 `serialize_derived_proof`/`parse_derived_proof` — each warns and forwards to its
 verb-first replacement (`encode_cbor`/`decode_cbor`, `encode_base_proof`/…).
-
-## Pre-1.0 caveat
-
-Until **1.0.0**, openvc is `0.x`: minor versions may include breaking changes
-(each is called out in the CHANGELOG). The freeze described here takes full effect
-at 1.0.0. Pin a version and watch releases.

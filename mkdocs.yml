@@ -4,9 +4,14 @@ repo_url: https://github.com/luisgf/openvc
 repo_name: luisgf/openvc
 docs_dir: docs
 
-# Historical / non-doc-site files that live under docs/ but are not part of the site.
+# The site is the API reference only; the narrative manual lives on the GitHub
+# wiki (sourced from wiki/ in this repo). Everything else under docs/ is repo
+# material (ADRs, roadmap, conventions) or historical — not part of the site.
 exclude_docs: |
   SESSION-HANDOFF.md
+  CONVENTIONS.md
+  ROADMAP.md
+  adr/
 
 theme:
   name: material
@@ -50,11 +55,3 @@ nav:
       - Issuer-key discovery: api/discovery.md
       - Observability: api/observability.md
       - Errors: api/errors.md
-  - Conventions: CONVENTIONS.md
-  - Versioning & deprecation: versioning.md
-  - Threat model: threat-model.md
-  - Roadmap: ROADMAP.md
-  - Design decisions:
-      - "ADR-0001 — EBSI HTTP client": adr/ADR-0001-ebsi-http-client.md
-      - "ADR-0002 — Async verification": adr/ADR-0002-async-verification.md
-      - "ADR-0003 — EU Trusted Lists": adr/ADR-0003-eu-trusted-lists.md

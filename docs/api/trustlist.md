@@ -25,6 +25,6 @@ in `problems`), and **selective** (default: `granted` qualified-CA services). XM
 parsing is hardened stdlib (no DTD/XXE, bounded). XML-signature (XAdES) verification
 is an **injected callback** kept out of core: install `openvc-core[trustlist]` for
 the reference `verify_xades_enveloped` (`signxml`), or inject your own. See
-[ADR-0003](../adr/ADR-0003-eu-trusted-lists.md).
+[ADR-0003](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0003-eu-trusted-lists.md).
 
 ::: openvc.trustlist
