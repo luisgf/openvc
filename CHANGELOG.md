@@ -4,6 +4,34 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — unreleased
+
+Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
+
+### Added
+
+- **Batch verification API.** New `openvc.verify_many(credentials, …)` verifies a list of
+  credentials in one call, resolving each distinct issuer DID / status list / schema /
+  issuer-metadata URL **once** — roughly O(distinct issuers), not O(credentials) — via
+  the per-call caches of the new `openvc.cache.batch_resolvers`. Each credential is
+  verified **independently and fail-closed**: a failure in one (bad signature, revoked,
+  unresolvable key, …) becomes that item's `error` and never aborts the others. Returns a
+  `BatchResult` (`index` / `ok` / `result` / `error`) per input credential, in order. The
+  **VP-JWT cascade** now reuses the same dedup, so a presentation whose embedded
+  credentials share an issuer resolves that DID once instead of once per credential — while
+  staying fail-fast (a VP is valid only if every credential is). Composes with the core TTL
+  cache ([#23](https://github.com/luisgf/openvc/issues/23)); no new dependency.
+  ([#24](https://github.com/luisgf/openvc/issues/24))
+
+### Fixed
+
+- **`parse_status_entries` fails closed on a hostile `credentialStatus.type`.** A signed
+  credential whose status entry's `type` was a non-iterable or a list carrying an
+  unhashable member (e.g. `[{…}]`) raised a bare `TypeError` from the set intersection —
+  escaping the `OpenvcError` contract (and, in `verify_many`, aborting the whole batch
+  instead of failing that one credential). Such a `type` is now filtered to its string
+  members and skipped like any unrecognized type. (Found in the #24 adversarial review.)
+
 ## [1.5.0] — 2026-07-07
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
@@ -547,6 +575,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.6.0]: https://github.com/luisgf/openvc/releases/tag/v1.6.0
 [1.5.0]: https://github.com/luisgf/openvc/releases/tag/v1.5.0
 [1.4.0]: https://github.com/luisgf/openvc/releases/tag/v1.4.0
 [1.3.0]: https://github.com/luisgf/openvc/releases/tag/v1.3.0

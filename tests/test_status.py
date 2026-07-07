@@ -98,6 +98,21 @@ def test_parse_malformed_raises():
             "type": "BitstringStatusListEntry", "statusPurpose": "revocation"}})
 
 
+@pytest.mark.parametrize("hostile_type", [
+    [{"a": 1}],          # a list carrying an unhashable member (set-intersection TypeError)
+    5,                   # a non-iterable type
+    {"nested": "obj"},   # a mapping, not a type list
+    [None, 42],          # a list of non-string members
+], ids=["unhashable-member", "non-iterable", "mapping", "non-string-members"])
+def test_parse_hostile_type_is_skipped_not_crashed(hostile_type):
+    """A hostile `credentialStatus.type` must be skipped like any unrecognized type, not
+    crash with a bare (non-OpenvcError) TypeError — otherwise it escapes the fail-closed
+    contract (a whole verify_many batch would abort). Regression from adversarial review."""
+    entries = parse_status_entries({"credentialStatus": {
+        "type": hostile_type, "statusListIndex": "0", "statusListCredential": "u"}})
+    assert entries == []
+
+
 # --------------------------------------------------------------------------- #
 # end-to-end status check
 # --------------------------------------------------------------------------- #

@@ -57,7 +57,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     schema.py              credentialSchema validation (W3C VC JSON Schema, opt-in)
     type_metadata.py       SD-JWT VC Type Metadata: vct#integrity + claims validation
     errors.py              OpenvcError — the root of every error family
-    verify.py              verify_credential: one-call pipeline over every format
+    verify.py              verify_credential / verify_many: one-call pipeline (single / batch)
     openid4vp.py           verify_vp_token: stateless OpenID4VP 1.0 vp_token verifier
     jwe.py                 decrypt_compact: JWE ECDH-ES decrypt for HAIP responses
 src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
@@ -195,7 +195,9 @@ the W3C Bitstring and IETF Token Status List encodings — checked *and* issued 
 are implemented and tested offline. Data Integrity verification also enforces the
 credential's validity window and `proofPurpose`, not just the signature. A generic
 `verify_credential` pipeline ties them together — format detection, key resolution,
-and fail-closed status/type policy in one call. Holder presentations are covered by
+and fail-closed status/type policy in one call; `verify_many` batches it, resolving each
+distinct issuer DID / status list once and reporting each credential fail-closed. Holder
+presentations are covered by
 VP-JWT (`aud`/`nonce` binding + cascade verification of each credential) and Data
 Integrity `challenge`/`domain`. Every error descends from a single `OpenvcError`
 root. See

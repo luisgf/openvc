@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING, Any, Sequence, Union
 if TYPE_CHECKING:
     from .did.base import DidResolverRegistry
 
+from .cache import batch_resolvers
 from .errors import OpenvcError
 from .proof._verify_common import DEFAULT_LEEWAY_S
 from .schema import (
@@ -154,6 +155,21 @@ class VerificationResult:
     status: Union[StatusResult, TokenStatusResult, None] = None
     schema: SchemaValidationResult | None = None  # credentialSchema validation, if run
     raw: Any = None                            # the underlying suite result
+
+
+@dataclass(frozen=True)
+class BatchResult:
+    """One credential's outcome in a :func:`verify_many` batch. On success *result* is set
+    and *error* is ``None``; on a fail-closed verification failure *error* is set and
+    *result* is ``None``. *index* is the credential's position in the input sequence, and
+    *ok* is **derived** from *error* so it can never disagree with it."""
+    index: int
+    result: VerificationResult | None = None
+    error: OpenvcError | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
 
 
 # --------------------------------------------------------------------------- #
@@ -308,6 +324,53 @@ def verify_credential(
     return _verify_data_integrity(
         credential, fmt, policy, resolver, resolve_status_list,
         resolve_status_list_token, resolve_credential_schema, extra_contexts)
+
+
+def verify_many(
+    credentials: Sequence[Any],
+    *,
+    policy: VerificationPolicy | None = None,
+    resolver: Any = None,
+    resolve_status_list: Any = None,
+    resolve_status_list_token: Any = None,
+    resolve_credential_schema: Any = None,
+    jwt_vc_issuer_fetch: Any = None,
+    x5c_trust_anchors: Any = None,
+    extra_contexts: Any = None,
+) -> list[BatchResult]:
+    """Verify many credentials in one call, resolving each distinct issuer DID / status
+    list / schema / issuer-metadata URL **once** — roughly O(distinct issuers), not
+    O(credentials). A 5-credential batch from one issuer resolves that DID once and
+    fetches+verifies a shared status list once, via per-call caches
+    (:func:`openvc.cache.batch_resolvers`), discarded when the call returns.
+
+    Each credential is verified **independently and fail-closed**: a failure in one (bad
+    signature, revoked, unresolvable key, malformed, …) becomes that item's ``error`` and
+    never aborts the others. Returns one :class:`BatchResult` per input credential, in
+    input order. Every keyword means exactly what it does in :func:`verify_credential`.
+
+    Verification is **sequential** — the win is deduplicated resolution (each distinct
+    issuer / status list resolved once), not parallelism; distinct issuers are still
+    resolved one at a time.
+    """
+    resolver = resolver if resolver is not None else default_resolver()
+    shared = batch_resolvers(
+        resolver,
+        resolve_status_list=resolve_status_list,
+        resolve_status_list_token=resolve_status_list_token,
+        resolve_credential_schema=resolve_credential_schema,
+        jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+    )
+    out: list[BatchResult] = []
+    for index, credential in enumerate(credentials):
+        try:
+            result = verify_credential(
+                credential, policy=policy, x5c_trust_anchors=x5c_trust_anchors,
+                extra_contexts=extra_contexts, **shared)
+            out.append(BatchResult(index=index, result=result))
+        except OpenvcError as exc:              # per-credential fail-closed; one bad
+            out.append(BatchResult(index=index, error=exc))  # item never aborts the rest
+    return out
 
 
 # -- per-format handlers ---------------------------------------------------- #
@@ -588,6 +651,7 @@ __all__ = [
     "FORMAT_ENVELOPED",
     "FORMAT_SD_JWT_VC",
     "FORMAT_VC_JWT",
+    "BatchResult",
     "IssuerBindingError",
     "KeyResolutionFailed",
     "StatusUnavailable",
@@ -599,4 +663,5 @@ __all__ = [
     "default_resolver",
     "detect_format",
     "verify_credential",
+    "verify_many",
 ]

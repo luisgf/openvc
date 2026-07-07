@@ -11,10 +11,12 @@ from .errors import OpenvcError  # noqa: E402
 from .keys import Ed25519SigningKey, P256SigningKey  # noqa: E402
 from .proof.vc_jwt import SigningKey  # noqa: E402
 from .verify import (  # noqa: E402
+    BatchResult,
     VerificationError,
     VerificationPolicy,
     VerificationResult,
     verify_credential,
+    verify_many,
 )
 from .openid4vp import verify_encrypted_vp_response, verify_vp_token  # noqa: E402
 
@@ -22,10 +24,12 @@ __all__ = [
     "__version__",
     "OpenvcError",
     "verify_credential",
+    "verify_many",
     "verify_vp_token",
     "verify_encrypted_vp_response",
     "VerificationPolicy",
     "VerificationResult",
+    "BatchResult",
     "VerificationError",
     "Ed25519SigningKey",
     "P256SigningKey",

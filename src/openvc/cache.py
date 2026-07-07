@@ -41,6 +41,7 @@ __all__ = [
     "DEFAULT_STATUS_TTL_S",
     "CachingDidResolver",
     "TtlCache",
+    "batch_resolvers",
     "cached_resolve",
 ]
 
@@ -163,3 +164,39 @@ class CachingDidResolver:
 
     def resolve(self, did: str) -> DidDocument:
         return self._resolve(did)
+
+
+# Per-call, request-scoped dedup for a batch of verifications: caches that NEVER expire
+# during the batch, so each distinct key resolves exactly once, then are discarded — which
+# is why they must not outlive one batch (an infinite TTL on a long-lived status cache
+# would serve an arbitrarily stale revocation).
+_BATCH_TTL_S = float("inf")
+
+
+def batch_resolvers(
+    resolver: DidResolver,
+    *,
+    resolve_status_list: Callable[[str], Any] | None = None,
+    resolve_status_list_token: Callable[[str], Any] | None = None,
+    resolve_credential_schema: Callable[[str], Any] | None = None,
+    jwt_vc_issuer_fetch: Callable[[str], Any] | None = None,
+) -> dict[str, Any]:
+    """Wrap *resolver* and each provided fetch/resolve callable in its own **per-call,
+    no-expiry** cache so verifying a batch resolves each distinct DID / status list /
+    schema / issuer-metadata URL exactly once (≈ O(distinct issuers), not O(credentials)).
+
+    The caches are **request-scoped**: build them for one batch and discard. Because they
+    never expire, they must not outlive the batch (that would serve an arbitrarily stale
+    status list). A ``None`` callable stays ``None``. Returns a dict ready to ``**``-splat
+    into :func:`~openvc.verify.verify_credential` and its batch / VP-cascade callers.
+    """
+    def memo(fn: Callable[[str], Any] | None) -> Callable[[str], Any] | None:
+        return cached_resolve(fn, cache=TtlCache(ttl_s=_BATCH_TTL_S)) if fn is not None else None
+
+    return {
+        "resolver": CachingDidResolver(resolver, cache=TtlCache(ttl_s=_BATCH_TTL_S)),
+        "resolve_status_list": memo(resolve_status_list),
+        "resolve_status_list_token": memo(resolve_status_list_token),
+        "resolve_credential_schema": memo(resolve_credential_schema),
+        "jwt_vc_issuer_fetch": memo(jwt_vc_issuer_fetch),
+    }

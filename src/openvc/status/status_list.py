@@ -76,9 +76,16 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
     from .bitstring import StatusListError
     entries: list[StatusEntry] = []
     for raw in _as_entry_list(credential.get("credentialStatus")):
-        types = raw.get("type", [])
-        types = [types] if isinstance(types, str) else types
-        if not _ENTRY_TYPES.intersection(types):
+        types = raw.get("type")
+        if isinstance(types, str):
+            types = [types]
+        elif not isinstance(types, (list, tuple)):
+            types = []
+        # Only string members can name a status-entry type; filtering them keeps a hostile
+        # `type` (a non-iterable, or a list carrying an unhashable/dict member) from crashing
+        # the set intersection with a bare TypeError — it is skipped like any unrelated type.
+        matched = _ENTRY_TYPES.intersection(t for t in types if isinstance(t, str))
+        if not matched:
             continue
         url = raw.get("statusListCredential")
         index = raw.get("statusListIndex")
@@ -93,7 +100,7 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
             status_list_credential=str(url),
             index=index_int,
             purpose=raw.get("statusPurpose", PURPOSE_REVOCATION),
-            entry_type=next(iter(_ENTRY_TYPES.intersection(types))),
+            entry_type=next(iter(matched)),
         ))
     return entries
 

@@ -160,12 +160,24 @@ class VpJwtProofSuite:
                 "require_holder_binding with a pinned holder key needs "
                 "expected_holder to authenticate the presenter")
 
+        from ..cache import batch_resolvers
         from ..verify import verify_credential
         raw = vp.get("verifiableCredential", [])
         entries = [raw] if isinstance(raw, (str, dict)) else list(raw)
+        # Dedupe resolution across the embedded credentials: a VP whose 5 credentials share
+        # an issuer resolves that DID once, not five times (and fetches+verifies a shared
+        # status list once). The cascade stays fail-fast — a VP is valid only if *every*
+        # credential is — so the first failure still propagates.
+        cascade_kwargs = dict(credential_verify_kwargs)
+        shared = batch_resolvers(
+            resolver,
+            resolve_status_list=cascade_kwargs.pop("resolve_status_list", None),
+            resolve_status_list_token=cascade_kwargs.pop("resolve_status_list_token", None),
+            resolve_credential_schema=cascade_kwargs.pop("resolve_credential_schema", None),
+            jwt_vc_issuer_fetch=cascade_kwargs.pop("jwt_vc_issuer_fetch", None),
+        )
         results = tuple(
-            verify_credential(entry, resolver=resolver, **credential_verify_kwargs)
-            for entry in entries)
+            verify_credential(entry, **shared, **cascade_kwargs) for entry in entries)
 
         if require_holder_binding:
             for result in results:
