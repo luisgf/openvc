@@ -48,6 +48,7 @@ nav:
       - Errors: api/errors.md
   - Conventions: CONVENTIONS.md
   - Versioning & deprecation: versioning.md
+  - Threat model: threat-model.md
   - Roadmap: ROADMAP.md
   - Design decisions:
       - "ADR-0001 — EBSI HTTP client": adr/ADR-0001-ebsi-http-client.md
