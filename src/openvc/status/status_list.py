@@ -15,7 +15,7 @@ same field names, same bit encoding.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from ..errors import OpenvcError
 from ..observability import logger, span
@@ -23,6 +23,8 @@ from .bitstring import decode_bitstring, get_status_bit
 
 # Fetch+verify a status-list credential URL -> the status-list VC as a dict.
 ResolveStatusList = Callable[[str], dict]
+# The async counterpart: the same, returning an awaitable.
+AsyncResolveStatusList = Callable[[str], Awaitable[dict]]
 
 _ENTRY_TYPES = frozenset({"BitstringStatusListEntry", "StatusList2021Entry"})
 PURPOSE_REVOCATION = "revocation"
@@ -122,30 +124,49 @@ def _encoded_list(status_vc: dict[str, Any], entry: StatusEntry) -> str:
     return str(encoded)
 
 
+def _read_status_bit(status_vc: dict[str, Any], entry: StatusEntry) -> StatusEntryResult:
+    """Decode a resolved status-list VC and read this entry's bit (pure — shared by
+    the sync and async checks)."""
+    bits = decode_bitstring(_encoded_list(status_vc, entry))
+    return StatusEntryResult(entry=entry, is_set=bool(get_status_bit(bits, entry.index)))
+
+
+def _tally_status(results: list[StatusEntryResult]) -> StatusResult:
+    """Fold per-entry results into a :class:`StatusResult` (revoked/suspended if any
+    matching-purpose bit is set)."""
+    revoked = any(r.is_set and r.entry.purpose == PURPOSE_REVOCATION for r in results)
+    suspended = any(r.is_set and r.entry.purpose == PURPOSE_SUSPENSION for r in results)
+    logger.debug("status checked: revoked=%s suspended=%s entries=%d",
+                 revoked, suspended, len(results))
+    return StatusResult(revoked=revoked, suspended=suspended, entries=tuple(results))
+
+
 def check_credential_status(
     credential: dict[str, Any], *, resolve_status_list: ResolveStatusList
 ) -> StatusResult:
     """Resolve each status-list credential the credential references and read its
     bit. Returns a :class:`StatusResult`; never raises on a *set* bit (that is a
     verifier policy decision) — only on malformed data or a resolve failure."""
-    results: list[StatusEntryResult] = []
-    revoked = suspended = False
     with span("openvc.status"):
-        for entry in parse_status_entries(credential):
-            status_vc = resolve_status_list(entry.status_list_credential)
-            bits = decode_bitstring(_encoded_list(status_vc, entry))
-            is_set = bool(get_status_bit(bits, entry.index))
-            results.append(StatusEntryResult(entry=entry, is_set=is_set))
-            if is_set and entry.purpose == PURPOSE_REVOCATION:
-                revoked = True
-            elif is_set and entry.purpose == PURPOSE_SUSPENSION:
-                suspended = True
-    logger.debug("status checked: revoked=%s suspended=%s entries=%d",
-                 revoked, suspended, len(results))
-    return StatusResult(revoked=revoked, suspended=suspended, entries=tuple(results))
+        results = [_read_status_bit(resolve_status_list(e.status_list_credential), e)
+                   for e in parse_status_entries(credential)]
+    return _tally_status(results)
+
+
+async def check_credential_status_async(
+    credential: dict[str, Any], *, resolve_status_list: AsyncResolveStatusList
+) -> StatusResult:
+    """Async :func:`check_credential_status` — awaits an async ``resolve_status_list``;
+    identical decoding, tally, and fail-closed semantics (the bit-reading is the same
+    pure code)."""
+    with span("openvc.status"):
+        results = [_read_status_bit(await resolve_status_list(e.status_list_credential), e)
+                   for e in parse_status_entries(credential)]
+    return _tally_status(results)
 
 
 __all__ = [
+    "AsyncResolveStatusList",
     "CredentialRevoked",
     "CredentialSuspended",
     "ResolveStatusList",
@@ -153,5 +174,6 @@ __all__ = [
     "StatusEntryResult",
     "StatusResult",
     "check_credential_status",
+    "check_credential_status_async",
     "parse_status_entries",
 ]

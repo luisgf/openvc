@@ -18,13 +18,15 @@ opt-in HTTPS-issuer counterpart to DID-based key resolution in the pipeline.
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse, urlunparse
 
 from .errors import OpenvcError
 
 # Fetch an https URL -> its parsed JSON object (e.g. openvc.fetch.https_json_fetch).
 Fetch = Callable[[str], dict]
+# The async counterpart: the same, returning an awaitable.
+AsyncFetch = Callable[[str], Awaitable[dict]]
 
 _WELL_KNOWN = "/.well-known/jwt-vc-issuer"
 
@@ -59,32 +61,60 @@ def _select_key(keys: list, kid: str | None) -> dict[str, Any]:
     raise JwtVcIssuerError("issuer JWKS has multiple keys but the token has no kid")
 
 
-def resolve_jwt_vc_issuer_key(iss: str, kid: str | None, *, fetch: Fetch) -> dict[str, Any]:
-    """Resolve the public JWK for an https *iss* + *kid* via its JWT VC Issuer
-    Metadata. Verifies the metadata's ``issuer`` equals *iss* before trusting any
-    key. *fetch* performs the (SSRF-guarded) https GETs."""
-    metadata = fetch(jwt_vc_issuer_metadata_url(iss))
+def _inline_jwks_or_uri(metadata: Any, iss: str) -> tuple[Any, str | None]:
+    """Validate the issuer metadata (``issuer`` must equal *iss* — anti-substitution)
+    and return either its inline ``jwks`` (uri ``None``) or the ``jwks_uri`` to fetch
+    (jwks ``None``). Pure — shared by the sync and async resolvers."""
     if not isinstance(metadata, dict):
         raise JwtVcIssuerError("issuer metadata is not a JSON object")
     if metadata.get("issuer") != iss:
         raise JwtVcIssuerError(
             f"metadata issuer {metadata.get('issuer')!r} != token iss {iss!r}")
+    jwks = metadata.get("jwks")
+    if jwks is not None:
+        return jwks, None
+    jwks_uri = metadata.get("jwks_uri")
+    if not isinstance(jwks_uri, str):
+        raise JwtVcIssuerError("issuer metadata has neither jwks nor jwks_uri")
+    return None, jwks_uri
 
-    jwks: Any = metadata.get("jwks")
-    if jwks is None:
-        jwks_uri = metadata.get("jwks_uri")
-        if not isinstance(jwks_uri, str):
-            raise JwtVcIssuerError("issuer metadata has neither jwks nor jwks_uri")
-        jwks = fetch(jwks_uri)
+
+def _key_from_jwks(jwks: Any, kid: str | None) -> dict[str, Any]:
+    """Select the public JWK for *kid* from a fetched JWKS (pure — shared)."""
     keys = jwks.get("keys") if isinstance(jwks, dict) else None
     if not isinstance(keys, list) or not keys:
         raise JwtVcIssuerError("issuer JWKS has no `keys` array")
     return _select_key(keys, kid)
 
 
+def resolve_jwt_vc_issuer_key(iss: str, kid: str | None, *, fetch: Fetch) -> dict[str, Any]:
+    """Resolve the public JWK for an https *iss* + *kid* via its JWT VC Issuer
+    Metadata. Verifies the metadata's ``issuer`` equals *iss* before trusting any
+    key. *fetch* performs the (SSRF-guarded) https GETs."""
+    metadata = fetch(jwt_vc_issuer_metadata_url(iss))
+    jwks, jwks_uri = _inline_jwks_or_uri(metadata, iss)
+    if jwks is None:
+        jwks = fetch(jwks_uri)  # type: ignore[arg-type]  # jwks_uri is str when jwks is None
+    return _key_from_jwks(jwks, kid)
+
+
+async def resolve_jwt_vc_issuer_key_async(
+    iss: str, kid: str | None, *, fetch: AsyncFetch
+) -> dict[str, Any]:
+    """Async :func:`resolve_jwt_vc_issuer_key` — awaits the (up to two) https GETs;
+    identical metadata validation and key selection (the same pure code)."""
+    metadata = await fetch(jwt_vc_issuer_metadata_url(iss))
+    jwks, jwks_uri = _inline_jwks_or_uri(metadata, iss)
+    if jwks is None:
+        jwks = await fetch(jwks_uri)  # type: ignore[arg-type]  # str when jwks is None
+    return _key_from_jwks(jwks, kid)
+
+
 __all__ = [
+    "AsyncFetch",
     "Fetch",
     "JwtVcIssuerError",
     "jwt_vc_issuer_metadata_url",
     "resolve_jwt_vc_issuer_key",
+    "resolve_jwt_vc_issuer_key_async",
 ]
