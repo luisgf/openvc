@@ -690,15 +690,29 @@ class EcdsaSdProofSuite:
 
 
 # --------------------------------------------------------------------------- #
-# Deprecated verb-last aliases (CONVENTIONS #2). Prefer the verb-first
-# encode_*/decode_* names above; these will be removed in a future release.
+# Deprecated verb-last aliases (CONVENTIONS #2). Accessing one emits a
+# DeprecationWarning and forwards to the verb-first name; removable at the next
+# MAJOR (see docs/versioning.md). Kept out of __all__ / dir() on purpose.
 # --------------------------------------------------------------------------- #
-cbor_encode = encode_cbor
-cbor_decode = decode_cbor
-serialize_base_proof = encode_base_proof
-serialize_derived_proof = encode_derived_proof
-parse_base_proof = decode_base_proof
-parse_derived_proof = decode_derived_proof
+_DEPRECATED_ALIASES = {
+    "cbor_encode": "encode_cbor",
+    "cbor_decode": "decode_cbor",
+    "serialize_base_proof": "encode_base_proof",
+    "serialize_derived_proof": "encode_derived_proof",
+    "parse_base_proof": "decode_base_proof",
+    "parse_derived_proof": "decode_derived_proof",
+}
+
+
+def __getattr__(name: str) -> Any:      # PEP 562 module-level attribute hook
+    new = _DEPRECATED_ALIASES.get(name)
+    if new is not None:
+        import warnings
+        warnings.warn(
+            f"openvc.proof.ecdsa_sd.{name} is deprecated; use {new} instead",
+            DeprecationWarning, stacklevel=2)
+        return globals()[new]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

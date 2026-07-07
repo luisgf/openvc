@@ -28,6 +28,11 @@ milestone; it ships once that work is complete.
   fields): a field may be added with a default, never removed/renamed/reordered
   without a major bump. Documented in CONVENTIONS.md.
   ([#7](https://github.com/luisgf/openvc/issues/7))
+- **Versioning & deprecation policy** (`docs/versioning.md`) — a published SemVer
+  contract: what MAJOR/MINOR/PATCH mean, what the stability guarantee covers (the
+  `__all__` surface + the return-object contract), and the deprecation cycle
+  (`DeprecationWarning` + a CHANGELOG note for ≥1 minor before removal at a major).
+  ([#8](https://github.com/luisgf/openvc/issues/8))
 
 ### Changed
 
@@ -52,8 +57,9 @@ milestone; it ships once that work is complete.
   `serialize_base_proof`/`parse_base_proof` and
   `serialize_derived_proof`/`parse_derived_proof` are now deprecated aliases of the
   verb-first `encode_cbor`/`decode_cbor`, `encode_base_proof`/`decode_base_proof` and
-  `encode_derived_proof`/`decode_derived_proof`; the old names will be removed in a
-  future release. ([#5](https://github.com/luisgf/openvc/issues/5))
+  `encode_derived_proof`/`decode_derived_proof`. Accessing a deprecated name now
+  emits a `DeprecationWarning`; they are removable at the next major.
+  ([#5](https://github.com/luisgf/openvc/issues/5))
 
 ## [0.9.0] — 2026-07-06
 

@@ -49,11 +49,15 @@ def test_except_signature_invalid_catches_every_suite():
     assert di is sd is jose is proof_errors.SignatureInvalid
 
 
-def test_deprecated_codec_aliases_resolve():
+def test_deprecated_codec_aliases_warn_and_resolve():
+    import pytest
     from openvc.proof import ecdsa_sd as m
-    assert m.cbor_encode is m.encode_cbor
-    assert m.cbor_decode is m.decode_cbor
-    assert m.serialize_base_proof is m.encode_base_proof
-    assert m.serialize_derived_proof is m.encode_derived_proof
-    assert m.parse_base_proof is m.decode_base_proof
-    assert m.parse_derived_proof is m.decode_derived_proof
+    pairs = [("cbor_encode", "encode_cbor"), ("cbor_decode", "decode_cbor"),
+             ("serialize_base_proof", "encode_base_proof"),
+             ("serialize_derived_proof", "encode_derived_proof"),
+             ("parse_base_proof", "decode_base_proof"),
+             ("parse_derived_proof", "decode_derived_proof")]
+    for old, new in pairs:
+        with pytest.warns(DeprecationWarning):
+            old_obj = getattr(m, old)         # accessing the deprecated name warns
+        assert old_obj is getattr(m, new)     # and forwards to the verb-first one

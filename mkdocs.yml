@@ -47,6 +47,7 @@ nav:
       - Issuer-key discovery: api/discovery.md
       - Errors: api/errors.md
   - Conventions: CONVENTIONS.md
+  - Versioning & deprecation: versioning.md
   - Roadmap: ROADMAP.md
   - Design decisions:
       - "ADR-0001 — EBSI HTTP client": adr/ADR-0001-ebsi-http-client.md
