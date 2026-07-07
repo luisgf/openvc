@@ -38,6 +38,7 @@ class VerificationMethod:
 
     @property
     def kid(self) -> str:
+        """The verification-method id — the ``#fragment`` key identifier."""
         return self.id.split("#", 1)[-1]
 
 
@@ -93,8 +94,10 @@ class DidResolutionError(DidError): ...
 
 @runtime_checkable
 class DidResolver(Protocol):
-    def supports(self, did: str) -> bool: ...
-    def resolve(self, did: str) -> DidDocument: ...
+    def supports(self, did: str) -> bool:
+        """Whether this resolver handles *did* (its DID method)."""
+    def resolve(self, did: str) -> DidDocument:
+        """Resolve *did* to a :class:`DidDocument`, or raise :class:`DidResolutionError`."""
 
 
 # --------------------------------------------------------------------------- #
@@ -141,13 +144,17 @@ def parse_did_document(raw: dict[str, Any]) -> DidDocument:
 # --------------------------------------------------------------------------- #
 
 class DidResolverRegistry:
+    """A registry that dispatches ``resolve`` to the first resolver that supports the DID."""
+
     def __init__(self, resolvers: list[DidResolver] | None = None) -> None:
         self._resolvers: list[DidResolver] = list(resolvers or [])
 
     def register(self, resolver: DidResolver) -> None:
+        """Add a resolver (consulted in registration order)."""
         self._resolvers.append(resolver)
 
     def resolve(self, did: str) -> DidDocument:
+        """Resolve *did* via the first matching resolver, else raise ``UnsupportedDidMethod``."""
         for r in self._resolvers:
             if r.supports(did):
                 return r.resolve(did)

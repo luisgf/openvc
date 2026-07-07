@@ -43,6 +43,10 @@ milestone; it ships once that work is complete.
   the remaining annotation gaps are filled, so a downstream type-checker consuming
   openvc's `py.typed` annotations is not degraded.
   ([#15](https://github.com/luisgf/openvc/issues/15))
+- **Docstrings on the frozen surface** — the remaining undocumented public names
+  (the `SigningKey` protocol + backends and their methods, the `ecdsa_sd` codec
+  functions, the DID resolver/registry) now carry a one-line docstring, so the
+  generated API reference is complete. ([#14](https://github.com/luisgf/openvc/issues/14))
 
 ### Changed
 

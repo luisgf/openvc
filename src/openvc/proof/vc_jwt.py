@@ -63,10 +63,13 @@ class SigningKey(Protocol):
       * EdDSA  -> raw 64-byte Ed25519 signature
     """
     @property
-    def alg(self) -> str: ...          # "ES256" | "EdDSA"
+    def alg(self) -> str:
+        """The JOSE algorithm identifier — ``"ES256"`` or ``"EdDSA"``."""
     @property
-    def kid(self) -> str: ...          # verificationMethod id, e.g. did:...#key-1
-    def sign(self, signing_input: bytes) -> bytes: ...
+    def kid(self) -> str:
+        """The verification-method id this key signs as (e.g. ``did:…#key-1``)."""
+    def sign(self, signing_input: bytes) -> bytes:
+        """Sign *signing_input*; return the raw JWS signature (R‖S / 64-byte, never DER)."""
 
 
 # --------------------------------------------------------------------------- #
