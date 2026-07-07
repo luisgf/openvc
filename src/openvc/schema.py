@@ -301,6 +301,9 @@ def validate_credential_schema(
             resource = json.loads(raw)
         except (ValueError, json.JSONDecodeError) as exc:
             raise SchemaResolutionError(f"schema {ref.id!r} is not valid JSON: {exc}") from exc
+        except RecursionError as exc:            # a hostile, deeply-nested schema
+            raise SchemaResolutionError(
+                f"schema {ref.id!r} is too deeply nested to parse") from exc
         if not isinstance(resource, dict):
             raise SchemaResolutionError(
                 f"schema {ref.id!r} did not resolve to a JSON object")
