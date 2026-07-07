@@ -33,6 +33,11 @@ milestone; it ships once that work is complete.
   `__all__` surface + the return-object contract), and the deprecation cycle
   (`DeprecationWarning` + a CHANGELOG note for ≥1 minor before removal at a major).
   ([#8](https://github.com/luisgf/openvc/issues/8))
+- **Threat model** (`docs/threat-model.md`) — assets (the verify decision, signing
+  keys, trust anchors), trust boundaries (the credential, network dereferences, the
+  SigningKey backend, injected resolvers), and an attacker-capability → control map
+  (alg-confusion, issuer impersonation, SSRF, decompression bomb, replay, temporal,
+  selective-disclosure) for audit readiness. ([#16](https://github.com/luisgf/openvc/issues/16))
 
 ### Changed
 
