@@ -4,10 +4,12 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] — unreleased
+## [1.1.0] — 2026-07-07
 
-This heading accumulates the [1.1 — EUDI interop](https://github.com/luisgf/openvc/milestone/3)
-milestone; it ships once that work is complete.
+The first slice of the [1.1 — EUDI verifier interop](https://github.com/luisgf/openvc/milestone/3)
+milestone: OpenID4VP 1.0 `vp_token` verification and the pyld-free JCS Data Integrity
+cryptosuites. The remaining milestone items (HAIP JWE-response decryption, SD-JWT VC
+Type Metadata) land in later releases.
 
 ### Added
 
