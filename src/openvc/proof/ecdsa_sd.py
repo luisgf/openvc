@@ -158,7 +158,10 @@ def _cbor_dec(data: bytes, i: int) -> tuple[Any, int]:
     if major == 3:
         if i + n > len(data):
             raise ProofValueMalformed("CBOR: truncated text string")
-        return data[i:i + n].decode("utf-8"), i + n
+        try:
+            return data[i:i + n].decode("utf-8"), i + n
+        except UnicodeDecodeError as exc:           # attacker bytes -> fail closed, typed
+            raise ProofValueMalformed(f"CBOR: text string is not valid UTF-8: {exc}") from exc
     if major == 4:
         out = []
         for _ in range(n):
@@ -170,6 +173,8 @@ def _cbor_dec(data: bytes, i: int) -> tuple[Any, int]:
         for _ in range(n):
             key, i = _cbor_dec(data, i)
             val, i = _cbor_dec(data, i)
+            if not isinstance(key, (int, bytes, str)):   # a map/list key is unhashable
+                raise ProofValueMalformed("CBOR: map key must be an int, bytes, or text")
             out_map[key] = val
         return out_map, i
     raise ProofValueMalformed(f"CBOR: unsupported major type {major}")
