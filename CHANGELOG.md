@@ -4,6 +4,26 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — unreleased
+
+Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
+
+### Added
+
+- **`ecdsa-rdfc-2019` Data Integrity cryptosuite (whole-document ECDSA over RDF).** New
+  `openvc.proof.di_ecdsa_rdfc.EcdsaRdfcProofSuite` — the ECDSA analogue of
+  `eddsa-rdfc-2022`: same RDF N-Quads canonicalization (RDFC-1.0 / URDNA2015 via `pyld`)
+  and config-first `hashData`, but signs **P-256/SHA-256** (ES256) or **P-384/SHA-384**
+  (ES384) — raw R‖S, multibase `proofValue` — the digest chosen by the key's curve,
+  reusing the multi-curve ECDSA handling built for `ecdsa-jcs-2019`. Wired into the
+  `verify_credential` pipeline (`detect_format` → `data-integrity:ecdsa-rdfc-2019`).
+  Behind the `[data-integrity]` extra (needs `pyld`, unlike the JCS suite). Pinned to the
+  W3C *vc-di-ecdsa* `TestVectors/ecdsa-rdfc-2019-p256` and `…-p384` golden vectors: both
+  SHA-256/384 `hashData` halves reproduce the published hex and each published
+  `proofValue` verifies end to end via `did:key` (ECDSA is randomised, so — like
+  `ecdsa-sd-2023` — interop is shown by matching intermediates and verifying reference
+  proofs, not a byte-for-byte re-sign). ([#48](https://github.com/luisgf/openvc/issues/48))
+
 ## [1.3.0] — 2026-07-07
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
@@ -508,6 +528,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.4.0]: https://github.com/luisgf/openvc/releases/tag/v1.4.0
 [1.3.0]: https://github.com/luisgf/openvc/releases/tag/v1.3.0
 [1.2.0]: https://github.com/luisgf/openvc/releases/tag/v1.2.0
 [1.1.0]: https://github.com/luisgf/openvc/releases/tag/v1.1.0

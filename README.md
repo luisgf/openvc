@@ -2,8 +2,8 @@
 
 A small, dependency-light **Verifiable Credentials core** for Python: sign and
 verify credentials in three proof formats — **VC-JWT** (JOSE), **SD-JWT VC**
-(selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022` and the
-selective-disclosure `ecdsa-sd-2023` over RDF, plus `eddsa-jcs-2022` /
+(selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022` / `ecdsa-rdfc-2019`
+and the selective-disclosure `ecdsa-sd-2023` over RDF, plus `eddsa-jcs-2022` /
 `ecdsa-jcs-2019` over RFC 8785 JCS with no `pyld`) — resolve issuer keys by **DID**
 (`did:key`, `did:jwk`, `did:web`), by **`/.well-known/jwt-vc-issuer`**, or by
 **X.509 `x5c`** chain — issue and check
@@ -39,6 +39,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     proof/vc_jwt.py        VcJwtProofSuite: peek / verify / sign
     proof/sd_jwt.py        SdJwtVcProofSuite: issue / present (key binding) / verify
     proof/data_integrity.py DataIntegrityProofSuite: eddsa-rdfc-2022 (needs pyld)
+    proof/di_ecdsa_rdfc.py EcdsaRdfcProofSuite: ecdsa-rdfc-2019 P-256/P-384 (needs pyld)
     proof/ecdsa_sd.py      EcdsaSdProofSuite: ecdsa-sd-2023 selective disclosure
     proof/di_jcs.py        Eddsa/EcdsaJcsProofSuite: eddsa-jcs-2022 / ecdsa-jcs-2019 (RFC 8785 JCS, no pyld)
     proof/_jcs.py          RFC 8785 JSON Canonicalization Scheme (hand-rolled, stdlib)
@@ -77,7 +78,7 @@ The PyPI distribution is **`openvc-core`**; the Python import package is
 ```sh
 pip install openvc-core                    # core: VC-JWT, did:key, did:web, status list
 pip install "openvc-core[ebsi]"            # + the EBSI registry client (httpx)
-pip install "openvc-core[data-integrity]"  # + eddsa-rdfc-2022 Data Integrity (pyld)
+pip install "openvc-core[data-integrity]"  # + RDF Data Integrity: eddsa/ecdsa-rdfc (pyld)
 pip install -e ".[all]"                    # everything + dev tools (from a checkout)
 ```
 
@@ -181,8 +182,8 @@ print(result.claims["given_name"], result.key_bound)
 
 Alpha. The proof suites (VC-JWT, SD-JWT VC, and Data Integrity —
 `eddsa-rdfc-2022`, verified byte-for-byte against the official W3C vc-di-eddsa
-vector, plus the selective-disclosure `ecdsa-sd-2023`, interop-validated against
-the official W3C vc-di-ecdsa vectors), the key
+vector, plus `ecdsa-rdfc-2019` and the selective-disclosure `ecdsa-sd-2023`, both
+interop-validated against the official W3C vc-di-ecdsa vectors), the key
 backends, issuer-key resolution by DID (`did:key`, `did:jwk`, `did:web`,
 `did:ebsi` read), by `/.well-known/jwt-vc-issuer`, and by X.509 `x5c` chain (with
 SAN issuer binding), the EBSI

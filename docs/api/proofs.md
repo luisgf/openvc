@@ -14,6 +14,10 @@ Each proof format is one suite behind the same key/verify primitives.
 
 ::: openvc.proof.data_integrity
 
+## Data Integrity — ecdsa-rdfc-2019 (P-256 / P-384)
+
+::: openvc.proof.di_ecdsa_rdfc
+
 ## Data Integrity — ecdsa-sd-2023 (selective disclosure)
 
 ::: openvc.proof.ecdsa_sd

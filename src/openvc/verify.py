@@ -84,6 +84,7 @@ FORMAT_DI_EDDSA = "data-integrity:eddsa-rdfc-2022"
 FORMAT_DI_ECDSA_SD = "data-integrity:ecdsa-sd-2023"
 FORMAT_DI_EDDSA_JCS = "data-integrity:eddsa-jcs-2022"
 FORMAT_DI_ECDSA_JCS = "data-integrity:ecdsa-jcs-2019"
+FORMAT_DI_ECDSA_RDFC = "data-integrity:ecdsa-rdfc-2019"
 FORMAT_ENVELOPED = "enveloped-verifiable-credential"
 
 _CRYPTOSUITE_FORMAT = {
@@ -91,6 +92,7 @@ _CRYPTOSUITE_FORMAT = {
     "ecdsa-sd-2023": FORMAT_DI_ECDSA_SD,
     "eddsa-jcs-2022": FORMAT_DI_EDDSA_JCS,
     "ecdsa-jcs-2019": FORMAT_DI_ECDSA_JCS,
+    "ecdsa-rdfc-2019": FORMAT_DI_ECDSA_RDFC,
 }
 
 
@@ -375,6 +377,9 @@ def _verify_data_integrity(
     elif fmt == FORMAT_DI_ECDSA_JCS:
         from .proof.di_jcs import EcdsaJcsProofSuite
         suite = EcdsaJcsProofSuite(leeway_s=policy.leeway_s)
+    elif fmt == FORMAT_DI_ECDSA_RDFC:
+        from .proof.di_ecdsa_rdfc import EcdsaRdfcProofSuite
+        suite = EcdsaRdfcProofSuite(leeway_s=policy.leeway_s)
     else:
         from .proof.data_integrity import DataIntegrityProofSuite
         suite = DataIntegrityProofSuite(leeway_s=policy.leeway_s)
