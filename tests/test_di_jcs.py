@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 from openvc import VerificationPolicy, verify_credential
-from openvc.keys import Ed25519SigningKey, P256SigningKey
+from openvc.keys import Ed25519SigningKey, P256SigningKey, P384SigningKey
 from openvc.multibase import encode_multibase
 from openvc.proof._jcs import JcsError, canonicalize
 from openvc.proof.di_jcs import (
@@ -172,7 +172,8 @@ def test_w3c_eddsa_jcs_hashes():
     combined ``hashData`` is proofConfigHash ‖ documentHash (config first)."""
     assert hashlib.sha256(canonicalize(_W3C_UNSECURED)).hexdigest() == _W3C_DOC_HASH
     assert hashlib.sha256(canonicalize(_W3C_PROOF_OPTIONS)).hexdigest() == _W3C_CFG_HASH
-    assert _hash_data(_W3C_UNSECURED, _W3C_PROOF_OPTIONS).hex() == _W3C_CFG_HASH + _W3C_DOC_HASH
+    assert _hash_data(
+        _W3C_UNSECURED, _W3C_PROOF_OPTIONS, "sha256").hex() == _W3C_CFG_HASH + _W3C_DOC_HASH
 
 
 def test_w3c_eddsa_jcs_verifies_published_signature():
@@ -196,6 +197,76 @@ def test_w3c_eddsa_jcs_published_signature_is_tamper_evident():
 
 
 # --------------------------------------------------------------------------- #
+# 2b. ecdsa-jcs-2019 P-384 — the W3C vc-di-ecdsa Recommendation §A.6 example
+# (P-384 uses SHA-384; the published signature is high-S — the verifier accepts it)
+# --------------------------------------------------------------------------- #
+
+_P384_VM = ("did:key:z82LkuBieyGShVBhvtE2zoiD6Kma4tJGFtkAhxR5pfkp5QPw4LutoYWhvQCnGjdVn14kujQ"
+            "#z82LkuBieyGShVBhvtE2zoiD6Kma4tJGFtkAhxR5pfkp5QPw4LutoYWhvQCnGjdVn14kujQ")
+_P384_UNSECURED = {
+    "@context": _W3C_CTX,
+    "id": "urn:uuid:58172aac-d8ba-11ed-83dd-0b3aef56cc33",
+    "type": ["VerifiableCredential", "AlumniCredential"],
+    "name": "Alumni Credential",
+    "description": "A minimum viable example of an Alumni Credential.",
+    "issuer": "https://vc.example/issuers/5678",
+    "validFrom": "2023-01-01T00:00:00Z",
+    "credentialSubject": {"id": "did:example:abcdefgh",
+                          "alumniOf": "The School of Examples"},
+}
+_P384_PROOF_OPTIONS = {
+    "type": "DataIntegrityProof", "cryptosuite": "ecdsa-jcs-2019",
+    "created": "2023-02-24T23:36:38Z", "verificationMethod": _P384_VM,
+    "proofPurpose": "assertionMethod", "@context": _W3C_CTX,
+}
+_P384_DOC_HASH = ("3e0be671cc1881035d463158c80921973dab3534d4f8dfacf4ff2725a4115eb7"
+                  "18e49d66de0e90e7365cd6062abf2259")
+_P384_CFG_HASH = ("83e5057817abb0c6872eafeaba1a9e53893c58eeb7414fb6d8aa3fa8c7917f7a"
+                  "d4792890b257c598baa17f4fbe6d183c")
+_P384_PROOF_VALUE = ("zq3EuTeLiGurmB2JR5oL8oWEsT7u2tba4HT1oZbiMYWc5qzsoW2kLYcBcF4HM5vCpJyTkce"
+                     "ULKrVXuJQkXeN5seL4uXrFNFRMm53GWy1Yrto8rTWxZi9DkNeWP7yUPs7ELAm")
+
+
+def test_did_key_resolves_p384():
+    from openvc.did.did_key import DidKeyResolver
+    doc = DidKeyResolver().resolve(_P384_VM.split("#", 1)[0])
+    jwk = doc.verification_methods[0].public_key_jwk
+    assert jwk["kty"] == "EC" and jwk["crv"] == "P-384"
+    import base64
+    x = base64.urlsafe_b64decode(jwk["x"] + "==")
+    assert len(x) == 48                                  # 48-byte P-384 coordinate
+    assert x.hex().startswith("ec3a4e415b4e19a4")        # the vector's X
+
+
+def test_w3c_ecdsa_jcs_p384_hashes():
+    """Both halves hash with SHA-384 (48 bytes each) and reproduce the §A.6 hex."""
+    import hashlib
+    assert hashlib.sha384(canonicalize(_P384_UNSECURED)).hexdigest() == _P384_DOC_HASH
+    assert hashlib.sha384(canonicalize(_P384_PROOF_OPTIONS)).hexdigest() == _P384_CFG_HASH
+    assert _hash_data(_P384_UNSECURED, _P384_PROOF_OPTIONS, "sha384").hex() == (
+        _P384_CFG_HASH + _P384_DOC_HASH)
+
+
+def test_w3c_ecdsa_jcs_p384_verifies_via_did_key():
+    """The published high-S P-384 signature verifies end to end, resolving the
+    did:key (which needs the P-384 multicodec 0x1201)."""
+    proof = {k: v for k, v in _P384_PROOF_OPTIONS.items() if k != "@context"}
+    proof["proofValue"] = _P384_PROOF_VALUE
+    secured = dict(_P384_UNSECURED, proof=proof)
+    result = EcdsaJcsProofSuite().verify(secured, now=datetime(2023, 6, 1, tzinfo=UTC))
+    assert result.issuer == "https://vc.example/issuers/5678"
+
+
+def test_w3c_ecdsa_jcs_p384_tamper_evident():
+    proof = {k: v for k, v in _P384_PROOF_OPTIONS.items() if k != "@context"}
+    proof["proofValue"] = _P384_PROOF_VALUE
+    tampered = dict(_P384_UNSECURED, proof=proof)
+    tampered["credentialSubject"] = dict(tampered["credentialSubject"], alumniOf="Forged U")
+    with pytest.raises(SignatureInvalid):
+        EcdsaJcsProofSuite().verify(tampered, now=datetime(2023, 6, 1, tzinfo=UTC))
+
+
+# --------------------------------------------------------------------------- #
 # 3. the suites end to end — round-trip, tamper, negatives, pipeline
 # --------------------------------------------------------------------------- #
 
@@ -212,8 +283,9 @@ def _credential(issuer="did:example:issuer"):
 _SUITES = [
     (EDDSA_JCS_CRYPTOSUITE, Ed25519SigningKey, EddsaJcsProofSuite),
     (ECDSA_JCS_CRYPTOSUITE, P256SigningKey, EcdsaJcsProofSuite),
+    (ECDSA_JCS_CRYPTOSUITE, P384SigningKey, EcdsaJcsProofSuite),   # P-384 / SHA-384 leg
 ]
-_SUITE_IDS = [s[0] for s in _SUITES]
+_SUITE_IDS = [f"{c}-{kc.__name__}" for c, kc, _ in _SUITES]
 
 
 @pytest.mark.parametrize("cryptosuite, KeyCls, Suite", _SUITES, ids=_SUITE_IDS)
@@ -417,7 +489,7 @@ def _did_key(key) -> str:
 @pytest.mark.parametrize("cryptosuite, KeyCls, Suite, fmt", [
     (EDDSA_JCS_CRYPTOSUITE, Ed25519SigningKey, EddsaJcsProofSuite, FORMAT_DI_EDDSA_JCS),
     (ECDSA_JCS_CRYPTOSUITE, P256SigningKey, EcdsaJcsProofSuite, FORMAT_DI_ECDSA_JCS),
-], ids=_SUITE_IDS)
+], ids=["eddsa-jcs-2022", "ecdsa-jcs-2019"])
 def test_pipeline_detects_and_verifies(cryptosuite, KeyCls, Suite, fmt):
     key = KeyCls.generate(kid="tmp")             # kid is unused; add_proof takes the VM param
     did = _did_key(key)

@@ -14,8 +14,10 @@ Responsibilities
 
 Security posture
 ----------------
-* Algorithm allow-list is fixed (ES256, EdDSA). `alg: none`, RS*, HS* are rejected
-  before any crypto runs — this is the primary defence against alg-confusion.
+* Algorithm allow-list is fixed (ES256, ES384, EdDSA). `alg: none`, RS*, HS* are
+  rejected before any crypto runs — this is the primary defence against alg-confusion.
+  (ES384 is the P-384 leg of the Data Integrity ecdsa-*-2019 suites; it does not change
+  the EBSI/EUDI-preferred ES256 path.)
 * The verification algorithm is taken from the token header ONLY after checking it
   against the allow-list, and is then pinned when calling the verifier.
 * peek_issuer never influences verification; it exists solely to select a key.
@@ -46,7 +48,7 @@ from .errors import (  # noqa: F401
 # Configuration
 # --------------------------------------------------------------------------- #
 
-ALLOWED_ALGS: frozenset[str] = frozenset({"ES256", "EdDSA"})
+ALLOWED_ALGS: frozenset[str] = frozenset({"ES256", "ES384", "EdDSA"})
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew on exp/nbf/iat
 
 
@@ -60,11 +62,12 @@ class SigningKey(Protocol):
 
     `sign` MUST return a JWS-compatible signature:
       * ES256  -> raw R||S concatenation, 64 bytes (NOT DER)
+      * ES384  -> raw R||S concatenation, 96 bytes (NOT DER)
       * EdDSA  -> raw 64-byte Ed25519 signature
     """
     @property
     def alg(self) -> str:
-        """The JOSE algorithm identifier — ``"ES256"`` or ``"EdDSA"``."""
+        """The JOSE algorithm identifier — ``"ES256"``, ``"ES384"`` or ``"EdDSA"``."""
     @property
     def kid(self) -> str:
         """The verification-method id this key signs as (e.g. ``did:…#key-1``)."""
@@ -241,7 +244,7 @@ class VcJwtProofSuite:
     @staticmethod
     def _jwk_to_key(jwk: dict[str, Any], alg: str) -> Any:
         try:
-            if alg == "ES256":
+            if alg in ("ES256", "ES384"):
                 return ECAlgorithm.from_jwk(json.dumps(jwk))
             return OKPAlgorithm.from_jwk(json.dumps(jwk))   # EdDSA
         except Exception as exc:

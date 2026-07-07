@@ -4,6 +4,25 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — unreleased
+
+Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
+
+### Added
+
+- **P-384 signing (ES384) + P-384 on the `ecdsa-jcs-2019` cryptosuite.** New
+  `openvc.keys.P384SigningKey` (ES384 — raw R‖S 96 bytes over SHA-384), and `ES384` is
+  now on the JOSE allow-list beside `ES256` / `EdDSA` — a **deliberate** widening;
+  `RS*` / `HS*` / `alg:none` stay rejected before any crypto. The whole-document
+  `EcdsaJcsProofSuite` (`ecdsa-jcs-2019`) is now curve-flexible: **P-256/SHA-256**
+  (ES256) or **P-384/SHA-384** (ES384), the digest chosen by the key's curve. `did:key`
+  resolution gains the P-384 multicodec (`0x1201`, `z82…`). Pinned byte-for-byte to the
+  W3C *vc-di-ecdsa* Recommendation §A.6 P-384 `ecdsa-jcs-2019` example (both SHA-384
+  hashes reproduced and its published **high-S** signature verified via `did:key`).
+  The RDF `ecdsa-rdfc-2019` suite is a follow-up
+  ([#48](https://github.com/luisgf/openvc/issues/48)).
+  ([#22](https://github.com/luisgf/openvc/issues/22))
+
 ## [1.2.0] — 2026-07-07
 
 Completes the [1.1 — EUDI verifier interop](https://github.com/luisgf/openvc/milestone/3)
@@ -489,6 +508,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.3.0]: https://github.com/luisgf/openvc/releases/tag/v1.3.0
 [1.2.0]: https://github.com/luisgf/openvc/releases/tag/v1.2.0
 [1.1.0]: https://github.com/luisgf/openvc/releases/tag/v1.1.0
 [1.0.1]: https://github.com/luisgf/openvc/releases/tag/v1.0.1
