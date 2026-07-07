@@ -80,9 +80,10 @@ def _subject_cred(**extra):
 # schema resolver
 # --------------------------------------------------------------------------- #
 
-def test_schema_resolver_fetches_and_returns():
-    resolve = default_credential_schema_resolver(fetch=lambda u: {"$schema": "s", "seen": u})
-    assert resolve("https://ex/s.json") == {"$schema": "s", "seen": "https://ex/s.json"}
+def test_schema_resolver_fetches_bytes():
+    # the schema resolver now returns raw bytes (so digestSRI can be verified)
+    resolve = default_credential_schema_resolver(fetch=lambda u: b'{"$schema": "s"}')
+    assert resolve("https://ex/s.json") == b'{"$schema": "s"}'
 
 
 # --------------------------------------------------------------------------- #

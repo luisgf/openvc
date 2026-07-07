@@ -56,22 +56,29 @@ declared schema is never silently skipped when you asked for it to be checked.
   one). A resource with no ``$schema`` "MUST NOT be processed" — we reject it.
 * ``format`` keywords (e.g. ``email``) are treated as annotations, not
   assertions — JSON Schema's default; we do not pull in format libraries.
-* ``digestSRI`` on an entry is parsed but **not** enforced (enforcing it needs
-  the raw fetched bytes, which the dict-returning resolver does not expose).
+* ``digestSRI`` on an entry is **enforced**: the resolver returns the raw schema
+  bytes, and a ``sha256-``/``sha384-``/``sha512-`` SRI hash is verified over them
+  (constant-time) before the schema is parsed — a mismatch fails closed. An issuer
+  can thus pin the exact schema so even a compromised schema host cannot swap it.
 * The spec models the outcome as Success / Failure / *Indeterminate*; this
   fail-closed verifier collapses Indeterminate (unreachable / non-schema /
   unsupported) into a raised :class:`SchemaError` rather than a distinct value.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from .errors import OpenvcError
 
-# Fetch a schema URL -> the parsed JSON Schema resource as a dict. The caller owns
-# transport and the SSRF policy for that host (as with ResolveStatusList).
-ResolveCredentialSchema = Callable[[str], dict]
+# Fetch a schema URL -> the RAW schema bytes. Bytes (not a parsed dict) so a
+# credentialSchema `digestSRI` can be verified over the exact response before parsing.
+# The caller owns transport and the SSRF policy for that host (as with ResolveStatusList).
+ResolveCredentialSchema = Callable[[str], bytes]
 
 SCHEMA_TYPE_JSON = "JsonSchema"
 SCHEMA_TYPE_JSON_CREDENTIAL = "JsonSchemaCredential"
@@ -281,10 +288,19 @@ def validate_credential_schema(
                 f"credentialSchema type {ref.type!r} is not supported "
                 f"(only {SCHEMA_TYPE_JSON!r} is validated)")
         try:
-            resource = resolve_credential_schema(ref.id)
+            raw = resolve_credential_schema(ref.id)
         except (SchemaError, DidError) as exc:
             raise SchemaResolutionError(
                 f"could not resolve schema {ref.id!r}: {exc}") from exc
+        if not isinstance(raw, (bytes, bytearray)):
+            raise SchemaResolutionError(
+                f"schema {ref.id!r} resolver must return bytes, got {type(raw).__name__}")
+        if ref.digest_sri:                        # integrity pin — verify BEFORE parsing
+            _verify_sri(bytes(raw), ref.digest_sri, ref.id)
+        try:
+            resource = json.loads(raw)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise SchemaResolutionError(f"schema {ref.id!r} is not valid JSON: {exc}") from exc
         if not isinstance(resource, dict):
             raise SchemaResolutionError(
                 f"schema {ref.id!r} did not resolve to a JSON object")
@@ -292,6 +308,37 @@ def validate_credential_schema(
         applied.append(ref.id)
 
     return SchemaValidationResult(validated=bool(applied), schemas=tuple(applied))
+
+
+_SRI_HASHES = {"sha256": hashlib.sha256, "sha384": hashlib.sha384, "sha512": hashlib.sha512}
+
+
+def _verify_sri(data: bytes, integrity: str, url: str) -> None:
+    """Verify a Subresource-Integrity metadata string against *data*, failing closed.
+
+    ``integrity`` is one or more space-separated ``<alg>-<base64(digest)>`` options
+    (W3C SRI); *data* matches if it satisfies ANY option of the strongest algorithm
+    present. Comparison is constant-time. Raises :class:`SchemaResolutionError` on an
+    unparseable string or a mismatch."""
+    options: list[tuple[str, bytes]] = []
+    for token in integrity.split():
+        alg, _, b64 = token.partition("-")
+        if alg in _SRI_HASHES and b64:
+            try:
+                options.append((alg, base64.b64decode(b64)))
+            except (ValueError, TypeError):
+                continue
+    if not options:
+        raise SchemaResolutionError(
+            f"schema {url!r} has an unparseable digestSRI {integrity!r}")
+    strongest = max(alg for alg, _ in options)                 # sha512 > sha384 > sha256
+    for alg, expected in options:
+        if alg != strongest:
+            continue
+        if hmac.compare_digest(_SRI_HASHES[alg](data).digest(), expected):
+            return
+    raise SchemaResolutionError(
+        f"schema {url!r} does not match its digestSRI ({strongest})")
 
 
 __all__ = [

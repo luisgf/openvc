@@ -30,18 +30,18 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .fetch import https_json_fetch, https_text_fetch
+from .fetch import https_bytes_fetch, https_text_fetch
 from .schema import ResolveCredentialSchema
 from .status import ResolveStatusList, ResolveStatusListToken
 
 
 def default_credential_schema_resolver(
-    *, fetch: Any = https_json_fetch,
+    *, fetch: Any = https_bytes_fetch,
 ) -> ResolveCredentialSchema:
-    """A ``resolve_credential_schema`` that fetches the JSON Schema over the
-    SSRF-guarded https fetch. Schema *integrity* (``digestSRI``) is a separate,
-    still-open control, so this trusts a guarded-fetched schema by shape, not hash."""
-    def resolve(url: str) -> dict:
+    """A ``resolve_credential_schema`` that fetches the raw schema bytes over the
+    SSRF-guarded https fetch. Returning bytes lets the pipeline verify a
+    ``credentialSchema.digestSRI`` over the exact response before parsing."""
+    def resolve(url: str) -> bytes:
         return fetch(url)
     return resolve
 

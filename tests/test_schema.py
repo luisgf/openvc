@@ -10,6 +10,8 @@ credential is the validation instance.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from openvc.did.base import DidResolutionError
@@ -24,6 +26,12 @@ from openvc.schema import (
 )
 
 SCHEMA_URL = "https://example.com/schemas/email.json"
+
+
+def _b(obj: object) -> bytes:
+    """A resolve_credential_schema now returns raw bytes; serialise a test schema."""
+    return json.dumps(obj).encode()
+
 
 # Spec Example 2: a raw JSON Schema whose top-level `properties.credentialSubject`
 # requires `emailAddress` — only bites if the whole VC is the instance.
@@ -112,7 +120,7 @@ def test_parse_rejects_malformed_entries():
 def test_validate_conforming_credential():
     pytest.importorskip("jsonschema")
     result = validate_credential_schema(
-        _cred(credential_schema=_entry()), resolve_credential_schema=lambda u: EMAIL_SCHEMA)
+        _cred(credential_schema=_entry()), resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
     assert result.validated is True
     assert result.schemas == (SCHEMA_URL,)
 
@@ -122,12 +130,13 @@ def test_validate_nonconforming_raises():
     cred = _cred(subject={"id": "did:example:s"},        # no emailAddress -> violates schema
                  credential_schema=_entry())
     with pytest.raises(SchemaValidationError):
-        validate_credential_schema(cred, resolve_credential_schema=lambda u: EMAIL_SCHEMA)
+        validate_credential_schema(cred, resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
 
 
 def test_validate_no_schema_declared_is_noop():
     pytest.importorskip("jsonschema")
-    result = validate_credential_schema(_cred(), resolve_credential_schema=lambda u: EMAIL_SCHEMA)
+    result = validate_credential_schema(
+        _cred(), resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
     assert result.validated is False and result.schemas == ()
 
 
@@ -136,7 +145,7 @@ def test_validate_wrapper_shape_accepted():
     # a resolver that hands back a {jsonSchema: ...} wrapper still works
     result = validate_credential_schema(
         _cred(credential_schema=_entry()),
-        resolve_credential_schema=lambda u: {"jsonSchema": EMAIL_SCHEMA})
+        resolve_credential_schema=lambda u: _b({"jsonSchema": EMAIL_SCHEMA}))
     assert result.validated is True
 
 
@@ -145,7 +154,7 @@ def test_validate_json_schema_credential_type_unsupported():
     with pytest.raises(UnsupportedSchemaType):
         validate_credential_schema(
             _cred(credential_schema=_entry(schema_type="JsonSchemaCredential")),
-            resolve_credential_schema=lambda u: EMAIL_SCHEMA)
+            resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
 
 
 def test_validate_unknown_type_unsupported():
@@ -153,7 +162,7 @@ def test_validate_unknown_type_unsupported():
     with pytest.raises(UnsupportedSchemaType):
         validate_credential_schema(
             _cred(credential_schema=_entry(schema_type="OtherSchema2099")),
-            resolve_credential_schema=lambda u: EMAIL_SCHEMA)
+            resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
 
 
 def test_validate_resolver_transport_error_wrapped():
@@ -172,7 +181,7 @@ def test_validate_non_dict_resource_rejected():
     with pytest.raises(SchemaResolutionError):
         validate_credential_schema(
             _cred(credential_schema=_entry()),
-            resolve_credential_schema=lambda u: ["not", "a", "schema"])
+            resolve_credential_schema=lambda u: _b(["not", "a", "schema"]))
 
 
 def test_validate_resource_without_schema_keyword_rejected():
@@ -181,7 +190,7 @@ def test_validate_resource_without_schema_keyword_rejected():
     with pytest.raises(SchemaResolutionError):
         validate_credential_schema(
             _cred(credential_schema=_entry()),
-            resolve_credential_schema=lambda u: no_dollar_schema)
+            resolve_credential_schema=lambda u: _b(no_dollar_schema))
 
 
 def test_validate_garbage_schema_rejected():
@@ -189,7 +198,7 @@ def test_validate_garbage_schema_rejected():
     garbage = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": 123}
     with pytest.raises(SchemaResolutionError):
         validate_credential_schema(
-            _cred(credential_schema=_entry()), resolve_credential_schema=lambda u: garbage)
+            _cred(credential_schema=_entry()), resolve_credential_schema=lambda u: _b(garbage))
 
 
 def test_validate_remote_ref_fails_closed_without_network(monkeypatch):
@@ -208,7 +217,7 @@ def test_validate_remote_ref_fails_closed_without_network(monkeypatch):
     with pytest.raises(SchemaResolutionError):        # not AssertionError -> no urlopen
         validate_credential_schema(
             _cred(credential_schema=_entry()),
-            resolve_credential_schema=lambda u: remote_ref_schema)
+            resolve_credential_schema=lambda u: _b(remote_ref_schema))
 
 
 def test_validate_local_ref_resolves():
@@ -220,12 +229,12 @@ def test_validate_local_ref_resolves():
         "properties": {"credentialSubject": {"$ref": "#/$defs/sub"}},
     }
     ok = validate_credential_schema(
-        _cred(credential_schema=_entry()), resolve_credential_schema=lambda u: local_ref_schema)
+        _cred(credential_schema=_entry()), resolve_credential_schema=lambda u: _b(local_ref_schema))
     assert ok.validated is True
     with pytest.raises(SchemaValidationError):
         validate_credential_schema(
             _cred(subject={"id": "x"}, credential_schema=_entry()),
-            resolve_credential_schema=lambda u: local_ref_schema)
+            resolve_credential_schema=lambda u: _b(local_ref_schema))
 
 
 def test_validate_deeply_nested_schema_fails_closed():
@@ -245,7 +254,7 @@ def test_validate_deeply_nested_schema_fails_closed():
     cred = _cred(credential_schema=_entry())
     cred["a"] = inst["a"]
     with pytest.raises(SchemaResolutionError):        # RecursionError -> typed SchemaError
-        validate_credential_schema(cred, resolve_credential_schema=lambda u: schema)
+        validate_credential_schema(cred, resolve_credential_schema=lambda u: _b(schema))
 
 
 def test_parse_rejects_list_with_non_dict_member():
@@ -267,13 +276,64 @@ def test_validate_array_all_applied_and_one_failing():
     schemas = {SCHEMA_URL: EMAIL_SCHEMA, "https://ex/name.json": name_schema}
     cred = _cred(subject={"emailAddress": "a@b.com", "name": "Ada"},
                  credential_schema=[_entry(), _entry(url="https://ex/name.json")])
-    result = validate_credential_schema(cred, resolve_credential_schema=lambda u: schemas[u])
+    result = validate_credential_schema(cred, resolve_credential_schema=lambda u: _b(schemas[u]))
     assert set(result.schemas) == set(schemas)
     # drop `name` -> the second schema fails
     cred_bad = _cred(subject={"emailAddress": "a@b.com"},
                      credential_schema=[_entry(), _entry(url="https://ex/name.json")])
     with pytest.raises(SchemaValidationError):
-        validate_credential_schema(cred_bad, resolve_credential_schema=lambda u: schemas[u])
+        validate_credential_schema(cred_bad, resolve_credential_schema=lambda u: _b(schemas[u]))
+
+
+# --------------------------------------------------------------------------- #
+# digestSRI enforcement (issue #10)
+# --------------------------------------------------------------------------- #
+
+def _sri(data: bytes, alg: str = "sha384") -> str:
+    import base64
+    import hashlib
+    h = {"sha256": hashlib.sha256, "sha384": hashlib.sha384, "sha512": hashlib.sha512}[alg]
+    return f"{alg}-{base64.b64encode(h(data).digest()).decode()}"
+
+
+def test_validate_digest_sri_match():
+    pytest.importorskip("jsonschema")
+    raw = _b(EMAIL_SCHEMA)
+    cred = _cred(credential_schema=_entry(digestSRI=_sri(raw)))
+    result = validate_credential_schema(cred, resolve_credential_schema=lambda u: raw)
+    assert result.validated is True
+
+
+def test_validate_digest_sri_mismatch_fails_closed():
+    pytest.importorskip("jsonschema")
+    # SRI computed over different bytes than the resolver returns
+    cred = _cred(credential_schema=_entry(digestSRI=_sri(b"a different schema")))
+    with pytest.raises(SchemaResolutionError):
+        validate_credential_schema(cred, resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
+
+
+def test_validate_digest_sri_malformed_rejected():
+    pytest.importorskip("jsonschema")
+    cred = _cred(credential_schema=_entry(digestSRI="not-a-real-sri"))
+    with pytest.raises(SchemaResolutionError):
+        validate_credential_schema(cred, resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
+
+
+def test_validate_digest_sri_strongest_alg_enforced():
+    pytest.importorskip("jsonschema")
+    raw = _b(EMAIL_SCHEMA)
+    # a correct sha256 but a WRONG sha512 -> the strongest (sha512) must win -> reject
+    sri = _sri(raw, "sha256") + " " + _sri(b"wrong", "sha512")
+    cred = _cred(credential_schema=_entry(digestSRI=sri))
+    with pytest.raises(SchemaResolutionError):
+        validate_credential_schema(cred, resolve_credential_schema=lambda u: raw)
+
+
+def test_validate_resolver_must_return_bytes():
+    pytest.importorskip("jsonschema")
+    with pytest.raises(SchemaResolutionError):     # a dict, not bytes
+        validate_credential_schema(
+            _cred(credential_schema=_entry()), resolve_credential_schema=lambda u: EMAIL_SCHEMA)
 
 
 # --------------------------------------------------------------------------- #
@@ -317,7 +377,7 @@ def test_pipeline_validates_when_resolver_given():
     from openvc import verify_credential
     token, reg = _signed(_cred(credential_schema=_entry()))
     result = verify_credential(
-        token, resolver=reg, resolve_credential_schema=lambda u: EMAIL_SCHEMA)
+        token, resolver=reg, resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
     assert result.schema is not None and result.schema.validated is True
 
 
@@ -326,7 +386,7 @@ def test_pipeline_rejects_nonconforming():
     from openvc import verify_credential
     token, reg = _signed(_cred(subject={"id": "did:example:s"}, credential_schema=_entry()))
     with pytest.raises(SchemaValidationError):
-        verify_credential(token, resolver=reg, resolve_credential_schema=lambda u: EMAIL_SCHEMA)
+        verify_credential(token, resolver=reg, resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
 
 
 def test_pipeline_opt_in_by_default():
@@ -352,5 +412,5 @@ def test_pipeline_resolver_but_no_schema_declared():
     from openvc import verify_credential
     token, reg = _signed(_cred())                 # no credentialSchema
     result = verify_credential(
-        token, resolver=reg, resolve_credential_schema=lambda u: EMAIL_SCHEMA)
+        token, resolver=reg, resolve_credential_schema=lambda u: _b(EMAIL_SCHEMA))
     assert result.schema is None
