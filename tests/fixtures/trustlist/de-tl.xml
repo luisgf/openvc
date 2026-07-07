@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TrustServiceStatusList xmlns="http://uri.etsi.org/02231/v2#">
+  <SchemeInformation>
+    <TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUgeneric</TSLType>
+    <SchemeOperatorName><Name xml:lang="en">Bundesnetzagentur</Name></SchemeOperatorName>
+    <SchemeTerritory>DE</SchemeTerritory>
+    <ListIssueDateTime>2026-01-01T00:00:00Z</ListIssueDateTime>
+    <NextUpdate><dateTime>2099-01-01T00:00:00Z</dateTime></NextUpdate>
+  </SchemeInformation>
+  <TrustServiceProviderList>
+    <TrustServiceProvider>
+      <TSPInformation><TSPName><Name xml:lang="en">Example TSP DE</Name></TSPName></TSPInformation>
+      <TSPServices>
+        <TSPService><ServiceInformation>
+          <ServiceTypeIdentifier>http://uri.etsi.org/TrstSvc/Svctype/CA/QC</ServiceTypeIdentifier>
+          <ServiceName><Name xml:lang="en">QC CA (granted)</Name></ServiceName>
+          <ServiceDigitalIdentity>
+            <DigitalId><X509Certificate>MIIBdjCCARugAwIBAgIUYtuiavGGa1bu56Aq9FseBkDWd3AwCgYIKoZIzj0EAwIwLzEtMCsGA1UEAwwkRXhhbXBsZSBUU1AgREUgUXVhbGlmaWVkIENBIDEgKHRlc3QpMCAXDTI2MDEwMTAwMDAwMFoYDzIwOTkwMTAxMDAwMDAwWjAvMS0wKwYDVQQDDCRFeGFtcGxlIFRTUCBERSBRdWFsaWZpZWQgQ0EgMSAodGVzdCkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATRylTFPAo8n+93mjLp0a9kzvY/F3Is9Y1C+SM7G42Pg9P4Ccf8oqrYX+aFbNksEU0Qte5VSif+Vs4k/pq9gv6CoxMwETAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0kAMEYCIQCB2mjIgpS0s5AKAN5Fj8H6UiBFUSTeTxZrF8RY3bInuQIhAIy/XcY1RWXkb/Ku7rYUp8fTdIVxpGbzl3jyIaarD0Nz</X509Certificate></DigitalId>
+          </ServiceDigitalIdentity>
+          <ServiceStatus>http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/granted</ServiceStatus>
+          <StatusStartingTime>2026-01-01T00:00:00Z</StatusStartingTime>
+        </ServiceInformation></TSPService>
+        <TSPService><ServiceInformation>
+          <ServiceTypeIdentifier>http://uri.etsi.org/TrstSvc/Svctype/CA/QC</ServiceTypeIdentifier>
+          <ServiceName><Name xml:lang="en">QC CA (withdrawn)</Name></ServiceName>
+          <ServiceDigitalIdentity>
+            <DigitalId><X509Certificate>MIIBdTCCARugAwIBAgIUDCQMnMZLAV1uUkU00IoRKR0vdMQwCgYIKoZIzj0EAwIwLzEtMCsGA1UEAwwkRXhhbXBsZSBUU1AgREUgUXVhbGlmaWVkIENBIDIgKHRlc3QpMCAXDTI2MDEwMTAwMDAwMFoYDzIwOTkwMTAxMDAwMDAwWjAvMS0wKwYDVQQDDCRFeGFtcGxlIFRTUCBERSBRdWFsaWZpZWQgQ0EgMiAodGVzdCkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAS3fh5hqGGzSplenOtMXT9b6Ynvr1jbxwXq82P+yY4rIaJPm24D0SKPqNaRG2vrw+GPuU0XBRZBYoLWP9w7jIo8oxMwETAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQCa6tfoFcX/DFR+Rw2cJ5oKL1rMzIDWCbMqANByBdRBxQIgdKcJB+9VAtQzpLE1JAZ2GI6PaZu6ni20DwLkZpT6cyk=</X509Certificate></DigitalId>
+          </ServiceDigitalIdentity>
+          <ServiceStatus>http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/withdrawn</ServiceStatus>
+          <StatusStartingTime>2026-06-01T00:00:00Z</StatusStartingTime>
+        </ServiceInformation></TSPService>
+      </TSPServices>
+    </TrustServiceProvider>
+  </TrustServiceProviderList>
+</TrustServiceStatusList>
