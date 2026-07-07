@@ -43,10 +43,18 @@ in the injected fetch. Validation being **opt-in** limits exposure.
 schema validation raises :class:`SchemaBackendUnavailable` — the rest of the
 library keeps working.
 
-Only the ``JsonSchema`` type is validated here. ``JsonSchemaCredential`` (the
-schema wrapped in its own Verifiable Credential, requiring a recursive VC
-verification) is recognised but raises :class:`UnsupportedSchemaType`, so a
-declared schema is never silently skipped when you asked for it to be checked.
+Both W3C schema types are validated. A ``JsonSchema`` entry dereferences to a raw
+JSON Schema. A ``JsonSchemaCredential`` entry dereferences to the schema *wrapped
+in its own signed Verifiable Credential*: its proof is verified through the same
+pipeline (an injected ``verify_inner`` — this module never imports
+:mod:`openvc.verify`, so no import cycle) before its verified
+``credentialSubject.jsonSchema`` is applied to the outer credential. That
+recursion is **bounded**: the schema-defining VC's *own* ``credentialSchema`` is
+not re-fetched (the proof is the trust anchor), so a hostile chain of schema-VCs
+cannot loop. Standalone :func:`validate_credential_schema` still raises
+:class:`UnsupportedSchemaType` for a ``JsonSchemaCredential`` unless a
+``verify_inner`` is supplied — the pipeline always supplies one, so a declared
+schema is never silently skipped when you asked for it to be checked.
 
 **Spec notes** (W3C VC JSON Schema, CR Draft 2025-02-04):
 
@@ -79,6 +87,14 @@ from .errors import OpenvcError
 # credentialSchema `digestSRI` can be verified over the exact response before parsing.
 # The caller owns transport and the SSRF policy for that host (as with ResolveStatusList).
 ResolveCredentialSchema = Callable[[str], bytes]
+
+# Verify the inner Verifiable Credential a `JsonSchemaCredential` entry points at,
+# returning its verified credential document (the VC dict). Injected by the pipeline
+# (`openvc.verify.verify_credential`) so this module never imports the verify pipeline
+# — keeping the schema layer free of an import cycle. It is handed the RAW fetched
+# bytes (a JSON VC document or a compact VC-JWT string) and MUST verify the proof,
+# raising on any failure, before returning the credential.
+VerifyInnerCredential = Callable[[bytes], dict[str, Any]]
 
 SCHEMA_TYPE_JSON = "JsonSchema"
 SCHEMA_TYPE_JSON_CREDENTIAL = "JsonSchemaCredential"
@@ -127,7 +143,7 @@ class CredentialSchemaRef:
     """One parsed ``credentialSchema`` entry."""
     id: str                        # URL that dereferences to the schema (resource)
     type: str                      # the recognised schema type, e.g. "JsonSchema"
-    digest_sri: str | None = None  # optional subresource-integrity hash (not enforced)
+    digest_sri: str | None = None  # optional subresource-integrity hash (enforced over raw bytes)
 
 
 @dataclass(frozen=True)
@@ -193,8 +209,8 @@ def _extract_json_schema(resource: dict[str, Any]) -> dict[str, Any]:
 
     The *Verifiable Credentials JSON Schema Specification* has the ``id`` of a
     ``JsonSchema`` entry dereference to a raw JSON Schema document. We also accept
-    a resource that *wraps* the schema under a ``jsonSchema`` property (the shape
-    ``JsonSchemaCredential`` uses for its embedded schema), so a caller that hands
+    a resource that *wraps* the schema under a ``jsonSchema`` property (the same
+    key a ``JsonSchemaCredential`` nests its schema under), so a caller that hands
     back either shape works. Anything else is a resolution error."""
     embedded = resource.get("jsonSchema")
     if isinstance(embedded, dict):
@@ -269,48 +285,131 @@ def _validate_instance(instance: dict[str, Any], schema: dict[str, Any],
 def validate_credential_schema(
     credential: dict[str, Any], *,
     resolve_credential_schema: ResolveCredentialSchema,
+    verify_inner: VerifyInnerCredential | None = None,
 ) -> SchemaValidationResult:
-    """Validate *credential* against every ``JsonSchema`` it declares.
+    """Validate *credential* against every schema it declares (``JsonSchema`` and
+    ``JsonSchemaCredential``).
 
     Fetches each declared schema via *resolve_credential_schema* and validates the
-    whole credential document against it. Raises :class:`SchemaValidationError` on
-    a mismatch, :class:`SchemaResolutionError` if a schema cannot be fetched or is
-    not a valid JSON Schema, and :class:`UnsupportedSchemaType` for a schema type
-    this verifier cannot check (e.g. ``JsonSchemaCredential``). Returns a
-    :class:`SchemaValidationResult` recording which schema URLs were applied (which
-    may be empty if the credential declares no ``credentialSchema``)."""
-    from .did.base import DidError  # the injected fetch's own transport/SSRF errors
-
+    whole credential document against it. A ``JsonSchemaCredential`` entry
+    dereferences to a signed VC whose proof is verified with *verify_inner* before
+    its embedded schema is applied; without a *verify_inner* such an entry raises
+    :class:`UnsupportedSchemaType` (the :func:`openvc.verify.verify_credential`
+    pipeline always injects one). Raises :class:`SchemaValidationError` on a
+    mismatch, :class:`SchemaResolutionError` if a schema cannot be fetched/verified
+    or is not a valid JSON Schema, and :class:`UnsupportedSchemaType` for an
+    unrecognised schema type. Returns a :class:`SchemaValidationResult` recording
+    which schema URLs were applied (which may be empty if the credential declares
+    no ``credentialSchema``)."""
     applied: list[str] = []
     for ref in parse_credential_schemas(credential):
-        if ref.type != SCHEMA_TYPE_JSON:
-            raise UnsupportedSchemaType(
-                f"credentialSchema type {ref.type!r} is not supported "
-                f"(only {SCHEMA_TYPE_JSON!r} is validated)")
-        try:
-            raw = resolve_credential_schema(ref.id)
-        except (SchemaError, DidError) as exc:
-            raise SchemaResolutionError(
-                f"could not resolve schema {ref.id!r}: {exc}") from exc
-        if not isinstance(raw, (bytes, bytearray)):
-            raise SchemaResolutionError(
-                f"schema {ref.id!r} resolver must return bytes, got {type(raw).__name__}")
-        if ref.digest_sri:                        # integrity pin — verify BEFORE parsing
-            _verify_sri(bytes(raw), ref.digest_sri, ref.id)
-        try:
-            resource = json.loads(raw)
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise SchemaResolutionError(f"schema {ref.id!r} is not valid JSON: {exc}") from exc
-        except RecursionError as exc:            # a hostile, deeply-nested schema
-            raise SchemaResolutionError(
-                f"schema {ref.id!r} is too deeply nested to parse") from exc
-        if not isinstance(resource, dict):
-            raise SchemaResolutionError(
-                f"schema {ref.id!r} did not resolve to a JSON object")
-        _validate_instance(credential, _extract_json_schema(resource), ref.id)
+        schema = _resolve_schema(ref, resolve_credential_schema, verify_inner)
+        _validate_instance(credential, schema, ref.id)
         applied.append(ref.id)
 
     return SchemaValidationResult(validated=bool(applied), schemas=tuple(applied))
+
+
+def _resolve_schema(
+    ref: CredentialSchemaRef,
+    resolve_credential_schema: ResolveCredentialSchema,
+    verify_inner: VerifyInnerCredential | None,
+) -> dict[str, Any]:
+    """Fetch (integrity- and, for a ``JsonSchemaCredential``, proof-check) the schema
+    *ref* points at and return the JSON Schema dict to validate against.
+
+    A ``digestSRI`` on the entry is verified over the raw response bytes **first**,
+    in both cases — so an issuer can pin the exact schema (or schema-VC) even
+    against a compromised schema host. For a ``JsonSchema`` the bytes are parsed as
+    the schema; for a ``JsonSchemaCredential`` they are a signed VC whose proof is
+    verified and whose ``credentialSubject.jsonSchema`` carries the schema."""
+    from .did.base import DidError  # the injected fetch's own transport/SSRF errors
+
+    if ref.type not in _KNOWN_SCHEMA_TYPES:
+        raise UnsupportedSchemaType(
+            f"credentialSchema type {ref.type!r} is not supported (only "
+            f"{SCHEMA_TYPE_JSON!r} and {SCHEMA_TYPE_JSON_CREDENTIAL!r} are validated)")
+    try:
+        raw = resolve_credential_schema(ref.id)
+    except (SchemaError, DidError) as exc:
+        raise SchemaResolutionError(
+            f"could not resolve schema {ref.id!r}: {exc}") from exc
+    if not isinstance(raw, (bytes, bytearray)):
+        raise SchemaResolutionError(
+            f"schema {ref.id!r} resolver must return bytes, got {type(raw).__name__}")
+    raw = bytes(raw)
+    if ref.digest_sri:                        # integrity pin — verify BEFORE parsing/verifying
+        _verify_sri(raw, ref.digest_sri, ref.id)
+
+    if ref.type == SCHEMA_TYPE_JSON_CREDENTIAL:
+        return _schema_from_credential(raw, ref, verify_inner)
+    return _extract_json_schema(_parse_schema_resource(raw, ref.id))
+
+
+def _parse_schema_resource(raw: bytes, url: str) -> dict[str, Any]:
+    """Parse fetched schema bytes into a JSON object, failing closed on non-JSON, a
+    non-object, or a hostile depth (a ``RecursionError`` becomes a typed error)."""
+    try:
+        resource = json.loads(raw)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise SchemaResolutionError(f"schema {url!r} is not valid JSON: {exc}") from exc
+    except RecursionError as exc:            # a hostile, deeply-nested schema
+        raise SchemaResolutionError(
+            f"schema {url!r} is too deeply nested to parse") from exc
+    if not isinstance(resource, dict):
+        raise SchemaResolutionError(
+            f"schema {url!r} did not resolve to a JSON object")
+    return resource
+
+
+def _schema_from_credential(
+    raw: bytes, ref: CredentialSchemaRef, verify_inner: VerifyInnerCredential | None,
+) -> dict[str, Any]:
+    """Verify the ``JsonSchemaCredential`` in *raw* and return its embedded JSON
+    Schema.
+
+    The bytes are a full Verifiable Credential (the schema wrapped in its own VC);
+    *verify_inner* checks its proof through the pipeline, and the schema is read
+    from the verified ``credentialSubject.jsonSchema`` (W3C VC JSON Schema §5). The
+    verified VC must actually carry the ``JsonSchemaCredential`` type, so a
+    signature-valid but wrong-typed credential cannot stand in as the schema
+    authority. The schema-VC's *own* ``credentialSchema`` (the meta-schema) is not
+    recursed into — the proof is the trust anchor and bounding recursion keeps a
+    hostile chain of schema-VCs from looping. For a hard content pin, add a
+    ``digestSRI`` to the entry (enforced above, before this runs)."""
+    if verify_inner is None:
+        raise UnsupportedSchemaType(
+            f"credentialSchema type {SCHEMA_TYPE_JSON_CREDENTIAL!r} needs a verifier "
+            f"for its inner VC; verify through openvc.verify_credential (which "
+            f"injects one) or pass verify_inner=")
+    try:
+        inner = verify_inner(raw)
+    except OpenvcError as exc:                # any proof/pipeline failure -> fail closed
+        raise SchemaResolutionError(
+            f"JsonSchemaCredential at {ref.id!r} did not verify: {exc}") from exc
+    if not isinstance(inner, dict):
+        raise SchemaResolutionError(
+            f"JsonSchemaCredential at {ref.id!r} did not verify to a credential object")
+    types = inner.get("type")
+    types = [types] if isinstance(types, str) else (types if isinstance(types, list) else [])
+    if SCHEMA_TYPE_JSON_CREDENTIAL not in types:
+        raise SchemaResolutionError(
+            f"credential at {ref.id!r} verified but is not a "
+            f"{SCHEMA_TYPE_JSON_CREDENTIAL} (declared types: {types})")
+    subject = inner.get("credentialSubject")
+    if isinstance(subject, list):             # VCDM allows an array of subjects
+        subject = next(
+            (s for s in subject
+             if isinstance(s, dict) and isinstance(s.get("jsonSchema"), dict)), None)
+    if not isinstance(subject, dict):
+        raise SchemaResolutionError(
+            f"JsonSchemaCredential at {ref.id!r} has no credentialSubject object")
+    schema = subject.get("jsonSchema")
+    if not isinstance(schema, dict):
+        raise SchemaResolutionError(
+            f"JsonSchemaCredential at {ref.id!r} credentialSubject carries no "
+            f"jsonSchema object")
+    return schema
 
 
 _SRI_HASHES = {"sha256": hashlib.sha256, "sha384": hashlib.sha384, "sha512": hashlib.sha512}
@@ -356,6 +455,7 @@ __all__ = [
     "SchemaValidationError",
     "SchemaValidationResult",
     "UnsupportedSchemaType",
+    "VerifyInnerCredential",
     "parse_credential_schemas",
     "validate_credential_schema",
 ]
