@@ -23,7 +23,7 @@ process. These software classes are for dev, tests, and low-assurance issuance.
 from __future__ import annotations
 
 import base64
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from .proof.vc_jwt import SigningKey
@@ -183,6 +183,91 @@ class P256SigningKey:
 
 
 # --------------------------------------------------------------------------- #
+# ECDH key agreement (JWE ECDH-ES — HAIP encrypted responses)
+# --------------------------------------------------------------------------- #
+
+@runtime_checkable
+class KeyAgreementKey(Protocol):
+    """The recipient's static private half for JWE ECDH-ES key agreement.
+
+    The encryption counterpart of :class:`~openvc.proof.vc_jwt.SigningKey`: an
+    HSM/Vault backend that runs the raw ECDH on-device (never exporting the private
+    scalar) drops in by implementing ``crv``, ``kid`` and ``agree`` — which returns
+    the raw ECDH shared secret ``Z``; the public JWE Concat KDF is applied by the
+    caller (:mod:`openvc.jwe`), so no secret-derived material beyond ``Z`` crosses the
+    boundary.
+    """
+    crv: str
+
+    @property
+    def kid(self) -> str: ...
+
+    def agree(self, peer_public_jwk: dict[str, Any]) -> bytes: ...
+
+
+class P256KeyAgreementKey:
+    """An in-process P-256 ECDH key-agreement key (JWE ``ECDH-ES``, HAIP responses)."""
+    crv = "P-256"
+
+    def __init__(self, private_key: ec.EllipticCurvePrivateKey, kid: str) -> None:
+        if not isinstance(private_key.curve, ec.SECP256R1):
+            raise InvalidKey("ECDH-ES over P-256 requires a P-256 (secp256r1) key")
+        self._sk = private_key
+        self._kid = kid
+
+    @property
+    def kid(self) -> str:
+        """The id the recipient key is published under (JWE ``kid``)."""
+        return self._kid
+
+    def agree(self, peer_public_jwk: dict[str, Any]) -> bytes:
+        """Return the raw ECDH shared secret ``Z`` (the 32-byte big-endian X
+        coordinate of the shared point) with the peer's ephemeral public key (the JWE
+        ``epk``). A non-P-256 peer key is rejected before any curve operation."""
+        if peer_public_jwk.get("kty") != "EC" or peer_public_jwk.get("crv") != "P-256":
+            raise InvalidKey("ECDH-ES peer (epk) must be an EC P-256 public JWK")
+        try:
+            x = int.from_bytes(_b64url_decode(peer_public_jwk["x"]), "big")
+            y = int.from_bytes(_b64url_decode(peer_public_jwk["y"]), "big")
+            peer = ec.EllipticCurvePublicNumbers(x, y, ec.SECP256R1()).public_key()
+        except (KeyError, ValueError, TypeError) as exc:               # malformed epk
+            raise InvalidKey(f"invalid ECDH-ES peer public key: {exc}") from exc
+        return self._sk.exchange(ec.ECDH(), peer)
+
+    def public_jwk(self) -> dict[str, Any]:
+        """The public key as an EC P-256 JWK marked ``use:"enc"`` — the verifier
+        publishes this (in ``client_metadata.jwks``) for the wallet to encrypt to."""
+        nums = self._sk.public_key().public_numbers()
+        return {
+            "kty": "EC", "crv": "P-256", "use": "enc",
+            "x": _b64url_encode(_int_to_fixed(nums.x, P256_COORD_BYTES)),
+            "y": _b64url_encode(_int_to_fixed(nums.y, P256_COORD_BYTES)),
+        }
+
+    # -- constructors ------------------------------------------------------ #
+
+    @classmethod
+    def generate(cls, kid: str) -> "P256KeyAgreementKey":
+        return cls(ec.generate_private_key(ec.SECP256R1()), kid)
+
+    @classmethod
+    def from_jwk(cls, jwk: dict[str, Any], kid: str) -> "P256KeyAgreementKey":
+        if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256" or "d" not in jwk:
+            raise InvalidKey("not a P-256 private JWK")
+        d = int.from_bytes(_b64url_decode(jwk["d"]), "big")
+        return cls(ec.derive_private_key(d, ec.SECP256R1()), kid)
+
+    @classmethod
+    def from_pem(
+        cls, pem: bytes, kid: str, password: bytes | None = None
+    ) -> "P256KeyAgreementKey":
+        sk = serialization.load_pem_private_key(pem, password=password)
+        if not isinstance(sk, ec.EllipticCurvePrivateKey):
+            raise InvalidKey("PEM is not an EC private key")
+        return cls(sk, kid)
+
+
+# --------------------------------------------------------------------------- #
 # Dependency-light verification (for did:key self-contained verify + tests)
 # --------------------------------------------------------------------------- #
 
@@ -234,7 +319,9 @@ def signing_key_from_jwk(jwk: dict[str, Any], kid: str) -> "SigningKey":
 __all__ = [
     "Ed25519SigningKey",
     "InvalidKey",
+    "KeyAgreementKey",
     "KeyBackendError",
+    "P256KeyAgreementKey",
     "P256SigningKey",
     "signing_key_from_jwk",
     "verify_signature",

@@ -324,3 +324,89 @@ def test_malformed_vct_values_fails_safe(issuer, holder, vct_values):
     with pytest.raises(VpTokenMalformed):
         verify_vp_token({"my_credential": [pres]}, dcql_query=dcql,
                         nonce=NONCE, client_id=CLIENT_ID)
+
+
+# --------------------------------------------------------------------------- #
+# verify_encrypted_vp_response — HAIP direct_post.jwt (decrypt then verify) (#19)
+# --------------------------------------------------------------------------- #
+
+def _encrypt_response(recipient_jwk, payload_obj, *, enc="A256GCM"):
+    """Test-only wallet-side JWE producer (direct ECDH-ES) over a response object."""
+    import base64
+    import json
+    import os
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from openvc.jwe import ALLOWED_ENC, _concat_kdf
+
+    def b64u(b):
+        return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+    eph = ec.generate_private_key(ec.SECP256R1())
+    rx = int.from_bytes(base64.urlsafe_b64decode(recipient_jwk["x"] + "=="), "big")
+    ry = int.from_bytes(base64.urlsafe_b64decode(recipient_jwk["y"] + "=="), "big")
+    z = eph.exchange(ec.ECDH(),
+                     ec.EllipticCurvePublicNumbers(rx, ry, ec.SECP256R1()).public_key())
+    en = eph.public_key().public_numbers()
+    header = {"alg": "ECDH-ES", "enc": enc,
+              "epk": {"kty": "EC", "crv": "P-256",
+                      "x": b64u(en.x.to_bytes(32, "big")), "y": b64u(en.y.to_bytes(32, "big"))}}
+    cek = _concat_kdf(z, ALLOWED_ENC[enc] * 8, enc.encode(), b"", b"")
+    protected = b64u(json.dumps(header, separators=(",", ":")).encode())
+    iv = os.urandom(12)
+    ct_tag = AESGCM(cek).encrypt(iv, json.dumps(payload_obj).encode(), protected.encode())
+    return f"{protected}..{b64u(iv)}.{b64u(ct_tag[:-16])}.{b64u(ct_tag[-16:])}"
+
+
+def test_encrypted_response_decrypts_and_verifies(issuer, holder):
+    from openvc import verify_encrypted_vp_response
+    from openvc.keys import P256KeyAgreementKey
+
+    pres = _sd_jwt_presentation(issuer, holder)
+    verifier_key = P256KeyAgreementKey.generate(kid="verifier#enc")
+    jwe = _encrypt_response(
+        verifier_key.public_jwk(),
+        {"vp_token": {"my_credential": [pres]}, "state": "session-42"})
+    result = verify_encrypted_vp_response(
+        jwe, key=verifier_key, dcql_query=_dcql_sd_jwt(), nonce=NONCE, client_id=CLIENT_ID)
+    (p,) = result.for_query("my_credential")
+    assert p.raw.claims["given_name"] == "Ada"
+
+
+def test_encrypted_response_wrong_key_fails_before_verify(issuer, holder):
+    from openvc import verify_encrypted_vp_response
+    from openvc.jwe import JweDecryptionFailed
+    from openvc.keys import P256KeyAgreementKey
+
+    pres = _sd_jwt_presentation(issuer, holder)
+    verifier_key = P256KeyAgreementKey.generate(kid="verifier#enc")
+    jwe = _encrypt_response(verifier_key.public_jwk(), {"vp_token": {"my_credential": [pres]}})
+    with pytest.raises(JweDecryptionFailed):
+        verify_encrypted_vp_response(
+            jwe, key=P256KeyAgreementKey.generate(kid="attacker"),
+            dcql_query=_dcql_sd_jwt(), nonce=NONCE, client_id=CLIENT_ID)
+
+
+def test_encrypted_response_without_vp_token_is_rejected(issuer, holder):
+    from openvc import verify_encrypted_vp_response
+    from openvc.keys import P256KeyAgreementKey
+
+    verifier_key = P256KeyAgreementKey.generate(kid="verifier#enc")
+    jwe = _encrypt_response(verifier_key.public_jwk(), {"state": "no-vp-token-here"})
+    with pytest.raises(VpTokenMalformed):
+        verify_encrypted_vp_response(
+            jwe, key=verifier_key, dcql_query=_dcql_sd_jwt(), nonce=NONCE, client_id=CLIENT_ID)
+
+
+def test_encrypted_response_still_enforces_binding(issuer, holder):
+    """Decryption does not bypass the nonce/client_id binding — the vp_token inside is
+    verified with the same guarantees as the plaintext path."""
+    from openvc import verify_encrypted_vp_response
+    from openvc.keys import P256KeyAgreementKey
+
+    pres = _sd_jwt_presentation(issuer, holder)          # bound to NONCE / CLIENT_ID
+    verifier_key = P256KeyAgreementKey.generate(kid="verifier#enc")
+    jwe = _encrypt_response(verifier_key.public_jwk(), {"vp_token": {"my_credential": [pres]}})
+    with pytest.raises(ClaimsInvalid):
+        verify_encrypted_vp_response(
+            jwe, key=verifier_key, dcql_query=_dcql_sd_jwt(),
+            nonce="a-different-nonce", client_id=CLIENT_ID)

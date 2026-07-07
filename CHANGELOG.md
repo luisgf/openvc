@@ -4,6 +4,30 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — unreleased
+
+Continues the [1.1 — EUDI verifier interop](https://github.com/luisgf/openvc/milestone/3)
+milestone.
+
+### Added
+
+- **Decrypt HAIP / OpenID4VP 1.0 encrypted responses (`direct_post.jwt`).** New
+  `openvc.jwe` with `decrypt_compact(token, *, key)` — a **decrypt-only** JWE Compact
+  path for the JWE that wraps a `vp_token` in a HAIP response. Exactly the
+  HAIP-mandated shape is accepted, **allow-listed before any crypto**: direct
+  `ECDH-ES` key agreement (empty encrypted key) + `A128GCM` / `A256GCM` content
+  encryption over an ephemeral **P-256** key. The ECDH runs through a new
+  `openvc.keys.KeyAgreementKey` backend (`P256KeyAgreementKey`), mirroring
+  `SigningKey` so the recipient's private half can live in an HSM/Vault; the public
+  NIST SP 800-56A Concat KDF (RFC 7518 §4.6) and AES-GCM decrypt are done in-library.
+  `openvc.openid4vp.verify_encrypted_vp_response(...)` (also `openvc.verify_encrypted_vp_response`)
+  bridges it to [#18](https://github.com/luisgf/openvc/issues/18): decrypt then verify
+  the `vp_token` with the same `nonce` / `client_id` binding. Pinned byte-for-byte to
+  RFC 7518 Appendix C (the Concat KDF), a real OpenID4VP 1.0 §8.3 `ECDH-ES`+`A128GCM`
+  JWE, and the RFC 7520 §5.5 key agreement; fails closed on a disallowed `alg`/`enc`,
+  an off-curve or non-P-256 ephemeral key, a bad shape, or a failed tag.
+  ([#19](https://github.com/luisgf/openvc/issues/19))
+
 ## [1.1.0] — 2026-07-07
 
 The first slice of the [1.1 — EUDI verifier interop](https://github.com/luisgf/openvc/milestone/3)
@@ -450,6 +474,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.2.0]: https://github.com/luisgf/openvc/releases/tag/v1.2.0
 [1.1.0]: https://github.com/luisgf/openvc/releases/tag/v1.1.0
 [1.0.1]: https://github.com/luisgf/openvc/releases/tag/v1.0.1
 [1.0.0]: https://github.com/luisgf/openvc/releases/tag/v1.0.0

@@ -7,9 +7,10 @@ selective-disclosure `ecdsa-sd-2023` over RDF, plus `eddsa-jcs-2022` /
 `ecdsa-jcs-2019` over RFC 8785 JCS with no `pyld`) — resolves issuer keys by **DID**
 (`did:key`, `did:jwk`, `did:web`), by **`/.well-known/jwt-vc-issuer`**, or by
 **X.509 `x5c`** chain, issues and checks **status-list** revocation, verifies
-**holder presentations** (VP-JWT and a stateless **OpenID4VP 1.0** `vp_token`), and
-— via an optional plugin — verifies against the **EBSI** trust registries. Private
-keys can live behind an **HSM/Vault** and never enter the process.
+**holder presentations** (VP-JWT and a stateless **OpenID4VP 1.0** `vp_token`,
+including **HAIP** JWE-encrypted responses), and — via an optional plugin — verifies
+against the **EBSI** trust registries. Private keys can live behind an **HSM/Vault**
+and never enter the process.
 
 ```sh
 pip install openvc-core                    # core

@@ -36,14 +36,18 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from .errors import OpenvcError
 from .proof._verify_common import DEFAULT_LEEWAY_S
 from .proof.errors import ClaimsInvalid
 
+if TYPE_CHECKING:
+    from .keys import KeyAgreementKey
+
 __all__ = [
     "verify_vp_token",
+    "verify_encrypted_vp_response",
     "VerifiedPresentation",
     "VpTokenVerification",
     "OpenID4VPError",
@@ -170,6 +174,44 @@ def verify_vp_token(
                 nonce=nonce, client_id=client_id, resolver=resolver,
                 now=now, leeway_s=leeway_s))
     return VpTokenVerification(presentations=tuple(verified))
+
+
+def verify_encrypted_vp_response(
+    response: str,
+    *,
+    key: "KeyAgreementKey",
+    dcql_query: Mapping[str, Any],
+    nonce: str,
+    client_id: str,
+    resolver: Any = None,
+    now: datetime | None = None,
+    leeway_s: int = DEFAULT_LEEWAY_S,
+) -> VpTokenVerification:
+    """Decrypt a HAIP ``direct_post.jwt`` response (a JWE) and verify its ``vp_token``.
+
+    *response* is the compact JWE from the ``response`` form field; *key* is the
+    verifier's :class:`~openvc.keys.KeyAgreementKey` (the private half of the
+    encryption key it published in ``client_metadata``). The JWE is decrypted (direct
+    ``ECDH-ES`` + ``A128GCM`` / ``A256GCM`` on P-256, allow-listed before any crypto —
+    see :mod:`openvc.jwe`); the plaintext is the OpenID4VP response object, whose
+    ``vp_token`` is then verified exactly as :func:`verify_vp_token` (same *nonce* /
+    *client_id* binding). The response ``state`` is **not** checked here — match it to
+    your session yourself (call :func:`openvc.jwe.decrypt_compact` if you need the raw
+    response object). Raises :class:`~openvc.jwe.JweError` on a decryption failure and
+    the same errors as :func:`verify_vp_token` thereafter.
+    """
+    from .jwe import decrypt_compact
+
+    plaintext = decrypt_compact(response, key=key)
+    try:
+        payload = json.loads(plaintext)
+    except (ValueError, RecursionError) as exc:
+        raise VpTokenMalformed(f"decrypted response is not valid JSON: {exc}") from exc
+    if not isinstance(payload, Mapping) or "vp_token" not in payload:
+        raise VpTokenMalformed("decrypted response has no vp_token member")
+    return verify_vp_token(
+        payload["vp_token"], dcql_query=dcql_query, nonce=nonce, client_id=client_id,
+        resolver=resolver, now=now, leeway_s=leeway_s)
 
 
 def _parse_vp_token(vp_token: Mapping[str, Any] | str) -> Mapping[str, Any]:
