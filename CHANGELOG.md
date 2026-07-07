@@ -4,10 +4,11 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] — unreleased
+## [1.2.0] — 2026-07-07
 
-Continues the [1.1 — EUDI verifier interop](https://github.com/luisgf/openvc/milestone/3)
-milestone.
+Completes the [1.1 — EUDI verifier interop](https://github.com/luisgf/openvc/milestone/3)
+milestone: HAIP `direct_post.jwt` response decryption and SD-JWT VC Type Metadata, plus
+the recorded OpenID4VP/HAIP conformance drift alarm.
 
 ### Added
 
