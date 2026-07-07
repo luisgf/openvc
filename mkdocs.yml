@@ -40,6 +40,7 @@ nav:
   - Home: index.md
   - API reference:
       - Verification pipeline: api/verification.md
+      - Async verification: api/async.md
       - OpenID4VP presentations: api/openid4vp.md
       - Proof suites: api/proofs.md
       - DIDs & keys: api/dids-keys.md
@@ -54,3 +55,4 @@ nav:
   - Roadmap: ROADMAP.md
   - Design decisions:
       - "ADR-0001 — EBSI HTTP client": adr/ADR-0001-ebsi-http-client.md
+      - "ADR-0002 — Async verification": adr/ADR-0002-async-verification.md

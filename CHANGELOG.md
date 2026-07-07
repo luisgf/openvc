@@ -4,6 +4,32 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — unreleased
+
+Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
+
+### Added
+
+- **Async-friendly verification (`openvc.aio`).** New `verify_credential_async` /
+  `verify_many_async` — the async counterparts of `verify_credential` / `verify_many`
+  for asyncio servers (FastAPI/Starlette), so a handler `await`s verification instead of
+  offloading the whole call to a thread pool, and a presentation cascade resolves its
+  issuers/status-lists **concurrently** (`asyncio.gather`) instead of serialising N
+  blocking fetches. Same formats, same `VerificationPolicy`, same `VerificationResult`,
+  same fail-closed guarantees — the async path **reuses every proof suite, status/schema
+  codec and binding check unchanged** and only re-expresses the I/O sequencing with
+  `await` (no second implementation of any signature check; see
+  [ADR-0002](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0002-async-verification.md)).
+  New injection points mirror the sync ones with awaitables: an `AsyncDidResolver` /
+  `AsyncDidResolverRegistry` (+ `as_async_resolver` to adapt any sync resolver), an
+  `AsyncDidWebResolver`, `openvc.fetch.https_{json,text,bytes}_fetch_async`, and async
+  default resolvers in `openvc.resolvers`. The batteries-included async fetch runs the
+  **exact same** SSRF/DNS-rebind guard under `asyncio.to_thread` — identical guarantees,
+  **no new dependency** (a caller may inject an `httpx.AsyncClient`-backed fetch instead).
+  `verify_many_async` deliberately does not port the sync batch's cross-credential resolver
+  cache (not concurrency-safe — ADR-0002 D4); overlapping the I/O is the win.
+  ([#27](https://github.com/luisgf/openvc/issues/27))
+
 ## [1.8.0] — unreleased
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.

@@ -20,6 +20,7 @@ ipaddress). Pass ``https_json_fetch`` wherever a ``Fetch`` is expected, or use
 """
 from __future__ import annotations
 
+import asyncio
 import http.client
 import ipaddress
 import json
@@ -29,7 +30,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .did.base import DidResolutionError
-from .did.did_web import DidWebResolver
+from .did.did_web import AsyncDidWebResolver, DidWebResolver
 from .observability import logger, span
 
 DEFAULT_TIMEOUT_S = 10.0
@@ -189,12 +190,55 @@ def default_did_web_resolver() -> DidWebResolver:
     return DidWebResolver(https_json_fetch)
 
 
+# --------------------------------------------------------------------------- #
+# Async fetches (additive — see docs/adr/ADR-0002-async-verification.md)
+#
+# These run the EXACT same SSRF/DNS-rebinding guard under asyncio.to_thread: the
+# guarantees (https-only, blocked address ranges, TCP pinned to the validated IP,
+# no redirects) are identical because it is the same code — only the event loop is
+# freed while the blocking GET runs on a worker thread. No new dependency: the
+# guard stays stdlib and httpx remains an EBSI-only extra. A caller who wants a
+# native httpx.AsyncClient fetch may inject their own; they then own the SSRF
+# contract (`_ip_is_forbidden` / `_resolve_public_ips` are the primitives to reuse).
+# --------------------------------------------------------------------------- #
+
+async def https_json_fetch_async(
+    url: str, *, timeout_s: float = DEFAULT_TIMEOUT_S, max_bytes: int = MAX_RESPONSE_BYTES,
+) -> dict[str, Any]:
+    """Async :func:`https_json_fetch` — same SSRF guards, run off the event loop."""
+    return await asyncio.to_thread(https_json_fetch, url, timeout_s=timeout_s, max_bytes=max_bytes)
+
+
+async def https_text_fetch_async(
+    url: str, *, timeout_s: float = DEFAULT_TIMEOUT_S, max_bytes: int = MAX_RESPONSE_BYTES,
+) -> str:
+    """Async :func:`https_text_fetch` — same SSRF guards, run off the event loop."""
+    return await asyncio.to_thread(https_text_fetch, url, timeout_s=timeout_s, max_bytes=max_bytes)
+
+
+async def https_bytes_fetch_async(
+    url: str, *, timeout_s: float = DEFAULT_TIMEOUT_S, max_bytes: int = MAX_RESPONSE_BYTES,
+) -> bytes:
+    """Async :func:`https_bytes_fetch` — same SSRF guards, run off the event loop."""
+    return await asyncio.to_thread(https_bytes_fetch, url, timeout_s=timeout_s, max_bytes=max_bytes)
+
+
+def default_async_did_web_resolver() -> AsyncDidWebResolver:
+    """An :class:`~openvc.did.did_web.AsyncDidWebResolver` wired to the SSRF-guarded
+    async fetch — the async counterpart of :func:`default_did_web_resolver`."""
+    return AsyncDidWebResolver(https_json_fetch_async)
+
+
 __all__ = [
     "DEFAULT_TIMEOUT_S",
     "MAX_RESPONSE_BYTES",
     "UnsafeUrlError",
+    "default_async_did_web_resolver",
     "default_did_web_resolver",
     "https_bytes_fetch",
+    "https_bytes_fetch_async",
     "https_json_fetch",
+    "https_json_fetch_async",
     "https_text_fetch",
+    "https_text_fetch_async",
 ]
