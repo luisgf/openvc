@@ -239,22 +239,18 @@ def test_validate_local_ref_resolves():
 
 def test_validate_deeply_nested_schema_fails_closed():
     pytest.importorskip("jsonschema")
-    # a schema nested past the recursion limit must fail closed as a typed
-    # SchemaError, not leak a raw RecursionError out of the pipeline.
-    schema: dict = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}
-    inst: dict = {}
-    snode, inode = schema, inst
-    for _ in range(2000):
-        schild: dict = {"type": "object"}
-        snode["properties"] = {"a": schild}
-        snode = schild
-        ichild: dict = {}
-        inode["a"] = ichild
-        inode = ichild
+    # A hostile, deeply-nested schema must fail closed as a typed SchemaError, not
+    # leak a raw RecursionError. Build the deep JSON *bytes* by concatenation so the
+    # test itself never recurses (json.dumps of a deep dict would RecursionError here).
+    depth = 2000
+    root_open = ('{"$schema":"https://json-schema.org/draft/2020-12/schema"'
+                 ',"type":"object","properties":{"a":')
+    level_open = '{"type":"object","properties":{"a":'
+    raw = (root_open + level_open * (depth - 1)
+           + '{"type":"object"}' + '}}' * (depth - 1) + '}}').encode()
     cred = _cred(credential_schema=_entry())
-    cred["a"] = inst["a"]
     with pytest.raises(SchemaResolutionError):        # RecursionError -> typed SchemaError
-        validate_credential_schema(cred, resolve_credential_schema=lambda u: _b(schema))
+        validate_credential_schema(cred, resolve_credential_schema=lambda u: raw)
 
 
 def test_parse_rejects_list_with_non_dict_member():
