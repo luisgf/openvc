@@ -39,6 +39,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
 from .errors import OpenvcError
 
 P256_COORD_BYTES = 32  # a P-256 coordinate / scalar is 32 bytes
+P384_COORD_BYTES = 48  # a P-384 coordinate / scalar is 48 bytes
 
 
 class KeyBackendError(OpenvcError): ...
@@ -183,6 +184,74 @@ class P256SigningKey:
 
 
 # --------------------------------------------------------------------------- #
+# P-384 (ES384) — the larger NIST curve for Data Integrity ecdsa-*-2019
+# --------------------------------------------------------------------------- #
+
+class P384SigningKey:
+    """An in-process P-384 (``ES384``) signing key — the P-384 leg of the
+    Data Integrity ECDSA cryptosuites (``ecdsa-jcs-2019`` / ``ecdsa-rdfc-2019``)."""
+    alg = "ES384"
+
+    def __init__(self, private_key: ec.EllipticCurvePrivateKey, kid: str) -> None:
+        if not isinstance(private_key.curve, ec.SECP384R1):
+            raise InvalidKey("ES384 requires a P-384 (secp384r1) key")
+        self._sk = private_key
+        self._kid = kid
+
+    @property
+    def kid(self) -> str:
+        """The verification-method id this key signs as."""
+        return self._kid
+
+    def sign(self, signing_input: bytes) -> bytes:
+        """Sign *signing_input* over SHA-384; returns the raw R‖S signature (JOSE
+        ES384, 96 bytes — not DER)."""
+        der = self._sk.sign(signing_input, ec.ECDSA(hashes.SHA384()))
+        r, s = decode_dss_signature(der)
+        return _int_to_fixed(r, P384_COORD_BYTES) + _int_to_fixed(s, P384_COORD_BYTES)
+
+    def public_jwk(self) -> dict[str, Any]:
+        """The public key as an EC P-384 JWK."""
+        nums = self._sk.public_key().public_numbers()
+        return {
+            "kty": "EC",
+            "crv": "P-384",
+            "x": _b64url_encode(_int_to_fixed(nums.x, P384_COORD_BYTES)),
+            "y": _b64url_encode(_int_to_fixed(nums.y, P384_COORD_BYTES)),
+        }
+
+    def public_key_raw(self, *, compressed: bool = True) -> bytes:
+        """SEC1 point (compressed by default) — used by the did:key encoder
+        (multicodec 0x1201 for P-384)."""
+        fmt = (serialization.PublicFormat.CompressedPoint if compressed
+               else serialization.PublicFormat.UncompressedPoint)
+        return self._sk.public_key().public_bytes(serialization.Encoding.X962, fmt)
+
+    # -- constructors ------------------------------------------------------ #
+
+    @classmethod
+    def generate(cls, kid: str) -> "P384SigningKey":
+        return cls(ec.generate_private_key(ec.SECP384R1()), kid)
+
+    @classmethod
+    def from_jwk(cls, jwk: dict[str, Any], kid: str) -> "P384SigningKey":
+        if jwk.get("kty") != "EC" or jwk.get("crv") != "P-384" or "d" not in jwk:
+            raise InvalidKey("not a P-384 private JWK")
+        d = int.from_bytes(_b64url_decode(jwk["d"]), "big")
+        try:                                              # d=0 / d>=n -> not a valid scalar
+            return cls(ec.derive_private_key(d, ec.SECP384R1()), kid)
+        except ValueError as exc:
+            raise InvalidKey(f"invalid P-384 private scalar: {exc}") from exc
+
+    @classmethod
+    def from_pem(cls, pem: bytes, kid: str, password: bytes | None = None) -> "P384SigningKey":
+        sk = serialization.load_pem_private_key(pem, password=password)
+        if not isinstance(sk, ec.EllipticCurvePrivateKey):
+            raise InvalidKey("PEM is not an EC private key")
+        return cls(sk, kid)
+
+
+# --------------------------------------------------------------------------- #
 # ECDH key agreement (JWE ECDH-ES — HAIP encrypted responses)
 # --------------------------------------------------------------------------- #
 
@@ -297,9 +366,27 @@ def verify_signature(
             ).public_key()
             pub.verify(der, signing_input, ec.ECDSA(hashes.SHA256()))
             return True
+        if alg == "ES384":
+            if len(signature) != 2 * P384_COORD_BYTES:
+                raise InvalidKey("ES384 signature must be 96-byte R||S")
+            r = int.from_bytes(signature[:P384_COORD_BYTES], "big")
+            s = int.from_bytes(signature[P384_COORD_BYTES:], "big")
+            der = encode_dss_signature(r, s)                   # R||S -> DER for verify
+            pub = ec.EllipticCurvePublicNumbers(
+                int.from_bytes(_b64url_decode(public_jwk["x"]), "big"),
+                int.from_bytes(_b64url_decode(public_jwk["y"]), "big"),
+                ec.SECP384R1(),
+            ).public_key()
+            pub.verify(der, signing_input, ec.ECDSA(hashes.SHA384()))
+            return True
         raise InvalidKey(f"unsupported alg {alg!r}")
     except InvalidSignature:
         return False
+    except (ValueError, KeyError, TypeError) as exc:
+        # A malformed / mismatched public JWK (wrong-curve coords, an OKP key with no
+        # "y", a bad-length Ed25519 x) must fail closed as a typed InvalidKey, not leak
+        # a bare ValueError/KeyError to callers that catch only KeyBackendError.
+        raise InvalidKey(f"malformed public key for {alg}: {exc}") from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -313,6 +400,8 @@ def signing_key_from_jwk(jwk: dict[str, Any], kid: str) -> "SigningKey":
         return Ed25519SigningKey.from_jwk(jwk, kid)
     if kty == "EC" and crv == "P-256":
         return P256SigningKey.from_jwk(jwk, kid)
+    if kty == "EC" and crv == "P-384":
+        return P384SigningKey.from_jwk(jwk, kid)
     raise InvalidKey(f"unsupported key type kty={kty!r} crv={crv!r}")
 
 
@@ -323,6 +412,7 @@ __all__ = [
     "KeyBackendError",
     "P256KeyAgreementKey",
     "P256SigningKey",
+    "P384SigningKey",
     "signing_key_from_jwk",
     "verify_signature",
 ]

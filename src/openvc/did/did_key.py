@@ -26,6 +26,7 @@ _B58_INDEX = {c: i for i, c in enumerate(_B58_ALPHABET)}
 # multicodec codes (unsigned-varint encoded in the key bytes)
 _MC_ED25519_PUB = 0xED
 _MC_P256_PUB = 0x1200
+_MC_P384_PUB = 0x1201
 
 
 def _b58decode(s: str) -> bytes:
@@ -70,12 +71,26 @@ class DidKeyResolver:
         if code == _MC_ED25519_PUB:
             jwk = {"kty": "OKP", "crv": "Ed25519", "x": _b64url(key_bytes)}
         elif code == _MC_P256_PUB:
-            pub = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), key_bytes)
+            try:                                          # off-curve / malformed SEC1 point
+                pub = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), key_bytes)
+            except ValueError as exc:
+                raise DidResolutionError(f"invalid did:key P-256 point: {exc}") from exc
             nums = pub.public_numbers()
             jwk = {
                 "kty": "EC", "crv": "P-256",
                 "x": _b64url(nums.x.to_bytes(32, "big")),
                 "y": _b64url(nums.y.to_bytes(32, "big")),
+            }
+        elif code == _MC_P384_PUB:
+            try:
+                pub = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP384R1(), key_bytes)
+            except ValueError as exc:
+                raise DidResolutionError(f"invalid did:key P-384 point: {exc}") from exc
+            nums = pub.public_numbers()
+            jwk = {
+                "kty": "EC", "crv": "P-384",
+                "x": _b64url(nums.x.to_bytes(48, "big")),
+                "y": _b64url(nums.y.to_bytes(48, "big")),
             }
         else:
             raise DidResolutionError(f"unsupported did:key multicodec 0x{code:x}")

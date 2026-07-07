@@ -23,9 +23,9 @@ builds on. It never imports anything upward.
   private key never has to be in-process. ES256 signatures are the correct JOSE
   raw `R‖S` form (the classic reason a locally-produced token fails elsewhere).
 - **Safe by construction.** The verifier pins an algorithm allow-list
-  (`ES256`, `EdDSA`) *before* any crypto runs, and reconciles the JWT envelope
-  with the embedded credential. The `did:web` fetch and the EBSI client both
-  guard against SSRF.
+  (`ES256`, `ES384`, `EdDSA`) *before* any crypto runs, and reconciles the JWT
+  envelope with the embedded credential. The `did:web` fetch and the EBSI client
+  both guard against SSRF.
 - **Version drift, contained.** EBSI ships versioned registries whose response
   shapes change; every version specific lives behind one adapter, so the domain
   model and trust logic never see wire formats.
@@ -34,7 +34,7 @@ builds on. It never imports anything upward.
 
 ```
 src/openvc/                core — knows nothing about EBSI or badges
-    keys.py                Ed25519 (EdDSA) & P-256 (ES256) SigningKey backends
+    keys.py                Ed25519 (EdDSA), P-256 (ES256) & P-384 (ES384) SigningKey backends
     multibase.py           base58btc multibase + multicodec varint
     proof/vc_jwt.py        VcJwtProofSuite: peek / verify / sign
     proof/sd_jwt.py        SdJwtVcProofSuite: issue / present (key binding) / verify
