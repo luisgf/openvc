@@ -40,6 +40,7 @@ nav:
   - Home: index.md
   - API reference:
       - Verification pipeline: api/verification.md
+      - OpenID4VP presentations: api/openid4vp.md
       - Proof suites: api/proofs.md
       - DIDs & keys: api/dids-keys.md
       - Status lists: api/status.md
