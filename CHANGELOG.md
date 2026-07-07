@@ -4,6 +4,19 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — unreleased
+
+### Security
+
+- **Fail closed on hostile ecdsa-sd CBOR proof values.** `decode_cbor` — which
+  parses attacker-controlled proof-value bytes — raised a bare `UnicodeDecodeError`
+  on a text string of invalid UTF-8, and a `TypeError` on a map with an unhashable
+  (map/list) key; both now fail closed as `ProofValueMalformed`. Uncovered by new
+  property-based fuzzing of the hand-rolled codecs (CBOR, base58btc/multibase,
+  bitstring, token status list) that asserts decode never raises outside the typed
+  `OpenvcError` family, plus an explicit MUST-REJECT corpus (behind the `hypothesis`
+  dev dependency). ([#11](https://github.com/luisgf/openvc/issues/11))
+
 ## [1.0.0] — 2026-07-07
 
 The first stable release — a frozen, documented public surface. This heading
@@ -392,6 +405,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.0.1]: https://github.com/luisgf/openvc/releases/tag/v1.0.1
 [1.0.0]: https://github.com/luisgf/openvc/releases/tag/v1.0.0
 [0.9.0]: https://github.com/luisgf/openvc/releases/tag/v0.9.0
 [0.8.1]: https://github.com/luisgf/openvc/releases/tag/v0.8.1
