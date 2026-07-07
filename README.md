@@ -50,6 +50,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     did/did_jwk.py         offline did:jwk (public-JWK identifier)
     did/did_web.py         did:web -> https -> fetch (fetch is injected)
     fetch.py               SSRF- + DNS-rebinding-safe https JSON fetch for did:web
+    cache.py               opt-in TTL cache: CachingDidResolver + cached_resolve wrappers
     jwt_vc_issuer.py       https issuer keys via /.well-known/jwt-vc-issuer
     x5c.py                 X.509 x5c chain trust + SAN issuer binding
     status/                status lists — W3C Bitstring + IETF Token Status List (check + issue)

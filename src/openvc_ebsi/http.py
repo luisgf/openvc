@@ -22,7 +22,6 @@ Pass ``client.get_json`` wherever a ``Fetch`` is expected (e.g. into the resolve
 from __future__ import annotations
 
 import random
-import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +30,7 @@ from urllib.parse import urlparse
 import httpx
 
 from openvc import __version__
+from openvc.cache import TtlCache
 
 from .errors import EbsiError
 
@@ -58,36 +58,9 @@ class HttpForbiddenHost(HttpError): ...     # SSRF guard tripped
 class HttpTransientExhausted(HttpError): ...  # retries used up
 
 
-# --------------------------------------------------------------------------- #
-# TTL cache (thread-safe, bounded)
-# --------------------------------------------------------------------------- #
-
-class TtlCache:
-    def __init__(self, *, ttl_s: float = 300.0, max_entries: int = 1024) -> None:
-        self._ttl = ttl_s
-        self._max = max_entries
-        self._data: dict[str, tuple[float, Any]] = {}
-        self._lock = threading.Lock()
-
-    def get(self, key: str) -> Any | None:
-        now = time.monotonic()
-        with self._lock:
-            hit = self._data.get(key)
-            if hit is None:
-                return None
-            expires, value = hit
-            if expires < now:
-                self._data.pop(key, None)
-                return None
-            return value
-
-    def set(self, key: str, value: Any) -> None:
-        with self._lock:
-            if len(self._data) >= self._max and key not in self._data:
-                # cheap eviction: drop the soonest-to-expire entry
-                oldest = min(self._data, key=lambda k: self._data[k][0])
-                self._data.pop(oldest, None)
-            self._data[key] = (time.monotonic() + self._ttl, value)
+# The thread-safe, bounded TtlCache now lives in core (openvc.cache) so the whole
+# library — DID/status/schema resolution — shares one caching primitive; EBSI consumes
+# it downward and keeps its short-TTL default (ADR-0001 D2: EBSI sends no cache headers).
 
 
 # --------------------------------------------------------------------------- #

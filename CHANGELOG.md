@@ -4,6 +4,25 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — unreleased
+
+Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
+
+### Added
+
+- **Core TTL cache for the resolution paths.** New `openvc.cache` — a thread-safe,
+  bounded, pure-stdlib `TtlCache` plus two opt-in wrappers: `CachingDidResolver` (memoizes
+  `resolve(did)` — skipping the `did:web` round-trip on a batch from one issuer) and
+  `cached_resolve` (wraps any `resolve_status_list` / `resolve_credential_schema` / fetch
+  `Callable[[str], …]`). Only successful results are cached — a transient failure is
+  retried, never pinned. **Freshness is a security property for status:** a cached status
+  list cannot see a revocation until it expires, so `cached_resolve` defaults to a short
+  TTL (`DEFAULT_STATUS_TTL_S = 60s`) while DID docs tolerate a longer one
+  (`DEFAULT_DID_TTL_S = 300s`). Caching stays opt-in (the pipeline default resolves
+  uncached, like the guarded resolvers). The thread-safe `TtlCache` that previously lived
+  only in `openvc_ebsi.http` is now this core primitive, which the EBSI client consumes
+  downward. No new dependency. ([#23](https://github.com/luisgf/openvc/issues/23))
+
 ## [1.4.0] — 2026-07-07
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
@@ -528,6 +547,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.5.0]: https://github.com/luisgf/openvc/releases/tag/v1.5.0
 [1.4.0]: https://github.com/luisgf/openvc/releases/tag/v1.4.0
 [1.3.0]: https://github.com/luisgf/openvc/releases/tag/v1.3.0
 [1.2.0]: https://github.com/luisgf/openvc/releases/tag/v1.2.0
