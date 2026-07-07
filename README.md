@@ -53,6 +53,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     cache.py               opt-in TTL cache: CachingDidResolver + cached_resolve wrappers
     jwt_vc_issuer.py       https issuer keys via /.well-known/jwt-vc-issuer
     x5c.py                 X.509 x5c chain trust + SAN issuer binding
+    trustlist/             EU Trusted Lists (LOTL->TL) -> X.509 anchors for x5c (ADR-0003)
     status/                status lists — W3C Bitstring + IETF Token Status List (check + issue)
     schema.py              credentialSchema validation (W3C VC JSON Schema, opt-in)
     type_metadata.py       SD-JWT VC Type Metadata: vct#integrity + claims validation

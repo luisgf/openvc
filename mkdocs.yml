@@ -46,6 +46,7 @@ nav:
       - DIDs & keys: api/dids-keys.md
       - Status lists: api/status.md
       - Credential schema & type metadata: api/schema.md
+      - EU Trusted Lists: api/trustlist.md
       - Issuer-key discovery: api/discovery.md
       - Observability: api/observability.md
       - Errors: api/errors.md
@@ -56,3 +57,4 @@ nav:
   - Design decisions:
       - "ADR-0001 — EBSI HTTP client": adr/ADR-0001-ebsi-http-client.md
       - "ADR-0002 — Async verification": adr/ADR-0002-async-verification.md
+      - "ADR-0003 — EU Trusted Lists": adr/ADR-0003-eu-trusted-lists.md

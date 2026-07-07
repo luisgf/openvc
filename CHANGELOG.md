@@ -4,6 +4,31 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] — unreleased
+
+Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
+
+### Added
+
+- **Consume EU Trusted Lists (LOTL → national TL) as a verifier trust-anchor source.**
+  New `openvc.trustlist`: `walk_lotl(...)` turns the Commission's List of Trusted Lists
+  and the national Trusted Lists it points at (eIDAS 2.0 / EUDI, ETSI TS 119 612) into a
+  `TrustAnchorSet` whose `.certificates` feed the existing X.509 path directly —
+  `verify_credential(vc, x5c_trust_anchors=anchors.certificates)` (and `.x509_hashes` for
+  HAIP `x509_hash` roots). This closes *"the `x5c` chain is internally valid"* → *"the
+  chain roots in an **EU-recognised** anchor, for the right service type, granted now"* —
+  it adds **no** verification surface; `openvc.x5c` stays the path validator and trust
+  lists are only the anchor source. **Trust is caller-pinned** (the LOTL signer certs —
+  no implicit root), **fail-closed** (a TL that can't be fetched/verified/is expired
+  contributes zero anchors and is recorded in `problems`, never silently trusted), and
+  **selective** (default: `granted` qualified-CA services; `select=None` returns all).
+  XML parsing is **hardened stdlib** (no DTD/DOCTYPE → no XXE or entity-expansion bombs,
+  bounded size); **XML-signature (XAdES) verification is an injected `verify_signature`
+  callback** kept out of core (a reference implementation behind a `[trustlist]` extra
+  follows). Generic — not EBSI-coupled. See
+  [ADR-0003](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0003-eu-trusted-lists.md).
+  ([#26](https://github.com/luisgf/openvc/issues/26))
+
 ## [1.9.0] — unreleased
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.

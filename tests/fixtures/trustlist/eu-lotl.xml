@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TrustServiceStatusList xmlns="http://uri.etsi.org/02231/v2#" xmlns:add="http://uri.etsi.org/02231/v2/additionaltypes#">
+  <SchemeInformation>
+    <TSLVersionIdentifier>5</TSLVersionIdentifier>
+    <TSLSequenceNumber>42</TSLSequenceNumber>
+    <TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUlistofthelists</TSLType>
+    <SchemeOperatorName><Name xml:lang="en">European Commission</Name></SchemeOperatorName>
+    <SchemeTerritory>EU</SchemeTerritory>
+    <ListIssueDateTime>2026-01-01T00:00:00Z</ListIssueDateTime>
+    <NextUpdate><dateTime>2099-01-01T00:00:00Z</dateTime></NextUpdate>
+    <PointersToOtherTSL>
+      <OtherTSLPointer>
+        <ServiceDigitalIdentities>
+          <ServiceDigitalIdentity>
+            <DigitalId><X509Certificate>MIIBZzCCAQ2gAwIBAgIUdEFNo+XgbZQtVst9yrGyaJiBcgowCgYIKoZIzj0EAwIwKDEmMCQGA1UEAwwdREUgVHJ1c3RlZCBMaXN0IFNpZ25lciAodGVzdCkwIBcNMjYwMTAxMDAwMDAwWhgPMjA5OTAxMDEwMDAwMDBaMCgxJjAkBgNVBAMMHURFIFRydXN0ZWQgTGlzdCBTaWduZXIgKHRlc3QpMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzolniFMTgxDamRpXLqxyaXXs5ankOHS7kQtZDYbkeNg56syhUHJKi2M0LmSUt10IIHEO3PgMMbKUd70rsvPE8KMTMBEwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEAzdRWxeylbBgHh9SrZISv+eJ/597oHX+UYB1SUcuUCb4CIFN74Oa9FN/MExzD6biL/OOTUTsiNWHSusEiK4vMFlmh</X509Certificate></DigitalId>
+          </ServiceDigitalIdentity>
+        </ServiceDigitalIdentities>
+        <TSLLocation>https://tl.example.de/de-tl.xml</TSLLocation>
+        <AdditionalInformation>
+          <OtherInformation><SchemeTerritory>DE</SchemeTerritory></OtherInformation>
+          <OtherInformation><TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUgeneric</TSLType></OtherInformation>
+          <OtherInformation><add:MimeType>application/vnd.etsi.tsl+xml</add:MimeType></OtherInformation>
+        </AdditionalInformation>
+      </OtherTSLPointer>
+      <OtherTSLPointer>
+        <ServiceDigitalIdentities>
+          <ServiceDigitalIdentity>
+            <DigitalId><X509Certificate>MIIBbTCCAROgAwIBAgIUJUTNxXT5Rsx7iLtJrRQQHSeZOpkwCgYIKoZIzj0EAwIwKzEpMCcGA1UEAwwgRVUgQ29tbWlzc2lvbiBMT1RMIFNpZ25lciAodGVzdCkwIBcNMjYwMTAxMDAwMDAwWhgPMjA5OTAxMDEwMDAwMDBaMCsxKTAnBgNVBAMMIEVVIENvbW1pc3Npb24gTE9UTCBTaWduZXIgKHRlc3QpMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEbM5CWu3C+Wujp3hhiJGPyggH4gVry4VmiOsG4VHehzNAfkxnMZJ11rz3is5WrFXDvg4y9lMv9iJULtAFGA3c6MTMBEwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEA5gcAlC5bmCfYQXHm7i+fHQ+HOgbwgHc+aep4KDJFb30CIBUb1IJWSkOEBSQSw19YEGBc/vxkfPv2RuIAyDIRG2F7</X509Certificate></DigitalId>
+          </ServiceDigitalIdentity>
+        </ServiceDigitalIdentities>
+        <TSLLocation>https://ec.example/lotl-pivot.xml</TSLLocation>
+        <AdditionalInformation>
+          <OtherInformation><TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUlistofthelists</TSLType></OtherInformation>
+        </AdditionalInformation>
+      </OtherTSLPointer>
+    </PointersToOtherTSL>
+  </SchemeInformation>
+</TrustServiceStatusList>
