@@ -68,6 +68,7 @@ def _int_to_fixed(n: int, length: int) -> bytes:
 # --------------------------------------------------------------------------- #
 
 class Ed25519SigningKey:
+    """An in-process Ed25519 (``EdDSA``) signing key — the general OB 3.0 default."""
     alg = "EdDSA"
 
     def __init__(self, private_key: ed25519.Ed25519PrivateKey, kid: str) -> None:
@@ -76,13 +77,16 @@ class Ed25519SigningKey:
 
     @property
     def kid(self) -> str:
+        """The verification-method id this key signs as."""
         return self._kid
 
     def sign(self, signing_input: bytes) -> bytes:
         # cryptography returns the raw 64-byte signature; JOSE-ready as-is.
+        """Sign *signing_input*; returns the raw 64-byte Ed25519 signature."""
         return self._sk.sign(signing_input)
 
     def public_jwk(self) -> dict[str, Any]:
+        """The public key as an OKP JWK."""
         raw = self._sk.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw
         )
@@ -120,6 +124,7 @@ class Ed25519SigningKey:
 # --------------------------------------------------------------------------- #
 
 class P256SigningKey:
+    """An in-process P-256 (``ES256``) signing key — required for EBSI/EUDI."""
     alg = "ES256"
 
     def __init__(self, private_key: ec.EllipticCurvePrivateKey, kid: str) -> None:
@@ -130,14 +135,17 @@ class P256SigningKey:
 
     @property
     def kid(self) -> str:
+        """The verification-method id this key signs as."""
         return self._kid
 
     def sign(self, signing_input: bytes) -> bytes:
+        """Sign *signing_input*; returns the raw R‖S signature (JOSE ES256, not DER)."""
         der = self._sk.sign(signing_input, ec.ECDSA(hashes.SHA256()))
         r, s = decode_dss_signature(der)                       # DER -> (int, int)
         return _int_to_fixed(r, P256_COORD_BYTES) + _int_to_fixed(s, P256_COORD_BYTES)
 
     def public_jwk(self) -> dict[str, Any]:
+        """The public key as an EC P-256 JWK."""
         nums = self._sk.public_key().public_numbers()
         return {
             "kty": "EC",

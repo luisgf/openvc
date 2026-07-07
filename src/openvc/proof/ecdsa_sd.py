@@ -109,6 +109,7 @@ def _cbor_head(major: int, n: int) -> bytes:
 
 
 def encode_cbor(obj: Any) -> bytes:
+    """Encode *obj* as the deterministic CBOR subset (RFC 8949) the proof value uses."""
     if isinstance(obj, bool):                       # bool is an int subclass — reject
         raise EcdsaSdError("CBOR: booleans are not part of the proof-value shape")
     if isinstance(obj, int):
@@ -175,6 +176,7 @@ def _cbor_dec(data: bytes, i: int) -> tuple[Any, int]:
 
 
 def decode_cbor(data: bytes) -> Any:
+    """Decode :func:`encode_cbor` output; raises ``ProofValueMalformed`` on bad input."""
     obj, i = _cbor_dec(data, 0)
     if i != len(data):
         raise ProofValueMalformed("CBOR: trailing bytes after the top-level item")
@@ -246,12 +248,14 @@ def encode_base_proof(
     *, base_signature: bytes, public_key: bytes, hmac_key: bytes,
     signatures: list[bytes], mandatory_pointers: list[str],
 ) -> str:
+    """Serialise an ecdsa-sd-2023 base proof value (issuer side)."""
     body = encode_cbor(
         [base_signature, public_key, hmac_key, signatures, mandatory_pointers])
     return _mb_encode(BASE_PROOF_HEADER + body)
 
 
 def decode_base_proof(proof_value: str) -> dict[str, Any]:
+    """Parse an ecdsa-sd-2023 base proof value into its parts."""
     raw = _mb_decode(proof_value)
     if not raw.startswith(BASE_PROOF_HEADER):
         raise ProofValueMalformed("not an ecdsa-sd-2023 base proof (bad header)")
@@ -268,6 +272,7 @@ def encode_derived_proof(
     *, base_signature: bytes, public_key: bytes, signatures: list[bytes],
     label_map: dict[str, str], mandatory_indexes: list[int],
 ) -> str:
+    """Serialise an ecdsa-sd-2023 derived proof value (holder side)."""
     body = encode_cbor([
         base_signature, public_key, signatures,
         compress_label_map(label_map), mandatory_indexes])
@@ -275,6 +280,7 @@ def encode_derived_proof(
 
 
 def decode_derived_proof(proof_value: str) -> dict[str, Any]:
+    """Parse an ecdsa-sd-2023 derived proof value into its parts."""
     raw = _mb_decode(proof_value)
     if not raw.startswith(DERIVED_PROOF_HEADER):
         raise ProofValueMalformed("not an ecdsa-sd-2023 derived proof (bad header)")
