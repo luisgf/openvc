@@ -11,6 +11,22 @@ milestone; it ships once that work is complete.
 
 ### Added
 
+- **OpenID4VP 1.0 `vp_token` verification (stateless).** New `openvc.openid4vp` with
+  `verify_vp_token(vp_token, *, dcql_query, nonce, client_id, …)` (also exported as
+  `openvc.verify_vp_token`) — a read/verify-only verifier for the presentation half of
+  OpenID for Verifiable Presentations 1.0 (Final, 2025-07-09). It validates the
+  response shape (a JSON object keyed by DCQL Credential Query `id`, values are arrays
+  — §8.1), routes each Presentation to the matching suite by `format` (`dc+sd-jwt`
+  SD-JWT VC + KB-JWT, and `jwt_vc_json` W3C VP-JWT), and enforces the holder binding:
+  the transaction `nonce` and the **full, prefixed** Client Identifier as the audience
+  (e.g. `x509_san_dns:client.example.org`, not the bare host — §14.2 / §15.11). It
+  builds no Authorization Request and keeps no session; `ldp_vc` / `mso_mdoc` raise a
+  typed `UnsupportedPresentationFormat` (follow-ups, not silently skipped), and any
+  binding/shape failure fails closed. Adversarially reviewed — the format is pinned to
+  the query's DCQL `format` so a VC-JWT cannot be smuggled under a `dc+sd-jwt` query to
+  skip the KB-JWT nonce binding (a cross-session replay), and every hostile
+  `vp_token`/`dcql_query` shape raises a typed error.
+  ([#18](https://github.com/luisgf/openvc/issues/18))
 - **JCS Data Integrity cryptosuites — `eddsa-jcs-2022` and `ecdsa-jcs-2019`.** A
   whole-document Data Integrity path that canonicalizes with **RFC 8785 JSON
   Canonicalization Scheme** instead of RDF N-Quads, so it needs **no `pyld`** — the
