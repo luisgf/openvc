@@ -22,6 +22,12 @@ milestone; it ships once that work is complete.
   proof-error taxonomy imports from one place. `docs/CONVENTIONS.md` gains a
   "Public surface & stability" section documenting where to import stable names and
   which paths are internal. ([#6](https://github.com/luisgf/openvc/issues/6))
+- **Frozen return-object contract.** `VerificationResult`, `VerificationPolicy` and
+  the per-suite `Verified*` dataclasses now have their field set pinned as public,
+  **add-only** API (a `tests/test_return_contract.py` drift alarm asserts the exact
+  fields): a field may be added with a default, never removed/renamed/reordered
+  without a major bump. Documented in CONVENTIONS.md.
+  ([#7](https://github.com/luisgf/openvc/issues/7))
 
 ### Changed
 
