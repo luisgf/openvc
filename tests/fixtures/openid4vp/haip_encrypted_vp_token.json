@@ -1,0 +1,30 @@
+{
+  "_provenance": "recorded from openvc \u2014 offline HAIP drift alarm (issue #20)",
+  "dcql_query": {
+    "credentials": [
+      {
+        "id": "my_credential",
+        "format": "dc+sd-jwt",
+        "meta": {
+          "vct_values": [
+            "https://credentials.example.com/identity_credential"
+          ]
+        }
+      }
+    ]
+  },
+  "nonce": "conformance-nonce-0001",
+  "client_id": "x509_san_dns:verifier.example",
+  "verifier_encryption_key": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "vhJnpW9nKLM97DLALfbT7BdplfKNcgeFUQN5KLX91YA",
+    "y": "8vP-M5MjOPoE4dd86uvTfLN6ypsNG9zv9_uSeSMJp6Q",
+    "d": "ADMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM"
+  },
+  "response_jwe": "eyJhbGciOiJFQ0RILUVTIiwiZW5jIjoiQTI1NkdDTSIsImVwayI6eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6ImpjeEVPWHVzcEVDWGppc2pzN0h0TlMxNzZCUm5VTUdaX3h6TnQ1ZTVOZmciLCJ5IjoiSGFLYkh2UWV3Z0g1c1c3MDA1V3FCNlFwRDc5WDh0YlBYUER1NldEUzFXQSJ9fQ..CuFiXi5gpci72hwW.ATKeK7JbAJhaheuv-kZy0Sta_LtszOKBXLmKSTrKCsUANrE7nvWFGszUGLZMuRieqQufSX2OWLITmdOma5GOUw00bEdztMNaweXpQ2w9iqT48NTlFM_IJox3iwOc6iAc_iASPxucaB9w1hYp_0_g_zlykvAgltG5WxPsQovc4zs6bGhyffASV-Wv6ebJcV9CleeBXV6yrMVhysJeh0i-N2dMexavJyHH7bHar3nANmg1XtGHHjb_zFJyiGIBLZxVTVN3Sgb_WsktBtPHpSlWvkeGNFWRq5qcWbonJwanIO_o2wdC4iGuYaYPStkLfzM1EkI8jwkRH12EsBQhOXGW0QTQnkGbfDUiBzICsA8tnXGpzuTg2MGwR819c3MBxnzPALDoX6xuw-Qm3iM5BzreHnmwswVIJuHZH_9CiNPnpQa4AzxxUyclNs503SSS5Yt1vPkG7xsM_kMEvCbw4x98zmfl5ZgeOJPrvgce-GGjGAd_EU_uZTA08RpKbgQNXYg5etw1Hw0Uus4B2gFlm6-M7BAwTDoagi7yLVXEjQ1-5_23uv72Jyj93FY6gd72eobWLH6_Zhxf_0ybcuwxEZm0DKAv4OzKFpo66HSRTdU3cWqAFRInJ3oZD0itZYd_vOH45qoXR96eE7_ve47-FeKpS2MY9Kv9ryoxEP5IduI4EpKWAO0MwMROg-M37D-T1CgEZrqI0EiS5v5i71frDDEv0vxjzjJavbmHJjwkcp1lYFuHuxDHCFgPgb5ckrNqCgkMCe24BqvjWiA4HnexrWOMz_LyKEXwNpyySyRE9KBspbP6spprwwKW-_B7XfmNlO2mLekdC6UqqFQKr1IEnPLgNY76N1L_DPDTZRLXBX-snMstbuVtvw73iYQRhI5MnH_xaQktRYgneJc3xPT6NwSx5t9FXxeUVSt9Wpo7s-0Xkc8WO_cE_bGAtG157B9DQlis63gny5u6lTS2gWoTF2Nh8mtpyinIDTp1Lw18Ae_VmYWpEU3dJxOp8CvnY8HwoOr9tQw6AfywzH01qOHQMe_7IquueDjBv5r3J7UTawC-kLCGuqyeNhMFRElAu_4IHpHnn9yN8eKnSUGVlG8r1w7Fn3mcH_yWpDusF90gzZctX_in5O6kVP2AZhnPCWeIMXFgNfojte1RnPc32gwRfiitd7t55vzYTEXL7iHuingU_4_xrezYTOvYGearre81Eu8e4jU7rRQN6oZnz-bYDCVQIrXmA4f2DxUrClakg_OEkM9Jx4CCSG48ixq0vGX6jj91ZK_W4xQNZMzTTtsYT5cPMm9BNOEJQcx7A2EWjT-6jLWzQpTNlinSWYQPjSObHd2c62UAfANfjhGUl7VOQM4CLTU6EwVfhq846jF3M1ewGZ-yOTBgDBoPrx-TF9SWsqXiBwCcH5BGX5aAnwTrLfgifczTAqPI9em7xJwvxMjLjJ2jgozklihjlha7fLjYHBOoT8IHpo9pTcb94_KYuno9-Rh3uq2JaMIj3wGkV8_M7xKTEUS_otCoXy1pBxX_dyVpgUfhJWKye5jeBt2rBBQ-w-2jkkOhzg3eGdI7IyhvQY6SZd35j2N_Q3xiWhRMv1yU9U-mYQkM7pCqVujeg0xy55x9ykb41yzOw75aC71xrAHix5VMN6_pOxsczBKzkMb6vZRKBhiFi7JYk0ElvVXFazaqkn0_EOZ7nGezZ6hzW_Qv6KYwTp-pr_Q6i_R_CDfR3I4GMzD9yuA4lNsIBOzw_JVQ_NfRoPz4wgUQfMzbpoKacLtxT0JLENg-Hij2KcXI_-AE7I0fwkEu0zvmUocHhCoWLKT1yrwZUdVrMm6X4NucOSC_UXE.XSxzyct8dE9VDAONyY8anw",
+  "expect": {
+    "format": "dc+sd-jwt",
+    "given_name": "Ada"
+  }
+}

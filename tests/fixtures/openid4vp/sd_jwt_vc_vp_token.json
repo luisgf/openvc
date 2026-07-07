@@ -1,0 +1,28 @@
+{
+  "_provenance": "recorded from openvc \u2014 offline drift alarm (issue #20)",
+  "dcql_query": {
+    "credentials": [
+      {
+        "id": "my_credential",
+        "format": "dc+sd-jwt",
+        "meta": {
+          "vct_values": [
+            "https://credentials.example.com/identity_credential"
+          ]
+        }
+      }
+    ]
+  },
+  "nonce": "conformance-nonce-0001",
+  "client_id": "x509_san_dns:verifier.example",
+  "vp_token": {
+    "my_credential": [
+      "eyJ0eXAiOiJkYytzZC1qd3QiLCJhbGciOiJFUzI1NiIsImtpZCI6ImRpZDprZXk6ekRuYWVqM2pxeFJ3cXUxeVBxaHZhcE1XZFA0bzg2a1ZNc0o4d0xKeHNrN2U3c05nSCN6RG5hZWozanF4UndxdTF5UHFodmFwTVdkUDRvODZrVk1zSjh3TEp4c2s3ZTdzTmdIIn0.eyJpc3MiOiJkaWQ6a2V5OnpEbmFlajNqcXhSd3F1MXlQcWh2YXBNV2RQNG84NmtWTXNKOHdMSnhzazdlN3NOZ0giLCJzdWIiOiJkaWQ6ZXhhbXBsZTphbGljZSIsImlhdCI6MTc4MzQxNDgzNCwidmN0IjoiaHR0cHM6Ly9jcmVkZW50aWFscy5leGFtcGxlLmNvbS9pZGVudGl0eV9jcmVkZW50aWFsIiwiY25mIjp7Imp3ayI6eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6ImsxTFA4N1hobXhPN29GdjFZMlZCR1haZXZWazVlODFBbGNfa1c3cWQ2QlkiLCJ5IjoiV3ItSndzZ1JVNW1OZm1nTnVzNUJZbG1Qd2ZEYUV5MlZZYTdydDFGLWxLWSJ9fSwiX3NkIjpbIjlUaHNjVk0yR0xSNDJiZUpQYjZ6SXZfcDNjazBXbmxmdlNJLVBSdUJ3N00iLCJiZE1ZamV3bEpCQkFrc1FRVlBoNnREdjAtNXIyTGNWSHhqdG40WklTVFBrIl0sIl9zZF9hbGciOiJzaGEtMjU2In0.NblRXrjeS2SFSGtxHN3Ek_KEOf_7GWIFT2z8rhast1l2YXOvVgKVMoOq3RkTj2foqsqwWn3xuXGGojFO7rpXZg~WyJYSEl1SnBzal9GVGFOTkw4NkZYTS1RIiwiZ2l2ZW5fbmFtZSIsIkFkYSJd~WyJoR1ZmTlctOGNoZnRTXzZmVTFOa0tRIiwiZmFtaWx5X25hbWUiLCJMb3ZlbGFjZSJd~eyJ0eXAiOiJrYitqd3QiLCJhbGciOiJFUzI1NiJ9.eyJpYXQiOjE3ODM0MTQ4MzQsImF1ZCI6Ing1MDlfc2FuX2Ruczp2ZXJpZmllci5leGFtcGxlIiwibm9uY2UiOiJjb25mb3JtYW5jZS1ub25jZS0wMDAxIiwic2RfaGFzaCI6Ind2RTNLb05ZZlNsUlctZlNWaVdISnM3dDJwM2pHdnpNci1JcGpiMjh1eVEifQ.DRp0Pg5FkNfuwSaH7NasBVKh0XD_jzcqLtTnpZS90bEOeG3avhReGkqRQ6dm2EQgma5aVFjblk1rWIeOFaawiA"
+    ]
+  },
+  "expect": {
+    "format": "dc+sd-jwt",
+    "given_name": "Ada",
+    "family_name": "Lovelace"
+  }
+}
