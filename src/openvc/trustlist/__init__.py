@@ -40,6 +40,7 @@ from .consume import (
 from .errors import (
     TrustListError,
     TrustListParseError,
+    TrustListSignatureBackendUnavailable,
     TrustListSignatureError,
     TrustListSignatureUnavailable,
 )
@@ -52,6 +53,7 @@ from .model import (
     TslPointer,
 )
 from .parse import parse_trust_list
+from .xades import verify_xades_enveloped
 
 __all__ = [
     "DEFAULT_SELECT",
@@ -64,6 +66,7 @@ __all__ = [
     "TrustListError",
     "TrustListParseError",
     "TrustListProblem",
+    "TrustListSignatureBackendUnavailable",
     "TrustListSignatureError",
     "TrustListSignatureUnavailable",
     "TrustServiceAnchor",
@@ -73,5 +76,6 @@ __all__ = [
     "consume_trust_list",
     "default_trust_list_fetch",
     "parse_trust_list",
+    "verify_xades_enveloped",
     "walk_lotl",
 ]

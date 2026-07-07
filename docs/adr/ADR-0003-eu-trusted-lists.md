@@ -4,12 +4,14 @@
 **Date:** 2026-07-07
 **Context owner:** openvc.trustlist
 
-**Phasing (decided in review):** land in two PRs. **PR 1 (this one):** the hardened
-parser, the fail-closed LOTL→TL walk, selection (default: `granted` + qualified-CA
-service types), and fixtures — with XML-signature verification as an **injected
-callback** (tested with a stub). **PR 2 (follow-up):** the optional `[trustlist]`
-extra shipping a `signxml`-based XAdES `verify_signature` callback + a real recorded
-TL-signature test. Core stays interface-only until then.
+**Phasing (both landed):** **PR 1** — the hardened parser, the fail-closed LOTL→TL
+walk, selection (default: `granted` + qualified-CA service types), and fixtures, with
+XML-signature verification as an **injected callback**. **PR 2** — the optional
+`[trustlist]` extra shipping `openvc.trustlist.verify_xades_enveloped`, a
+`signxml`-based XAdES `verify_signature` verifier, proven by a sign→verify round-trip
+and a full `walk_lotl` over signed LOTL + national TL (a live-EU-LOTL recorded vector
+remains a future hardening step — it needs network + out-of-band Commission certs). The
+callback stays injected, so core remains `cryptography` + `pyjwt`.
 
 ## Context
 
