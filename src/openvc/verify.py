@@ -331,19 +331,78 @@ def _verify_by_format(
             x5c_trust_anchors=x5c_trust_anchors,
             extra_contexts=extra_contexts, _depth=_depth + 1)
 
+    # Closure the schema layer uses to verify a JsonSchemaCredential (the schema
+    # wrapped in its own signed VC); built here where every resolver + _depth is in
+    # scope, then threaded to the handler that runs _check_schema after the proof.
+    verify_inner = _make_schema_verifier(
+        policy, resolver, resolve_status_list, resolve_status_list_token,
+        jwt_vc_issuer_fetch, x5c_trust_anchors, extra_contexts, _depth)
+
     if fmt == FORMAT_VC_JWT:
         return _verify_vc_jwt(
             credential, policy, resolver, resolve_status_list,
             resolve_status_list_token, resolve_credential_schema,
-            jwt_vc_issuer_fetch, x5c_trust_anchors)
+            jwt_vc_issuer_fetch, x5c_trust_anchors, verify_inner)
     if fmt == FORMAT_SD_JWT_VC:
         return _verify_sd_jwt(
             credential, policy, resolver, resolve_status_list,
             resolve_status_list_token, resolve_credential_schema,
-            jwt_vc_issuer_fetch, x5c_trust_anchors)
+            jwt_vc_issuer_fetch, x5c_trust_anchors, verify_inner)
     return _verify_data_integrity(
         credential, fmt, policy, resolver, resolve_status_list,
-        resolve_status_list_token, resolve_credential_schema, extra_contexts)
+        resolve_status_list_token, resolve_credential_schema, extra_contexts,
+        verify_inner)
+
+
+def _make_schema_verifier(
+    policy: VerificationPolicy, resolver: Any, resolve_status_list: Any,
+    resolve_status_list_token: Any, jwt_vc_issuer_fetch: Any, x5c_trust_anchors: Any,
+    extra_contexts: Any, _depth: int,
+) -> Any:
+    """Build the ``verify_inner`` closure the schema layer calls to verify a
+    ``JsonSchemaCredential`` — the JSON Schema wrapped in its own signed VC.
+
+    It runs the schema-defining VC through the **same** pipeline, so every format /
+    DID / x5c / status resolver the caller wired applies to it too (fail-closed:
+    an inner VC that declares a status but has no resolver still fails). Schema
+    validation is **off** on that inner pass (``resolve_credential_schema=None``):
+    the VC's own ``credentialSchema`` — the meta-schema — is not re-fetched, which
+    bounds recursion so a hostile chain of schema-VCs cannot loop. The outer
+    ``expected_types`` / ``expected_vct`` / ``audience`` / ``nonce`` constrain the
+    *outer* credential, not this one, so the inner policy carries only the leeway,
+    the evaluation instant, and the fail-closed-status knob."""
+    def verify_inner(raw: bytes) -> dict[str, Any]:
+        inner_policy = VerificationPolicy(
+            leeway_s=policy.leeway_s,
+            require_status=policy.require_status,
+            now=policy.now,
+        )
+        return verify_credential(
+            _bytes_to_credential(raw), policy=inner_policy, resolver=resolver,
+            resolve_status_list=resolve_status_list,
+            resolve_status_list_token=resolve_status_list_token,
+            resolve_credential_schema=None,          # bound recursion (see docstring)
+            jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+            x5c_trust_anchors=x5c_trust_anchors,
+            extra_contexts=extra_contexts, _depth=_depth + 1,
+        ).credential
+    return verify_inner
+
+
+def _bytes_to_credential(raw: bytes) -> Any:
+    """Turn the raw bytes fetched for a ``JsonSchemaCredential`` into a credential
+    the pipeline can re-dispatch: the parsed JSON object for an embedded-proof VC,
+    else the decoded string for a compact VC-JWT."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise UnknownCredentialFormat(
+            f"JsonSchemaCredential bytes are not valid UTF-8: {exc}") from exc
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return text                       # not JSON -> a compact JWS (VC-JWT)
+    return obj if isinstance(obj, dict) else text
 
 
 def verify_many(
@@ -402,7 +461,7 @@ def verify_many(
 def _verify_vc_jwt(token: str, policy: VerificationPolicy, resolver: Any,
                    resolve_status_list: Any, resolve_status_list_token: Any,
                    resolve_credential_schema: Any, jwt_vc_issuer_fetch: Any,
-                   x5c_trust_anchors: Any) -> VerificationResult:
+                   x5c_trust_anchors: Any, verify_inner: Any) -> VerificationResult:
     from .proof.vc_jwt import VcJwtProofSuite
 
     suite = VcJwtProofSuite(leeway_s=policy.leeway_s)
@@ -416,7 +475,8 @@ def _verify_vc_jwt(token: str, policy: VerificationPolicy, resolver: Any,
     # W3C status is in the vc object; an IETF `status` claim is in the JWT payload
     status = _check_status(verified.credential, verified.claims, policy,
                            resolve_status_list, resolve_status_list_token)
-    schema = _check_schema(verified.credential, policy, resolve_credential_schema)
+    schema = _check_schema(verified.credential, policy, resolve_credential_schema,
+                           verify_inner)
     return VerificationResult(
         format=FORMAT_VC_JWT, credential=verified.credential, claims=verified.claims,
         issuer=verified.issuer, subject=verified.subject, status=status,
@@ -426,7 +486,7 @@ def _verify_vc_jwt(token: str, policy: VerificationPolicy, resolver: Any,
 def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
                    resolve_status_list: Any, resolve_status_list_token: Any,
                    resolve_credential_schema: Any, jwt_vc_issuer_fetch: Any,
-                   x5c_trust_anchors: Any) -> VerificationResult:
+                   x5c_trust_anchors: Any, verify_inner: Any) -> VerificationResult:
     from .proof.sd_jwt import SdJwtVcProofSuite
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
@@ -443,7 +503,8 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
                            resolve_status_list, resolve_status_list_token)
     # SD-JWT: only disclosed claims are visible; a withheld credentialSchema cannot
     # be validated (same selective-disclosure caveat as status).
-    schema = _check_schema(verified.claims, policy, resolve_credential_schema)
+    schema = _check_schema(verified.claims, policy, resolve_credential_schema,
+                           verify_inner)
     return VerificationResult(
         format=FORMAT_SD_JWT_VC, credential=verified.claims, claims=verified.claims,
         issuer=verified.issuer, subject=_as_str(verified.claims.get("sub")),
@@ -453,7 +514,7 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
 def _verify_data_integrity(
     doc: dict[str, Any], fmt: str, policy: VerificationPolicy, resolver: Any,
     resolve_status_list: Any, resolve_status_list_token: Any,
-    resolve_credential_schema: Any, extra_contexts: Any,
+    resolve_credential_schema: Any, extra_contexts: Any, verify_inner: Any,
 ) -> VerificationResult:
     if fmt == FORMAT_DI_ECDSA_SD:
         from .proof.ecdsa_sd import EcdsaSdProofSuite
@@ -487,7 +548,8 @@ def _verify_data_integrity(
     # too so a (non-conformant) token `status` on one is not silently skipped
     status = _check_status(verified.credential, verified.credential, policy,
                            resolve_status_list, resolve_status_list_token)
-    schema = _check_schema(verified.credential, policy, resolve_credential_schema)
+    schema = _check_schema(verified.credential, policy, resolve_credential_schema,
+                           verify_inner)
     return VerificationResult(
         format=fmt, credential=verified.credential, issuer=verified.issuer,
         subject=verified.subject, status=status, schema=schema, raw=verified)
@@ -633,6 +695,7 @@ def _check_schema(
     credential: dict[str, Any],
     policy: VerificationPolicy,
     resolve_credential_schema: Any,
+    verify_inner: Any,
 ) -> SchemaValidationResult | None:
     """Validate the credential against its declared ``credentialSchema`` (opt-in).
 
@@ -642,7 +705,9 @@ def _check_schema(
     revocation gate — see :mod:`openvc.schema`); otherwise the schema is left
     unchecked. A malformed ``credentialSchema`` shape is not inspected unless the
     caller opted in, so a credential that merely carries one does not break
-    verification for callers who never asked for schema validation."""
+    verification for callers who never asked for schema validation. *verify_inner*
+    lets the schema layer verify a ``JsonSchemaCredential`` (schema-in-a-VC) through
+    this same pipeline."""
     if not credential.get("credentialSchema"):
         return None
     if resolve_credential_schema is None:
@@ -653,7 +718,8 @@ def _check_schema(
                 "(set policy.require_schema=False to skip)")
         return None
     return validate_credential_schema(
-        credential, resolve_credential_schema=resolve_credential_schema)
+        credential, resolve_credential_schema=resolve_credential_schema,
+        verify_inner=verify_inner)
 
 
 def _fail_closed(policy: VerificationPolicy, declared: str, resolver_arg: str) -> None:

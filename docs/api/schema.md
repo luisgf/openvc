@@ -2,7 +2,9 @@
 
 Opt-in `credentialSchema` (W3C VC JSON Schema) validation for the verification
 pipeline: fetch the JSON Schema a credential declares and validate the whole
-credential against it. Wired into
+credential against it. Both W3C schema types are handled — a raw `JsonSchema`, and
+a `JsonSchemaCredential` (the schema wrapped in its own signed VC, whose proof is
+verified through the pipeline before its embedded schema is applied). Wired into
 [`verify_credential`](verification.md) via `resolve_credential_schema=`.
 
 ::: openvc.schema

@@ -4,6 +4,30 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — unreleased
+
+Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
+
+### Added
+
+- **`JsonSchemaCredential` — the schema-in-a-VC type.** `openvc.schema` now validates a
+  `credentialSchema` entry of type `JsonSchemaCredential`, where the schema a credential
+  points at is itself a **signed Verifiable Credential**. The pipeline fetches that VC,
+  **verifies its proof** through the same `verify_credential` path — so every DID / x5c /
+  status resolver the caller wired applies to it too, fail-closed — and applies the JSON
+  Schema nested in its verified `credentialSubject.jsonSchema` to the outer credential.
+  Recognised by `verify_credential(resolve_credential_schema=…)` and by standalone
+  `openvc.schema.validate_credential_schema(…, verify_inner=…)`; the schema layer takes the
+  verifier as an injected callable, so it stays free of an import cycle with the pipeline.
+  **Bounded and fail-closed:** the schema-defining VC's *own* `credentialSchema` (the
+  meta-schema) is not re-fetched, so a hostile chain of schema-VCs cannot loop; a `digestSRI`
+  on the entry is enforced over the exact VC bytes before any parse/verify; the inner VC must
+  actually carry the `JsonSchemaCredential` type, so a signature-valid but wrong-typed VC
+  cannot stand in as the schema authority; and any inner-proof failure surfaces as a typed
+  `SchemaResolutionError`. Previously such an entry raised `UnsupportedSchemaType`. Behind the
+  `[schema]` extra; remote `$ref` resolution stays off.
+  ([#28](https://github.com/luisgf/openvc/issues/28))
+
 ## [1.7.0] — 2026-07-07
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
