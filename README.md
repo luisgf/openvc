@@ -53,6 +53,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     x5c.py                 X.509 x5c chain trust + SAN issuer binding
     status/                status lists — W3C Bitstring + IETF Token Status List (check + issue)
     schema.py              credentialSchema validation (W3C VC JSON Schema, opt-in)
+    type_metadata.py       SD-JWT VC Type Metadata: vct#integrity + claims validation
     errors.py              OpenvcError — the root of every error family
     verify.py              verify_credential: one-call pipeline over every format
     openid4vp.py           verify_vp_token: stateless OpenID4VP 1.0 vp_token verifier

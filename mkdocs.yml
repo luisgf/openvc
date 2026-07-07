@@ -44,7 +44,7 @@ nav:
       - Proof suites: api/proofs.md
       - DIDs & keys: api/dids-keys.md
       - Status lists: api/status.md
-      - Credential schema: api/schema.md
+      - Credential schema & type metadata: api/schema.md
       - Issuer-key discovery: api/discovery.md
       - Errors: api/errors.md
   - Conventions: CONVENTIONS.md
