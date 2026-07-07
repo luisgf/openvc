@@ -33,6 +33,13 @@ milestone; it ships once that work is complete.
   `__all__` surface + the return-object contract), and the deprecation cycle
   (`DeprecationWarning` + a CHANGELOG note for ≥1 minor before removal at a major).
   ([#8](https://github.com/luisgf/openvc/issues/8))
+- **`credentialSchema` `digestSRI` is enforced** (`openvc.schema`) — when a
+  credential pins its schema with a `sha256-`/`sha384-`/`sha512-` subresource-
+  integrity hash, the hash is verified over the raw schema bytes (constant-time,
+  strongest algorithm wins) **before** the schema is parsed; a mismatch fails closed.
+  An issuer can thus pin the exact schema so even a compromised schema host cannot
+  swap it. A guarded `openvc.fetch.https_bytes_fetch` backs it.
+  ([#10](https://github.com/luisgf/openvc/issues/10))
 - **Threat model** (`docs/threat-model.md`) — assets (the verify decision, signing
   keys, trust anchors), trust boundaries (the credential, network dereferences, the
   SigningKey backend, injected resolvers), and an attacker-capability → control map
@@ -50,6 +57,11 @@ milestone; it ships once that work is complete.
 
 ### Changed
 
+- **BREAKING: `resolve_credential_schema` now returns `bytes`**, not a parsed
+  ``dict`` — so a `credentialSchema.digestSRI` can be verified over the exact
+  response before parsing. The blessed `openvc.resolvers.default_credential_schema_resolver`
+  is updated; a custom schema resolver must return the raw bytes.
+  ([#10](https://github.com/luisgf/openvc/issues/10))
 - **BREAKING: unified proof-error taxonomy** (openvc.proof.errors). `ProofError`
   moved out of the `openvc.proof.vc_jwt` format module into a new
   `openvc.proof.errors` module (still re-exported from `vc_jwt` for now), and the

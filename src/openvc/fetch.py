@@ -163,6 +163,20 @@ def https_text_fetch(
         raise DidResolutionError(f"response is not UTF-8 text: {exc}") from exc
 
 
+def https_bytes_fetch(
+    url: str,
+    *,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+) -> bytes:
+    """Fetch *url* as raw bytes with the same SSRF guards as :func:`https_json_fetch`.
+
+    For resources whose *exact bytes* matter — a ``credentialSchema`` whose
+    ``digestSRI`` is verified over the response before parsing. Raises the same
+    error family."""
+    return _https_fetch_guarded(url, timeout_s=timeout_s, max_bytes=max_bytes)
+
+
 def default_did_web_resolver() -> DidWebResolver:
     """A :class:`~openvc.did.did_web.DidWebResolver` wired to the SSRF-guarded
     fetch — the batteries-included way to resolve did:web offline of any HTTP
@@ -175,6 +189,7 @@ __all__ = [
     "MAX_RESPONSE_BYTES",
     "UnsafeUrlError",
     "default_did_web_resolver",
+    "https_bytes_fetch",
     "https_json_fetch",
     "https_text_fetch",
 ]
