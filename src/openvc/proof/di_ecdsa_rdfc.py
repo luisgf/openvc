@@ -33,10 +33,12 @@ from ..errors import OpenvcError
 from ..keys import verify_signature
 from ..multibase import decode_multibase, encode_multibase
 from ._verify_common import (
+    ALG_PROFILE,
     DEFAULT_LEEWAY_S,
     check_presentation_binding,
     check_proof_purpose,
     check_validity_window,
+    match_alg,
     resolve_verification_key,
 )
 from .contexts import document_loader
@@ -48,15 +50,10 @@ __all__ = ["EcdsaRdfcProofSuite", "ECDSA_RDFC_CRYPTOSUITE"]
 
 ECDSA_RDFC_CRYPTOSUITE = "ecdsa-rdfc-2019"
 
-# JOSE alg -> (JWK kty, JWK crv, hashData digest). ecdsa-rdfc-2019 is curve-dependent:
-# P-256 hashes with SHA-256, P-384 with SHA-384 (vc-di-ecdsa §3.x — the same rule the
-# JCS ecdsa-jcs-2019 sibling uses). The digest is used for BOTH halves of hashData. The
-# two curves are disjoint on ``crv``, so a resolved key maps to exactly one alg.
-_ALG_PROFILE: dict[str, tuple[str, str, str]] = {
-    "ES256": ("EC", "P-256", "sha256"),
-    "ES384": ("EC", "P-384", "sha384"),
-}
-_ALLOWED_ALGS = frozenset(_ALG_PROFILE)
+# ecdsa-rdfc-2019 is curve-dependent: P-256 hashes with SHA-256, P-384 with SHA-384
+# (vc-di-ecdsa §3.x). The JOSE-alg -> (kty, crv, digest) table and the key->alg matcher
+# are shared with the JCS ecdsa-jcs-2019 sibling via _verify_common.ALG_PROFILE /
+# match_alg, so the curve->digest rule is single-sourced.
 
 
 def _hash_data(
@@ -89,27 +86,15 @@ class EcdsaRdfcProofSuite:
     ``[data-integrity]`` extra), which the JCS suite does not.
     """
 
-    _allowed_algs = _ALLOWED_ALGS
+    _allowed_algs = frozenset({"ES256", "ES384"})
 
     def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S) -> None:
         self._leeway = leeway_s
 
     def _match_alg(self, jwk: dict[str, Any]) -> str:
-        """The allowed alg whose (kty, crv) matches *jwk*, or fail closed.
-
-        Picking the alg from the key's curve — not from anything attacker-controlled —
-        both selects the right digest and rejects a cross-type key (e.g. an Ed25519 OKP
-        key resolved under this ecdsa suite) *before* :func:`verify_signature` would read
-        a missing JWK member (an OKP key has no ``y``) and crash past the ProofError
-        contract.
-        """
-        kty, crv = jwk.get("kty"), jwk.get("crv")
-        for alg in sorted(self._allowed_algs):
-            p_kty, p_crv, _ = _ALG_PROFILE[alg]
-            if kty == p_kty and crv == p_crv:
-                return alg
-        raise ProofMalformed(
-            f"{ECDSA_RDFC_CRYPTOSUITE} does not accept a kty={kty!r} crv={crv!r} key")
+        """The allowed alg whose (kty, crv) matches *jwk*, or fail closed (rejecting a
+        cross-type key before the crypto runs — see :func:`match_alg`)."""
+        return match_alg(jwk, self._allowed_algs, cryptosuite=ECDSA_RDFC_CRYPTOSUITE)
 
     def add_proof(
         self,
@@ -156,7 +141,7 @@ class EcdsaRdfcProofSuite:
         proof_config["@context"] = credential["@context"]
 
         loader = document_loader(extra_contexts)
-        hash_name = _ALG_PROFILE[signing_key.alg][2]
+        hash_name = ALG_PROFILE[signing_key.alg][2]
         data = _hash_data(_unsecured(credential), proof_config, loader, hash_name)
         signature = signing_key.sign(data)           # raw ES256 / ES384 R‖S
 
@@ -205,7 +190,6 @@ class EcdsaRdfcProofSuite:
         proof_config = {k: v for k, v in proof.items() if k != "proofValue"}
         proof_config["@context"] = secured.get("@context")
 
-        loader = document_loader(extra_contexts)
         unsecured = _unsecured(secured)
         jwk = public_key_jwk or resolve_verification_key(
             proof.get("verificationMethod"),
@@ -215,7 +199,11 @@ class EcdsaRdfcProofSuite:
         # The resolved key's (kty, crv) picks the alg + digest — and rejects a cross-type
         # key before verify_signature would read a wrong JWK member and crash.
         alg = self._match_alg(jwk)
-        data = _hash_data(unsecured, proof_config, loader, _ALG_PROFILE[alg][2])
+        # Build the RDF document loader only now: a cross-type or unresolvable key fails
+        # above without paying the loader's context-file reads (the canonicalization in
+        # _hash_data is the costly step, and it runs only on a key that matched).
+        loader = document_loader(extra_contexts)
+        data = _hash_data(unsecured, proof_config, loader, ALG_PROFILE[alg][2])
         try:
             ok = verify_signature(
                 alg=alg, public_jwk=jwk, signing_input=data, signature=signature)

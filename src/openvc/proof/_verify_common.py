@@ -28,6 +28,7 @@ from .errors import (
     KeyResolutionError,
     MalformedTimestamp,
     PresentationBindingError,
+    ProofMalformed,
     ProofPurposeMismatch,
 )
 
@@ -206,7 +207,37 @@ def resolve_verification_key(
     return vm.public_key_jwk
 
 
+# JOSE alg -> (JWK kty, JWK crv, hashData digest) for the Data Integrity suites that pick
+# their signature algorithm from the *resolved key's* curve rather than from anything in
+# the proof. ecdsa-*-2019 is curve-dependent (P-256/SHA-256, P-384/SHA-384 —
+# vc-di-ecdsa §3.x); eddsa-* is always SHA-256. Single-sourced here so the curve->digest
+# rule cannot drift between the JCS (di_jcs) and RDF (di_ecdsa_rdfc) ECDSA suites.
+ALG_PROFILE: dict[str, tuple[str, str, str]] = {
+    "EdDSA": ("OKP", "Ed25519", "sha256"),
+    "ES256": ("EC", "P-256", "sha256"),
+    "ES384": ("EC", "P-384", "sha384"),
+}
+
+
+def match_alg(jwk: dict[str, Any], allowed_algs: frozenset[str], *, cryptosuite: str) -> str:
+    """The *allowed_algs* member whose (kty, crv) matches *jwk*, or fail closed.
+
+    Selecting the alg — and thus the hashData digest — from the resolved key's own
+    (kty, crv), never from an attacker-controlled proof field, is what lets a suite reject
+    a cross-type key (e.g. an Ed25519 OKP key resolved under an ECDSA suite) *before* the
+    signature check would read a missing JWK member ('y' on an OKP key) and crash past the
+    ProofError contract. The accepted curves are disjoint on ``crv``, so at most one alg
+    matches. Shared by the whole-document suites (di_jcs, di_ecdsa_rdfc)."""
+    kty, crv = jwk.get("kty"), jwk.get("crv")
+    for alg in sorted(allowed_algs):
+        p_kty, p_crv, _ = ALG_PROFILE[alg]
+        if kty == p_kty and crv == p_crv:
+            return alg
+    raise ProofMalformed(f"{cryptosuite} does not accept a kty={kty!r} crv={crv!r} key")
+
+
 __all__ = [
+    "ALG_PROFILE",
     "CredentialExpired",
     "CredentialNotYetValid",
     "DEFAULT_LEEWAY_S",
@@ -217,5 +248,6 @@ __all__ = [
     "check_presentation_binding",
     "check_proof_purpose",
     "check_validity_window",
+    "match_alg",
     "resolve_verification_key",
 ]

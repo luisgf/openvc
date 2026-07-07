@@ -30,10 +30,12 @@ from ..keys import verify_signature
 from ..multibase import decode_multibase, encode_multibase
 from ._jcs import JcsError, canonicalize
 from ._verify_common import (
+    ALG_PROFILE,
     DEFAULT_LEEWAY_S,
     check_presentation_binding,
     check_proof_purpose,
     check_validity_window,
+    match_alg,
     resolve_verification_key,
 )
 from .data_integrity import PROOF_TYPE, VerifiedDataIntegrity, _iso, _unsecured
@@ -51,14 +53,9 @@ EDDSA_JCS_CRYPTOSUITE = "eddsa-jcs-2022"
 ECDSA_JCS_CRYPTOSUITE = "ecdsa-jcs-2019"
 
 
-# JOSE alg -> (JWK kty, JWK crv, hashData digest). ecdsa-jcs-2019 is curve-dependent
-# (P-256 hashes with SHA-256, P-384 with SHA-384 — vc-di-ecdsa §3.x); eddsa-jcs-2022 is
-# always SHA-256. The digest is used for BOTH halves of hashData.
-_ALG_PROFILE: dict[str, tuple[str, str, str]] = {
-    "EdDSA": ("OKP", "Ed25519", "sha256"),
-    "ES256": ("EC", "P-256", "sha256"),
-    "ES384": ("EC", "P-384", "sha384"),
-}
+# The JOSE-alg -> (kty, crv, digest) table and the key->alg matcher are shared with the
+# RDF ECDSA suite (di_ecdsa_rdfc) via _verify_common.ALG_PROFILE / match_alg, so the
+# curve->digest rule is single-sourced. The digest is used for BOTH halves of hashData.
 
 
 def _hash_data(
@@ -90,9 +87,9 @@ class _JcsProofSuite:
     Subclasses set ``_cryptosuite`` (the ``proof.cryptosuite`` string) and
     ``_allowed_algs`` (the JOSE algs the key may use — ``{"EdDSA"}`` for
     eddsa-jcs-2022, ``{"ES256", "ES384"}`` for ecdsa-jcs-2019). The digest and the
-    accepted JWK ``kty``/``crv`` follow from the alg via ``_ALG_PROFILE``, so a
-    cross-type key (e.g. an Ed25519 key under an ``ecdsa`` cryptosuite) fails closed
-    before it can crash inside the verifier.
+    accepted JWK ``kty``/``crv`` follow from the alg via the shared
+    ``_verify_common.ALG_PROFILE`` / ``match_alg``, so a cross-type key (e.g. an Ed25519
+    key under an ``ecdsa`` cryptosuite) fails closed before it can crash inside the verifier.
     """
 
     _cryptosuite: str
@@ -103,13 +100,7 @@ class _JcsProofSuite:
 
     def _match_alg(self, jwk: dict[str, Any]) -> str:
         """The allowed alg whose (kty, crv) matches *jwk*, or fail closed."""
-        kty, crv = jwk.get("kty"), jwk.get("crv")
-        for alg in sorted(self._allowed_algs):
-            p_kty, p_crv, _ = _ALG_PROFILE[alg]
-            if kty == p_kty and crv == p_crv:
-                return alg
-        raise ProofMalformed(
-            f"{self._cryptosuite} does not accept a kty={kty!r} crv={crv!r} key")
+        return match_alg(jwk, self._allowed_algs, cryptosuite=self._cryptosuite)
 
     def add_proof(
         self,
@@ -155,7 +146,7 @@ class _JcsProofSuite:
         proof_config = dict(proof)
         proof_config["@context"] = credential["@context"]
 
-        hash_name = _ALG_PROFILE[signing_key.alg][2]
+        hash_name = ALG_PROFILE[signing_key.alg][2]
         data = _hash_data(_unsecured(credential), proof_config, hash_name)
         signature = signing_key.sign(data)           # raw Ed25519 / ES256 R‖S / ES384 R‖S
 
@@ -211,7 +202,7 @@ class _JcsProofSuite:
         # cross-type key (e.g. an OKP key under ecdsa) before verify_signature would
         # read a wrong JWK member (an OKP key has no "y") and crash.
         alg = self._match_alg(jwk)
-        data = _hash_data(unsecured, proof_config, _ALG_PROFILE[alg][2])
+        data = _hash_data(unsecured, proof_config, ALG_PROFILE[alg][2])
         try:
             ok = verify_signature(
                 alg=alg, public_jwk=jwk, signing_input=data, signature=signature)
