@@ -23,7 +23,10 @@ process. These software classes are for dev, tests, and low-assurance issuance.
 from __future__ import annotations
 
 import base64
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .proof.vc_jwt import SigningKey
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -210,7 +213,7 @@ def verify_signature(
 # Convenience factory
 # --------------------------------------------------------------------------- #
 
-def signing_key_from_jwk(jwk: dict[str, Any], kid: str):
+def signing_key_from_jwk(jwk: dict[str, Any], kid: str) -> "SigningKey":
     """Dispatch to the right backend from a private JWK."""
     kty, crv = jwk.get("kty"), jwk.get("crv")
     if kty == "OKP" and crv == "Ed25519":

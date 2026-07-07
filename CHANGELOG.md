@@ -38,6 +38,11 @@ milestone; it ships once that work is complete.
   SigningKey backend, injected resolvers), and an attacker-capability → control map
   (alg-confusion, issuer impersonation, SSRF, decompression bomb, replay, temporal,
   selective-disclosure) for audit readiness. ([#16](https://github.com/luisgf/openvc/issues/16))
+- **Stricter typing of the shipped surface** — mypy now enforces
+  `disallow_untyped_defs` / `disallow_incomplete_defs` / `no_implicit_optional`, and
+  the remaining annotation gaps are filled, so a downstream type-checker consuming
+  openvc's `py.typed` annotations is not degraded.
+  ([#15](https://github.com/luisgf/openvc/issues/15))
 
 ### Changed
 

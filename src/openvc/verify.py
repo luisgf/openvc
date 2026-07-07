@@ -50,7 +50,10 @@ import base64
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Sequence, Union
+from typing import TYPE_CHECKING, Any, Sequence, Union
+
+if TYPE_CHECKING:
+    from .did.base import DidResolverRegistry
 
 from .errors import OpenvcError
 from .proof._verify_common import DEFAULT_LEEWAY_S
@@ -150,7 +153,7 @@ class VerificationResult:
 # Default resolver
 # --------------------------------------------------------------------------- #
 
-def default_resolver():
+def default_resolver() -> "DidResolverRegistry":
     """A :class:`DidResolverRegistry` with the offline ``did:key`` and ``did:jwk``
     resolvers and the SSRF-guarded ``did:web`` resolver — the pipeline's default
     when none is passed. (``did:web`` only reaches the network when a ``did:web``
@@ -302,9 +305,10 @@ def verify_credential(
 
 # -- per-format handlers ---------------------------------------------------- #
 
-def _verify_vc_jwt(token, policy, resolver, resolve_status_list,
-                   resolve_status_list_token, resolve_credential_schema,
-                   jwt_vc_issuer_fetch, x5c_trust_anchors) -> VerificationResult:
+def _verify_vc_jwt(token: str, policy: VerificationPolicy, resolver: Any,
+                   resolve_status_list: Any, resolve_status_list_token: Any,
+                   resolve_credential_schema: Any, jwt_vc_issuer_fetch: Any,
+                   x5c_trust_anchors: Any) -> VerificationResult:
     from .proof.vc_jwt import VcJwtProofSuite
 
     suite = VcJwtProofSuite(leeway_s=policy.leeway_s)
@@ -325,9 +329,10 @@ def _verify_vc_jwt(token, policy, resolver, resolve_status_list,
         schema=schema, raw=verified)
 
 
-def _verify_sd_jwt(sd_jwt, policy, resolver, resolve_status_list,
-                   resolve_status_list_token, resolve_credential_schema,
-                   jwt_vc_issuer_fetch, x5c_trust_anchors) -> VerificationResult:
+def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
+                   resolve_status_list: Any, resolve_status_list_token: Any,
+                   resolve_credential_schema: Any, jwt_vc_issuer_fetch: Any,
+                   x5c_trust_anchors: Any) -> VerificationResult:
     from .proof.sd_jwt import SdJwtVcProofSuite
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
@@ -352,8 +357,9 @@ def _verify_sd_jwt(sd_jwt, policy, resolver, resolve_status_list,
 
 
 def _verify_data_integrity(
-    doc, fmt, policy, resolver, resolve_status_list, resolve_status_list_token,
-    resolve_credential_schema, extra_contexts,
+    doc: dict[str, Any], fmt: str, policy: VerificationPolicy, resolver: Any,
+    resolve_status_list: Any, resolve_status_list_token: Any,
+    resolve_credential_schema: Any, extra_contexts: Any,
 ) -> VerificationResult:
     if fmt == FORMAT_DI_ECDSA_SD:
         from .proof.ecdsa_sd import EcdsaSdProofSuite
