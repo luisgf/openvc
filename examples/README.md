@@ -17,6 +17,7 @@ python examples/01_verify_pipeline.py
 | `04_status_list.py` | publish a Bitstring status list, stamp a `credentialStatus`, revoke by flipping the bit |
 | `05_vp_jwt_presentation.py` | a holder wraps a credential in a VP-JWT bound to a verifier (`aud`/`nonce`); verify cascade-checks each embedded credential with holder binding |
 | `06_remote_signing_key.py` | a remote `SigningKey` backend (AWS KMS / Vault / PKCS#11 pattern) — the private key never enters the process; shows the DER→R‖S conversion ES256 needs |
+| `07_jcs_no_pyld.py` | JCS Data Integrity (`eddsa-jcs-2022` / `ecdsa-jcs-2019`): whole-document proofs canonicalized with RFC 8785 — verified through the pipeline with **no `[data-integrity]` extra** |
 
 `_common.py` holds the shared `did_key_ed25519()` / `did_key_p256()` helpers that
 mint a signing key already keyed to its `did:key` verification method.

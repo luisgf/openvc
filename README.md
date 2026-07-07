@@ -3,7 +3,8 @@
 A small, dependency-light **Verifiable Credentials core** for Python: sign and
 verify credentials in three proof formats — **VC-JWT** (JOSE), **SD-JWT VC**
 (selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022` and the
-selective-disclosure `ecdsa-sd-2023`) — resolve issuer keys by **DID**
+selective-disclosure `ecdsa-sd-2023` over RDF, plus `eddsa-jcs-2022` /
+`ecdsa-jcs-2019` over RFC 8785 JCS with no `pyld`) — resolve issuer keys by **DID**
 (`did:key`, `did:jwk`, `did:web`), by **`/.well-known/jwt-vc-issuer`**, or by
 **X.509 `x5c`** chain — issue and check
 **status-list** revocation, and — via an optional plugin — verify against the
@@ -38,6 +39,8 @@ src/openvc/                core — knows nothing about EBSI or badges
     proof/sd_jwt.py        SdJwtVcProofSuite: issue / present (key binding) / verify
     proof/data_integrity.py DataIntegrityProofSuite: eddsa-rdfc-2022 (needs pyld)
     proof/ecdsa_sd.py      EcdsaSdProofSuite: ecdsa-sd-2023 selective disclosure
+    proof/di_jcs.py        Eddsa/EcdsaJcsProofSuite: eddsa-jcs-2022 / ecdsa-jcs-2019 (RFC 8785 JCS, no pyld)
+    proof/_jcs.py          RFC 8785 JSON Canonicalization Scheme (hand-rolled, stdlib)
     proof/vp_jwt.py        VpJwtProofSuite: holder presentations (VP-JWT) + cascade
     proof/contexts/        bundled JSON-LD contexts + offline document loader
     did/base.py            DidDocument, resolver protocol, W3C parser, registry

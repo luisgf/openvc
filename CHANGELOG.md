@@ -4,6 +4,33 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — unreleased
+
+This heading accumulates the [1.1 — EUDI interop](https://github.com/luisgf/openvc/milestone/3)
+milestone; it ships once that work is complete.
+
+### Added
+
+- **JCS Data Integrity cryptosuites — `eddsa-jcs-2022` and `ecdsa-jcs-2019`.** A
+  whole-document Data Integrity path that canonicalizes with **RFC 8785 JSON
+  Canonicalization Scheme** instead of RDF N-Quads, so it needs **no `pyld`** — the
+  hand-rolled canonicalizer (`openvc.proof._jcs`) is pure stdlib, including a
+  correct ECMAScript `Number.prototype.toString` serializer and UTF-16 code-unit
+  member ordering. New `openvc.proof.di_jcs` exposes `EddsaJcsProofSuite` (Ed25519)
+  and `EcdsaJcsProofSuite` (ECDSA P-256 / SHA-256); the verify pipeline
+  (`verify_credential`) detects and dispatches both. The canonicalizer is pinned
+  byte-for-byte to the WebPKI/cyberphone RFC 8785 reference suite and the RFC 8785
+  Appendix B number table, and the `eddsa-jcs-2022` suite is pinned to the W3C
+  *Data Integrity EdDSA Cryptosuites v1.0* Recommendation worked example (both
+  SHA-256 hashes reproduced, and its published Ed25519 `proofValue` verified end to
+  end via `did:key`). Verification **fails closed** on hostile input — non-finite
+  numbers (`json` accepts `NaN`/`Infinity` by default), deeply-nested documents, a
+  cross-curve verification key, or a wrong-length signature all raise a typed
+  `ProofError`, never a bare exception — hardened after an adversarial review and a
+  differential number-serialization fuzz against the reference oracle. The RDF
+  `eddsa-rdfc-2022` / `ecdsa-sd-2023` suites are unchanged.
+  ([#17](https://github.com/luisgf/openvc/issues/17))
+
 ## [1.0.1] — 2026-07-07
 
 ### Security
@@ -405,6 +432,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.1.0]: https://github.com/luisgf/openvc/releases/tag/v1.1.0
 [1.0.1]: https://github.com/luisgf/openvc/releases/tag/v1.0.1
 [1.0.0]: https://github.com/luisgf/openvc/releases/tag/v1.0.0
 [0.9.0]: https://github.com/luisgf/openvc/releases/tag/v0.9.0

@@ -4,7 +4,8 @@ openvc.verify — the generic verification pipeline.
 One call, :func:`verify_credential`, that
 
   1. **detects the format** — VC-JWT, SD-JWT VC, Data Integrity (eddsa-rdfc-2022 /
-     ecdsa-sd-2023), or an enveloped VCDM 2.0 credential;
+     ecdsa-sd-2023 over RDF, or eddsa-jcs-2022 / ecdsa-jcs-2019 over RFC 8785 JCS),
+     or an enveloped VCDM 2.0 credential;
   2. **resolves the issuer key** via a :class:`~openvc.did.base.DidResolverRegistry`
      (JOSE formats peek the untrusted ``iss``/``kid``; Data Integrity resolves the
      proof's ``verificationMethod``);
@@ -81,11 +82,15 @@ FORMAT_VC_JWT = "vc-jwt"
 FORMAT_SD_JWT_VC = "sd-jwt-vc"
 FORMAT_DI_EDDSA = "data-integrity:eddsa-rdfc-2022"
 FORMAT_DI_ECDSA_SD = "data-integrity:ecdsa-sd-2023"
+FORMAT_DI_EDDSA_JCS = "data-integrity:eddsa-jcs-2022"
+FORMAT_DI_ECDSA_JCS = "data-integrity:ecdsa-jcs-2019"
 FORMAT_ENVELOPED = "enveloped-verifiable-credential"
 
 _CRYPTOSUITE_FORMAT = {
     "eddsa-rdfc-2022": FORMAT_DI_EDDSA,
     "ecdsa-sd-2023": FORMAT_DI_ECDSA_SD,
+    "eddsa-jcs-2022": FORMAT_DI_EDDSA_JCS,
+    "ecdsa-jcs-2019": FORMAT_DI_ECDSA_JCS,
 }
 
 
@@ -364,13 +369,26 @@ def _verify_data_integrity(
     if fmt == FORMAT_DI_ECDSA_SD:
         from .proof.ecdsa_sd import EcdsaSdProofSuite
         suite: Any = EcdsaSdProofSuite(leeway_s=policy.leeway_s)
+    elif fmt == FORMAT_DI_EDDSA_JCS:
+        from .proof.di_jcs import EddsaJcsProofSuite
+        suite = EddsaJcsProofSuite(leeway_s=policy.leeway_s)
+    elif fmt == FORMAT_DI_ECDSA_JCS:
+        from .proof.di_jcs import EcdsaJcsProofSuite
+        suite = EcdsaJcsProofSuite(leeway_s=policy.leeway_s)
     else:
         from .proof.data_integrity import DataIntegrityProofSuite
         suite = DataIntegrityProofSuite(leeway_s=policy.leeway_s)
 
-    verified = suite.verify(
-        doc, resolver=resolver, expected_proof_purpose=policy.proof_purpose,
-        now=policy.now, extra_contexts=extra_contexts)
+    # The JCS suites canonicalize with RFC 8785 (no JSON-LD term resolution), so —
+    # unlike the RDF suites — they take no extra_contexts.
+    if fmt in (FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS):
+        verified = suite.verify(
+            doc, resolver=resolver, expected_proof_purpose=policy.proof_purpose,
+            now=policy.now)
+    else:
+        verified = suite.verify(
+            doc, resolver=resolver, expected_proof_purpose=policy.proof_purpose,
+            now=policy.now, extra_contexts=extra_contexts)
     _bind_issuer_to_verification_method(verified)
     _check_types(verified.credential, policy.expected_types)
     # DI credentials use W3C credentialStatus, but pass the doc as the IETF source
