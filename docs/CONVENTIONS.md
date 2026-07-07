@@ -40,6 +40,13 @@ leading-underscore module or name — `openvc.proof._verify_common`, `openvc.pro
 policy errors and `check_*` verbs `_verify_common` defines are stable only via
 `openvc.proof.errors` (errors) and the suites (checks).
 
+**Return-object contract.** The `frozen` dataclasses consumers destructure —
+`VerificationResult`, `VerificationPolicy`, and the per-suite `Verified*` results —
+carry a fixed set of fields that is **frozen public API and add-only**: a field may
+be added (with a default, so old constructions keep working) but not removed,
+renamed, or reordered without a major bump and a CHANGELOG note. `tests/test_return_contract.py`
+pins the exact fields as a drift alarm.
+
 ## Casing (PEP 8)
 
 - Classes and type aliases: `PascalCase` (`VcJwtProofSuite`, `ResolveStatusList`).
