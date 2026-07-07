@@ -104,8 +104,8 @@ def consume_trust_list(
     if verify_signature is None:
         raise TrustListSignatureUnavailable(
             "no verify_signature callback given; a trust list is never trusted "
-            "unverified (inject one — a reference XAdES verifier ships in the "
-            "[trustlist] extra)")
+            "unverified (pass openvc.trustlist.verify_xades_enveloped from the "
+            "[trustlist] extra, or inject your own)")
     try:
         verify_signature(bytes(xml), tuple(expected_signer_certs))
     except TrustListError:

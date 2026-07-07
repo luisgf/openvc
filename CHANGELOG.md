@@ -4,6 +4,27 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — unreleased
+
+Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
+
+### Added
+
+- **Reference XAdES verifier for EU Trusted Lists (the `[trustlist]` extra).** New
+  `openvc.trustlist.verify_xades_enveloped` — the batteries-included, fail-closed
+  `verify_signature` callback that `walk_lotl` / `consume_trust_list` need: it checks a
+  Trusted List's enveloped XAdES / XML-DSig signature verifies against **one of** the
+  expected signer certificates (the ones the parent list vouched for), pinning trust to
+  those certs — an authentic-but-unexpected signer, a wrong key, or tampered content all
+  fail. Completes the LOTL→TL trust anchoring from [#26](https://github.com/luisgf/openvc/issues/26)
+  (part 1 landed the parser + fail-closed walk with signature verification injected). It
+  lives behind a new **`[trustlist]` extra** (`signxml`, which pulls `lxml` — kept out of
+  core; loaded lazily, only when verifying); without it, verification raises
+  `TrustListSignatureBackendUnavailable`. `signxml` forbids DTDs, so XXE / entity-expansion
+  are rejected; input is size-bounded. Proven by a sign→verify round-trip and a full
+  `walk_lotl` over a signed LOTL + national TL, incl. a forged-national-TL fail-closed
+  case. ([#26](https://github.com/luisgf/openvc/issues/26))
+
 ## [1.8.0] — 2026-07-07
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.

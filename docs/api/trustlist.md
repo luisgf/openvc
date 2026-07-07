@@ -8,13 +8,13 @@ adds no verification surface; [`openvc.x5c`](dids-keys.md) stays the path valida
 
 ```python
 from openvc import verify_credential
-from openvc.trustlist import walk_lotl
+from openvc.trustlist import walk_lotl, verify_xades_enveloped
 from openvc.fetch import https_bytes_fetch
 
 anchors = walk_lotl(
     "https://ec.europa.eu/tools/lotl/eu-lotl.xml",
     lotl_signer_certs=[commission_cert],     # caller-pinned root — no implicit trust
-    verify_signature=my_xades_verifier,      # injected, fail-closed
+    verify_signature=verify_xades_enveloped, # the [trustlist] extra's XAdES verifier
     fetch=https_bytes_fetch)
 verify_credential(vc, x5c_trust_anchors=anchors.certificates)
 ```
@@ -22,8 +22,9 @@ verify_credential(vc, x5c_trust_anchors=anchors.certificates)
 Trust is **caller-pinned** (the LOTL signer certs), **fail-closed** (a list that
 cannot be fetched, verified, or is expired contributes zero anchors and is recorded
 in `problems`), and **selective** (default: `granted` qualified-CA services). XML
-parsing is hardened stdlib (no DTD/XXE, bounded); XML-signature (XAdES) verification
-is an **injected callback** kept out of core. See
+parsing is hardened stdlib (no DTD/XXE, bounded). XML-signature (XAdES) verification
+is an **injected callback** kept out of core: install `openvc-core[trustlist]` for
+the reference `verify_xades_enveloped` (`signxml`), or inject your own. See
 [ADR-0003](../adr/ADR-0003-eu-trusted-lists.md).
 
 ::: openvc.trustlist

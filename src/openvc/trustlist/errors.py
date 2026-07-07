@@ -15,9 +15,9 @@ class TrustListParseError(TrustListError):
 
 class TrustListSignatureUnavailable(TrustListError):
     """A Trusted List had to be verified but no ``verify_signature`` callback was
-    supplied (fail-closed — a list is never trusted unverified). Inject a
-    ``verify_signature`` (a reference XAdES one will ship in the ``[trustlist]``
-    extra)."""
+    supplied (fail-closed — a list is never trusted unverified). Pass the reference
+    :func:`openvc.trustlist.verify_xades_enveloped` (``pip install
+    openvc-core[trustlist]``), or inject your own."""
 
 
 class TrustListSignatureError(TrustListError):
@@ -25,9 +25,18 @@ class TrustListSignatureError(TrustListError):
     certificate(s) — the list is not authentic."""
 
 
+class TrustListSignatureBackendUnavailable(TrustListSignatureUnavailable):
+    """XAdES signature verification was requested (via the reference
+    :func:`openvc.trustlist.verify_xades_enveloped`) but the ``[trustlist]`` extra
+    (``signxml``) is not installed (``pip install openvc-core[trustlist]``). A
+    subclass of :class:`TrustListSignatureUnavailable`: no verifier is available, so
+    a list is still never trusted unverified."""
+
+
 __all__ = [
     "TrustListError",
     "TrustListParseError",
+    "TrustListSignatureBackendUnavailable",
     "TrustListSignatureError",
     "TrustListSignatureUnavailable",
 ]

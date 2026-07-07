@@ -83,6 +83,7 @@ The PyPI distribution is **`openvc-core`**; the Python import package is
 pip install openvc-core                    # core: VC-JWT, did:key, did:web, status list
 pip install "openvc-core[ebsi]"            # + the EBSI registry client (httpx)
 pip install "openvc-core[data-integrity]"  # + RDF Data Integrity: eddsa/ecdsa-rdfc (pyld)
+pip install "openvc-core[trustlist]"       # + EU Trusted List XAdES verification (signxml)
 pip install -e ".[all]"                    # everything + dev tools (from a checkout)
 ```
 
