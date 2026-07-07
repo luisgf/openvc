@@ -117,7 +117,8 @@ class TirV4(TirAdapter):
     def issuer_url(self, base: str, did: str) -> str:
         return f"{base}/trusted-issuers-registry/{self.version}/issuers/{did}"
 
-    def parse_issuer(self, raw, *, base, did, fetch, decode) -> IssuerRecord:
+    def parse_issuer(self, raw: Any, *, base: str, did: str, fetch: Any,
+                     decode: Any) -> IssuerRecord:
         accs = [
             Accreditation(
                 attribute_id=a.get("hash", ""),
@@ -147,7 +148,8 @@ class TirV5(TirAdapter):
     def issuer_url(self, base: str, did: str) -> str:
         return f"{base}/trusted-issuers-registry/{self.version}/issuers/{did}"
 
-    def parse_issuer(self, raw, *, base, did, fetch, decode) -> IssuerRecord:
+    def parse_issuer(self, raw: Any, *, base: str, did: str, fetch: Any,
+                     decode: Any) -> IssuerRecord:
         has_attrs = bool(raw.get("hasAttributes", False))
         accs: list[Accreditation] = []
         if has_attrs:
