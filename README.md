@@ -8,9 +8,9 @@ selective-disclosure `ecdsa-sd-2023` over RDF, plus `eddsa-jcs-2022` /
 (`did:key`, `did:jwk`, `did:web`), by **`/.well-known/jwt-vc-issuer`**, or by
 **X.509 `x5c`** chain — issue and check
 **status-list** revocation, verify a stateless **OpenID4VP 1.0** presentation
-(`vp_token`), and — via an optional plugin — verify against the **EBSI** trust
-registries. Designed so private keys can live behind an **HSM/Vault** and never
-enter the process.
+(`vp_token`, incl. **HAIP** `direct_post.jwt` JWE-encrypted responses), and — via an
+optional plugin — verify against the **EBSI** trust registries. Designed so private
+keys can live behind an **HSM/Vault** and never enter the process.
 
 It is intentionally *not* an Open Badges library: `openvc` is the generic VC
 machinery that a badge issuer (or an EBSI verifier, or a EUDI wallet backend)
@@ -56,6 +56,7 @@ src/openvc/                core — knows nothing about EBSI or badges
     errors.py              OpenvcError — the root of every error family
     verify.py              verify_credential: one-call pipeline over every format
     openid4vp.py           verify_vp_token: stateless OpenID4VP 1.0 vp_token verifier
+    jwe.py                 decrypt_compact: JWE ECDH-ES decrypt for HAIP responses
 src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
     http.py                EbsiHttpClient: TTL cache, retries, host allow-list
     versioning.py          DID Registry / TIR version adapters + DidEbsiResolver

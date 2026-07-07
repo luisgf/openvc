@@ -16,13 +16,14 @@ from .verify import (  # noqa: E402
     VerificationResult,
     verify_credential,
 )
-from .openid4vp import verify_vp_token  # noqa: E402
+from .openid4vp import verify_encrypted_vp_response, verify_vp_token  # noqa: E402
 
 __all__ = [
     "__version__",
     "OpenvcError",
     "verify_credential",
     "verify_vp_token",
+    "verify_encrypted_vp_response",
     "VerificationPolicy",
     "VerificationResult",
     "VerificationError",

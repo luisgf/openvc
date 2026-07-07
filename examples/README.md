@@ -19,6 +19,7 @@ python examples/01_verify_pipeline.py
 | `06_remote_signing_key.py` | a remote `SigningKey` backend (AWS KMS / Vault / PKCS#11 pattern) — the private key never enters the process; shows the DER→R‖S conversion ES256 needs |
 | `07_jcs_no_pyld.py` | JCS Data Integrity (`eddsa-jcs-2022` / `ecdsa-jcs-2019`): whole-document proofs canonicalized with RFC 8785 — verified through the pipeline with **no `[data-integrity]` extra** |
 | `08_openid4vp_verify.py` | verify a stateless OpenID4VP 1.0 `vp_token`: a holder presents an SD-JWT VC + KB-JWT bound to the verifier's `nonce`/`client_id`; the verifier checks the DCQL-keyed shape and the binding |
+| `09_haip_encrypted_response.py` | HAIP `direct_post.jwt`: the wallet returns the `vp_token` inside a JWE (`ECDH-ES`/AES-GCM); the verifier decrypts with its `KeyAgreementKey` and verifies in one call (`verify_encrypted_vp_response`) |
 
 `_common.py` holds the shared `did_key_ed25519()` / `did_key_p256()` helpers that
 mint a signing key already keyed to its `did:key` verification method.
