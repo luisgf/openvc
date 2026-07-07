@@ -3,7 +3,8 @@
 A small, **dependency-light Verifiable Credentials core** for Python. It signs and
 verifies credentials in three proof formats — **VC-JWT** (JOSE), **SD-JWT VC**
 (selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022` and the
-selective-disclosure `ecdsa-sd-2023`) — resolves issuer keys by **DID**
+selective-disclosure `ecdsa-sd-2023` over RDF, plus `eddsa-jcs-2022` /
+`ecdsa-jcs-2019` over RFC 8785 JCS with no `pyld`) — resolves issuer keys by **DID**
 (`did:key`, `did:jwk`, `did:web`), by **`/.well-known/jwt-vc-issuer`**, or by
 **X.509 `x5c`** chain, issues and checks **status-list** revocation, verifies
 **holder presentations** (VP-JWT), and — via an optional plugin — verifies against

@@ -18,6 +18,10 @@ Each proof format is one suite behind the same key/verify primitives.
 
 ::: openvc.proof.ecdsa_sd
 
+## Data Integrity — eddsa-jcs-2022 / ecdsa-jcs-2019 (RFC 8785 JCS, no pyld)
+
+::: openvc.proof.di_jcs
+
 ## VP-JWT — holder presentations
 
 ::: openvc.proof.vp_jwt
