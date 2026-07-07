@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.10.0] — unreleased
+## [1.8.0] — 2026-07-07
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
 
@@ -28,13 +28,6 @@ Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4)
   follows). Generic — not EBSI-coupled. See
   [ADR-0003](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0003-eu-trusted-lists.md).
   ([#26](https://github.com/luisgf/openvc/issues/26))
-
-## [1.9.0] — unreleased
-
-Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
-
-### Added
-
 - **Async-friendly verification (`openvc.aio`).** New `verify_credential_async` /
   `verify_many_async` — the async counterparts of `verify_credential` / `verify_many`
   for asyncio servers (FastAPI/Starlette), so a handler `await`s verification instead of
@@ -54,13 +47,6 @@ Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4)
   `verify_many_async` deliberately does not port the sync batch's cross-credential resolver
   cache (not concurrency-safe — ADR-0002 D4); overlapping the I/O is the win.
   ([#27](https://github.com/luisgf/openvc/issues/27))
-
-## [1.8.0] — unreleased
-
-Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
-
-### Added
-
 - **`JsonSchemaCredential` — the schema-in-a-VC type.** `openvc.schema` now validates a
   `credentialSchema` entry of type `JsonSchemaCredential`, where the schema a credential
   points at is itself a **signed Verifiable Credential**. The pipeline fetches that VC,
@@ -671,6 +657,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.8.0]: https://github.com/luisgf/openvc/releases/tag/v1.8.0
 [1.7.0]: https://github.com/luisgf/openvc/releases/tag/v1.7.0
 [1.6.0]: https://github.com/luisgf/openvc/releases/tag/v1.6.0
 [1.5.0]: https://github.com/luisgf/openvc/releases/tag/v1.5.0
