@@ -12,7 +12,7 @@ did:web and did:ebsi alike, so they belong in the core.)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Awaitable, Protocol, runtime_checkable
 
 from ..errors import OpenvcError
 
@@ -161,7 +161,64 @@ class DidResolverRegistry:
         raise UnsupportedDidMethod(f"no resolver for {did!r}")
 
 
+# --------------------------------------------------------------------------- #
+# Async variants (additive — see docs/adr/ADR-0002-async-verification.md)
+# --------------------------------------------------------------------------- #
+
+@runtime_checkable
+class AsyncDidResolver(Protocol):
+    """The async counterpart of :class:`DidResolver`: ``supports`` stays a plain
+    predicate (no I/O), ``resolve`` is awaitable so a backend can await a non-blocking
+    fetch. A sync resolver is adapted to this shape by :func:`as_async_resolver`."""
+    def supports(self, did: str) -> bool:
+        """Whether this resolver handles *did* (its DID method)."""
+    def resolve(self, did: str) -> Awaitable[DidDocument]:
+        """Resolve *did* to a :class:`DidDocument`, or raise :class:`DidResolutionError`."""
+
+
+class _SyncResolverAsAsync:
+    """Adapts a sync :class:`DidResolver` to :class:`AsyncDidResolver`. Used for the
+    offline methods (did:key / did:jwk) whose ``resolve`` is pure compute — the
+    coroutine awaits nothing and returns immediately."""
+    def __init__(self, resolver: DidResolver) -> None:
+        self._resolver = resolver
+
+    def supports(self, did: str) -> bool:
+        return self._resolver.supports(did)
+
+    async def resolve(self, did: str) -> DidDocument:
+        return self._resolver.resolve(did)
+
+
+def as_async_resolver(resolver: DidResolver) -> AsyncDidResolver:
+    """Wrap a sync :class:`DidResolver` as an :class:`AsyncDidResolver` (its
+    ``resolve`` awaits nothing). Lets an offline did:key / did:jwk resolver — or any
+    sync resolver whose blocking is acceptable — drop into an async registry."""
+    return _SyncResolverAsAsync(resolver)
+
+
+class AsyncDidResolverRegistry:
+    """The async counterpart of :class:`DidResolverRegistry`: dispatches an awaitable
+    ``resolve`` to the first :class:`AsyncDidResolver` that supports the DID."""
+
+    def __init__(self, resolvers: list[AsyncDidResolver] | None = None) -> None:
+        self._resolvers: list[AsyncDidResolver] = list(resolvers or [])
+
+    def register(self, resolver: AsyncDidResolver) -> None:
+        """Add a resolver (consulted in registration order)."""
+        self._resolvers.append(resolver)
+
+    async def resolve(self, did: str) -> DidDocument:
+        """Resolve *did* via the first matching resolver, else raise ``UnsupportedDidMethod``."""
+        for r in self._resolvers:
+            if r.supports(did):
+                return await r.resolve(did)
+        raise UnsupportedDidMethod(f"no resolver for {did!r}")
+
+
 __all__ = [
+    "AsyncDidResolver",
+    "AsyncDidResolverRegistry",
     "DidDocument",
     "DidError",
     "DidResolutionError",
@@ -170,5 +227,6 @@ __all__ = [
     "RELATIONSHIP_KEYS",
     "UnsupportedDidMethod",
     "VerificationMethod",
+    "as_async_resolver",
     "parse_did_document",
 ]

@@ -25,7 +25,7 @@ from __future__ import annotations
 import base64
 import zlib
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from ..observability import logger, span
 from ._decompress import DecompressionBomb, inflate_bounded
@@ -120,6 +120,8 @@ def set_status(data: bytearray, index: int, value: int, *, bits: int = 1) -> Non
 # "status_list": {"bits", "lst"} member). Verifying the token's signature and the
 # SSRF policy for its host are the caller's concern, as with the W3C flow.
 ResolveStatusListToken = Callable[[str], dict]
+# The async counterpart: the same, returning an awaitable.
+AsyncResolveStatusListToken = Callable[[str], Awaitable[dict]]
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,24 @@ def _status_list_claim(token_claims: dict[str, Any]) -> tuple[int, str]:
     return bits, lst
 
 
+def _token_status_result(
+    ref: TokenStatusRef, token_claims: dict[str, Any]
+) -> TokenStatusResult:
+    """Decode a resolved status-list token and read this token's status (pure —
+    shared by the sync and async checks)."""
+    bits, lst = _status_list_claim(token_claims)
+    value = get_status(decode_status_list(lst), ref.index, bits=bits)
+    result = TokenStatusResult(
+        ref=ref,
+        status=value,
+        revoked=value == STATUS_INVALID,
+        suspended=value == STATUS_SUSPENDED,
+    )
+    logger.debug("token status checked: revoked=%s suspended=%s",
+                 result.revoked, result.suspended)
+    return result
+
+
 def check_token_status(
     claims: dict[str, Any], *, resolve_status_list_token: ResolveStatusListToken
 ) -> TokenStatusResult | None:
@@ -183,20 +203,25 @@ def check_token_status(
         return None
     with span("openvc.status"):
         token_claims = resolve_status_list_token(ref.uri)
-        bits, lst = _status_list_claim(token_claims)
-        value = get_status(decode_status_list(lst), ref.index, bits=bits)
-    result = TokenStatusResult(
-        ref=ref,
-        status=value,
-        revoked=value == STATUS_INVALID,
-        suspended=value == STATUS_SUSPENDED,
-    )
-    logger.debug("token status checked: revoked=%s suspended=%s",
-                 result.revoked, result.suspended)
-    return result
+        return _token_status_result(ref, token_claims)
+
+
+async def check_token_status_async(
+    claims: dict[str, Any], *, resolve_status_list_token: AsyncResolveStatusListToken
+) -> TokenStatusResult | None:
+    """Async :func:`check_token_status` — awaits an async ``resolve_status_list_token``;
+    identical decoding and fail-closed semantics (the status-reading is the same
+    pure code)."""
+    ref = parse_token_status_ref(claims)
+    if ref is None:
+        return None
+    with span("openvc.status"):
+        token_claims = await resolve_status_list_token(ref.uri)
+        return _token_status_result(ref, token_claims)
 
 
 __all__ = [
+    "AsyncResolveStatusListToken",
     "ResolveStatusListToken",
     "STATUS_INVALID",
     "STATUS_SUSPENDED",
@@ -204,6 +229,7 @@ __all__ = [
     "TokenStatusRef",
     "TokenStatusResult",
     "check_token_status",
+    "check_token_status_async",
     "decode_status_list",
     "encode_status_list",
     "get_status",

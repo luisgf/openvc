@@ -18,6 +18,7 @@ from .verify import (  # noqa: E402
     verify_credential,
     verify_many,
 )
+from .aio import verify_credential_async, verify_many_async  # noqa: E402
 from .openid4vp import verify_encrypted_vp_response, verify_vp_token  # noqa: E402
 
 __all__ = [
@@ -25,6 +26,8 @@ __all__ = [
     "OpenvcError",
     "verify_credential",
     "verify_many",
+    "verify_credential_async",
+    "verify_many_async",
     "verify_vp_token",
     "verify_encrypted_vp_response",
     "VerificationPolicy",

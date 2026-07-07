@@ -30,9 +30,19 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .fetch import https_bytes_fetch, https_text_fetch
-from .schema import ResolveCredentialSchema
-from .status import ResolveStatusList, ResolveStatusListToken
+from .fetch import (
+    https_bytes_fetch,
+    https_bytes_fetch_async,
+    https_text_fetch,
+    https_text_fetch_async,
+)
+from .schema import AsyncResolveCredentialSchema, ResolveCredentialSchema
+from .status import (
+    AsyncResolveStatusList,
+    AsyncResolveStatusListToken,
+    ResolveStatusList,
+    ResolveStatusListToken,
+)
 from .type_metadata import ResolveTypeMetadata
 
 
@@ -115,9 +125,70 @@ def _as_credential(raw: str) -> Any:
     return obj if isinstance(obj, dict) else text
 
 
+# --------------------------------------------------------------------------- #
+# Async variants (additive — see docs/adr/ADR-0002-async-verification.md). Same
+# guards and same status-verification, over the async fetch + async pipeline.
+# --------------------------------------------------------------------------- #
+
+def default_credential_schema_resolver_async(
+    *, fetch: Any = https_bytes_fetch_async,
+) -> AsyncResolveCredentialSchema:
+    """Async :func:`default_credential_schema_resolver` — fetches the raw schema
+    bytes over the SSRF-guarded async https fetch."""
+    async def resolve(url: str) -> bytes:
+        return await fetch(url)
+    return resolve
+
+
+def default_status_list_resolver_async(
+    *, resolver: Any = None, jwt_vc_issuer_fetch: Any = None,
+    leeway_s: int = 60, extra_contexts: Any = None, fetch: Any = https_text_fetch_async,
+) -> AsyncResolveStatusList:
+    """Async :func:`default_status_list_resolver` — fetches the status-list credential
+    over the SSRF-guarded async fetch and **verifies** it through the async pipeline
+    before returning it. *resolver* is an :class:`AsyncDidResolver`."""
+    async def resolve(url: str) -> dict:
+        from .aio import verify_credential_async
+        from .verify import VerificationPolicy
+        credential = _as_credential(await fetch(url))
+        result = await verify_credential_async(
+            credential, resolver=resolver, jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+            policy=VerificationPolicy(require_status=False, leeway_s=leeway_s),
+            extra_contexts=extra_contexts)
+        return result.credential
+    return resolve
+
+
+def default_status_list_token_resolver_async(
+    *, resolver: Any = None, jwt_vc_issuer_fetch: Any = None,
+    leeway_s: int = 60, fetch: Any = https_text_fetch_async,
+) -> AsyncResolveStatusListToken:
+    """Async :func:`default_status_list_token_resolver` — fetches the ``statuslist+jwt``
+    over the SSRF-guarded async fetch, resolves the issuer key via the async pipeline,
+    and verifies the token (typ + signature + ``exp`` + ``sub`` == the fetched URI)."""
+    async def resolve(uri: str) -> dict:
+        from .aio import _resolve_jose_key_async, default_async_resolver
+        from .proof._jws import parse_compact
+        from .status import StatusListError, verify_status_list_token
+        token = (await fetch(uri)).strip()
+        header, payload, _, _ = parse_compact(token)
+        iss, kid = payload.get("iss"), header.get("kid")
+        if not isinstance(iss, str) or not iss:
+            raise StatusListError(
+                "status list token has no string `iss` to resolve its key")
+        reg = resolver if resolver is not None else default_async_resolver()
+        jwk = await _resolve_jose_key_async(reg, iss, kid, jwt_vc_issuer_fetch)
+        return verify_status_list_token(
+            token, public_key_jwk=jwk, expected_uri=uri, leeway_s=leeway_s)
+    return resolve
+
+
 __all__ = [
     "default_credential_schema_resolver",
+    "default_credential_schema_resolver_async",
     "default_status_list_resolver",
+    "default_status_list_resolver_async",
     "default_status_list_token_resolver",
+    "default_status_list_token_resolver_async",
     "default_type_metadata_resolver",
 ]
