@@ -11,6 +11,20 @@ milestone.
 
 ### Added
 
+- **SD-JWT VC Type Metadata (verifier side).** New `openvc.type_metadata` with
+  `validate_type_metadata(payload, *, vct, vct_integrity, resolve)` — resolves the Type
+  Metadata a credential's `vct` points to (draft-ietf-oauth-sd-jwt-vc-17 §4), pins it
+  with `vct#integrity` (a W3C Subresource-Integrity hash over the raw bytes), enforces
+  `metadata.vct == credential.vct`, walks the `extends` chain (parent-before-child, each
+  integrity-pinned, cycle-/depth-bounded), composes the inherited claim metadata, and
+  validates the processed payload against it — the DCQL-style `path` engine plus
+  `mandatory`. Fetch is opt-in (`openvc.resolvers.default_type_metadata_resolver`, over
+  the SSRF-guarded https fetch) and every failure is fail-closed. Reuses the reviewed
+  digestSRI check and the JSON-fetch guards from the `credentialSchema` work.
+  (Scope note: the draft removed embedded JSON Schema in draft-12, so validation is via
+  the `claims` array, not a JSON Schema; the per-claim `sd` constraint needs disclosure
+  provenance and is a documented non-goal.) Pinned to the draft-17 Appendix B.2 worked
+  example. ([#21](https://github.com/luisgf/openvc/issues/21))
 - **Decrypt HAIP / OpenID4VP 1.0 encrypted responses (`direct_post.jwt`).** New
   `openvc.jwe` with `decrypt_compact(token, *, key)` — a **decrypt-only** JWE Compact
   path for the JWE that wraps a `vp_token` in a HAIP response. Exactly the

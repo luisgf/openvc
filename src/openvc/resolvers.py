@@ -33,6 +33,7 @@ from typing import Any
 from .fetch import https_bytes_fetch, https_text_fetch
 from .schema import ResolveCredentialSchema
 from .status import ResolveStatusList, ResolveStatusListToken
+from .type_metadata import ResolveTypeMetadata
 
 
 def default_credential_schema_resolver(
@@ -41,6 +42,18 @@ def default_credential_schema_resolver(
     """A ``resolve_credential_schema`` that fetches the raw schema bytes over the
     SSRF-guarded https fetch. Returning bytes lets the pipeline verify a
     ``credentialSchema.digestSRI`` over the exact response before parsing."""
+    def resolve(url: str) -> bytes:
+        return fetch(url)
+    return resolve
+
+
+def default_type_metadata_resolver(
+    *, fetch: Any = https_bytes_fetch,
+) -> ResolveTypeMetadata:
+    """A ``resolve`` for :func:`openvc.type_metadata.validate_type_metadata` that
+    fetches the raw Type Metadata bytes from a ``vct`` / ``extends`` URL over the
+    SSRF-guarded https fetch. Returning the exact bytes lets ``vct#integrity`` /
+    ``extends#integrity`` be verified over the response before parsing."""
     def resolve(url: str) -> bytes:
         return fetch(url)
     return resolve
@@ -106,4 +119,5 @@ __all__ = [
     "default_credential_schema_resolver",
     "default_status_list_resolver",
     "default_status_list_token_resolver",
+    "default_type_metadata_resolver",
 ]
