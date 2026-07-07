@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] — unreleased
+## [1.0.0] — 2026-07-07
 
 The first stable release — a frozen, documented public surface. This heading
 accumulates the [1.0 — Stabilize](https://github.com/luisgf/openvc/milestone/2)
