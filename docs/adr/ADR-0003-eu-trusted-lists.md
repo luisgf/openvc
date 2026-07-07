@@ -176,9 +176,10 @@ verify_credential(vc, x5c_trust_anchors=anchors.certificates)   # D1
 ## Resolved in review
 
 1. **XAdES:** ship both — the injected-callback interface in core *and* an optional
-   `[trustlist]` extra (`signxml`) with a reference verifier. The extra lands in PR 2.
-2. **Scope:** two PRs (see *Phasing* above) — parser + walk + fixtures first,
-   `[trustlist]` XAdES extra as a follow-up.
+   `[trustlist]` extra (`signxml`) with a reference verifier. Both landed (PR 2 added
+   the extra).
+2. **Scope:** two PRs (see *Phasing* above) — parser + walk + fixtures first, the
+   `[trustlist]` XAdES extra second.
 3. **Selection defaults:** default to `ServiceStatus.GRANTED` + qualified-CA service
    types (`ServiceType.CA_QC`); the caller can broaden (`select=None` returns every
    service with its metadata).
