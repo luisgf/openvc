@@ -132,6 +132,32 @@ A Data Integrity presentation binds with `challenge` / `domain` instead of
 embedded credentials. See the
 [API reference](https://luisgf.github.io/openvc/) for the exact call surface.
 
+### `ldp_vc` over OpenID4VP
+
+When a DCQL Credential Query uses `format: "ldp_vc"`, the wallet answers with a
+**W3C Verifiable Presentation secured by a Data Integrity `authentication`
+proof** (OpenID4VP 1.0 §B.1). `verify_vp_token` verifies it exactly like the
+JOSE formats, mapping the request binding onto the Data Integrity proof:
+`proof.challenge` must equal the `nonce` and `proof.domain` the full, prefixed
+`client_id`, with `proofPurpose: authentication`. The holder key is resolved
+from the proof's `verificationMethod` (and must be authorised for
+`authentication` in its DID document), and every credential the VP embeds is
+cascade-verified through `verify_credential`. All four whole-document
+cryptosuites are accepted — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (need the
+`[data-integrity]` extra) and `eddsa-jcs-2022` / `ecdsa-jcs-2019` (pyld-free).
+A bare string or a bare credential (no VP wrapper) under an `ldp_vc` query is
+rejected: the holder binding lives only on a presentation proof. `mso_mdoc`
+stays unsupported.
+
+The reported `holder` is the **authenticated** identity — the DID that controls
+the `verificationMethod` that signed the proof, not a self-asserted `holder`
+field (a `holder` that disagrees with the signer is rejected). So to check the
+presenter actually owns a credential, compare its subject to `p.holder`, or pass
+`require_holder_binding=True` to `verify_vp_token` — which enforces, for the W3C
+VP formats (`ldp_vc`, `jwt_vc_json`), that every embedded credential was issued to
+the authenticated holder. It is off by default because a holder may legitimately
+present a third party's credential.
+
 ## Replay: what the bindings buy you
 
 `aud`/`domain` pins the presentation to *your* verifier; `nonce`/`challenge`
