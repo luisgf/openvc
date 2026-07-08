@@ -142,6 +142,7 @@ def verify_vp_token(
     now: datetime | None = None,
     leeway_s: int = DEFAULT_LEEWAY_S,
     extra_contexts: Mapping[str, dict] | None = None,
+    require_holder_binding: bool = False,
 ) -> VpTokenVerification:
     """Verify an OpenID4VP 1.0 ``vp_token`` against the query and request binding.
 
@@ -161,6 +162,15 @@ def verify_vp_token(
     failure rejects the whole response (fail closed). *extra_contexts* is passed to
     the Data Integrity path for ``ldp_vc`` presentations that reference JSON-LD
     contexts beyond the bundled ones (RDF cryptosuites only).
+
+    Every Presentation is cryptographically holder-bound (the KB-JWT for
+    ``dc+sd-jwt``, the holder signature for ``jwt_vc_json`` and ``ldp_vc``), and the
+    reported ``holder`` is the **authenticated** identity — the KB/holder signer, not
+    a self-asserted field. *require_holder_binding* additionally requires, for the W3C
+    VP formats (``ldp_vc``, ``jwt_vc_json``), that every embedded credential was issued
+    to that holder (``credentialSubject.id == holder``) — so a presenter cannot pass
+    off a third party's credential as their own; off by default (a holder may
+    legitimately present another party's credential).
 
     With no ``credential_sets``, every Credential Query is required and its absence is
     rejected. When the query *does* carry ``credential_sets``, per-query completeness
@@ -189,7 +199,8 @@ def verify_vp_token(
             verified.append(_verify_one(
                 query_id, query, presentation,
                 nonce=nonce, client_id=client_id, resolver=resolver,
-                now=now, leeway_s=leeway_s, extra_contexts=extra_contexts))
+                now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
+                require_holder_binding=require_holder_binding))
     return VpTokenVerification(presentations=tuple(verified))
 
 
@@ -204,6 +215,7 @@ def verify_encrypted_vp_response(
     now: datetime | None = None,
     leeway_s: int = DEFAULT_LEEWAY_S,
     extra_contexts: Mapping[str, dict] | None = None,
+    require_holder_binding: bool = False,
 ) -> VpTokenVerification:
     """Decrypt a HAIP ``direct_post.jwt`` response (a JWE) and verify its ``vp_token``.
 
@@ -229,7 +241,8 @@ def verify_encrypted_vp_response(
         raise VpTokenMalformed("decrypted response has no vp_token member")
     return verify_vp_token(
         payload["vp_token"], dcql_query=dcql_query, nonce=nonce, client_id=client_id,
-        resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts)
+        resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
+        require_holder_binding=require_holder_binding)
 
 
 def _parse_vp_token(vp_token: Mapping[str, Any] | str) -> Mapping[str, Any]:
@@ -297,7 +310,7 @@ def _presentation_list(query_id: str, query: Mapping[str, Any], value: Any) -> l
 def _verify_one(
     query_id: str, query: Mapping[str, Any], presentation: Any, *,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
-    extra_contexts: Mapping[str, dict] | None,
+    extra_contexts: Mapping[str, dict] | None, require_holder_binding: bool,
 ) -> VerifiedPresentation:
     fmt = query["format"]
     if fmt == FORMAT_SD_JWT_VC:
@@ -307,11 +320,13 @@ def _verify_one(
     if fmt == FORMAT_JWT_VC:
         return _verify_jwt_vp(
             query_id, presentation,
-            nonce=nonce, client_id=client_id, resolver=resolver, leeway_s=leeway_s)
+            nonce=nonce, client_id=client_id, resolver=resolver, leeway_s=leeway_s,
+            require_holder_binding=require_holder_binding)
     if fmt == FORMAT_LDP_VC:
         return _verify_ldp_vp(
             query_id, presentation, nonce=nonce, client_id=client_id, resolver=resolver,
-            now=now, leeway_s=leeway_s, extra_contexts=extra_contexts)
+            now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
+            require_holder_binding=require_holder_binding)
     if fmt == FORMAT_MSO_MDOC:
         raise UnsupportedPresentationFormat(
             f"Credential Query {query_id!r} format {fmt!r} is not yet supported")
@@ -360,14 +375,18 @@ def _verify_sd_jwt_vc(
 def _verify_jwt_vp(
     query_id: str, presentation: Any, *,
     nonce: str, client_id: str, resolver: Any, leeway_s: int,
+    require_holder_binding: bool = False,
 ) -> VerifiedPresentation:
     from .proof.vp_jwt import VpJwtProofSuite
 
     if not isinstance(presentation, str):
         raise VpTokenMalformed(
             f"a {FORMAT_JWT_VC} Presentation for {query_id!r} must be a compact JWT string")
+    # resolver mode authenticates the holder from `iss`, so require_holder_binding binds
+    # subject==holder without needing expected_holder (VP-JWT enforces that invariant).
     verified = VpJwtProofSuite(leeway_s=leeway_s).verify(
-        presentation, audience=client_id, nonce=nonce, resolver=resolver)
+        presentation, audience=client_id, nonce=nonce, resolver=resolver,
+        require_holder_binding=require_holder_binding)
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_JWT_VC, holder=verified.holder,
         credentials=tuple(verified.credentials), raw=verified)
@@ -376,7 +395,7 @@ def _verify_jwt_vp(
 def _verify_ldp_vp(
     query_id: str, presentation: Any, *,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
-    extra_contexts: Mapping[str, dict] | None,
+    extra_contexts: Mapping[str, dict] | None, require_holder_binding: bool,
 ) -> VerifiedPresentation:
     from .verify import VerificationPolicy, verify_credential
 
@@ -427,6 +446,12 @@ def _verify_ldp_vp(
         verify_kwargs["extra_contexts"] = extra_contexts
     verified_vp = suite.verify(dict(presentation), **verify_kwargs)
 
+    # The AUTHENTICATED holder is the controller of the verificationMethod whose key
+    # just signed (and was authorised for `authentication`) — never the self-asserted
+    # `holder` field. Binding + reporting must key off the signer so a caller's
+    # "did the presenter own this credential?" check cannot be spoofed.
+    holder = _vp_holder(query_id, presentation, verified_vp.proof)
+
     # Cascade-verify each embedded credential through the pipeline (fail closed).
     policy = VerificationPolicy(require_status=False, now=now, leeway_s=leeway_s)
     credentials = tuple(
@@ -434,8 +459,17 @@ def _verify_ldp_vp(
                           extra_contexts=extra_contexts)
         for vc in _embedded_vcs(query_id, presentation))
 
+    # Optional subject binding: require each embedded credential to have been issued
+    # to the authenticated holder (the presenter owns what they present).
+    if require_holder_binding:
+        for result in credentials:
+            if not result.subject or result.subject != holder:
+                raise ClaimsInvalid(
+                    f"credential subject {result.subject!r} is not the authenticated "
+                    f"holder {holder!r} (require_holder_binding)")
+
     return VerifiedPresentation(
-        query_id=query_id, format=FORMAT_LDP_VC, holder=_vp_holder(presentation, proof),
+        query_id=query_id, format=FORMAT_LDP_VC, holder=holder,
         credentials=credentials, raw=verified_vp)
 
 
@@ -472,16 +506,23 @@ def _embedded_vcs(query_id: str, presentation: Mapping[str, Any]) -> list[Any]:
     return items
 
 
-def _vp_holder(presentation: Mapping[str, Any], proof: Mapping[str, Any]) -> str | None:
-    holder = presentation.get("holder")
-    if isinstance(holder, Mapping):
-        holder = holder.get("id")
-    if isinstance(holder, str) and holder:
-        return holder
-    vm = proof.get("verificationMethod")           # fall back to the authenticating DID
-    if isinstance(vm, str):
-        return vm.split("#", 1)[0]
-    return None
+def _vp_holder(
+    query_id: str, presentation: Mapping[str, Any], proof: Mapping[str, Any]
+) -> str | None:
+    # The authenticated holder is the DID that controls the verificationMethod whose
+    # key signed the authentication proof. A self-asserted `holder` field, if present,
+    # MUST equal it — else a presenter could sign with their own key while labelling
+    # the presentation as a victim (mirrors the VP-JWT `vp.holder == iss` check).
+    vm = proof.get("verificationMethod")
+    authenticated = vm.split("#", 1)[0] if isinstance(vm, str) else None
+    claimed = presentation.get("holder")
+    if isinstance(claimed, Mapping):
+        claimed = claimed.get("id")
+    if isinstance(claimed, str) and claimed and authenticated and claimed != authenticated:
+        raise ClaimsInvalid(
+            f"the {FORMAT_LDP_VC} Presentation for {query_id!r} claims holder "
+            f"{claimed!r} but was authenticated by {authenticated!r}")
+    return authenticated
 
 
 def _check_vct(query_id: str, query: Mapping[str, Any], vct: str | None) -> None:

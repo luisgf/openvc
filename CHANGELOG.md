@@ -23,9 +23,14 @@ Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/
   `eddsa-jcs-2022` / `ecdsa-jcs-2019`. The format is **pinned to the DCQL query** — a bare
   string or a bare credential with no VP wrapper is rejected, since the holder binding lives
   only on a presentation proof (the LDP analogue of the existing `dc+sd-jwt` "must be an
-  SD-JWT" pin, closing the same unbound-credential smuggle). A new optional `extra_contexts=`
-  parameter threads custom JSON-LD contexts to the RDF path. `mso_mdoc` remains a typed
-  `UnsupportedPresentationFormat`. ([#61](https://github.com/luisgf/openvc/issues/61))
+  SD-JWT" pin, closing the same unbound-credential smuggle). The reported `holder` is the
+  **authenticated** identity — the DID that controls the signing `verificationMethod`, never
+  a self-asserted `holder` field (a mismatch is rejected), so a caller's "did the presenter
+  own this credential?" check cannot be spoofed. A new opt-in `require_holder_binding=`
+  additionally requires every embedded credential's `credentialSubject.id` to equal that
+  authenticated holder (for the W3C VP formats `ldp_vc` / `jwt_vc_json`). A new optional
+  `extra_contexts=` threads custom JSON-LD contexts to the RDF path. `mso_mdoc` remains a
+  typed `UnsupportedPresentationFormat`. ([#61](https://github.com/luisgf/openvc/issues/61))
 
 ## [1.11.1] — 2026-07-08
 

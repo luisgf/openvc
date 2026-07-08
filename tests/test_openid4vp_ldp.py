@@ -98,6 +98,84 @@ def test_ldp_vp_roundtrip(cryptosuite):
     assert p.credentials[0].subject == p.holder    # alumnus == presenter here
 
 
+def test_ldp_vp_holder_is_the_authenticated_signer():
+    # No self-asserted `holder` field -> the reported holder is the DID that signed.
+    suite, key_factory, mc = _suite("eddsa-jcs-2022")
+    ik = key_factory.generate(kid="_")
+    idid, ikid = _did_key(ik, mc)
+    ik = key_factory(ik._sk, kid=ikid)
+    hk = key_factory.generate(kid="_")
+    hdid, hkid = _did_key(hk, mc)
+    hk = key_factory(hk._sk, kid=hkid)
+    vc = {"@context": [V2], "type": ["VerifiableCredential"], "issuer": idid,
+          "credentialSubject": {"id": hdid}}
+    svc = suite.add_proof(vc, signing_key=ik, verification_method=ikid,
+                          proof_purpose="assertionMethod")
+    vp = {"@context": [V2], "type": ["VerifiablePresentation"],   # no `holder` field
+          "verifiableCredential": [svc]}
+    svp = suite.add_proof(vp, signing_key=hk, verification_method=hkid,
+                          proof_purpose="authentication", challenge=NONCE, domain=CLIENT_ID)
+    (p,) = verify_vp_token({"c1": [svp]}, dcql_query=DCQL, nonce=NONCE,
+                           client_id=CLIENT_ID).presentations
+    assert p.holder == hdid                          # the signer, derived from the proof
+
+
+def test_ldp_vp_rejects_self_asserted_holder_spoof():
+    # Alice signs a VP but labels holder = Bob (a victim). The self-asserted holder must
+    # not be trusted over the authenticating key. (The #61 adversarial-review finding.)
+    suite, key_factory, mc = _suite("eddsa-jcs-2022")
+    ik = key_factory.generate(kid="_")
+    idid, ikid = _did_key(ik, mc)
+    ik = key_factory(ik._sk, kid=ikid)
+    bob = key_factory.generate(kid="_")
+    bob_did, _bob_kid = _did_key(bob, mc)
+    alice = key_factory.generate(kid="_")
+    alice_did, alice_kid = _did_key(alice, mc)
+    alice = key_factory(alice._sk, kid=alice_kid)
+
+    vc_for_bob = suite.add_proof(
+        {"@context": [V2], "type": ["VerifiableCredential"], "issuer": idid,
+         "credentialSubject": {"id": bob_did}},
+        signing_key=ik, verification_method=ikid, proof_purpose="assertionMethod")
+    vp = {"@context": [V2], "type": ["VerifiablePresentation"], "holder": bob_did,
+          "verifiableCredential": [vc_for_bob]}
+    spoofed = suite.add_proof(vp, signing_key=alice, verification_method=alice_kid,
+                              proof_purpose="authentication", challenge=NONCE, domain=CLIENT_ID)
+    with pytest.raises(ProofError):                  # ClaimsInvalid <: ProofError
+        verify_vp_token({"c1": [spoofed]}, dcql_query=DCQL, nonce=NONCE, client_id=CLIENT_ID)
+
+
+def test_ldp_vp_require_holder_binding_enforces_subject():
+    # A holder legitimately presents a credential issued to SOMEONE ELSE. Allowed by
+    # default; rejected when the caller demands subject == holder.
+    suite, key_factory, mc = _suite("eddsa-jcs-2022")
+    ik = key_factory.generate(kid="_")
+    idid, ikid = _did_key(ik, mc)
+    ik = key_factory(ik._sk, kid=ikid)
+    hk = key_factory.generate(kid="_")
+    hdid, hkid = _did_key(hk, mc)
+    hk = key_factory(hk._sk, kid=hkid)
+    other_subject = "did:example:carol"
+
+    svc = suite.add_proof(
+        {"@context": [V2], "type": ["VerifiableCredential"], "issuer": idid,
+         "credentialSubject": {"id": other_subject}},
+        signing_key=ik, verification_method=ikid, proof_purpose="assertionMethod")
+    vp = {"@context": [V2], "type": ["VerifiablePresentation"], "holder": hdid,
+          "verifiableCredential": [svc]}
+    svp = suite.add_proof(vp, signing_key=hk, verification_method=hkid,
+                          proof_purpose="authentication", challenge=NONCE, domain=CLIENT_ID)
+
+    # default: a holder may present another party's credential
+    (p,) = verify_vp_token({"c1": [svp]}, dcql_query=DCQL, nonce=NONCE,
+                           client_id=CLIENT_ID).presentations
+    assert p.holder == hdid and p.credentials[0].subject == other_subject
+    # require_holder_binding: subject must be the authenticated holder
+    with pytest.raises(ProofError):
+        verify_vp_token({"c1": [svp]}, dcql_query=DCQL, nonce=NONCE, client_id=CLIENT_ID,
+                        require_holder_binding=True)
+
+
 def test_ldp_vp_wrong_nonce_rejected():
     vp = _issue_and_present("eddsa-jcs-2022")
     with pytest.raises(ProofError):                 # PresentationBindingError <: ProofError

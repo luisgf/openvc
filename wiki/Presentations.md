@@ -149,6 +149,15 @@ A bare string or a bare credential (no VP wrapper) under an `ldp_vc` query is
 rejected: the holder binding lives only on a presentation proof. `mso_mdoc`
 stays unsupported.
 
+The reported `holder` is the **authenticated** identity — the DID that controls
+the `verificationMethod` that signed the proof, not a self-asserted `holder`
+field (a `holder` that disagrees with the signer is rejected). So to check the
+presenter actually owns a credential, compare its subject to `p.holder`, or pass
+`require_holder_binding=True` to `verify_vp_token` — which enforces, for the W3C
+VP formats (`ldp_vc`, `jwt_vc_json`), that every embedded credential was issued to
+the authenticated holder. It is off by default because a holder may legitimately
+present a third party's credential.
+
 ## Replay: what the bindings buy you
 
 `aud`/`domain` pins the presentation to *your* verifier; `nonce`/`challenge`
