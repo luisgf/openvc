@@ -46,6 +46,8 @@ commission, commission_der = _cert("EU Commission LOTL Signer (test)")
 de_signer, de_signer_der = _cert("DE Trusted List Signer (test)")
 ca_qc_1, ca_qc_1_der = _cert("Example TSP DE Qualified CA 1 (test)")
 ca_qc_2, ca_qc_2_der = _cert("Example TSP DE Qualified CA 2 (test)")
+eds_q, eds_q_der = _cert("Example TSP DE Qualified e-Delivery (test)")
+qsealcd, qsealcd_der = _cert("Example TSP DE Remote QSealCD Mgmt (test)")
 
 # commit the commission cert (the LOTL signer the caller pins) as PEM
 (OUT / "commission.pem").write_bytes(commission.public_bytes(Encoding.PEM))
@@ -54,7 +56,7 @@ LOTL = f"""<?xml version="1.0" encoding="UTF-8"?>
 <TrustServiceStatusList xmlns="http://uri.etsi.org/02231/v2#" \
 xmlns:add="http://uri.etsi.org/02231/v2/additionaltypes#">
   <SchemeInformation>
-    <TSLVersionIdentifier>5</TSLVersionIdentifier>
+    <TSLVersionIdentifier>6</TSLVersionIdentifier>
     <TSLSequenceNumber>42</TSLSequenceNumber>
     <TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUlistofthelists</TSLType>
     <SchemeOperatorName><Name xml:lang="en">European Commission</Name></SchemeOperatorName>
@@ -96,6 +98,7 @@ xmlns:add="http://uri.etsi.org/02231/v2/additionaltypes#">
 DE_TL = f"""<?xml version="1.0" encoding="UTF-8"?>
 <TrustServiceStatusList xmlns="http://uri.etsi.org/02231/v2#">
   <SchemeInformation>
+    <TSLVersionIdentifier>6</TSLVersionIdentifier>
     <TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUgeneric</TSLType>
     <SchemeOperatorName><Name xml:lang="en">Bundesnetzagentur</Name></SchemeOperatorName>
     <SchemeTerritory>DE</SchemeTerritory>
@@ -124,6 +127,28 @@ DE_TL = f"""<?xml version="1.0" encoding="UTF-8"?>
           <ServiceStatus>http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/withdrawn</ServiceStatus>
           <StatusStartingTime>2026-06-01T00:00:00Z</StatusStartingTime>
         </ServiceInformation></TSPService>
+        <TSPService><ServiceInformation>
+          <ServiceTypeIdentifier>http://uri.etsi.org/TrstSvc/Svctype/EDS/Q</ServiceTypeIdentifier>
+          <ServiceName><Name xml:lang="en">Qualified e-delivery (granted)</Name></ServiceName>
+          <ServiceDigitalIdentity>
+            <DigitalId><X509Certificate>{_b64(eds_q_der)}</X509Certificate></DigitalId>
+          </ServiceDigitalIdentity>
+          <ServiceStatus>http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/granted</ServiceStatus>
+          <StatusStartingTime>2026-05-01T00:00:00Z</StatusStartingTime>
+          <ServiceSupplyPoints>
+            <ServiceSupplyPoint>https://eds.example.de/submit</ServiceSupplyPoint>
+          </ServiceSupplyPoints>
+        </ServiceInformation></TSPService>
+        <TSPService><ServiceInformation>
+          <ServiceTypeIdentifier>\
+http://uri.etsi.org/TrstSvc/Svctype/RemoteQSealCDManagement/Q</ServiceTypeIdentifier>
+          <ServiceName><Name xml:lang="en">Remote QSealCD management (granted)</Name></ServiceName>
+          <ServiceDigitalIdentity>
+            <DigitalId><X509Certificate>{_b64(qsealcd_der)}</X509Certificate></DigitalId>
+          </ServiceDigitalIdentity>
+          <ServiceStatus>http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/granted</ServiceStatus>
+          <StatusStartingTime>2026-05-01T00:00:00Z</StatusStartingTime>
+        </ServiceInformation></TSPService>
       </TSPServices>
     </TrustServiceProvider>
   </TrustServiceProviderList>
@@ -134,3 +159,4 @@ DE_TL = f"""<?xml version="1.0" encoding="UTF-8"?>
 (OUT / "de-tl.xml").write_text(DE_TL)
 print("wrote:", sorted(p.name for p in OUT.iterdir()))
 print("ca_qc_1 sha256:", __import__("hashlib").sha256(ca_qc_1_der).hexdigest())
+print("eds_q sha256:", __import__("hashlib").sha256(eds_q_der).hexdigest())

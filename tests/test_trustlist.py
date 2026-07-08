@@ -78,10 +78,12 @@ def test_parse_national_tl():
     assert tl.territory == "DE"
     assert tl.next_update == datetime(2099, 1, 1, tzinfo=timezone.utc)
     assert len(tl.providers) == 1
+    assert tl.version == 6                  # TLv6 (ETSI TS 119 612 v2.4.1)
     prov = tl.providers[0]
     assert prov.name == "Example TSP DE"
-    assert len(prov.services) == 2
-    granted = next(s for s in prov.services if s.service_status.endswith("granted"))
+    assert len(prov.services) == 4          # 2 CA/QC + EDS/Q + RemoteQSealCDManagement/Q (TLv6)
+    granted = next(s for s in prov.services if s.service_type == ServiceType.CA_QC
+                   and s.service_status.endswith("granted"))
     assert granted.service_type == ServiceType.CA_QC
     assert granted.tsp_name == "Example TSP DE"
     assert granted.service_name == "QC CA (granted)"
@@ -187,7 +189,52 @@ def test_walk_default_select_granted_qc_ca():
 def test_walk_select_none_returns_all_services():
     res = walk_lotl(LOTL_URL, lotl_signer_certs=["c"], verify_signature=_ok_sig,
                     fetch=_fetch_from(_store()), select=None)
-    assert len(res.anchors) == 2                 # granted + withdrawn CA/QC
+    assert len(res.anchors) == 4    # granted + withdrawn CA/QC, granted EDS/Q + RemoteQSealCD
+
+
+# --------------------------------------------------------------------------- #
+# TLv6 (ETSI TS 119 612 v2.4.1, mandatory since 29 Apr 2026) conformance (issue #58)
+# --------------------------------------------------------------------------- #
+
+def test_tlv6_version_is_parsed():
+    assert parse_trust_list(LOTL).version == 6      # TSLVersionIdentifier
+    assert parse_trust_list(DE_TL).version == 6
+
+
+@pytest.mark.parametrize("svc_type", [
+    ServiceType.EDS_Q, ServiceType.REMOTE_QSEALCD_MANAGEMENT_Q])
+def test_tlv6_new_service_types_are_selectable(svc_type):
+    # The qualified trust services beyond CA/QC that TLv6 national lists carry are
+    # selectable by their named ServiceType constant.
+    res = walk_lotl(LOTL_URL, lotl_signer_certs=["c"], verify_signature=_ok_sig,
+                    fetch=_fetch_from(_store()),
+                    select=Select(service_types=frozenset({svc_type}),
+                                  statuses=frozenset({ServiceStatus.GRANTED})))
+    assert len(res.anchors) == 1 and res.anchors[0].service_type == svc_type
+
+
+def test_tlv6_service_supply_point_is_tolerated():
+    # <ServiceSupplyPoints> is a TLv6 addition the parser must ignore, not choke on:
+    # the EDS/Q service in the fixture carries one and still parses + selects.
+    tl = parse_trust_list(DE_TL)
+    eds = [s for p in tl.providers for s in p.services if s.service_type == ServiceType.EDS_Q]
+    assert len(eds) == 1 and eds[0].certificate is not None
+
+
+def test_arbitrary_eudi_service_type_uri_is_selectable_verbatim():
+    # EUDI trust services introduced by v2.4.1 (issuance of QEAA / EAA / PuB-EAA,
+    # qualified electronic ledgers) are not yet named constants, but Select matches
+    # ServiceTypeIdentifier verbatim — so a caller filters by the raw URI as national
+    # lists start carrying it. Proven by injecting an (illustrative) EUDI type.
+    qeaa = "http://uri.etsi.org/TrstSvc/Svctype/EAA/Q"
+    de_v6 = DE_TL.replace(b"http://uri.etsi.org/TrstSvc/Svctype/EDS/Q", qeaa.encode())
+    types = {s.service_type for p in parse_trust_list(de_v6).providers for s in p.services}
+    assert qeaa in types
+    res = walk_lotl(LOTL_URL, lotl_signer_certs=["c"], verify_signature=_ok_sig,
+                    fetch={LOTL_URL: LOTL, DE_URL: de_v6}.get,
+                    select=Select(service_types=frozenset({qeaa}),
+                                  statuses=frozenset({ServiceStatus.GRANTED})))
+    assert len(res.anchors) == 1
 
 
 def test_walk_select_by_status():

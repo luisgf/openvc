@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <TrustServiceStatusList xmlns="http://uri.etsi.org/02231/v2#">
   <SchemeInformation>
+    <TSLVersionIdentifier>6</TSLVersionIdentifier>
     <TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUgeneric</TSLType>
     <SchemeOperatorName><Name xml:lang="en">Bundesnetzagentur</Name></SchemeOperatorName>
     <SchemeTerritory>DE</SchemeTerritory>
@@ -15,7 +16,7 @@
           <ServiceTypeIdentifier>http://uri.etsi.org/TrstSvc/Svctype/CA/QC</ServiceTypeIdentifier>
           <ServiceName><Name xml:lang="en">QC CA (granted)</Name></ServiceName>
           <ServiceDigitalIdentity>
-            <DigitalId><X509Certificate>MIIBdjCCARugAwIBAgIUYtuiavGGa1bu56Aq9FseBkDWd3AwCgYIKoZIzj0EAwIwLzEtMCsGA1UEAwwkRXhhbXBsZSBUU1AgREUgUXVhbGlmaWVkIENBIDEgKHRlc3QpMCAXDTI2MDEwMTAwMDAwMFoYDzIwOTkwMTAxMDAwMDAwWjAvMS0wKwYDVQQDDCRFeGFtcGxlIFRTUCBERSBRdWFsaWZpZWQgQ0EgMSAodGVzdCkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATRylTFPAo8n+93mjLp0a9kzvY/F3Is9Y1C+SM7G42Pg9P4Ccf8oqrYX+aFbNksEU0Qte5VSif+Vs4k/pq9gv6CoxMwETAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0kAMEYCIQCB2mjIgpS0s5AKAN5Fj8H6UiBFUSTeTxZrF8RY3bInuQIhAIy/XcY1RWXkb/Ku7rYUp8fTdIVxpGbzl3jyIaarD0Nz</X509Certificate></DigitalId>
+            <DigitalId><X509Certificate>MIIBdjCCARugAwIBAgIUFAHCywQ4T74qGl2RbWh2jFp6HOowCgYIKoZIzj0EAwIwLzEtMCsGA1UEAwwkRXhhbXBsZSBUU1AgREUgUXVhbGlmaWVkIENBIDEgKHRlc3QpMCAXDTI2MDEwMTAwMDAwMFoYDzIwOTkwMTAxMDAwMDAwWjAvMS0wKwYDVQQDDCRFeGFtcGxlIFRTUCBERSBRdWFsaWZpZWQgQ0EgMSAodGVzdCkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATv2OFeYejFFJXAm5oQmIh0X6/eXbA8mn3r9Me1+TF8YzeNLLvt9B5wANGV40s/xdn0dcA0E/A35GUY6Dt3bB4JoxMwETAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0kAMEYCIQCgYEkJgcSUFydqPbSguOU/Nb4Cbq3gjDTMtBBKOcbHbgIhAJ7c1qIe1M+d+eKN4JeWQ4TyejnWb3doVXl4DYBVGTId</X509Certificate></DigitalId>
           </ServiceDigitalIdentity>
           <ServiceStatus>http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/granted</ServiceStatus>
           <StatusStartingTime>2026-01-01T00:00:00Z</StatusStartingTime>
@@ -24,10 +25,31 @@
           <ServiceTypeIdentifier>http://uri.etsi.org/TrstSvc/Svctype/CA/QC</ServiceTypeIdentifier>
           <ServiceName><Name xml:lang="en">QC CA (withdrawn)</Name></ServiceName>
           <ServiceDigitalIdentity>
-            <DigitalId><X509Certificate>MIIBdTCCARugAwIBAgIUDCQMnMZLAV1uUkU00IoRKR0vdMQwCgYIKoZIzj0EAwIwLzEtMCsGA1UEAwwkRXhhbXBsZSBUU1AgREUgUXVhbGlmaWVkIENBIDIgKHRlc3QpMCAXDTI2MDEwMTAwMDAwMFoYDzIwOTkwMTAxMDAwMDAwWjAvMS0wKwYDVQQDDCRFeGFtcGxlIFRTUCBERSBRdWFsaWZpZWQgQ0EgMiAodGVzdCkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAS3fh5hqGGzSplenOtMXT9b6Ynvr1jbxwXq82P+yY4rIaJPm24D0SKPqNaRG2vrw+GPuU0XBRZBYoLWP9w7jIo8oxMwETAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQCa6tfoFcX/DFR+Rw2cJ5oKL1rMzIDWCbMqANByBdRBxQIgdKcJB+9VAtQzpLE1JAZ2GI6PaZu6ni20DwLkZpT6cyk=</X509Certificate></DigitalId>
+            <DigitalId><X509Certificate>MIIBdTCCARugAwIBAgIUTHHGHbZVMbCz3sJc+meYdjJz1jEwCgYIKoZIzj0EAwIwLzEtMCsGA1UEAwwkRXhhbXBsZSBUU1AgREUgUXVhbGlmaWVkIENBIDIgKHRlc3QpMCAXDTI2MDEwMTAwMDAwMFoYDzIwOTkwMTAxMDAwMDAwWjAvMS0wKwYDVQQDDCRFeGFtcGxlIFRTUCBERSBRdWFsaWZpZWQgQ0EgMiAodGVzdCkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQwbcp8MYTxVTttfVqxenHoTId/aR9salfYfl8pr/CNXhZu9pW4rNgxPIs+MFhY2WiUxXysShtskdieHvkYGCKEoxMwETAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQDiwk6sR8RRSaNMEHO7JG3/UXbBteTKVH0xdH3Ragl/LAIgKGqv5FoBP7D1X8PbRpgdIElAIy781jcLNFPdqKdAYS8=</X509Certificate></DigitalId>
           </ServiceDigitalIdentity>
           <ServiceStatus>http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/withdrawn</ServiceStatus>
           <StatusStartingTime>2026-06-01T00:00:00Z</StatusStartingTime>
+        </ServiceInformation></TSPService>
+        <TSPService><ServiceInformation>
+          <ServiceTypeIdentifier>http://uri.etsi.org/TrstSvc/Svctype/EDS/Q</ServiceTypeIdentifier>
+          <ServiceName><Name xml:lang="en">Qualified e-delivery (granted)</Name></ServiceName>
+          <ServiceDigitalIdentity>
+            <DigitalId><X509Certificate>MIIBgTCCASegAwIBAgIUEcu4fFfjfChINEtoodtumiv9+WYwCgYIKoZIzj0EAwIwNTEzMDEGA1UEAwwqRXhhbXBsZSBUU1AgREUgUXVhbGlmaWVkIGUtRGVsaXZlcnkgKHRlc3QpMCAXDTI2MDEwMTAwMDAwMFoYDzIwOTkwMTAxMDAwMDAwWjA1MTMwMQYDVQQDDCpFeGFtcGxlIFRTUCBERSBRdWFsaWZpZWQgZS1EZWxpdmVyeSAodGVzdCkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATTS7MU18IOw4bY59iLoSHGv7Z6ut19+dBSoqd9rKGX8k285FQ5xmcNPd+/KxrT8qy5Fx499eo4qu3yMl2G23OcoxMwETAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIDMmREdOsPiHI28b4UXVsuFV9qq3VQCk+qJykzDtpVuGAiEAjY4OJOcrqornbB2lOZ7z7dd1oQPIrpku85YaShjJoNE=</X509Certificate></DigitalId>
+          </ServiceDigitalIdentity>
+          <ServiceStatus>http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/granted</ServiceStatus>
+          <StatusStartingTime>2026-05-01T00:00:00Z</StatusStartingTime>
+          <ServiceSupplyPoints>
+            <ServiceSupplyPoint>https://eds.example.de/submit</ServiceSupplyPoint>
+          </ServiceSupplyPoints>
+        </ServiceInformation></TSPService>
+        <TSPService><ServiceInformation>
+          <ServiceTypeIdentifier>http://uri.etsi.org/TrstSvc/Svctype/RemoteQSealCDManagement/Q</ServiceTypeIdentifier>
+          <ServiceName><Name xml:lang="en">Remote QSealCD management (granted)</Name></ServiceName>
+          <ServiceDigitalIdentity>
+            <DigitalId><X509Certificate>MIIBfzCCASWgAwIBAgIUDv6Ns7lISEOLPzvrj7vHouurxMEwCgYIKoZIzj0EAwIwNDEyMDAGA1UEAwwpRXhhbXBsZSBUU1AgREUgUmVtb3RlIFFTZWFsQ0QgTWdtdCAodGVzdCkwIBcNMjYwMTAxMDAwMDAwWhgPMjA5OTAxMDEwMDAwMDBaMDQxMjAwBgNVBAMMKUV4YW1wbGUgVFNQIERFIFJlbW90ZSBRU2VhbENEIE1nbXQgKHRlc3QpMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEIHjVYN9q3RS6yVO9jBUVPQSEdDJ79O+rh80xhYMbG098BINRmgcz62sJC7z/1sDQEhGZ66ZoRrNbuboEsmsVtKMTMBEwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiAXDQTAQGdaD4CwTCKuCBbVuCU2hWodvmpFFrZp+jnktgIhAISRX44kGfpEXoIzHZY2S2VeUM9yyO6QZqw0EJwIQ0XV</X509Certificate></DigitalId>
+          </ServiceDigitalIdentity>
+          <ServiceStatus>http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/granted</ServiceStatus>
+          <StatusStartingTime>2026-05-01T00:00:00Z</StatusStartingTime>
         </ServiceInformation></TSPService>
       </TSPServices>
     </TrustServiceProvider>

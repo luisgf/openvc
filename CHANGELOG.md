@@ -4,6 +4,25 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] — unreleased
+
+Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
+
+### Added
+
+- **TLv6 (ETSI TS 119 612 v2.4.1) trusted-list conformance + EUDI service types.** Since
+  **29 Apr 2026** the EU LOTL and every national Trusted List are TLv6 only.
+  `openvc.trustlist` now parses `TSLVersionIdentifier` (new **`TrustList.version`** — `6`
+  for TLv6) and tolerates the new optional elements (e.g. `ServiceSupplyPoints`) — verified
+  against the real deployed TLv6 lists. `ServiceType` gains named constants for the qualified
+  trust services TLv6 national lists carry beyond `CA/QC`: `EDS_Q`, `EDS_REM_Q`, `PSES_Q`,
+  `QES_VALIDATION_Q`, `REMOTE_QSIGCD_MANAGEMENT_Q`, `REMOTE_QSEALCD_MANAGEMENT_Q`,
+  `NATIONAL_ROOT_CA_QC`, `TSA`, `OCSP`, `ARCHIVING`. `Select` matches `ServiceTypeIdentifier`
+  **verbatim**, so the EUDI-wallet trust services v2.4.1 introduces (issuance of QEAA / EAA /
+  PuB-EAA, qualified electronic ledgers) are already selectable by their URI as national lists
+  start carrying them — no library change needed. The golden fixtures are refreshed to TLv6
+  shape. Purely additive. ([#58](https://github.com/luisgf/openvc/issues/58))
+
 ## [1.12.0] — 2026-07-08
 
 Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.

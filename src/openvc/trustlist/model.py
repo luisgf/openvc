@@ -66,6 +66,7 @@ class TrustList:
     next_update: datetime | None
     pointers: tuple[TslPointer, ...] = ()          # LOTL: pointers to national TLs
     providers: tuple[TrustServiceProvider, ...] = ()  # national TL: the TSP list
+    version: int | None = None                     # TSLVersionIdentifier (6 = TLv6)
 
     @property
     def is_lotl(self) -> bool:
