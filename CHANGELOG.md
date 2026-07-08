@@ -4,6 +4,22 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.1] — unreleased
+
+Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
+
+### Changed
+
+- **Post-1.0 documentation truth pass.** `docs/ROADMAP.md` is rewritten around the current
+  Short / Medium / Long-term milestones (the shipped 0.8→post-1.0 framing is gone, and the
+  out-of-scope list now points at the mdoc and BBS spikes); the PyPI **classifier** moves from
+  `3 - Alpha` to `5 - Production/Stable`; the GitHub **topics** gain `sd-jwt-vc` / `openid4vp` /
+  `eudi` / `eidas` / `trusted-list` / `did-key` / `es256`; the wiki gains a **Credential
+  schemas** page (the `JsonSchema` and signed `JsonSchemaCredential` types + `digestSRI`
+  pinning) and a fuller **Caching** section (`TtlCache` / `CachingDidResolver` / `cached_resolve`
+  and the status-freshness TTL); and `docs/SESSION-HANDOFF.md` is banner-marked as a historical
+  v0.1-era snapshot. No code change. ([#62](https://github.com/luisgf/openvc/issues/62))
+
 ## [1.13.0] — 2026-07-08
 
 Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
