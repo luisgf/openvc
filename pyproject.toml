@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "openvc-core"
 dynamic = ["version"]
-description = "Generic, HSM-friendly Verifiable Credentials core — VC-JWT proofs and DID resolution (key/web) — with an optional read-only EBSI plugin."
+description = "Dependency-light, HSM-friendly Verifiable Credentials core — VC-JWT, SD-JWT VC and Data Integrity proofs, DID resolution, status lists, OpenID4VP — with an optional read-only EBSI plugin."
 readme = "README.md"
 # PEP 639 SPDX expression + explicit license files (both GPL and LGPL texts).
 license = "LGPL-3.0-or-later"
@@ -17,6 +17,8 @@ requires-python = ">=3.10"
 keywords = [
     "verifiable-credentials", "vc-jwt", "w3c-vc", "did", "did-key", "did-web",
     "did-ebsi", "ebsi", "es256", "eddsa", "ed25519", "cryptography", "jose",
+    "sd-jwt", "sd-jwt-vc", "selective-disclosure", "data-integrity",
+    "status-list", "openid4vp", "eudi",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -61,6 +63,8 @@ all = ["openvc-core[ebsi,data-integrity,schema,trustlist,dev]"]
 Homepage = "https://github.com/luisgf/openvc"
 Source = "https://github.com/luisgf/openvc"
 Changelog = "https://github.com/luisgf/openvc/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/luisgf/openvc/wiki"
+"API reference" = "https://luisgf.github.io/openvc/"
 
 # Single source of truth for the version: openvc.__version__ (in src/openvc/__init__.py).
 [tool.setuptools.dynamic]

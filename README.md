@@ -1,233 +1,169 @@
 # openvc
 
-A small, dependency-light **Verifiable Credentials core** for Python: sign and
-verify credentials in three proof formats — **VC-JWT** (JOSE), **SD-JWT VC**
-(selective disclosure), and **Data Integrity** (`eddsa-rdfc-2022` / `ecdsa-rdfc-2019`
-and the selective-disclosure `ecdsa-sd-2023` over RDF, plus `eddsa-jcs-2022` /
-`ecdsa-jcs-2019` over RFC 8785 JCS with no `pyld`) — resolve issuer keys by **DID**
-(`did:key`, `did:jwk`, `did:web`), by **`/.well-known/jwt-vc-issuer`**, or by
-**X.509 `x5c`** chain — issue and check
-**status-list** revocation, verify a stateless **OpenID4VP 1.0** presentation
-(`vp_token`, incl. **HAIP** `direct_post.jwt` JWE-encrypted responses), and — via an
-optional plugin — verify against the **EBSI** trust registries. Designed so private
-keys can live behind an **HSM/Vault** and never enter the process.
+[![PyPI](https://img.shields.io/pypi/v/openvc-core)](https://pypi.org/project/openvc-core/)
+[![Python versions](https://img.shields.io/pypi/pyversions/openvc-core)](https://pypi.org/project/openvc-core/)
+[![CI](https://github.com/luisgf/openvc/actions/workflows/ci.yml/badge.svg)](https://github.com/luisgf/openvc/actions/workflows/ci.yml)
+[![License: LGPL-3.0-or-later](https://img.shields.io/pypi/l/openvc-core)](https://github.com/luisgf/openvc/blob/main/COPYING.LESSER)
 
-It is intentionally *not* an Open Badges library: `openvc` is the generic VC
-machinery that a badge issuer (or an EBSI verifier, or a EUDI wallet backend)
-builds on. It never imports anything upward.
+A dependency-light, HSM-friendly **Verifiable Credentials core** for Python:
+sign and verify W3C VCs in the three mainstream proof formats, resolve issuer
+keys, check revocation, and verify wallet presentations — **fail-closed by
+default**, with private keys that never have to enter the process.
 
-## Why
-
-- **VC-JWT first, HSM-friendly.** Signing delegates the raw signature to a
-  `SigningKey` backend, so a PKCS#11 / Vault Transit key is a drop-in — the
-  private key never has to be in-process. ES256 signatures are the correct JOSE
-  raw `R‖S` form (the classic reason a locally-produced token fails elsewhere).
-- **Safe by construction.** The verifier pins an algorithm allow-list
-  (`ES256`, `ES384`, `EdDSA`) *before* any crypto runs, and reconciles the JWT
-  envelope with the embedded credential. The `did:web` fetch and the EBSI client
-  both guard against SSRF.
-- **Version drift, contained.** EBSI ships versioned registries whose response
-  shapes change; every version specific lives behind one adapter, so the domain
-  model and trust logic never see wire formats.
-
-## Layout
-
-```
-src/openvc/                core — knows nothing about EBSI or badges
-    keys.py                Ed25519 (EdDSA), P-256 (ES256) & P-384 (ES384) SigningKey backends
-    multibase.py           base58btc multibase + multicodec varint
-    proof/vc_jwt.py        VcJwtProofSuite: peek / verify / sign
-    proof/sd_jwt.py        SdJwtVcProofSuite: issue / present (key binding) / verify
-    proof/data_integrity.py DataIntegrityProofSuite: eddsa-rdfc-2022 (needs pyld)
-    proof/di_ecdsa_rdfc.py EcdsaRdfcProofSuite: ecdsa-rdfc-2019 P-256/P-384 (needs pyld)
-    proof/ecdsa_sd.py      EcdsaSdProofSuite: ecdsa-sd-2023 selective disclosure
-    proof/di_jcs.py        Eddsa/EcdsaJcsProofSuite: eddsa-jcs-2022 / ecdsa-jcs-2019 (RFC 8785 JCS, no pyld)
-    proof/_jcs.py          RFC 8785 JSON Canonicalization Scheme (hand-rolled, stdlib)
-    proof/vp_jwt.py        VpJwtProofSuite: holder presentations (VP-JWT) + cascade
-    proof/contexts/        bundled JSON-LD contexts + offline document loader
-    did/base.py            DidDocument, resolver protocol, W3C parser, registry
-    did/did_key.py         offline did:key (Ed25519, P-256)
-    did/did_jwk.py         offline did:jwk (public-JWK identifier)
-    did/did_web.py         did:web -> https -> fetch (fetch is injected)
-    fetch.py               SSRF- + DNS-rebinding-safe https JSON fetch for did:web
-    cache.py               opt-in TTL cache: CachingDidResolver + cached_resolve wrappers
-    jwt_vc_issuer.py       https issuer keys via /.well-known/jwt-vc-issuer
-    x5c.py                 X.509 x5c chain trust + SAN issuer binding
-    trustlist/             EU Trusted Lists (LOTL->TL) -> X.509 anchors for x5c (ADR-0003)
-    status/                status lists — W3C Bitstring + IETF Token Status List (check + issue)
-    schema.py              credentialSchema validation (W3C VC JSON Schema, opt-in)
-    type_metadata.py       SD-JWT VC Type Metadata: vct#integrity + claims validation
-    errors.py              OpenvcError — the root of every error family
-    verify.py              verify_credential / verify_many: one-call pipeline (single / batch)
-    aio.py                 verify_credential_async / verify_many_async: async pipeline (ADR-0002)
-    openid4vp.py           verify_vp_token: stateless OpenID4VP 1.0 vp_token verifier
-    jwe.py                 decrypt_compact: JWE ECDH-ES decrypt for HAIP responses
-    observability.py       opt-in logging.getLogger('openvc') + injectable span hook
-src/openvc_ebsi/           optional EBSI plugin (read-only); depends on openvc only
-    http.py                EbsiHttpClient: TTL cache, retries, host allow-list
-    versioning.py          DID Registry / TIR version adapters + DidEbsiResolver
-    trust.py               recursive TI->TAO->RootTAO trust-chain verification
-    verify.py              verify_ebsi_badge: signature + trust + revocation
-    models.py              Accreditation, IssuerRecord (version-agnostic domain)
-```
-
-**Dependency rule:** `openvc` imports nothing upward. `openvc_ebsi` depends on
-`openvc`, never the reverse.
+| Capability | What is covered | Spec |
+|---|---|---|
+| **Sign & verify** | VC-JWT (`ES256` / `ES384` / `EdDSA`) | [VC-JOSE-COSE](https://www.w3.org/TR/vc-jose-cose/) |
+| | SD-JWT VC — selective disclosure, Key Binding, Type Metadata | [SD-JWT VC](https://datatracker.ietf.org/doc/draft-ietf-oauth-sd-jwt-vc/) |
+| | Data Integrity — `eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `eddsa-jcs-2022` / `ecdsa-jcs-2019` (stdlib JCS, no `pyld`), and selective-disclosure `ecdsa-sd-2023` | [vc-di-eddsa](https://www.w3.org/TR/vc-di-eddsa/) / [vc-di-ecdsa](https://www.w3.org/TR/vc-di-ecdsa/) |
+| **Verify presentations** | VP-JWT, Data Integrity `challenge`/`domain`, and stateless [OpenID4VP 1.0](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html) `vp_token` — incl. HAIP `direct_post.jwt` JWE-encrypted responses | OpenID4VP / HAIP |
+| **Resolve issuer keys** | `did:key`, `did:jwk`, `did:web` (+ `did:ebsi` via plugin), `/.well-known/jwt-vc-issuer`, X.509 `x5c` chains with SAN issuer binding | [DID](https://www.w3.org/TR/did-core/) |
+| **Revocation** | Bitstring Status List and Token Status List — check **and** issue | [W3C](https://www.w3.org/TR/vc-bitstring-status-list/) / [IETF](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/) |
+| **Trust anchors** | Caller-pinned X.509 anchors, [EU Trusted Lists](https://github.com/luisgf/openvc/wiki/Trust) (LOTL → national TL), EBSI Trusted Issuers Registry (read-only plugin) | ETSI TS 119 612 / [EBSI](https://hub.ebsi.eu/) |
+| **Keys** | The `SigningKey` protocol — an HSM / KMS / Vault backend is a drop-in; ES256 signatures are raw JOSE `R‖S`, never DER | — |
 
 ## Install
 
-The PyPI distribution is **`openvc-core`**; the Python import package is
-**`openvc`** — so `pip install openvc-core`, then `import openvc`.
+The PyPI distribution is **`openvc-core`** (the import package stays `openvc`):
 
 ```sh
-pip install openvc-core                    # core: VC-JWT, did:key, did:web, status list
-pip install "openvc-core[ebsi]"            # + the EBSI registry client (httpx)
-pip install "openvc-core[data-integrity]"  # + RDF Data Integrity: eddsa/ecdsa-rdfc (pyld)
-pip install "openvc-core[trustlist]"       # + EU Trusted List XAdES verification (signxml)
-pip install -e ".[all]"                    # everything + dev tools (from a checkout)
+pip install openvc-core
 ```
+
+The core needs only `cryptography` and `pyjwt`. Everything heavier is an extra:
+
+| Extra | Adds | Pulls in |
+|---|---|---|
+| `openvc-core[data-integrity]` | RDF-canonicalized suites (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `ecdsa-sd-2023`) | `pyld` |
+| `openvc-core[ebsi]` | the EBSI registry client | `httpx` |
+| `openvc-core[schema]` | `credentialSchema` (W3C VC JSON Schema) validation | `jsonschema` |
+| `openvc-core[trustlist]` | XAdES signature verification for EU Trusted Lists | `signxml` |
+| `openvc-core[all]` | everything above + the dev tools | |
 
 ## Quick start
 
-Verify a credential in **any** format with the one-call pipeline — the format is
-detected (VC-JWT / SD-JWT VC / Data Integrity / enveloped), the issuer key resolved
-(`did:key`, `did:web`), and the policy enforced. Status is **fail-closed** by
-default: a credential that declares a status is rejected unless you supply a
-resolver (or opt out with `require_status=False`).
+Issue a VC-JWT and verify it with the one-call pipeline. `verify_credential`
+detects the format (VC-JWT / SD-JWT VC / Data Integrity / enveloped), resolves
+the issuer key, verifies the proof, and applies policy — types, audience, and
+**fail-closed** status:
 
 ```python
-from openvc import verify_credential, VerificationPolicy
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
-# `credential` is a VC-JWT / SD-JWT string, or a Data Integrity / enveloped dict
+from openvc import VerificationPolicy, verify_credential
+from openvc.keys import Ed25519SigningKey
+from openvc.multibase import encode_multibase
+from openvc.proof.vc_jwt import VcJwtProofSuite
+
+# An issuer key addressed by did:key, so the whole flow runs offline.
+private_key = ed25519.Ed25519PrivateKey.generate()
+public_raw = Ed25519SigningKey(private_key, kid="_").public_key_raw()
+mb = encode_multibase(bytes([0xED, 0x01]) + public_raw)   # multicodec ed25519-pub
+issuer = Ed25519SigningKey(private_key, kid=f"did:key:{mb}#{mb}")
+
+token = VcJwtProofSuite().sign({
+    "@context": ["https://www.w3.org/ns/credentials/v2"],
+    "id": "urn:uuid:2f3a-example",
+    "type": ["VerifiableCredential", "ExampleCredential"],
+    "issuer": f"did:key:{mb}",
+    "credentialSubject": {"id": "did:example:alice", "name": "Ada Lovelace"},
+}, signing_key=issuer)
+
 result = verify_credential(
-    credential,
-    policy=VerificationPolicy(expected_types=["VerifiableCredential"]),
-    resolve_status_list=fetch_verified_status_list,   # needed if it declares status
-)
+    token, policy=VerificationPolicy(expected_types=["ExampleCredential"]))
 print(result.format, result.issuer, result.subject)
 ```
 
-Or drive a single suite directly. Issue and verify a VC-JWT with an in-process key
-(swap for an HSM backend in production):
-
-```python
-from openvc.keys import P256SigningKey
-from openvc.proof.vc_jwt import VcJwtProofSuite
-
-sk = P256SigningKey.generate(kid="did:web:issuer.example#key-1")
-suite = VcJwtProofSuite()
-
-credential = {
-    "@context": ["https://www.w3.org/2018/credentials/v1"],
-    "id": "urn:uuid:...",
-    "type": ["VerifiableCredential"],
-    "issuer": "did:web:issuer.example",
-    "credentialSubject": {"id": "did:key:z6Mk..."},
-}
-token = suite.sign(credential, signing_key=sk)
-
-verified = suite.verify(token, public_key_jwk=sk.public_jwk())
-print(verified.issuer, verified.subject)
-```
-
-Resolve a `did:web` with the SSRF-guarded fetch, then verify against its key:
-
-```python
-from openvc.fetch import default_did_web_resolver
-
-resolver = default_did_web_resolver()          # https-only, blocks private ranges
-doc = resolver.resolve("did:web:issuer.example")
-vm = doc.key_by_kid("did:web:issuer.example#key-1")
-verified = suite.verify(token, public_key_jwk=vm.public_key_jwk)
-```
-
-EBSI (read-only) — resolve a `did:ebsi` and check issuer trust:
-
-```python
-from openvc.proof.vc_jwt import VcJwtProofSuite
-from openvc_ebsi.http import for_ebsi
-from openvc_ebsi.versioning import DidEbsiResolver
-from openvc_ebsi.verify import verify_ebsi_badge
-
-suite = VcJwtProofSuite()
-with for_ebsi("pilot") as http:
-    resolver = DidEbsiResolver(http.get_json, decode_jwt=suite.peek_claims)
-    result = verify_ebsi_badge(token, resolver=resolver, proof_suite=suite,
-                               expected_types=["VerifiableAttestation"])
-    print(result.trusted, result.issuer)
-```
-
-SD-JWT VC — issue with selective disclosure, then verify a holder presentation
-(the holder proves possession of the `cnf` key and reveals only what it chooses):
+Selective disclosure with SD-JWT VC — issue, present with a Key Binding JWT,
+verify; the holder proves possession of the `cnf` key and the verifier sees
+only what was disclosed:
 
 ```python
 from openvc.keys import Ed25519SigningKey
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
 
-issuer = Ed25519SigningKey.generate(kid="did:web:issuer.example#key-1")
-holder = Ed25519SigningKey.generate(kid="did:key:zHolder#0")
+issuer = Ed25519SigningKey.generate(kid="https://issuer.example#key-1")
+holder = Ed25519SigningKey.generate(kid="holder-key-1")
 suite = SdJwtVcProofSuite()
 
 sd_jwt = suite.issue(
-    {"iss": "did:web:issuer.example", "vct": "https://credentials.example/id",
-     "given_name": "Ada", "age": 36},
+    {"iss": "https://issuer.example", "given_name": "Ada", "age": 36},
     signing_key=issuer, disclosable=["given_name", "age"],
-    holder_jwk=holder.public_jwk(),
-)
+    holder_jwk=holder.public_jwk(), vct="https://credentials.example/identity")
+
 presentation = suite.create_presentation(
     sd_jwt, holder_key=holder, audience="https://verifier.example", nonce="n-123")
 
 result = suite.verify(
     presentation, public_key_jwk=issuer.public_jwk(),
-    audience="https://verifier.example", nonce="n-123", require_key_binding=True)
+    audience="https://verifier.example", nonce="n-123", require_key_binding=True,
+    expected_vct="https://credentials.example/identity")
 print(result.claims["given_name"], result.key_bound)
 ```
 
-## Status
+Every flow — Data Integrity proofs, VP-JWT and OpenID4VP presentations, status
+lists, remote HSM signing, EU Trusted Lists, EBSI — has a guide in the
+[wiki](https://github.com/luisgf/openvc/wiki) and a runnable script in
+[`examples/`](https://github.com/luisgf/openvc/blob/main/examples/).
 
-Alpha. The proof suites (VC-JWT, SD-JWT VC, and Data Integrity —
-`eddsa-rdfc-2022`, verified byte-for-byte against the official W3C vc-di-eddsa
-vector, plus `ecdsa-rdfc-2019` and the selective-disclosure `ecdsa-sd-2023`, both
-interop-validated against the official W3C vc-di-ecdsa vectors), the key
-backends, issuer-key resolution by DID (`did:key`, `did:jwk`, `did:web`,
-`did:ebsi` read), by `/.well-known/jwt-vc-issuer`, and by X.509 `x5c` chain (with
-SAN issuer binding), the EBSI
-registry client (verified against recorded pilot fixtures and a live smoke test),
-the recursive TI→TAO→RootTAO trust chain (with per-hop delegation scoping and
-revocation of the accreditations themselves), and status-list revocation in both
-the W3C Bitstring and IETF Token Status List encodings — checked *and* issued —
-are implemented and tested offline. Data Integrity verification also enforces the
-credential's validity window and `proofPurpose`, not just the signature. A generic
-`verify_credential` pipeline ties them together — format detection, key resolution,
-and fail-closed status/type policy in one call; `verify_many` batches it, resolving each
-distinct issuer DID / status list once and reporting each credential fail-closed. Holder
-presentations are covered by
-VP-JWT (`aud`/`nonce` binding + cascade verification of each credential) and Data
-Integrity `challenge`/`domain`. Every error descends from a single `OpenvcError`
-root. See
-[the roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md) for
-what is next.
+## Why openvc
 
-`did:ebsi` write/onboarding (JSON-RPC + OID4VP) is **out of scope** — this is a
-verifier/issuer library, not a node operator.
+- **HSM-first.** Signing goes through the `SigningKey` protocol (`alg` / `kid`
+  / `sign`), so a PKCS#11, AWS KMS, or Vault Transit backend drops in and the
+  private key never enters the process. ES256 signatures are the correct raw
+  JOSE `R‖S` form — the classic reason a locally-produced token fails elsewhere.
+- **Fail-closed by construction.** The `{ES256, ES384, EdDSA}` allow-list runs
+  *before* any crypto (`alg:none`, RS\*, HS\* never reach a verifier); a
+  declared credential status without a resolver rejects; an unparseable
+  timestamp rejects; the JWT envelope is reconciled with the embedded credential.
+- **SSRF-guarded network.** Every issuer-named URL (`did:web`, well-known,
+  status lists, schemas) goes through an https-only fetch that blocks
+  private/loopback/link-local ranges, refuses redirects, and pins the
+  connection to the validated IP (no DNS rebinding).
+- **Dependency-light.** The core imports `cryptography` and `pyjwt`, nothing
+  else; JSON canonicalization (RFC 8785) and the `ecdsa-sd-2023` CBOR codec are
+  hand-rolled on the stdlib, and `pyld` / `httpx` stay behind extras.
+- **Conformance pinned by real vectors.** `eddsa-rdfc-2022` reproduces the
+  official W3C test vector byte-for-byte; `ecdsa-rdfc-2019` / `ecdsa-sd-2023`
+  verify the official vc-di-ecdsa vectors and match their intermediates; the
+  EBSI client is verified against recorded pilot responses. Golden fixtures are
+  the drift alarm.
 
-## Tests
+## Documentation
 
-```sh
-pip install -e ".[all]"
-pytest                        # offline: deterministic, no network
-OPENVC_EBSI_LIVE=1 pytest     # also the opt-in live EBSI smoke test
-```
+- **[Manual (wiki)](https://github.com/luisgf/openvc/wiki)** — installation,
+  a guide per proof format, presentations & OpenID4VP, issuer-key resolution,
+  status lists, trust (EU Trusted Lists, EBSI), HSM integration, the security
+  model, and the versioning contract.
+- **[API reference](https://luisgf.github.io/openvc/)** — generated from the
+  docstrings, per module.
+- **[`examples/`](https://github.com/luisgf/openvc/blob/main/examples/)** —
+  ten runnable, offline scripts covering every flow (they run in CI, so they
+  cannot rot).
+
+## Scope
+
+`openvc` is the generic VC machinery a badge issuer, an EBSI verifier, or a
+EUDI wallet backend builds on — intentionally **not** an Open Badges library, a
+wallet, or a node operator. EBSI support is **read-only** (resolve `did:ebsi`,
+read the trust registries); onboarding/writing is out of scope. The
+`openvc_ebsi` plugin depends on `openvc`, never the reverse.
 
 ## Project
 
-- [Examples](https://github.com/luisgf/openvc/blob/main/examples/) — runnable
-  scripts for the main flows (pipeline, SD-JWT, Data Integrity, status lists, VP-JWT)
+- [Changelog](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) —
+  every release, with the spec/security reasoning
 - [Roadmap](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md)
-- [Changelog](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md)
-- [Contributing](https://github.com/luisgf/openvc/blob/main/CONTRIBUTING.md)
-  (dev setup, checks, and the commit convention)
-- [Security policy](https://github.com/luisgf/openvc/blob/main/SECURITY.md)
+- [Versioning & deprecation policy](https://github.com/luisgf/openvc/wiki/Versioning-and-Deprecation)
+- [Contributing](https://github.com/luisgf/openvc/blob/main/CONTRIBUTING.md) —
+  dev setup, checks, commit convention
+- [Security policy](https://github.com/luisgf/openvc/blob/main/SECURITY.md) and
+  the [threat model](https://github.com/luisgf/openvc/wiki/Security-Model)
+
+```sh
+pip install -e ".[all]"       # from a checkout
+pytest                        # offline: deterministic, no network
+OPENVC_EBSI_LIVE=1 pytest     # + the opt-in live EBSI smoke test
+```
 
 ## License
 
