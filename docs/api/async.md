@@ -12,7 +12,7 @@ second implementation of any signature check to drift. The batteries-included as
 fetch (`openvc.fetch.https_json_fetch_async`) runs the **exact same** SSRF /
 DNS-rebind guard as the sync fetch under `asyncio.to_thread`; a caller may inject an
 `httpx.AsyncClient`-backed fetch instead. See
-[ADR-0002](../adr/ADR-0002-async-verification.md) for the design and its trade-offs.
+[ADR-0002](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0002-async-verification.md) for the design and its trade-offs.
 
 ```python
 import asyncio

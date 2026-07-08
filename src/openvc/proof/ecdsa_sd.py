@@ -703,7 +703,7 @@ class EcdsaSdProofSuite:
 # --------------------------------------------------------------------------- #
 # Deprecated verb-last aliases (CONVENTIONS #2). Accessing one emits a
 # DeprecationWarning and forwards to the verb-first name; removable at the next
-# MAJOR (see docs/versioning.md). Kept out of __all__ / dir() on purpose.
+# MAJOR (see the wiki's Versioning-and-Deprecation page). Kept out of __all__ / dir() on purpose.
 # --------------------------------------------------------------------------- #
 _DEPRECATED_ALIASES = {
     "cbor_encode": "encode_cbor",

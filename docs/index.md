@@ -33,9 +33,12 @@ print(result.format, result.issuer, result.subject)
 ```
 
 `verify_credential` detects the format, resolves the issuer key, verifies the
-proof, and applies policy (types, audience, **fail-closed** status). See the
-[API reference](api/verification.md) for the full surface, and the
-[examples](https://github.com/luisgf/openvc/blob/main/examples/) for runnable
+proof, and applies policy (types, audience, **fail-closed** status). This site
+is the **API reference**, generated from the docstrings; the task-oriented
+manual — guides per proof format, presentations, status lists, trust, HSM
+integration, the security model — lives on the
+[project wiki](https://github.com/luisgf/openvc/wiki), and the
+[examples](https://github.com/luisgf/openvc/blob/main/examples/) are runnable
 scripts of every flow.
 
 ## How it fits together

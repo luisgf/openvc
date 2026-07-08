@@ -49,7 +49,7 @@ Areas most relevant to security, and how the library is designed to fail closed:
   before trusting it. A custom resolver deliberately opts out of that guard.
 
 For the full assets / trust-boundaries / attacker-capabilities picture, see the
-[threat model](https://luisgf.github.io/openvc/threat-model/).
+[threat model](https://github.com/luisgf/openvc/wiki/Security-Model).
 
 If you believe any of these controls can be bypassed, that is exactly the kind of
 report we want.

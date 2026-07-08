@@ -1,0 +1,46 @@
+name: wiki
+
+# Mirror wiki/ (the source of truth, reviewed in PRs and checked by CI) to the
+# GitHub wiki on every push to main. The sync is authoritative (--delete): a
+# page edited directly on the wiki is overwritten by the next sync — the repo
+# always wins, so the wiki cannot drift from what CI verified.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wiki/**'
+      - '.github/workflows/wiki.yml'
+  workflow_dispatch:
+
+# The default GITHUB_TOKEN's contents:write also covers <repo>.wiki.git.
+permissions:
+  contents: write
+
+# One sync at a time, in order.
+concurrency:
+  group: wiki
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Sync wiki/ to the GitHub wiki
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" /tmp/wiki
+          rsync -a --delete --exclude .git wiki/ /tmp/wiki/
+          cd /tmp/wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "wiki already in sync"
+          else
+            git commit -m "docs: sync wiki from ${GITHUB_SHA}"
+            git push
+          fi

@@ -13,6 +13,14 @@ on:
       - 'src/openvc/**'
       - 'README.md'
       - '.github/workflows/docs.yml'
+  # PRs run the strict build only (no deploy): a broken nav entry, dead link,
+  # or bad mkdocstrings identifier fails the PR instead of surfacing after merge.
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'src/openvc/**'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 # Least privilege for the Actions Pages deployment: read the repo, write the
@@ -47,12 +55,15 @@ jobs:
         run: mkdocs build --strict --site-dir ./site
 
       - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
         with:
           path: ./site
 
   deploy:
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
