@@ -2,14 +2,15 @@
 openvc.proof.sd_jwt — SD-JWT VC proof suite (selective disclosure).
 
 Implements the IETF SD-JWT VC family:
-  * draft-ietf-oauth-selective-disclosure-jwt (the SD-JWT mechanism)
-  * draft-ietf-oauth-sd-jwt-vc (the VC profile: ``vct``, ``cnf``, ``status`` ...)
+  * RFC 9901 (the SD-JWT mechanism; formerly draft-ietf-oauth-selective-disclosure-jwt)
+  * draft-ietf-oauth-sd-jwt-vc (the VC profile: ``vct``, ``cnf``, ``status`` …;
+    a draft that builds on RFC 9901)
 
 The third proof profile alongside VC-JWT (:mod:`openvc.proof.vc_jwt`) and Data
 Integrity — and the format EUDI/ARF converges on. It reuses the same JOSE
 machinery: the ``SigningKey`` backend (HSM-friendly, the private key never enters
-the process) and the fixed ``{ES256, EdDSA}`` algorithm allow-list checked before
-any crypto runs.
+the process) and the fixed ``{ES256, ES384, EdDSA, Ed25519}`` algorithm allow-list
+checked before any crypto runs.
 
 How SD-JWT works, briefly
 -------------------------
