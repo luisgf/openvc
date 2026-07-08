@@ -50,3 +50,21 @@ Currently deprecated (removable at the next MAJOR): the verb-last
 `serialize_base_proof`/`parse_base_proof`,
 `serialize_derived_proof`/`parse_derived_proof` — each warns and forwards to its
 verb-first replacement (`encode_cbor`/`decode_cbor`, `encode_base_proof`/…).
+
+## Algorithm names (RFC 9864)
+
+[RFC 9864](https://www.rfc-editor.org/rfc/rfc9864) (Oct 2025) marks the polymorphic
+`EdDSA` **Deprecated** in the IANA JOSE registry and introduces the fully-specified
+name `Ed25519` for the same Ed25519 signature. openvc tracks this without breaking
+anyone:
+
+- **Verify accepts both.** `Ed25519` joined the `{ES256, ES384, EdDSA}` allow-list
+  (so it is now `{ES256, ES384, EdDSA, Ed25519}`); a token with `alg: Ed25519`
+  verifies exactly like an `EdDSA` one across VC-JWT, SD-JWT VC and the status-list
+  token. RS\*/HS\*/`alg:none` stay rejected before any crypto.
+- **Signing still emits `EdDSA` by default** — no wire change unless you ask for it.
+  Opt into the fully-specified name per key: `Ed25519SigningKey.generate(kid,
+  alg="Ed25519")` (also on `.from_jwk` / `.from_pem`).
+- **`ES256`/`ES384` are not deprecated**, so their fully-specified `ESP256`/`ESP384`
+  names are **not** accepted yet — deferred until forward-looking signers actually
+  emit them, to keep the allow-list narrow (the EBSI/EUDI world is ES256-centric).

@@ -112,7 +112,14 @@ needs the *operation*, not the key material.
 
 ## The allow-list
 
-Whatever the backend, the verifier accepts only `{ES256, ES384, EdDSA}` —
+Whatever the backend, the verifier accepts only `{ES256, ES384, EdDSA, Ed25519}` —
 checked **before** any crypto runs. RS\*/HS\*/`alg: none` are rejected
 outright; see the [Security model](Security-Model) for why this is
 non-negotiable.
+
+`Ed25519` is the [RFC 9864](https://www.rfc-editor.org/rfc/rfc9864)
+fully-specified name for EdDSA (which IANA has deprecated as polymorphic).
+`Ed25519SigningKey` still **emits `EdDSA` by default**; opt into the new name per
+key with `Ed25519SigningKey.generate(kid, alg="Ed25519")` (or `.from_jwk` /
+`.from_pem`). See [Versioning & deprecation](Versioning-and-Deprecation) for the
+migration and why `ESP256`/`ESP384` are not accepted yet.

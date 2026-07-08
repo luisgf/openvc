@@ -37,7 +37,7 @@ class UnsupportedCryptosuite(ProofError):
 
 
 class UnsupportedAlgorithm(ProofError):
-    """The JOSE algorithm is not in the ``{ES256, EdDSA}`` allow-list."""
+    """The JOSE algorithm is not in the ``{ES256, ES384, EdDSA, Ed25519}`` allow-list."""
 
 
 class MalformedToken(ProofError):

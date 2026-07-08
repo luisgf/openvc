@@ -14,10 +14,13 @@ Responsibilities
 
 Security posture
 ----------------
-* Algorithm allow-list is fixed (ES256, ES384, EdDSA). `alg: none`, RS*, HS* are
-  rejected before any crypto runs — this is the primary defence against alg-confusion.
-  (ES384 is the P-384 leg of the Data Integrity ecdsa-*-2019 suites; it does not change
-  the EBSI/EUDI-preferred ES256 path.)
+* Algorithm allow-list is fixed (ES256, ES384, EdDSA, and the RFC 9864
+  fully-specified name Ed25519, which is EdDSA over Ed25519). `alg: none`, RS*, HS*
+  are rejected before any crypto runs — this is the primary defence against
+  alg-confusion. (ES384 is the P-384 leg of the Data Integrity ecdsa-*-2019 suites;
+  it does not change the EBSI/EUDI-preferred ES256 path. IANA deprecated the
+  polymorphic "EdDSA" in RFC 9864, so "Ed25519" is accepted alongside it — see the
+  versioning guide for the migration.)
 * The verification algorithm is taken from the token header ONLY after checking it
   against the allow-list, and is then pinned when calling the verifier.
 * peek_issuer never influences verification; it exists solely to select a key.
@@ -48,8 +51,14 @@ from .errors import (  # noqa: F401
 # Configuration
 # --------------------------------------------------------------------------- #
 
-ALLOWED_ALGS: frozenset[str] = frozenset({"ES256", "ES384", "EdDSA"})
+ALLOWED_ALGS: frozenset[str] = frozenset({"ES256", "ES384", "EdDSA", "Ed25519"})
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew on exp/nbf/iat
+
+# PyJWT (2.x) ships only the polymorphic "EdDSA"; teach a PRIVATE PyJWT instance the
+# RFC 9864 fully-specified "Ed25519" name (same OKP/Ed25519 verification) so a token
+# with `alg: Ed25519` verifies without mutating the process-global pyjwt registry.
+_JWT = pyjwt.PyJWT()
+_JWT._jws.register_algorithm("Ed25519", OKPAlgorithm())
 
 
 # --------------------------------------------------------------------------- #
@@ -67,7 +76,8 @@ class SigningKey(Protocol):
     """
     @property
     def alg(self) -> str:
-        """The JOSE algorithm identifier — ``"ES256"``, ``"ES384"`` or ``"EdDSA"``."""
+        """The JOSE algorithm identifier — ``"ES256"``, ``"ES384"``, ``"EdDSA"`` or
+        the RFC 9864 fully-specified ``"Ed25519"``."""
     @property
     def kid(self) -> str:
         """The verification-method id this key signs as (e.g. ``did:…#key-1``)."""
@@ -169,7 +179,7 @@ class VcJwtProofSuite:
         key = self._jwk_to_key(public_key_jwk, alg)
 
         try:
-            claims = pyjwt.decode(
+            claims = _JWT.decode(                          # PyJWT instance that knows "Ed25519"
                 token,
                 key=key,
                 algorithms=[alg],                         # pinned, single alg
