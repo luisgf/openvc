@@ -4,6 +4,26 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] — unreleased
+
+Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
+
+### Added
+
+- **The full key surface is re-exported from the package root.** Beside the existing
+  `Ed25519SigningKey` / `P256SigningKey` / `SigningKey`, `openvc` now also exports
+  `P384SigningKey`, the `KeyAgreementKey` protocol and its `P256KeyAgreementKey` (the
+  HAIP `direct_post.jwt` decryption backend), the `signing_key_from_jwk` factory and
+  the dependency-light `verify_signature` helper — so the signing/key primitives import
+  symmetrically from `openvc` or from `openvc.keys` (they are the **same objects**).
+  Purely additive; `openvc.keys` is unchanged. Backed by new dedicated unit floors for
+  `openvc.keys`, `openvc.proof.vc_jwt` and `openvc.multibase` — the three lowest-level
+  modules, previously covered only indirectly — asserting the negative paths first (the
+  algorithm allow-list rejecting `none`/RS\*/HS\* before any crypto, VC-JWT envelope
+  reconciliation, wrong-curve / malformed-JWK typed failures, ECDH peer-key rejection,
+  and the base58/varint leading-zero and truncation edges).
+  ([#63](https://github.com/luisgf/openvc/issues/63))
+
 ## [1.9.0] — 2026-07-07
 
 Part of the [post-1.0 — Breadth](https://github.com/luisgf/openvc/milestone/4) milestone.
