@@ -89,7 +89,20 @@ the SSRF guard, that protection is gone — prefer composing the shipped pieces.
 
 ## Caching
 
-DID documents rarely change; network resolvers can be wrapped in an opt-in
-TTL cache (`openvc.cache`) — `CachingDidResolver` wraps a resolver,
-`cached_resolve` wraps a bare resolve function. `did:key` / `did:jwk` never
-need it (they never touch the network).
+Network resolution is opt-in cacheable through `openvc.cache`, a thread-safe,
+bounded, pure-stdlib `TtlCache` with two wrappers:
+
+- `CachingDidResolver` memoises `resolve(did)` — so a batch from one `did:web`
+  issuer skips the repeat round-trip; `did:key` / `did:jwk` never need it (they
+  never touch the network).
+- `cached_resolve` wraps any `resolve_status_list` / `resolve_credential_schema`
+  / fetch `Callable[[str], …]`.
+
+Only **successful** results are cached — a transient failure is retried, never
+pinned. **Freshness is a security property for status:** a cached status list
+cannot see a revocation until it expires, so `cached_resolve` defaults to a short
+TTL (`DEFAULT_STATUS_TTL_S = 60 s`) while DID documents tolerate a longer one
+(`DEFAULT_DID_TTL_S = 300 s`). Caching stays opt-in — the pipeline default resolves
+uncached. For a one-shot batch, `verify_many` (and the VP-JWT cascade) already
+dedupes each distinct issuer / status list / schema per call, so you often do not
+need a standing cache at all.

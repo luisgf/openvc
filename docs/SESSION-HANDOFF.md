@@ -1,5 +1,12 @@
 # Session handoff — openbadgeslib → OB 3.0 + EBSI
 
+> **⚠️ Historical snapshot (2026-07-05, v0.1-era).** This is a dated design handoff,
+> **not** the current state — openvc is at 1.x with most of what this document
+> anticipates already shipped. For where the project *is*, read
+> [`docs/ROADMAP.md`](ROADMAP.md), the [CHANGELOG](../CHANGELOG.md), and the GitHub
+> milestones; kept only for the original design rationale. (Excluded from the docs
+> site via `mkdocs.yml`.)
+
 This is the working plan and current state as of the session on 2026-07-05, written
 so Claude Code can pick up without re-deriving the design. Pair with `CLAUDE.md`
 (conventions) and `docs/adr/ADR-0001-ebsi-http-client.md` (HTTP evidence/decisions).
