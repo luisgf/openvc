@@ -253,10 +253,20 @@ class VcJwtProofSuite:
 
     @staticmethod
     def _jwk_to_key(jwk: dict[str, Any], alg: str) -> Any:
+        # openvc's OKP support is Ed25519-only: pin the curve BEFORE loading so
+        # neither the RFC 9864 fully-specified "Ed25519" name (whose whole point is
+        # that the curve is fixed) nor the polymorphic "EdDSA" can verify against a
+        # non-Ed25519 OKP key (e.g. an Ed448 verificationMethod). Without this, PyJWT's
+        # OKPAlgorithm would accept any OKP curve — disagreeing with the curve-pinned
+        # openvc.keys.verify_signature used by the SD-JWT / VP / status paths.
+        if alg in ("EdDSA", "Ed25519") and (
+                jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519"):
+            raise ProofError(f"{alg} requires an OKP Ed25519 key, got "
+                             f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
         try:
             if alg in ("ES256", "ES384"):
                 return ECAlgorithm.from_jwk(json.dumps(jwk))
-            return OKPAlgorithm.from_jwk(json.dumps(jwk))   # EdDSA
+            return OKPAlgorithm.from_jwk(json.dumps(jwk))   # EdDSA / Ed25519 (Ed25519 only)
         except Exception as exc:
             raise ProofError(f"could not load {alg} key from JWK: {exc}") from exc
 

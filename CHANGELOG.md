@@ -23,7 +23,10 @@ Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/
   `Ed25519SigningKey.generate(kid, alg="Ed25519")` (also `.from_jwk` / `.from_pem`).
   `RS*` / `HS*` / `alg:none` stay rejected before any crypto. `ES256`/`ES384` are not
   deprecated, so their `ESP256`/`ESP384` fully-specified names are deliberately **not**
-  accepted yet (see the versioning guide). ([#59](https://github.com/luisgf/openvc/issues/59))
+  accepted yet (see the versioning guide). Because `Ed25519` is *fully-specified*, the
+  VC-JWT verify path now **pins the OKP curve to Ed25519** (an Ed448 key/signature under
+  `Ed25519` — or `EdDSA` — fails closed), matching `keys.verify_signature`. (Curve-pinning
+  gap found in the #59 adversarial review.) ([#59](https://github.com/luisgf/openvc/issues/59))
 
 ## [1.10.0] — 2026-07-08
 

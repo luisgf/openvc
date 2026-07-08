@@ -33,6 +33,10 @@ def _header_alg(token: str) -> str:
     return json.loads(base64.urlsafe_b64decode(token.split(".")[0] + "=="))["alg"]
 
 
+def _seg(obj: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+
 # --------------------------------------------------------------------------- #
 # allow-list
 # --------------------------------------------------------------------------- #
@@ -117,6 +121,26 @@ def test_vc_jwt_ed25519_wrong_key_fails_closed():
     token = VcJwtProofSuite().sign(CRED, signing_key=key)
     with pytest.raises(SignatureInvalid):
         VcJwtProofSuite().verify(token, public_key_jwk=other.public_jwk())
+
+
+@pytest.mark.parametrize("alg", ["Ed25519", "EdDSA"])
+def test_vc_jwt_okp_curve_is_pinned_to_ed25519(alg):
+    # RFC 9864 "Ed25519" is fully-specified — the curve MUST be Ed25519. An Ed448
+    # OKP key/signature under either OKP name must fail closed (not silently verify),
+    # matching keys.verify_signature. (Found in the #59 adversarial review.)
+    from cryptography.hazmat.primitives.asymmetric import ed448
+    from openvc.proof.errors import ProofError
+
+    sk = ed448.Ed448PrivateKey.generate()
+    x = base64.urlsafe_b64encode(sk.public_key().public_bytes_raw()).rstrip(b"=").decode()
+    ed448_jwk = {"kty": "OKP", "crv": "Ed448", "x": x}
+    header = {"alg": alg, "typ": "JWT"}
+    payload = {"iss": "did:example:issuer", "vc": CRED}
+    signing_input = f"{_seg(header)}.{_seg(payload)}"
+    sig = base64.urlsafe_b64encode(sk.sign(signing_input.encode())).rstrip(b"=").decode()
+    token = f"{signing_input}.{sig}"
+    with pytest.raises(ProofError):
+        VcJwtProofSuite().verify(token, public_key_jwk=ed448_jwk)
 
 
 def test_pipeline_verify_credential_ed25519_did_key():
