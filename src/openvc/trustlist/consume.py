@@ -47,12 +47,31 @@ class ServiceStatus:
 
 
 class ServiceType:
-    """ETSI TS 119 612 ``ServiceTypeIdentifier`` URIs (a useful subset)."""
+    """ETSI TS 119 612 ``ServiceTypeIdentifier`` URIs.
+
+    A convenience set of the identifiers observed on the live EU Trusted Lists under
+    **TLv6** (ETSI TS 119 612 v2.4.1, mandatory since 29 Apr 2026). These are just
+    names — :class:`Select` matches ``ServiceTypeIdentifier`` verbatim, so **any** URI
+    works, including the EUDI-wallet trust services (issuance of QEAA / EAA / PuB-EAA,
+    qualified electronic ledgers) that v2.4.1 introduces but national lists have not
+    widely populated yet: pass their URI to :class:`Select` as it rolls out.
+    """
     CA_QC = f"{_ETSI}/Svctype/CA/QC"                 # CA issuing qualified certificates
     CA_PKC = f"{_ETSI}/Svctype/CA/PKC"              # CA issuing public-key certificates
+    NATIONAL_ROOT_CA_QC = f"{_ETSI}/Svctype/NationalRootCA-QC"
     OCSP_QC = f"{_ETSI}/Svctype/Certstatus/OCSP/QC"
+    OCSP = f"{_ETSI}/Svctype/Certstatus/OCSP"        # non-qualified OCSP
     CRL_QC = f"{_ETSI}/Svctype/Certstatus/CRL/QC"
-    TSA_QTST = f"{_ETSI}/Svctype/TSA/QTST"
+    TSA_QTST = f"{_ETSI}/Svctype/TSA/QTST"           # qualified timestamping
+    TSA = f"{_ETSI}/Svctype/TSA"                     # non-qualified timestamping
+    # Other qualified eIDAS trust services carried on TLv6 national lists:
+    EDS_Q = f"{_ETSI}/Svctype/EDS/Q"                 # qualified electronic delivery
+    EDS_REM_Q = f"{_ETSI}/Svctype/EDS/REM/Q"         # qualified registered e-mail delivery
+    PSES_Q = f"{_ETSI}/Svctype/PSES/Q"               # qualified preservation of e-signatures
+    QES_VALIDATION_Q = f"{_ETSI}/Svctype/QESValidation/Q"          # qualified QES validation
+    REMOTE_QSIGCD_MANAGEMENT_Q = f"{_ETSI}/Svctype/RemoteQSigCDManagement/Q"
+    REMOTE_QSEALCD_MANAGEMENT_Q = f"{_ETSI}/Svctype/RemoteQSealCDManagement/Q"
+    ARCHIVING = f"{_ETSI}/Svctype/Archiv"            # archiving
 
 
 @dataclass(frozen=True)

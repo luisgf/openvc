@@ -43,8 +43,18 @@ Properties worth knowing:
 - **Fail-closed** — a national TL that cannot be fetched, verified, or is
   expired contributes **zero** anchors and is recorded in `anchors.problems`,
   never silently trusted.
-- **Selective** — the default selection keeps `granted` qualified-CA services;
-  pass `select=None` for everything.
+- **Selective** — the default selection keeps `granted` qualified-CA services
+  (the ones that issue EUDI issuer certs); pass `select=None` for everything, or a
+  `Select(service_types=…)` over `ServiceType`. Beyond `CA_QC`, the named types cover
+  the qualified trust services **TLv6** national lists carry (`EDS_Q`, `PSES_Q`,
+  `QES_VALIDATION_Q`, `REMOTE_QSIGCD_MANAGEMENT_Q`, `REMOTE_QSEALCD_MANAGEMENT_Q`,
+  `TSA_QTST`, …). `Select` matches the `ServiceTypeIdentifier` **verbatim**, so the
+  EUDI-wallet trust services v2.4.1 adds (issuance of QEAA / EAA / PuB-EAA, qualified
+  electronic ledgers) are selectable by their URI as national lists start carrying them.
+- **TLv6** — since **29 Apr 2026** the LOTL and every national TL are ETSI TS 119 612
+  **v2.4.1** (TLv6) only. The parser reads `TSLVersionIdentifier` (`TrustList.version`
+  — `6` for TLv6) and tolerates the new optional elements (e.g. `ServiceSupplyPoints`);
+  the `[trustlist]` XAdES verifier accepts the mandated **XAdES-BASELINE-B** signatures.
 - **Hardened XML** — stdlib parsing with DTD/DOCTYPE rejected (no XXE, no
   entity-expansion bombs), size-bounded input; XAdES verification lives behind
   the `[trustlist]` extra (`signxml`) and pins the signer to the certs the

@@ -56,6 +56,7 @@ def parse_trust_list(xml: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Trust
     operator = None
     territory = None
     seq = None
+    version = None
     issue = None
     next_update = None
     pointers: list[TslPointer] = []
@@ -63,6 +64,7 @@ def parse_trust_list(xml: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Trust
         operator = _localized_name(scheme.find(_q("SchemeOperatorName")))
         territory = _text(scheme, _q("SchemeTerritory"))
         seq = _int(_text(scheme, _q("TSLSequenceNumber")))
+        version = _int(_text(scheme, _q("TSLVersionIdentifier")))
         issue = _text(scheme, _q("ListIssueDateTime"))
         nu = scheme.find(_q("NextUpdate"))
         next_update = _parse_datetime(_text(nu, _q("dateTime"))) if nu is not None else None
@@ -82,7 +84,7 @@ def parse_trust_list(xml: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Trust
     return TrustList(
         tsl_type=tsl_type, scheme_operator=operator, territory=territory,
         sequence_number=seq, issue_datetime=issue, next_update=next_update,
-        pointers=tuple(pointers), providers=tuple(providers))
+        pointers=tuple(pointers), providers=tuple(providers), version=version)
 
 
 # --------------------------------------------------------------------------- #

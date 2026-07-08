@@ -1,14 +1,18 @@
 # Trusted List fixtures
 
-ETSI TS 119 612 **-shaped** fixtures for `openvc.trustlist` — **not** the live EU
-LOTL. They pin the parser and the fail-closed LOTL→TL walk.
+ETSI TS 119 612 v2.4.1 (**TLv6**) **-shaped** fixtures for `openvc.trustlist` —
+**not** the live EU LOTL. They pin the parser and the fail-closed LOTL→TL walk.
+Both lists carry `TSLVersionIdentifier = 6` (TLv6, mandatory since 29 Apr 2026).
 
 - `eu-lotl.xml` — a List of Trusted Lists (`TSLType` = `EUlistofthelists`) with two
   `OtherTSLPointer`s: one to the DE national TL (`EUgeneric`, territory `DE`, with
   its signer cert), and one **pivot** pointer to another LOTL (must be skipped by
   the walk).
-- `de-tl.xml` — a national TL with one TSP and two `CA/QC` services: one `granted`,
-  one `withdrawn` (so status selection is testable).
+- `de-tl.xml` — a national TL with one TSP and four services: two `CA/QC` (one
+  `granted`, one `withdrawn`, so status selection is testable), one granted `EDS/Q`
+  (qualified e-delivery, carrying a TLv6 `ServiceSupplyPoints` element the parser
+  must tolerate), and one granted `RemoteQSealCDManagement/Q` — the qualified trust
+  services TLv6 national lists actually carry.
 - `commission.pem` — the self-signed cert a test pins as the LOTL signer
   (`lotl_signer_certs`). The DE-TL signer and the two CA certs are embedded in the
   XML and recovered by the parser.
