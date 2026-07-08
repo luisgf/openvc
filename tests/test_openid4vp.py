@@ -230,7 +230,9 @@ def test_invalid_json_string_is_rejected():
                         nonce=NONCE, client_id=CLIENT_ID)
 
 
-@pytest.mark.parametrize("fmt", ["ldp_vc", "mso_mdoc", "jwt_vc_json_ld", "made_up"])
+# ldp_vc is now verified (issue #61, see test_openid4vp_ldp); mso_mdoc and any
+# unknown format identifier stay typed-unsupported.
+@pytest.mark.parametrize("fmt", ["mso_mdoc", "jwt_vc_json_ld", "made_up"])
 def test_unsupported_format_is_typed(issuer, holder, fmt):
     with pytest.raises(UnsupportedPresentationFormat):
         verify_vp_token({"c": [{}]}, dcql_query={"credentials": [{"id": "c", "format": fmt}]},

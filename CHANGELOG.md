@@ -4,6 +4,29 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] — unreleased
+
+Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
+
+### Added
+
+- **Verify `ldp_vc` presentations in `verify_vp_token` (OpenID4VP 1.0 §B.1).** An `ldp_vc`
+  DCQL query is answered with a **W3C Verifiable Presentation secured by a Data Integrity
+  `authentication` proof**; `verify_vp_token` / `verify_encrypted_vp_response` now verify
+  it beside `dc+sd-jwt` and `jwt_vc_json` (previously a typed `UnsupportedPresentationFormat`).
+  The request binding maps onto the proof — `proof.challenge` = the `nonce`, `proof.domain`
+  = the full, prefixed `client_id`, `proofPurpose: authentication` — the holder key is
+  resolved from the proof's `verificationMethod` (and must be authorised for
+  `authentication` in its DID document), and every embedded credential is **cascade-verified**
+  through `verify_credential`. All four whole-document cryptosuites are accepted:
+  `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (need the `[data-integrity]` extra) and the pyld-free
+  `eddsa-jcs-2022` / `ecdsa-jcs-2019`. The format is **pinned to the DCQL query** — a bare
+  string or a bare credential with no VP wrapper is rejected, since the holder binding lives
+  only on a presentation proof (the LDP analogue of the existing `dc+sd-jwt` "must be an
+  SD-JWT" pin, closing the same unbound-credential smuggle). A new optional `extra_contexts=`
+  parameter threads custom JSON-LD contexts to the RDF path. `mso_mdoc` remains a typed
+  `UnsupportedPresentationFormat`. ([#61](https://github.com/luisgf/openvc/issues/61))
+
 ## [1.11.1] — 2026-07-08
 
 Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.

@@ -23,9 +23,16 @@ Request, hosts no ``request_uri``, and keeps no session/state — the verifier o
 hand the plaintext ``vp_token`` object here — both transports converge on the same
 shape (§8.3).
 
-Scope of the credential formats: ``dc+sd-jwt`` and ``jwt_vc_json`` are verified.
-``ldp_vc`` (a Data Integrity VP) and ``mso_mdoc`` (ISO mdoc) raise
-:class:`UnsupportedPresentationFormat` — they are follow-ups, not silently skipped.
+Scope of the credential formats: ``dc+sd-jwt``, ``jwt_vc_json`` and ``ldp_vc`` are
+verified. An ``ldp_vc`` credential is presented as a **W3C Verifiable Presentation
+secured with a Data Integrity proof** (OpenID4VP 1.0 §B.1): the holder binding is the
+proof's ``authentication`` purpose with ``challenge`` = the request ``nonce`` and
+``domain`` = the (full, prefixed) ``client_id``; the presentation's embedded
+credentials are cascade-verified through :func:`openvc.verify_credential`. The RDF
+cryptosuites (``eddsa-rdfc-2022`` / ``ecdsa-rdfc-2019``) need the ``[data-integrity]``
+extra (``pyld``); the JCS ones (``eddsa-jcs-2022`` / ``ecdsa-jcs-2019``) do not.
+``mso_mdoc`` (ISO mdoc) raises :class:`UnsupportedPresentationFormat` — a follow-up,
+not silently skipped.
 
 Credential-level revocation (status list) is out of scope for this layer: it verifies
 the presentation binding and each credential's proof + validity window. Apply status
@@ -62,10 +69,16 @@ __all__ = [
 # DCQL Credential Format Identifiers (OpenID4VP 1.0 §10 "format_specific_parameters").
 FORMAT_SD_JWT_VC = "dc+sd-jwt"      # SD-JWT VC + KB-JWT               (verified)
 FORMAT_JWT_VC = "jwt_vc_json"       # W3C VC as a JWT -> a VP-JWT      (verified)
-FORMAT_LDP_VC = "ldp_vc"            # W3C VC with Data Integrity -> LDP-VP (unsupported)
+FORMAT_LDP_VC = "ldp_vc"            # W3C VC with Data Integrity -> LDP-VP (verified)
 FORMAT_MSO_MDOC = "mso_mdoc"        # ISO 18013-5 mdoc                (unsupported)
 
-_SUPPORTED_FORMATS = frozenset({FORMAT_SD_JWT_VC, FORMAT_JWT_VC})
+_SUPPORTED_FORMATS = frozenset({FORMAT_SD_JWT_VC, FORMAT_JWT_VC, FORMAT_LDP_VC})
+
+# Data Integrity cryptosuites accepted for an ldp_vc presentation's holder
+# `authentication` proof — the whole-document suites (ecdsa-sd-2023 is
+# selective-disclosure issuance, not a holder proof, so it is excluded).
+_LDP_VP_CRYPTOSUITES = frozenset({
+    "eddsa-rdfc-2022", "eddsa-jcs-2022", "ecdsa-rdfc-2019", "ecdsa-jcs-2019"})
 
 
 # --------------------------------------------------------------------------- #
@@ -128,6 +141,7 @@ def verify_vp_token(
     resolver: Any = None,
     now: datetime | None = None,
     leeway_s: int = DEFAULT_LEEWAY_S,
+    extra_contexts: Mapping[str, dict] | None = None,
 ) -> VpTokenVerification:
     """Verify an OpenID4VP 1.0 ``vp_token`` against the query and request binding.
 
@@ -140,10 +154,13 @@ def verify_vp_token(
     instant for the validity window.
 
     Returns a :class:`VpTokenVerification`. Raises :class:`VpTokenMalformed` on a
-    shape violation, :class:`UnsupportedPresentationFormat` for ``ldp_vc`` /
-    ``mso_mdoc``, and the suite's own typed error (``SignatureInvalid`` /
+    shape violation, :class:`UnsupportedPresentationFormat` for ``mso_mdoc`` (and an
+    ``ldp_vc`` presentation whose Data Integrity cryptosuite is not one of the
+    whole-document suites), and the suite's own typed error (``SignatureInvalid`` /
     ``ClaimsInvalid`` / …) if any Presentation fails to verify or bind — a single
-    failure rejects the whole response (fail closed).
+    failure rejects the whole response (fail closed). *extra_contexts* is passed to
+    the Data Integrity path for ``ldp_vc`` presentations that reference JSON-LD
+    contexts beyond the bundled ones (RDF cryptosuites only).
 
     With no ``credential_sets``, every Credential Query is required and its absence is
     rejected. When the query *does* carry ``credential_sets``, per-query completeness
@@ -172,7 +189,7 @@ def verify_vp_token(
             verified.append(_verify_one(
                 query_id, query, presentation,
                 nonce=nonce, client_id=client_id, resolver=resolver,
-                now=now, leeway_s=leeway_s))
+                now=now, leeway_s=leeway_s, extra_contexts=extra_contexts))
     return VpTokenVerification(presentations=tuple(verified))
 
 
@@ -186,6 +203,7 @@ def verify_encrypted_vp_response(
     resolver: Any = None,
     now: datetime | None = None,
     leeway_s: int = DEFAULT_LEEWAY_S,
+    extra_contexts: Mapping[str, dict] | None = None,
 ) -> VpTokenVerification:
     """Decrypt a HAIP ``direct_post.jwt`` response (a JWE) and verify its ``vp_token``.
 
@@ -211,7 +229,7 @@ def verify_encrypted_vp_response(
         raise VpTokenMalformed("decrypted response has no vp_token member")
     return verify_vp_token(
         payload["vp_token"], dcql_query=dcql_query, nonce=nonce, client_id=client_id,
-        resolver=resolver, now=now, leeway_s=leeway_s)
+        resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts)
 
 
 def _parse_vp_token(vp_token: Mapping[str, Any] | str) -> Mapping[str, Any]:
@@ -279,6 +297,7 @@ def _presentation_list(query_id: str, query: Mapping[str, Any], value: Any) -> l
 def _verify_one(
     query_id: str, query: Mapping[str, Any], presentation: Any, *,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
+    extra_contexts: Mapping[str, dict] | None,
 ) -> VerifiedPresentation:
     fmt = query["format"]
     if fmt == FORMAT_SD_JWT_VC:
@@ -289,7 +308,11 @@ def _verify_one(
         return _verify_jwt_vp(
             query_id, presentation,
             nonce=nonce, client_id=client_id, resolver=resolver, leeway_s=leeway_s)
-    if fmt in (FORMAT_LDP_VC, FORMAT_MSO_MDOC):
+    if fmt == FORMAT_LDP_VC:
+        return _verify_ldp_vp(
+            query_id, presentation, nonce=nonce, client_id=client_id, resolver=resolver,
+            now=now, leeway_s=leeway_s, extra_contexts=extra_contexts)
+    if fmt == FORMAT_MSO_MDOC:
         raise UnsupportedPresentationFormat(
             f"Credential Query {query_id!r} format {fmt!r} is not yet supported")
     raise UnsupportedPresentationFormat(
@@ -348,6 +371,117 @@ def _verify_jwt_vp(
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_JWT_VC, holder=verified.holder,
         credentials=tuple(verified.credentials), raw=verified)
+
+
+def _verify_ldp_vp(
+    query_id: str, presentation: Any, *,
+    nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
+    extra_contexts: Mapping[str, dict] | None,
+) -> VerifiedPresentation:
+    from .verify import VerificationPolicy, verify_credential
+
+    # OpenID4VP 1.0 §B.1: an ldp_vc credential is presented as a W3C Verifiable
+    # Presentation secured with a Data Integrity `authentication` proof — the value is
+    # the VP JSON object (not a string). Pin that shape so a holder-unbound bare
+    # credential cannot be smuggled under an ldp_vc query (the LDP analogue of the
+    # dc+sd-jwt "must be an SD-JWT" pin): the binding lives ONLY on a VP proof.
+    if isinstance(presentation, str):
+        raise VpTokenMalformed(
+            f"an {FORMAT_LDP_VC} Presentation for {query_id!r} must be a JSON object "
+            f"(a W3C Verifiable Presentation), not a string")
+    if not isinstance(presentation, Mapping):
+        raise VpTokenMalformed(
+            f"an {FORMAT_LDP_VC} Presentation for {query_id!r} must be a JSON object")
+    types = presentation.get("type")
+    type_list = ([types] if isinstance(types, str)
+                 else types if isinstance(types, list) else [])
+    if "VerifiablePresentation" not in type_list:
+        raise VpTokenMalformed(
+            f"an {FORMAT_LDP_VC} Presentation for {query_id!r} must be a "
+            f"VerifiablePresentation")
+
+    proof = presentation.get("proof")
+    if isinstance(proof, list):
+        raise UnsupportedPresentationFormat(
+            f"the {FORMAT_LDP_VC} Presentation for {query_id!r} carries multiple proofs "
+            f"(not supported)")
+    if not isinstance(proof, Mapping):
+        raise VpTokenMalformed(
+            f"the {FORMAT_LDP_VC} Presentation for {query_id!r} has no Data Integrity "
+            f"holder proof")
+    cryptosuite = proof.get("cryptosuite")
+    if cryptosuite not in _LDP_VP_CRYPTOSUITES:
+        raise UnsupportedPresentationFormat(
+            f"the {FORMAT_LDP_VC} Presentation for {query_id!r} uses an unsupported "
+            f"Data Integrity cryptosuite {cryptosuite!r}")
+
+    # Verify the holder's authentication proof, bound to the request: challenge = the
+    # transaction nonce, domain = the full prefixed client_id. The holder key is
+    # resolved from the proof's verificationMethod and must be authorized for
+    # `authentication` in its DID document (the suite enforces this).
+    suite = _di_suite_for(str(cryptosuite), leeway_s)
+    verify_kwargs: dict[str, Any] = dict(
+        resolver=resolver, expected_proof_purpose="authentication",
+        expected_challenge=nonce, expected_domain=client_id, now=now)
+    if cryptosuite in ("eddsa-rdfc-2022", "ecdsa-rdfc-2019"):   # RDF suites take contexts
+        verify_kwargs["extra_contexts"] = extra_contexts
+    verified_vp = suite.verify(dict(presentation), **verify_kwargs)
+
+    # Cascade-verify each embedded credential through the pipeline (fail closed).
+    policy = VerificationPolicy(require_status=False, now=now, leeway_s=leeway_s)
+    credentials = tuple(
+        verify_credential(vc, policy=policy, resolver=resolver,
+                          extra_contexts=extra_contexts)
+        for vc in _embedded_vcs(query_id, presentation))
+
+    return VerifiedPresentation(
+        query_id=query_id, format=FORMAT_LDP_VC, holder=_vp_holder(presentation, proof),
+        credentials=credentials, raw=verified_vp)
+
+
+def _di_suite_for(cryptosuite: str, leeway_s: int) -> Any:
+    # cryptosuite is pre-validated against _LDP_VP_CRYPTOSUITES by the caller.
+    if cryptosuite == "eddsa-rdfc-2022":
+        from .proof.data_integrity import DataIntegrityProofSuite
+        return DataIntegrityProofSuite(leeway_s=leeway_s)
+    if cryptosuite == "eddsa-jcs-2022":
+        from .proof.di_jcs import EddsaJcsProofSuite
+        return EddsaJcsProofSuite(leeway_s=leeway_s)
+    if cryptosuite == "ecdsa-jcs-2019":
+        from .proof.di_jcs import EcdsaJcsProofSuite
+        return EcdsaJcsProofSuite(leeway_s=leeway_s)
+    from .proof.di_ecdsa_rdfc import EcdsaRdfcProofSuite      # ecdsa-rdfc-2019
+    return EcdsaRdfcProofSuite(leeway_s=leeway_s)
+
+
+def _embedded_vcs(query_id: str, presentation: Mapping[str, Any]) -> list[Any]:
+    # VCDM: `verifiableCredential` is one credential or an array. A presentation
+    # answering a Credential Query must carry at least one. Each item is a VC string
+    # (VC-JWT / SD-JWT) or a JSON object (Data Integrity / EnvelopedVerifiableCredential)
+    # — verify_credential re-detects the format.
+    vc = presentation.get("verifiableCredential")
+    items = vc if isinstance(vc, list) else ([vc] if vc is not None else [])
+    if not items:
+        raise VpTokenMalformed(
+            f"the {FORMAT_LDP_VC} Presentation for {query_id!r} embeds no "
+            f"verifiableCredential")
+    for item in items:
+        if not isinstance(item, (str, Mapping)):
+            raise VpTokenMalformed(
+                f"each embedded credential in {query_id!r} must be a string or JSON object")
+    return items
+
+
+def _vp_holder(presentation: Mapping[str, Any], proof: Mapping[str, Any]) -> str | None:
+    holder = presentation.get("holder")
+    if isinstance(holder, Mapping):
+        holder = holder.get("id")
+    if isinstance(holder, str) and holder:
+        return holder
+    vm = proof.get("verificationMethod")           # fall back to the authenticating DID
+    if isinstance(vm, str):
+        return vm.split("#", 1)[0]
+    return None
 
 
 def _check_vct(query_id: str, query: Mapping[str, Any], vct: str | None) -> None:
