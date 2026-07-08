@@ -1,6 +1,8 @@
 """
 openvc.status.token_status_list — IETF Token Status List
-(draft-ietf-oauth-status-list).
+(draft-ietf-oauth-status-list-21; IESG-approved and in the RFC Editor queue as of
+2026-07, intended Proposed Standard — no RFC number yet). The codec is pinned
+byte-for-byte to the draft §4.1 examples in ``tests/test_conformance_status_list``.
 
 The second status-list encoding, alongside the W3C Bitstring list in
 ``openvc.status.bitstring``. The differences that matter:

@@ -6,7 +6,9 @@ the credential without reissuing anything. openvc implements **both** wire
 encodings behind **one interface** — the W3C
 [Bitstring Status List](https://www.w3.org/TR/vc-bitstring-status-list/) and
 the IETF [Token Status List](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/)
-— and can **check and issue** either.
+(draft-21, IESG-approved and in the RFC Editor queue as of 2026-07) — and can
+**check and issue** either. The Token Status List codec is pinned byte-for-byte to
+the draft's §4.1 worked examples.
 
 ## Issue a list, stamp a credential, revoke it
 

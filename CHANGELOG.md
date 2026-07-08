@@ -4,6 +4,25 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.1] — unreleased
+
+Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
+
+### Changed
+
+- **Normative references refreshed, and the IETF Token Status List codec pinned to its
+  current draft.** The SD-JWT mechanism openvc implements is now **RFC 9901** (Nov 2025,
+  formerly draft-ietf-oauth-selective-disclosure-jwt) — docstrings updated. The Token
+  Status List is at **draft-ietf-oauth-status-list-21** (IESG-approved, in the RFC Editor
+  queue — no RFC number yet); a new `tests/test_conformance_status_list.py` drift alarm
+  pins the codec **byte-for-byte** to the draft §4.1 1-bit and 2-bit worked examples
+  (decoding each published `lst` reproduces the exact status array, and the encoder
+  reproduces each `lst`), plus the token/reference wire contract (`typ: statuslist+jwt`,
+  `status_list{bits,lst}`, `status.status_list{uri,idx}`, and the VALID/INVALID/SUSPENDED
+  status types). No behaviour change — when the RFC publishes, the vectors and citations
+  swap to it and any draft→RFC wire drift fires here first.
+  ([#60](https://github.com/luisgf/openvc/issues/60))
+
 ## [1.11.0] — 2026-07-08
 
 Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
