@@ -84,7 +84,8 @@ def test_rejects_non_p384_curve(curve):
 # --------------------------------------------------------------------------- #
 
 def test_es384_is_allow_listed_but_rs_and_none_stay_rejected():
-    assert ALLOWED_ALGS == frozenset({"ES256", "ES384", "EdDSA"})
+    # Ed25519 (RFC 9864 fully-specified EdDSA) joined the allow-list in #59.
+    assert ALLOWED_ALGS == frozenset({"ES256", "ES384", "EdDSA", "Ed25519"})
     assert "RS256" not in ALLOWED_ALGS and "HS256" not in ALLOWED_ALGS
     assert "none" not in ALLOWED_ALGS
 

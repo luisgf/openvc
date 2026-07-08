@@ -111,8 +111,8 @@ lists, remote HSM signing, EU Trusted Lists, EBSI — has a guide in the
   / `sign`), so a PKCS#11, AWS KMS, or Vault Transit backend drops in and the
   private key never enters the process. ES256 signatures are the correct raw
   JOSE `R‖S` form — the classic reason a locally-produced token fails elsewhere.
-- **Fail-closed by construction.** The `{ES256, ES384, EdDSA}` allow-list runs
-  *before* any crypto (`alg:none`, RS\*, HS\* never reach a verifier); a
+- **Fail-closed by construction.** The `{ES256, ES384, EdDSA, Ed25519}` allow-list
+  runs *before* any crypto (`alg:none`, RS\*, HS\* never reach a verifier); a
   declared credential status without a resolver rejects; an unparseable
   timestamp rejects; the JWT envelope is reconciled with the embedded credential.
 - **SSRF-guarded network.** Every issuer-named URL (`did:web`, well-known,

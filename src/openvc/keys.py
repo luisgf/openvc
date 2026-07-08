@@ -3,7 +3,9 @@ openvc.keys — key backends implementing the SigningKey protocol.
 
 Two software backends are provided:
 
-  * Ed25519SigningKey  -> alg "EdDSA"   (default for general OB 3.0 issuance)
+  * Ed25519SigningKey  -> alg "EdDSA"   (default for general OB 3.0 issuance;
+                                         opt into the RFC 9864 fully-specified
+                                         name "Ed25519" with alg="Ed25519")
   * P256SigningKey     -> alg "ES256"   (P-256, required for EBSI/EUDI)
 
 Both produce **JWS-compatible** signatures, which is the subtle part:
@@ -41,6 +43,11 @@ from .errors import OpenvcError
 P256_COORD_BYTES = 32  # a P-256 coordinate / scalar is 32 bytes
 P384_COORD_BYTES = 48  # a P-384 coordinate / scalar is 48 bytes
 
+# The polymorphic "EdDSA" and its RFC 9864 fully-specified equivalent "Ed25519"
+# name the same Ed25519 signature; IANA deprecated "EdDSA" (RFC 9864), so an
+# Ed25519 backend may emit either. Both verify identically.
+ED25519_ALG_NAMES = frozenset({"EdDSA", "Ed25519"})
+
 
 class KeyBackendError(OpenvcError): ...
 class InvalidKey(KeyBackendError): ...
@@ -69,12 +76,28 @@ def _int_to_fixed(n: int, length: int) -> bytes:
 # --------------------------------------------------------------------------- #
 
 class Ed25519SigningKey:
-    """An in-process Ed25519 (``EdDSA``) signing key — the general OB 3.0 default."""
-    alg = "EdDSA"
+    """An in-process Ed25519 (``EdDSA``) signing key — the general OB 3.0 default.
 
-    def __init__(self, private_key: ed25519.Ed25519PrivateKey, kid: str) -> None:
+    The JOSE algorithm name emitted in the header defaults to the (still-supported)
+    polymorphic ``"EdDSA"``; pass ``alg="Ed25519"`` to emit the RFC 9864
+    fully-specified name instead. Both name the same Ed25519 signature.
+    """
+
+    def __init__(
+        self, private_key: ed25519.Ed25519PrivateKey, kid: str, *, alg: str = "EdDSA"
+    ) -> None:
+        if alg not in ED25519_ALG_NAMES:
+            raise InvalidKey(f"Ed25519 alg must be one of {sorted(ED25519_ALG_NAMES)}, "
+                             f"got {alg!r}")
         self._sk = private_key
         self._kid = kid
+        self._alg = alg
+
+    @property
+    def alg(self) -> str:
+        """The JOSE algorithm name in the header — ``"EdDSA"`` (default) or the RFC
+        9864 fully-specified ``"Ed25519"``."""
+        return self._alg
 
     @property
     def kid(self) -> str:
@@ -102,22 +125,24 @@ class Ed25519SigningKey:
     # -- constructors ------------------------------------------------------ #
 
     @classmethod
-    def generate(cls, kid: str) -> "Ed25519SigningKey":
-        return cls(ed25519.Ed25519PrivateKey.generate(), kid)
+    def generate(cls, kid: str, *, alg: str = "EdDSA") -> "Ed25519SigningKey":
+        return cls(ed25519.Ed25519PrivateKey.generate(), kid, alg=alg)
 
     @classmethod
-    def from_jwk(cls, jwk: dict[str, Any], kid: str) -> "Ed25519SigningKey":
+    def from_jwk(cls, jwk: dict[str, Any], kid: str, *, alg: str = "EdDSA") -> "Ed25519SigningKey":
         if jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519" or "d" not in jwk:
             raise InvalidKey("not an Ed25519 private JWK")
         sk = ed25519.Ed25519PrivateKey.from_private_bytes(_b64url_decode(jwk["d"]))
-        return cls(sk, kid)
+        return cls(sk, kid, alg=alg)
 
     @classmethod
-    def from_pem(cls, pem: bytes, kid: str, password: bytes | None = None) -> "Ed25519SigningKey":
+    def from_pem(
+        cls, pem: bytes, kid: str, password: bytes | None = None, *, alg: str = "EdDSA"
+    ) -> "Ed25519SigningKey":
         sk = serialization.load_pem_private_key(pem, password=password)
         if not isinstance(sk, ed25519.Ed25519PrivateKey):
             raise InvalidKey("PEM is not an Ed25519 private key")
-        return cls(sk, kid)
+        return cls(sk, kid, alg=alg)
 
 
 # --------------------------------------------------------------------------- #
@@ -349,7 +374,7 @@ def verify_signature(
     The VC verification path uses the proof suite instead; this is complementary.
     """
     try:
-        if alg == "EdDSA":
+        if alg in ED25519_ALG_NAMES:                       # "EdDSA" or RFC 9864 "Ed25519"
             raw = _b64url_decode(public_jwk["x"])
             ed25519.Ed25519PublicKey.from_public_bytes(raw).verify(signature, signing_input)
             return True

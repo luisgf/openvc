@@ -69,7 +69,7 @@ In production the issuer key usually lives in an HSM/KMS and is addressed by
   supply a status resolver (or opt out explicitly). See
   [Status lists](Status-Lists).
 - An **unresolvable issuer key**, an **unparseable timestamp**, or an
-  algorithm outside the `{ES256, ES384, EdDSA}` allow-list all reject —
+  algorithm outside the `{ES256, ES384, EdDSA, Ed25519}` allow-list all reject —
   ambiguity never resolves to "accept". The reasoning is laid out in the
   [Security model](Security-Model).
 - Every failure raises a subclass of a single root, so

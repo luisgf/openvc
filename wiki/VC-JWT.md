@@ -2,7 +2,8 @@
 
 The VC-JWT suite wraps a W3C credential in a signed JWT
 ([VC-JOSE-COSE](https://www.w3.org/TR/vc-jose-cose/)). It is the
-EBSI/EUDI-compatible path (`ES256`) and supports `ES384` and `EdDSA` as well.
+EBSI/EUDI-compatible path (`ES256`) and supports `ES384` and `EdDSA` as well
+(plus the RFC 9864 fully-specified name `Ed25519` for the latter).
 
 ## Sign and verify
 
@@ -37,8 +38,10 @@ already hold the key. Normally you let the pipeline resolve it from the
 ## What the verifier enforces
 
 - **The algorithm allow-list runs before any crypto.** Only
-  `{ES256, ES384, EdDSA}` are accepted; `alg: none`, RS\*, and HS\* are
-  rejected up front, which closes the classic alg-confusion attacks.
+  `{ES256, ES384, EdDSA, Ed25519}` are accepted (`Ed25519` is the RFC 9864
+  fully-specified name for EdDSA — see
+  [Versioning & deprecation](Versioning-and-Deprecation)); `alg: none`, RS\*,
+  and HS\* are rejected up front, which closes the classic alg-confusion attacks.
 - **Envelope ↔ credential reconciliation.** The JWT claims (`iss`, `sub`,
   `exp`, `nbf`) must agree with the embedded credential (`issuer`,
   `credentialSubject.id`, validity window) — a token cannot smuggle a

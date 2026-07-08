@@ -4,6 +4,30 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] — unreleased
+
+Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
+
+### Added
+
+- **Accept the RFC 9864 fully-specified `Ed25519` JOSE algorithm name.** RFC 9864
+  (Oct 2025) marks the polymorphic `EdDSA` **Deprecated** in the IANA registry and
+  gives `Ed25519` as the fully-specified name for the same Ed25519 signature.
+  `Ed25519` joins the algorithm allow-list — now `{ES256, ES384, EdDSA, Ed25519}`,
+  still checked **before any crypto** — so a token with `alg: Ed25519` verifies
+  exactly like an `EdDSA` one across VC-JWT, SD-JWT VC and the IETF status-list token
+  (the SD-JWT / status paths already routed through `keys.verify_signature`; VC-JWT
+  now decodes through a **private** PyJWT instance taught the name, with no
+  process-global pyjwt-registry mutation). **Signing still emits `EdDSA` by default**
+  — no wire change unless you ask for it — with an opt-in per key:
+  `Ed25519SigningKey.generate(kid, alg="Ed25519")` (also `.from_jwk` / `.from_pem`).
+  `RS*` / `HS*` / `alg:none` stay rejected before any crypto. `ES256`/`ES384` are not
+  deprecated, so their `ESP256`/`ESP384` fully-specified names are deliberately **not**
+  accepted yet (see the versioning guide). Because `Ed25519` is *fully-specified*, the
+  VC-JWT verify path now **pins the OKP curve to Ed25519** (an Ed448 key/signature under
+  `Ed25519` — or `EdDSA` — fails closed), matching `keys.verify_signature`. (Curve-pinning
+  gap found in the #59 adversarial review.) ([#59](https://github.com/luisgf/openvc/issues/59))
+
 ## [1.10.0] — 2026-07-08
 
 Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
