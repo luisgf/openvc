@@ -20,15 +20,23 @@ package root:
 ```python
 from openvc import (verify_credential, VerificationPolicy, VerificationResult,
                     VerificationError, OpenvcError,
-                    Ed25519SigningKey, P256SigningKey, SigningKey)
+                    Ed25519SigningKey, P256SigningKey, P384SigningKey, SigningKey,
+                    KeyAgreementKey, P256KeyAgreementKey,
+                    signing_key_from_jwk, verify_signature)
 ```
+
+The full key surface — the three `*SigningKey` backends and their `SigningKey`
+protocol, the `KeyAgreementKey` protocol and its `P256KeyAgreementKey`, plus the
+`signing_key_from_jwk` factory and the `verify_signature` helper — is re-exported
+from the package root as well as from `openvc.keys`; import either way.
 
 Everything else is imported from its module and is equally stable API: proof suites
 from `openvc.proof.<suite>` (`vc_jwt`, `sd_jwt`, `data_integrity`, `ecdsa_sd`,
 `vp_jwt`); the **shared proof-error taxonomy** — `ProofError`, its leaves, and the
 policy errors (`CredentialExpired`, `ProofPurposeMismatch`, …) — from the canonical
 `openvc.proof.errors`; DID resolution from `openvc.did.base` and the concrete
-resolvers from `openvc.did.did_key` / `did_jwk` / `did_web`; keys from `openvc.keys`;
+resolvers from `openvc.did.did_key` / `did_jwk` / `did_web`; keys also from
+`openvc.keys`;
 status-list check/issue from `openvc.status` (prefer it over the codec submodules);
 schema validation from `openvc.schema`; the SSRF-guarded drop-ins from
 `openvc.resolvers` and `openvc.fetch`. The `openvc.proof` package re-exports nothing

@@ -5,10 +5,21 @@
 __version__ = "1.9.0"
 
 # The one-call verification pipeline is the headline API (see openvc.verify); the
-# two signing backends and the SigningKey protocol are the signing counterpart.
-# Everything else is imported from its module (see docs/CONVENTIONS.md).
+# signing backends (Ed25519 / P256 / P384), the SigningKey protocol and the
+# KeyAgreementKey backend used for HAIP decryption are its signing/key counterpart,
+# alongside the signing_key_from_jwk factory and the dependency-light
+# verify_signature helper. Everything else is imported from its module (see
+# docs/CONVENTIONS.md).
 from .errors import OpenvcError  # noqa: E402
-from .keys import Ed25519SigningKey, P256SigningKey  # noqa: E402
+from .keys import (  # noqa: E402
+    Ed25519SigningKey,
+    KeyAgreementKey,
+    P256KeyAgreementKey,
+    P256SigningKey,
+    P384SigningKey,
+    signing_key_from_jwk,
+    verify_signature,
+)
 from .proof.vc_jwt import SigningKey  # noqa: E402
 from .verify import (  # noqa: E402
     BatchResult,
@@ -36,5 +47,10 @@ __all__ = [
     "VerificationError",
     "Ed25519SigningKey",
     "P256SigningKey",
+    "P384SigningKey",
     "SigningKey",
+    "KeyAgreementKey",
+    "P256KeyAgreementKey",
+    "signing_key_from_jwk",
+    "verify_signature",
 ]

@@ -25,6 +25,11 @@ backend implements the protocol and delegates `sign` to the remote service.
 and `.public_key_raw()`. Fine for development and for issuers whose keys live
 with the process; for production issuance, prefer a remote backend.
 
+These three backends and the `SigningKey` protocol — plus the `KeyAgreementKey`
+protocol and its `P256KeyAgreementKey`, the `signing_key_from_jwk` factory, and
+the dependency-light `verify_signature` helper — are all importable straight from
+`openvc` as well as from `openvc.keys`; the two paths are the same objects.
+
 ## A remote backend (KMS / Vault / PKCS#11 pattern)
 
 The one thing hand-rolled backends get wrong: **JOSE ES256 signatures are raw
