@@ -4,6 +4,23 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.2] — unreleased
+
+Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
+
+### Added
+
+- **ML-DSA (RFC 9964) design ADR** ([ADR-0004](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0004-ml-dsa-design.md)).
+  The post-quantum spike concludes: `ML-DSA-44/65/87` VC-JWT / SD-JWT VC would land behind the
+  existing `SigningKey` protocol as an **explicitly-experimental opt-in** — a `[pq]` extra pinning
+  `cryptography>=48` plus a runtime capability guard (ML-DSA needs OpenSSL ≥ 3.5), a new
+  `AKP`-keyed backend (the 32-byte seed private key, raw-bytes `sign`, external-mu `sign_mu` for the
+  HSM path), verification through the dependency-light `keys.verify_signature` (PyJWT ships no
+  ML-DSA), and a **separate PQ allow-list merged only when opted in** so the default alg-confusion
+  defence is untouched. Data Integrity PQ suites, `did:key` multicodec (still draft), and composite
+  signatures stay out of scope. **Design only; no code change** — the implementation is tracked in
+  [#72](https://github.com/luisgf/openvc/issues/72). ([#71](https://github.com/luisgf/openvc/issues/71))
+
 ## [1.13.1] — 2026-07-08
 
 Part of the [Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6) milestone.
