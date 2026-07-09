@@ -85,14 +85,15 @@ from .verify import (
 def default_async_resolver() -> AsyncDidResolverRegistry:
     """The async counterpart of :func:`openvc.verify.default_resolver`: the offline
     ``did:key`` / ``did:jwk`` resolvers (adapted via :func:`as_async_resolver`) plus
-    the SSRF-guarded async ``did:web`` resolver."""
+    the SSRF-guarded async ``did:web`` and ``did:webvh`` resolvers."""
     from .did.did_jwk import DidJwkResolver
     from .did.did_key import DidKeyResolver
-    from .fetch import default_async_did_web_resolver
+    from .fetch import default_async_did_web_resolver, default_async_did_webvh_resolver
     return AsyncDidResolverRegistry([
         as_async_resolver(DidKeyResolver()),
         as_async_resolver(DidJwkResolver()),
         default_async_did_web_resolver(),
+        default_async_did_webvh_resolver(),
     ])
 
 

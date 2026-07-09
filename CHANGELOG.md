@@ -4,6 +4,37 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] — unreleased
+
+Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
+
+### Added
+
+- **`did:webvh` resolver (DIF Recommended DID Method v1.0), verify-side.** New
+  `openvc.did.did_webvh` resolves a `did:webvh` DID by fetching its `did.jsonl` version log
+  over the SSRF-guarded text fetch and **replaying it fail-closed**: the **SCID** (the
+  identifier is the `base58btc(multihash-sha256(JCS(...)))` of the genesis entry), the
+  **entryHash chain** (version numbers increment; an inserted/reordered/tampered entry
+  breaks it), each entry's **`eddsa-jcs-2022`** Data Integrity proof by an authorized
+  `updateKey`, and **key pre-rotation** (a rotated-in key must hash into the previous
+  `nextKeyHashes`). A deactivated log fails closed, and a log that declares a **`witness`
+  threshold policy is refused fail-closed** (verify-side witness verification is
+  unsupported — openvc will not silently downgrade to the un-witnessed trust model).
+  Registered in the default resolver (sync + async), so a `did:webvh` issuer verifies with
+  no code change; the multihash / JCS / Ed25519 primitives are the in-tree ones, no new
+  dependency. Conformance is pinned to **real v1.0 golden vectors** from the reference
+  `didwebvh-rs` test suite, and the resolver was hardened by an adversarial review (no log
+  forgery was possible; the witness downgrade and a pre-rotation crash-on-junk were fixed).
+  Verify-side only — log creation / rotation / witnessing (issuer-side) is out of scope.
+  ([#68](https://github.com/luisgf/openvc/issues/68))
+
+### Changed
+
+- **`parse_did_document` now reads `publicKeyMultibase` Multikey verification methods**
+  (Ed25519 / P-256 / P-384), not only `publicKeyJwk` — the modern W3C encoding `did:webvh`
+  and newer `did:web` documents use. Purely additive: a method without a decodable key is
+  still skipped. New `openvc.did.base.multikey_to_jwk` helper. ([#68](https://github.com/luisgf/openvc/issues/68))
+
 ## [1.14.0] — 2026-07-09
 
 Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.

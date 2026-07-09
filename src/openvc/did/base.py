@@ -11,10 +11,18 @@ did:web and did:ebsi alike, so they belong in the core.)
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Protocol, runtime_checkable
 
 from ..errors import OpenvcError
+from ..multibase import MultibaseError, decode_multibase, read_varint
+
+# multicodec varint heads for the public-key types openvc decodes from a Multikey
+# (publicKeyMultibase) — Ed25519 and the two NIST curves, matching did:key.
+_MC_ED25519 = 0xED
+_MC_P256 = 0x1200
+_MC_P384 = 0x1201
 
 # The W3C verification relationships a proofPurpose can name. Captured so a
 # verifier can bind a key to the purpose it is authorized for (a proof claiming
@@ -116,19 +124,69 @@ def _relationship_refs(doc: dict[str, Any], key: str) -> list[str]:
     return refs
 
 
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def multikey_to_jwk(multibase_key: str) -> dict[str, Any]:
+    """Decode a ``publicKeyMultibase`` Multikey to a public JWK.
+
+    Handles the key types openvc verifies with — Ed25519 (multicodec ``0xed``) and the
+    NIST curves P-256 (``0x1200``) / P-384 (``0x1201``, SEC1 compressed points) — the same
+    set as :mod:`openvc.did.did_key`. Raises :class:`~openvc.multibase.MultibaseError`
+    (or ``ValueError`` for an off-curve point / unknown codec) so the caller can skip an
+    undecodable method rather than crash."""
+    raw = decode_multibase(multibase_key)
+    code, off = read_varint(raw)
+    key = raw[off:]
+    if code == _MC_ED25519:
+        if len(key) != 32:
+            raise ValueError(f"Ed25519 Multikey must be 32 bytes, got {len(key)}")
+        return {"kty": "OKP", "crv": "Ed25519", "x": _b64url(key)}
+    if code in (_MC_P256, _MC_P384):
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        curve, crv, size = (
+            (ec.SECP256R1(), "P-256", 32) if code == _MC_P256 else (ec.SECP384R1(), "P-384", 48))
+        pub = ec.EllipticCurvePublicKey.from_encoded_point(curve, key)  # validates on-curve
+        nums = pub.public_numbers()
+        return {"kty": "EC", "crv": crv,
+                "x": _b64url(nums.x.to_bytes(size, "big")),
+                "y": _b64url(nums.y.to_bytes(size, "big"))}
+    raise ValueError(f"unsupported Multikey multicodec 0x{code:x}")
+
+
+def _vm_public_jwk(vm: dict[str, Any]) -> dict[str, Any] | None:
+    """The verification method's public key as a JWK — from ``publicKeyJwk`` directly, or
+    converted from a ``publicKeyMultibase`` Multikey. ``None`` if neither is present or the
+    Multikey is an undecodable type (the method is then skipped, as before)."""
+    jwk = vm.get("publicKeyJwk")
+    if isinstance(jwk, dict):
+        return jwk
+    mb = vm.get("publicKeyMultibase")
+    if isinstance(mb, str):
+        try:
+            return multikey_to_jwk(mb)
+        except (MultibaseError, ValueError, TypeError):
+            return None
+    return None
+
+
 def parse_did_document(raw: dict[str, Any]) -> DidDocument:
     """Parse a W3C DID document. Tolerates a `didDocument` wrapper or a bare doc
-    (the EBSI DID Registry returns it bare, as application/did+ld+json)."""
+    (the EBSI DID Registry returns it bare, as application/did+ld+json). Verification
+    methods may carry ``publicKeyJwk`` or a ``publicKeyMultibase`` Multikey (did:webvh and
+    modern did:web documents use the latter)."""
     doc = raw.get("didDocument", raw)
     vms = [
         VerificationMethod(
             id=vm["id"],
             type=vm.get("type", ""),
             controller=vm.get("controller", doc.get("id", "")),
-            public_key_jwk=vm["publicKeyJwk"],
+            public_key_jwk=jwk,
         )
         for vm in doc.get("verificationMethod", [])
-        if "publicKeyJwk" in vm
+        if isinstance(vm, dict) and "id" in vm and (jwk := _vm_public_jwk(vm)) is not None
     ]
     relationships = {
         key: _relationship_refs(doc, key) for key in RELATIONSHIP_KEYS if key in doc
