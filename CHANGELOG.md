@@ -4,12 +4,26 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.13.2] — unreleased
+## [1.14.0] — unreleased
 
 Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
 
 ### Added
 
+- **EBSI production-launch readiness.** The `openvc_ebsi` plugin is ready for EBSI's
+  **Q4 2026 business/production launch** (EUROPEUM-EDIC, `ebsi.eu` family): `for_ebsi` gains a
+  **`production`** environment (`api.ebsi.eu`), seeding the https-only SSRF allow-list and
+  `EBSI_BASE` for the cutover. The **TIR v5 `/attributes` listing is now walked across every
+  page** — the adapter followed only the first page before, silently dropping an issuer's later
+  accreditations (a fail-closed trust gap); pagination follows the JSON:API `links.next` cursor
+  bounded by `total`, a same-origin check (host **and** port), a seen-page guard (EBSI returns a
+  self-referential `next` on the last page — following it blindly looped forever), and hard page
+  **and item** caps, all through the SSRF-guarded fetch. A malformed registry body (a `null` /
+  array / string where an object is required) now fails closed as a typed `MalformedRegistryResponse`
+  rather than leaking a bare `AttributeError` past the `EbsiError` family. `verify_ebsi_badge` is
+  confirmed to verify the **VCDM 1.1 and 2.0 dual envelopes** Conformance v4 issues (2.0 keeps the
+  JWT `vc` wrapper, with `validFrom`/`validUntil`), covered by a regression test. Read-only stays
+  read-only. ([#64](https://github.com/luisgf/openvc/issues/64))
 - **ML-DSA (RFC 9964) design ADR** ([ADR-0004](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0004-ml-dsa-design.md)).
   The post-quantum spike concludes: `ML-DSA-44/65/87` VC-JWT / SD-JWT VC would land behind the
   existing `SigningKey` protocol as an **explicitly-experimental opt-in** — a `[pq]` extra pinning
@@ -32,6 +46,16 @@ Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc
   and covered by the external audit ([#75](https://github.com/luisgf/openvc/issues/75)). Also
   refreshes the ROADMAP out-of-scope note. **Design only; no code change.**
   ([#65](https://github.com/luisgf/openvc/issues/65))
+
+### Security
+
+- **VC-JWT verification now also enforces the credential body's own validity window.**
+  `VcJwtProofSuite.verify` checked only the JWT `exp`/`nbf` claims; it now *additionally* enforces
+  the credential's VCDM 2.0 `validFrom`/`validUntil` (and VCDM 1.1 `issuanceDate`/`expirationDate`)
+  with the same leeway. An issuer — EBSI's VCDM 2.0 envelopes among them — can encode expiry **only**
+  in the credential body with no JWT `exp`; such an expired credential previously verified. Surfaced
+  by the adversarial review of #64. Fail-closed, defence-in-depth; raises the existing
+  `CredentialExpired` / `CredentialNotYetValid` (both `ProofError`). ([#64](https://github.com/luisgf/openvc/issues/64))
 
 ## [1.13.1] — 2026-07-08
 

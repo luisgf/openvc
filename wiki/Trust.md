@@ -91,6 +91,12 @@ with for_ebsi("pilot") as http:
   ([ADR-0001](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0001-ebsi-http-client.md)).
   Never resolve `did:web` through it — `did:web` has its own guarded fetch
   (see [Resolving issuer keys](Resolving-Issuer-Keys)).
+- **Environment-aware**: `for_ebsi("pilot" | "conformance" | "production")` seeds
+  the allow-list from the chosen EBSI environment — `production` (`api.ebsi.eu`) is
+  registered for EBSI's Q4 2026 business launch. Pass `extra_hosts` to also permit an
+  issuer's status-list origin. The v5 Trusted Issuers Registry `/attributes` listing
+  is paginated, and openvc walks every page (bounded, and immune to EBSI's
+  self-referential `next` cursor) so an issuer with many accreditations is read in full.
 - **Version drift, contained**: every EBSI API version specific lives behind
   one adapter in `openvc_ebsi.versioning`; the trust logic never sees wire
   formats. Conformance is pinned by recorded pilot fixtures, plus an opt-in
