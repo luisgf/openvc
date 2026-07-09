@@ -26,6 +26,7 @@ certificate issuance.
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Sequence
@@ -94,11 +95,24 @@ def _load_cert(cert: Any) -> Any:
 
 
 def _subject_value(cert: Any, oid: Any) -> str | None:
+    """The single subject value for *oid*, or ``None`` if absent/empty.
+
+    A WRPAC identity attribute is single-valued; a subject carrying the OID **more
+    than once** is rejected fail-closed rather than silently reporting the DER-first
+    one (which a downstream that reads the last value — or a human reading the full
+    ``subject`` — would disagree with, a spoofing wedge). An empty/whitespace value is
+    normalised to ``None`` so a caller's ``is None`` guard is not defeated by ``''``."""
     attrs = cert.subject.get_attributes_for_oid(oid)
     if not attrs:
         return None
+    if len(attrs) > 1:
+        raise RpCertError(
+            f"subject carries {oid.dotted_string} {len(attrs)} times — a relying-party "
+            f"identity attribute must be single-valued")
     value = attrs[0].value
-    return value if isinstance(value, str) else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
 
 
 def _public_jwk(cert: Any) -> dict[str, Any] | None:
@@ -203,16 +217,24 @@ def verify_rp_access_certificate(
     """Validate a WRPAC and return its parsed attributes.
 
     The chain (leaf *cert* + any *intermediates*) is path-validated to *trust_anchors*
-    (the ACA roots, ``x509.Certificate`` objects — the trusted-list anchors that root
-    them) by ``cryptography``'s verifier: signatures, validity window, and
-    ``basicConstraints`` are enforced; only the TLS-specific EKU requirement is relaxed
-    (a WRPAC is an e-seal/signature certificate, not a TLS server cert). If
-    *required_eku* (an EKU OID dotted string) is given, the leaf must carry it.
+    (the ACA roots — the trusted-list anchors that root them; each an
+    ``x509.Certificate``, DER/PEM bytes, or a base64 string) by ``cryptography``'s
+    verifier: signatures, the validity window, ``basicConstraints`` and path length are
+    enforced; only the TLS-specific EKU requirement is relaxed (a WRPAC is an
+    e-seal/signature certificate, not a TLS server cert). If *required_eku* (an EKU OID
+    dotted string) is given, the leaf must carry it.
 
-    Raises :class:`RpCertError` on a malformed certificate, a path-validation failure,
-    or a missing required EKU. Same fail-closed posture as :func:`openvc.x5c.resolve_x5c_key`.
+    **This proves the certificate chains to your anchors (and carries *required_eku* if
+    given) — it does NOT, by itself, prove the certificate is a WRPAC.** If your
+    *trust_anchors* certify end-entities beyond relying-party access certificates (e.g. a
+    broad national/eIDAS root rather than a dedicated ACA), pass *required_eku* — or gate
+    on the returned ``certificate_policies`` — to distinguish a WRPAC. With no such gate
+    this accepts any end-entity under the anchor.
+
+    Raises :class:`RpCertError` on a malformed certificate, a bad/empty anchor set, a
+    path-validation failure, or a missing required EKU. Same fail-closed posture as
+    :func:`openvc.x5c.resolve_x5c_key`.
     """
-    from cryptography import x509
     from cryptography.x509.verification import (
         ExtensionPolicy,
         PolicyBuilder,
@@ -220,9 +242,21 @@ def verify_rp_access_certificate(
         VerificationError,
     )
 
-    anchors = [a for a in trust_anchors if isinstance(a, x509.Certificate)]
+    # Fail closed — with a typed error — on a mistyped trust parameter (e.g. a single
+    # Certificate where a sequence is expected, or a string `now`) rather than leaking a
+    # bare TypeError/AttributeError past the OpenvcError family.
+    if isinstance(trust_anchors, (str, bytes)) or not isinstance(trust_anchors, Iterable):
+        raise RpCertError("trust_anchors must be a sequence of ACA roots, not a single value")
+    if isinstance(intermediates, (str, bytes)) or not isinstance(intermediates, Iterable):
+        raise RpCertError("intermediates must be a sequence of certificates")
+    if now is not None and not isinstance(now, datetime):
+        raise RpCertError("now must be a datetime or None")
+
+    # Load anchors through the same coercion as cert/intermediates — symmetric, and a
+    # bad anchor is a typed error, not a silent drop that would fail-open the anchor set.
+    anchors = [_load_cert(a) for a in trust_anchors]
     if not anchors:
-        raise RpCertError("no trust anchors given (a sequence of x509.Certificate ACA roots)")
+        raise RpCertError("no trust anchors given (a sequence of ACA roots)")
 
     leaf = _load_cert(cert)
     inter = [_load_cert(i) for i in intermediates]

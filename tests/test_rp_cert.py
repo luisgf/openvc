@@ -182,3 +182,55 @@ def test_verify_refuses_non_ca_intermediate_smuggling():
     with pytest.raises(RpCertError):
         verify_rp_access_certificate(leaf, trust_anchors=[root],
                                      intermediates=[impostor], now=_AT)
+
+
+# --------------------------------------------------------------------------- #
+# adversarial-review regressions (issue #67)
+# --------------------------------------------------------------------------- #
+
+def test_rejects_duplicate_identity_rdn():
+    # A subject carrying organizationIdentifier twice must fail closed, not silently
+    # report the first while `subject` shows both — else a machine gate and a human/audit
+    # view can be driven to different identities (adversarial-review M1).
+    ca, ca_key, ca_name = _ca()
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "Totally Legit RP"),
+        x509.NameAttribute(NameOID.ORGANIZATION_IDENTIFIER, "VATES-ATTACKER01"),
+        x509.NameAttribute(NameOID.ORGANIZATION_IDENTIFIER, "VATES-VICTIMBANK"),
+    ])
+    leaf = _cert(subject, ca_name, key, ca_key,
+                 [(x509.ExtendedKeyUsage([ObjectIdentifier(RP_EKU)]), False)])
+    with pytest.raises(RpCertError):
+        parse_rp_access_certificate(leaf)
+    with pytest.raises(RpCertError):                     # even chaining to a good anchor
+        verify_rp_access_certificate(leaf, trust_anchors=[ca], now=_AT)
+
+
+def test_verify_rejects_mistyped_trust_params_as_typed_error():
+    # A single Certificate where a sequence is expected, or a string `now`, must raise
+    # the typed RpCertError, not leak a bare TypeError/AttributeError (adversarial-review L1).
+    ca, ca_key, ca_name = _ca()
+    leaf = _wrpac(ca_key, ca_name)
+    with pytest.raises(RpCertError):
+        verify_rp_access_certificate(leaf, trust_anchors=ca, now=_AT)          # not a list
+    with pytest.raises(RpCertError):
+        verify_rp_access_certificate(leaf, trust_anchors=[ca], intermediates=ca, now=_AT)
+    with pytest.raises(RpCertError):
+        verify_rp_access_certificate(leaf, trust_anchors=[ca], now="2026-01-01")   # str now
+
+
+def test_verify_accepts_anchors_in_any_certificate_form():
+    # trust_anchors is symmetric with cert/intermediates — DER/PEM/base64/Certificate all
+    # work, and a bad anchor entry is a typed error, not a silent drop (adversarial-review L2).
+    import base64
+    ca, ca_key, ca_name = _ca()
+    leaf = _wrpac(ca_key, ca_name)
+    ca_der = ca.public_bytes(serialization.Encoding.DER)
+    ca_pem = ca.public_bytes(serialization.Encoding.PEM)
+    ca_b64 = base64.b64encode(ca_der).decode()
+    for anchor in (ca, ca_der, ca_pem, ca_b64):
+        rp = verify_rp_access_certificate(leaf, trust_anchors=[anchor], now=_AT)
+        assert rp.entity_identifier == "VATES-B12345678"
+    with pytest.raises(RpCertError):
+        verify_rp_access_certificate(leaf, trust_anchors=[b"not a cert"], now=_AT)

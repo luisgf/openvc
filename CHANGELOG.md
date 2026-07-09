@@ -35,7 +35,10 @@ Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc
   registration-record URLs) to gate on; `parse_rp_access_certificate` is the untrusted,
   inspection-only counterpart. The **registration certificate (WRPRC)** — the entitlements /
   intended-use artifact — is a signed JWT/CWT (ETSI TS 119 475), not X.509, with a claim mapping
-  not yet finalised, and is deferred to its own issue. ([#67](https://github.com/luisgf/openvc/issues/67))
+  not yet finalised, and is deferred to its own issue ([#89](https://github.com/luisgf/openvc/issues/89)).
+  Hardened by an adversarial review: identity attributes are enforced single-valued (a duplicate-RDN
+  spoof fails closed) and mistyped trust parameters raise the typed `RpCertError`.
+  ([#67](https://github.com/luisgf/openvc/issues/67))
 - **ML-DSA (RFC 9964) design ADR** ([ADR-0004](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0004-ml-dsa-design.md)).
   The post-quantum spike concludes: `ML-DSA-44/65/87` VC-JWT / SD-JWT VC would land behind the
   existing `SigningKey` protocol as an **explicitly-experimental opt-in** — a `[pq]` extra pinning
