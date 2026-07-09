@@ -17,11 +17,15 @@ Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc
   **entryHash chain** (version numbers increment; an inserted/reordered/tampered entry
   breaks it), each entry's **`eddsa-jcs-2022`** Data Integrity proof by an authorized
   `updateKey`, and **key pre-rotation** (a rotated-in key must hash into the previous
-  `nextKeyHashes`). A deactivated log fails closed. Registered in the default resolver
-  (sync + async), so a `did:webvh` issuer verifies with no code change; the multihash / JCS
-  / Ed25519 primitives are the in-tree ones, no new dependency. Conformance is pinned to
-  **real v1.0 golden vectors** from the reference `didwebvh-rs` test suite. Verify-side
-  only — log creation / rotation / witnessing (issuer-side) is out of scope.
+  `nextKeyHashes`). A deactivated log fails closed, and a log that declares a **`witness`
+  threshold policy is refused fail-closed** (verify-side witness verification is
+  unsupported — openvc will not silently downgrade to the un-witnessed trust model).
+  Registered in the default resolver (sync + async), so a `did:webvh` issuer verifies with
+  no code change; the multihash / JCS / Ed25519 primitives are the in-tree ones, no new
+  dependency. Conformance is pinned to **real v1.0 golden vectors** from the reference
+  `didwebvh-rs` test suite, and the resolver was hardened by an adversarial review (no log
+  forgery was possible; the witness downgrade and a pre-rotation crash-on-junk were fixed).
+  Verify-side only — log creation / rotation / witnessing (issuer-side) is out of scope.
   ([#68](https://github.com/luisgf/openvc/issues/68))
 
 ### Changed

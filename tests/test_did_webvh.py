@@ -176,6 +176,24 @@ def test_document_id_must_match_requested_did():
         _resolver(_log("basic-create")).resolve("did:webvh:QmX:other.example")
 
 
+def test_witness_policy_fails_closed():
+    # A real witnessed log (the didwebvh-rs witness-threshold vector) declares a witness
+    # threshold. openvc does not verify witness co-signatures, so it must REFUSE rather
+    # than silently downgrade to the un-witnessed trust model (adversarial-review MED-1).
+    with pytest.raises(DidWebvhError, match="witness"):
+        _resolver(_log("witness-threshold")).resolve(_did("witness-threshold"))
+
+
+def test_non_string_updatekey_fails_closed():
+    # A non-string updateKeys element must fail closed, not crash _prerotation_hash with a
+    # bare AttributeError before the entryHash/proof checks (adversarial-review LOW-1).
+    did = _did("pre-rotation-consume")
+    log = _tamper("pre-rotation-consume", 1,
+                  lambda e: e["parameters"].__setitem__("updateKeys", [123]))
+    with pytest.raises(DidWebvhError):
+        _resolver(log).resolve(did)
+
+
 # --------------------------------------------------------------------------- #
 # Multikey -> JWK (the parse_did_document extension did:webvh needs)
 # --------------------------------------------------------------------------- #

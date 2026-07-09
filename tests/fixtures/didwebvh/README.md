@@ -14,6 +14,7 @@ than to shapes this resolver also generates:
 | `pre-rotation-consume.jsonl` | the next entry **consumes** it — its `updateKeys` hash into the commitment |
 | `multi-update.jsonl` | a three-version chain |
 | `deactivate.jsonl` | a log that ends in `deactivated: true` |
+| `witness-threshold.jsonl` | a log declaring a `witness` threshold policy (openvc refuses it fail-closed — verify-side witness verification is unsupported) |
 
 `tests/test_did_webvh.py` resolves each of these and tampers them (mutated state, corrupt
 proof, forged SCID, renumbered/dropped entries, unauthorized signer) to assert the

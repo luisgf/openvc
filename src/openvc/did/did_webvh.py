@@ -24,8 +24,10 @@ For each log entry (one JSON object per line) this checks, fail-closed:
   must hash into it, so a compromised current key cannot rotate to an attacker key.
 
 Verify-side only: this resolves and validates a log; it does NOT create, update, rotate
-or witness one (issuer-side tooling is out of scope). Dependency-light — the JCS,
-multibase/multihash and Ed25519 primitives already live in the core.
+or witness one (issuer-side tooling is out of scope). A log that declares a **witness
+threshold** policy is refused fail-closed — openvc does not verify witness co-signatures,
+so it will not silently downgrade to the un-witnessed trust model. Dependency-light — the
+JCS, multibase/multihash and Ed25519 primitives already live in the core.
 
 SSRF note: like did:web, did:webvh is intentionally cross-host, so it takes an injected
 text fetch (pass :func:`openvc.fetch.https_text_fetch` for the SSRF-guarded one, or use
@@ -229,6 +231,7 @@ class _WebvhReplay:
         prev_time: datetime | None = None
         active_keys: list[str] = []            # updateKeys in force, carried forward
         next_key_hashes: list[str] = []        # pre-rotation commitment in force
+        witness: dict[str, Any] = {}           # witness policy in force, carried forward
         state: dict[str, Any] = {}
         deactivated = False
 
@@ -238,6 +241,14 @@ class _WebvhReplay:
             if not isinstance(params, dict):
                 raise DidWebvhError(f"entry {number} has no parameters object")
             declared_keys = params.get("updateKeys")
+            # updateKeys, when present, must be a list of multikey STRINGS — a non-string
+            # element would otherwise crash _prerotation_hash with a bare AttributeError,
+            # before the entryHash/proof checks (so with no valid signature required).
+            if declared_keys is not None and (
+                    not isinstance(declared_keys, list)
+                    or not all(isinstance(k, str) for k in declared_keys)):
+                raise DidWebvhError(
+                    f"entry {number}: updateKeys must be a list of multikey strings")
 
             # -- authorized signing keys for THIS entry -------------------- #
             if index == 0:
@@ -300,8 +311,22 @@ class _WebvhReplay:
             if "nextKeyHashes" in params:
                 nkh = params.get("nextKeyHashes")
                 next_key_hashes = nkh if isinstance(nkh, list) else []
+            if "witness" in params:
+                w = params.get("witness")
+                witness = w if isinstance(w, dict) else {}
             if "deactivated" in params:
                 deactivated = bool(params.get("deactivated"))
+
+            # A declared witness policy requires threshold witness co-signatures on each
+            # entry, so a compromised updateKey alone cannot push an accepted update. openvc
+            # does not verify witness attestations (verify-side witnessing is unsupported),
+            # so a log that mandates them fails CLOSED rather than silently downgrading to
+            # the un-witnessed trust model.
+            threshold = witness.get("threshold")
+            if isinstance(threshold, int) and not isinstance(threshold, bool) and threshold > 0:
+                raise DidWebvhError(
+                    f"entry {number}: a witness policy (threshold {threshold}) is declared, but "
+                    "verify-side witness verification is unsupported — refusing to downgrade trust")
 
             new_state = entry.get("state")
             if not isinstance(new_state, dict):
