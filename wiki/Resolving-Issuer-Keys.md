@@ -6,7 +6,7 @@ where keys can come from and how to control that.
 
 ## The default resolver
 
-Out of the box, `verify_credential` resolves three DID methods — all with no
+Out of the box, `verify_credential` resolves four DID methods — all with no
 key server of your own:
 
 | Method | How it works | Network |
@@ -14,6 +14,7 @@ key server of your own:
 | `did:key` | the key **is** the identifier (multicodec + base58btc) | none |
 | `did:jwk` | the identifier embeds a base64url JWK | none |
 | `did:web` | `did:web:example.com` → `https://example.com/.well-known/did.json` | SSRF-guarded https |
+| `did:webvh` | `did:web` + a hash-chained `did.jsonl` version log, **replayed and verified** | SSRF-guarded https |
 
 `did:jwk`, fully offline:
 
@@ -42,6 +43,30 @@ resolver = default_did_web_resolver()      # https-only, private ranges blocked
 doc = resolver.resolve("did:web:issuer.example")
 vm = doc.key_by_kid("did:web:issuer.example#key-1")
 ```
+
+### `did:webvh` — did:web with verifiable history
+
+[`did:webvh`](https://identity.foundation/didwebvh/v1.0/) (a DIF **Recommended** DID
+Method) is `did:web` plus a self-certifying, hash-chained **version log**. Instead of a
+single `did.json`, the controller publishes a `did.jsonl` whose every entry is bound to
+the one before it, so resolving means **verifying history** — openvc replays the log
+fail-closed: the **SCID** (the identifier is the hash of the genesis entry), the
+**entryHash chain** (an inserted / reordered / tampered entry breaks it), each entry's
+**`eddsa-jcs-2022` proof** by an authorized `updateKey`, and **key pre-rotation** (a
+rotated-in key must have been pre-committed). A deactivated log fails closed. It is
+registered in the default resolver, so no code change is needed to verify a credential
+from a `did:webvh` issuer — or resolve one directly:
+
+<!-- docs: no-run -->
+```python
+from openvc.fetch import default_did_webvh_resolver
+
+resolver = default_did_webvh_resolver()    # fetches + replays did.jsonl, SSRF-guarded
+doc = resolver.resolve("did:webvh:QmSCID…:issuer.example")
+```
+
+Verify-side only: openvc resolves and validates a log; creating, rotating or witnessing
+one (issuer-side tooling) is out of scope.
 
 ## What the SSRF guard guarantees
 

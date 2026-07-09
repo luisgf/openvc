@@ -26,12 +26,15 @@ import ipaddress
 import json
 import socket
 import ssl
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from .did.base import DidResolutionError
 from .did.did_web import AsyncDidWebResolver, DidWebResolver
 from .observability import logger, span
+
+if TYPE_CHECKING:
+    from .did.did_webvh import AsyncDidWebvhResolver, DidWebvhResolver
 
 DEFAULT_TIMEOUT_S = 10.0
 MAX_RESPONSE_BYTES = 1_048_576  # 1 MiB — DID documents are small; bound memory.
@@ -190,6 +193,14 @@ def default_did_web_resolver() -> DidWebResolver:
     return DidWebResolver(https_json_fetch)
 
 
+def default_did_webvh_resolver() -> "DidWebvhResolver":
+    """A :class:`~openvc.did.did_webvh.DidWebvhResolver` wired to the SSRF-guarded
+    **text** fetch (``did.jsonl`` is JSON Lines, not one JSON object) — the
+    batteries-included did:webvh resolver."""
+    from .did.did_webvh import DidWebvhResolver
+    return DidWebvhResolver(https_text_fetch)
+
+
 # --------------------------------------------------------------------------- #
 # Async fetches (additive — see docs/adr/ADR-0002-async-verification.md)
 #
@@ -229,12 +240,22 @@ def default_async_did_web_resolver() -> AsyncDidWebResolver:
     return AsyncDidWebResolver(https_json_fetch_async)
 
 
+def default_async_did_webvh_resolver() -> "AsyncDidWebvhResolver":
+    """The async counterpart of :func:`default_did_webvh_resolver` — an
+    :class:`~openvc.did.did_webvh.AsyncDidWebvhResolver` on the SSRF-guarded async
+    text fetch."""
+    from .did.did_webvh import AsyncDidWebvhResolver
+    return AsyncDidWebvhResolver(https_text_fetch_async)
+
+
 __all__ = [
     "DEFAULT_TIMEOUT_S",
     "MAX_RESPONSE_BYTES",
     "UnsafeUrlError",
     "default_async_did_web_resolver",
+    "default_async_did_webvh_resolver",
     "default_did_web_resolver",
+    "default_did_webvh_resolver",
     "https_bytes_fetch",
     "https_bytes_fetch_async",
     "https_json_fetch",

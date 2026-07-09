@@ -179,15 +179,16 @@ class BatchResult:
 
 def default_resolver() -> "DidResolverRegistry":
     """A :class:`DidResolverRegistry` with the offline ``did:key`` and ``did:jwk``
-    resolvers and the SSRF-guarded ``did:web`` resolver — the pipeline's default
-    when none is passed. (``did:web`` only reaches the network when a ``did:web``
-    DID is resolved.)"""
+    resolvers and the SSRF-guarded ``did:web`` and ``did:webvh`` resolvers — the
+    pipeline's default when none is passed. (``did:web`` / ``did:webvh`` only reach the
+    network when such a DID is resolved.)"""
     from .did.base import DidResolverRegistry
     from .did.did_jwk import DidJwkResolver
     from .did.did_key import DidKeyResolver
-    from .fetch import default_did_web_resolver
+    from .fetch import default_did_web_resolver, default_did_webvh_resolver
     return DidResolverRegistry(
-        [DidKeyResolver(), DidJwkResolver(), default_did_web_resolver()])
+        [DidKeyResolver(), DidJwkResolver(),
+         default_did_web_resolver(), default_did_webvh_resolver()])
 
 
 # --------------------------------------------------------------------------- #
