@@ -14,6 +14,7 @@
 
 - [Presentations & OpenID4VP](Presentations)
 - [Resolving issuer keys](Resolving-Issuer-Keys)
+- [Relying-party certificates](Relying-Party-Certificates)
 - [Credential schemas](Credential-Schemas)
 - [Status lists](Status-Lists)
 - [Trust anchors: EU TL & EBSI](Trust)

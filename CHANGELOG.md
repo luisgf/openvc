@@ -24,6 +24,18 @@ Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc
   confirmed to verify the **VCDM 1.1 and 2.0 dual envelopes** Conformance v4 issues (2.0 keeps the
   JWT `vc` wrapper, with `validFrom`/`validUntil`), covered by a regression test. Read-only stays
   read-only. ([#64](https://github.com/luisgf/openvc/issues/64))
+- **EUDI relying-party access certificate (WRPAC) parsing.** New `openvc.rp_cert` reads a
+  **WRPAC** — the mandatory X.509 access certificate (CIR (EU) 2025/848, ETSI TS 119 411-8) that
+  authenticates *who is asking* — over the existing `cryptography` X.509 machinery, with the same
+  fail-closed posture as `openvc.x5c`. `verify_rp_access_certificate(cert, *, trust_anchors, …)`
+  path-validates the chain to caller-provided **ACA** anchors (signatures, validity,
+  `basicConstraints` — no non-CA-intermediate smuggling; only the TLS EKU is relaxed), optionally
+  enforces a `required_eku`, and returns a typed `RelyingPartyAccessCertificate` (entity
+  identifier, trade name, EKUs, certificate policies, and the Subject Information Access
+  registration-record URLs) to gate on; `parse_rp_access_certificate` is the untrusted,
+  inspection-only counterpart. The **registration certificate (WRPRC)** — the entitlements /
+  intended-use artifact — is a signed JWT/CWT (ETSI TS 119 475), not X.509, with a claim mapping
+  not yet finalised, and is deferred to its own issue. ([#67](https://github.com/luisgf/openvc/issues/67))
 - **ML-DSA (RFC 9964) design ADR** ([ADR-0004](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0004-ml-dsa-design.md)).
   The post-quantum spike concludes: `ML-DSA-44/65/87` VC-JWT / SD-JWT VC would land behind the
   existing `SigningKey` protocol as an **explicitly-experimental opt-in** — a `[pq]` extra pinning
