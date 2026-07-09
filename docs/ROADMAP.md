@@ -56,10 +56,13 @@ sequence that; the out-of-scope list below is the standing boundary.
 - **OpenID4VP request generation, session/state**: wallet / RP-server concerns. The
   OpenID4VP + HAIP items are strictly stateless *consume-and-verify* (verify a
   received `vp_token`, decrypt a received JWE).
-- **ISO mdoc**: device engagement / proximity flows are out. Server-side *verification*
-  of an OpenID4VP-delivered `mso_mdoc` is a distinct, read-only question under active
-  evaluation — see the [mdoc spike](https://github.com/luisgf/openvc/issues/65); it is
-  not in scope until that ADR lands.
+- **ISO mdoc — engagement / proximity / issuance / COSE signing**: device engagement,
+  NFC/BLE/QR proximity flows, issuance, and a COSE *signing* surface stay out. Server-side
+  *verification* of an OpenID4VP-delivered `mso_mdoc` is the exception:
+  [ADR-0005](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0005-mso-mdoc-verification.md)
+  (the [mdoc spike](https://github.com/luisgf/openvc/issues/65)) ruled it **in scope**,
+  read-only (IssuerAuth + DeviceAuth over the OpenID4VP SessionTranscript). It lands as its
+  own dedicated issue, sequenced with the [Digital Credentials API work](https://github.com/luisgf/openvc/issues/66).
 - **COSE/CWT (`vc+cose`) securing**: openvc is JOSE-first for EBSI/EUDI; a COSE
   signing surface duplicates the JOSE path against thin demand.
 - **BBS / bbs-2023** unlinkable selective disclosure — *deferred, not rejected*:

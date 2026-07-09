@@ -20,6 +20,18 @@ Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc
   defence is untouched. Data Integrity PQ suites, `did:key` multicodec (still draft), and composite
   signatures stay out of scope. **Design only; no code change** — the implementation is tracked in
   [#72](https://github.com/luisgf/openvc/issues/72). ([#71](https://github.com/luisgf/openvc/issues/71))
+- **`mso_mdoc` verification scope ADR** ([ADR-0005](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0005-mso-mdoc-verification.md)).
+  The mdoc spike concludes **verify-only `mso_mdoc` is in scope** — the second mandatory EUDI format
+  (CIR 2024/2977), read-only server-side verification of an OpenID4VP-delivered `DeviceResponse`
+  (IssuerAuth MSO `COSE_Sign1` + `x5chain`→IACA, `valueDigests` integrity, DeviceAuth over the
+  OpenID4VP SessionTranscript). Strategy: a **hand-rolled COSE verifier with no new runtime
+  dependency**, factoring the in-tree `ecdsa-sd` CBOR codec into a shared module and extending it
+  (negative ints, tags), reusing `x5c` path-validation and `keys.verify_signature`. Device
+  engagement / proximity / issuance / COSE **signing** stay out; the build is a dedicated follow-up
+  issue sequenced with the Digital Credentials API work ([#66](https://github.com/luisgf/openvc/issues/66))
+  and covered by the external audit ([#75](https://github.com/luisgf/openvc/issues/75)). Also
+  refreshes the ROADMAP out-of-scope note. **Design only; no code change.**
+  ([#65](https://github.com/luisgf/openvc/issues/65))
 
 ## [1.13.1] — 2026-07-08
 
