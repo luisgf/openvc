@@ -39,6 +39,8 @@ from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
 from openvc.did.base import DidDocument, parse_did_document
+from openvc.observability import logger
+from .errors import MalformedRegistryResponse
 from .models import Accreditation, IssuerRecord
 
 # Injected capabilities (keep transport + crypto out of the adapters).
@@ -47,11 +49,25 @@ DecodeJwt = Callable[[str], dict[str, Any]]      # VC-JWT body -> claims (proof 
 
 
 def _origin(url: str) -> str:
-    """``scheme://host`` (lowercased) — used to keep pagination on the listing's own
-    origin. A belt-and-suspenders check on top of the HTTP client's SSRF allow-list:
-    a ``links.next`` cursor may only advance within the same origin as the listing."""
+    """``scheme://host:port`` (lowercased) — used to keep pagination on the listing's
+    own origin. A belt-and-suspenders check on top of the HTTP client's SSRF allow-list:
+    a ``links.next`` cursor may only advance within the same web origin as the listing —
+    the port is part of that origin, so a ``next`` that only changes the port is refused
+    (the SSRF host allow-list matches host but not port)."""
     p = urlparse(url)
-    return f"{p.scheme.lower()}://{(p.hostname or '').lower()}"
+    port = "" if p.port is None else p.port
+    return f"{p.scheme.lower()}://{(p.hostname or '').lower()}:{port}"
+
+
+def _require_object(value: Any, what: str) -> dict[str, Any]:
+    """A fetched registry body must be a JSON object where the adapter reads one.
+    A non-object (``null`` / list / string / number — a flaky or compromised registry)
+    fails closed as a typed :class:`MalformedRegistryResponse`, never a bare
+    ``AttributeError`` leaking past the ``EbsiError`` / ``OpenvcError`` family."""
+    if not isinstance(value, dict):
+        raise MalformedRegistryResponse(
+            f"expected a JSON object for {what}, got {type(value).__name__}")
+    return value
 
 
 def _flatten_accredited_for(accredited_for: Any) -> tuple[str, ...]:
@@ -154,9 +170,11 @@ class TirV5(TirAdapter):
     body lives one fetch deeper, in a revision. Two+ calls, different shape."""
     version = "v5"
 
-    # A registry with many accreditations paginates `/attributes`; this bounds the
-    # walk so a registry that keeps handing out a `next` cursor can never spin forever.
+    # A registry with many accreditations paginates `/attributes`; these bound the walk
+    # so a registry that keeps handing out a `next` cursor — or one giant page — can
+    # never spin forever nor fan one verify out into unbounded revision fetches.
     _MAX_ATTRIBUTE_PAGES = 50
+    _MAX_ATTRIBUTE_ITEMS = 1000
 
     def issuer_url(self, base: str, did: str) -> str:
         return f"{base}/trusted-issuers-registry/{self.version}/issuers/{did}"
@@ -165,15 +183,17 @@ class TirV5(TirAdapter):
         """Yield every attribute-listing item across EBSI's paginated `/attributes`.
 
         The v5 listing is JSON:API-style — ``items`` plus a ``links.next`` cursor and a
-        ``total``. Two production traps this closes: an issuer with more accreditations
-        than one page (the old code read only the first page and silently dropped the
-        rest — a fail-*closed* trust gap), and EBSI returning ``links.next`` even on the
-        last page, sometimes pointing at the *same* URL (following it blindly loops
-        forever). Stop when we have seen ``total`` items, or ``next`` is absent / already
-        visited / off the listing's origin, or a page yields no items; a hard page cap
-        backstops all of it. Every page is fetched through the injected SSRF-guarded
-        ``fetch``, and ``next`` may only advance within the listing's own origin — a
-        compromised registry cannot pivot pagination elsewhere."""
+        ``total``. Production traps this closes: an issuer with more accreditations than
+        one page (the old code read only the first page and silently dropped the rest — a
+        fail-*closed* trust gap); EBSI returning ``links.next`` even on the last page,
+        sometimes pointing at the *same* URL (following it blindly loops forever); and a
+        page (or ``total``) big enough to fan one verify into unbounded revision fetches.
+        Stop when we have collected ``total`` items, or ``next`` is absent / already
+        visited / off the listing's origin, or a page yields no items; a hard page cap and
+        a hard item cap backstop the rest. Every page is fetched through the injected
+        SSRF-guarded ``fetch``, and ``next`` may only advance within the listing's own
+        origin (host AND port) — a compromised registry can neither pivot pagination
+        elsewhere nor make it spin."""
         origin = _origin(attributes_url)
         url: str | None = attributes_url
         seen: set[str] = set()
@@ -181,24 +201,34 @@ class TirV5(TirAdapter):
         total: int | None = None
         while url is not None and url not in seen and len(seen) < self._MAX_ATTRIBUTE_PAGES:
             seen.add(url)
-            page = fetch(url)
+            page = _require_object(fetch(url), "TIR attributes page")
             items = page.get("items")
             if not isinstance(items, list) or not items:
                 break
             for item in items:
-                if isinstance(item, dict):
-                    yield item
-                    collected += 1
+                if not isinstance(item, dict):
+                    continue
+                yield item
+                collected += 1
+                if collected >= self._MAX_ATTRIBUTE_ITEMS:   # bound total revision fetches
+                    logger.warning(
+                        "TIR /attributes listing exceeded %d items; truncating the walk "
+                        "(the issuer may appear to hold fewer accreditations)",
+                        self._MAX_ATTRIBUTE_ITEMS)
+                    return
             if total is None:
                 t = page.get("total")
-                total = t if isinstance(t, int) and t >= 0 else None
+                # bool is an int subclass — `total: true` must NOT read as 1 and stop early.
+                total = t if isinstance(t, int) and not isinstance(t, bool) and t >= 0 else None
             if total is not None and collected >= total:
                 break
-            nxt = (page.get("links") or {}).get("next")
+            links = page.get("links")
+            nxt = links.get("next") if isinstance(links, dict) else None
             url = nxt if isinstance(nxt, str) and nxt and _origin(nxt) == origin else None
 
     def parse_issuer(self, raw: Any, *, base: str, did: str, fetch: Any,
                      decode: Any) -> IssuerRecord:
+        raw = _require_object(raw, "TIR issuer response")
         has_attrs = bool(raw.get("hasAttributes", False))
         accs: list[Accreditation] = []
         if has_attrs:
@@ -209,15 +239,18 @@ class TirV5(TirAdapter):
                 href = item.get("href")
                 if not href:
                     continue
-                revision = fetch(href)                    # extra hop, v5-specific
+                revision = _require_object(fetch(href), "TIR attribute revision")  # v5 hop
                 # v5 nests the accreditation under `attribute`: the signed VC-JWT
                 # is `attribute.body`, and issuerType/tao/rootTao sit on the
                 # `attribute` object itself — NOT in the VC credentialSubject
                 # (whose `accreditedFor` carries the authorised types).
-                attribute = revision.get("attribute") or {}
+                attribute = revision.get("attribute")
+                attribute = attribute if isinstance(attribute, dict) else {}
                 body = attribute.get("body")
                 claims = decode(body) if body else {}
-                subject = claims.get("vc", {}).get("credentialSubject", {})
+                vc = claims.get("vc") if isinstance(claims, dict) else None
+                subject = vc.get("credentialSubject") if isinstance(vc, dict) else None
+                subject = subject if isinstance(subject, dict) else {}
                 accs.append(Accreditation(
                     attribute_id=item.get("id", "") or attribute.get("hash", ""),
                     issuer_type=attribute.get("issuerType", ""),

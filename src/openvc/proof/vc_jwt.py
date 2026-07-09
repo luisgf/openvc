@@ -46,6 +46,7 @@ from .errors import (  # noqa: F401
     SignatureInvalid,
     UnsupportedAlgorithm,
 )
+from ._verify_common import check_validity_window
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -201,6 +202,14 @@ class VcJwtProofSuite:
         credential = claims.get("vc")
         if not isinstance(credential, dict):
             raise ClaimsInvalid("no embedded `vc` object in token")
+
+        # Defence in depth: also honour the credential body's own validity window
+        # (VCDM 2.0 validFrom/validUntil, VCDM 1.1 issuanceDate/expirationDate). The JWT
+        # nbf/exp checked above is the primary temporal gate, but an issuer — EBSI's
+        # VCDM 2.0 envelopes among them — may encode expiry ONLY in the credential body;
+        # without this an expired such credential would still verify. Same leeway; there
+        # is no Data-Integrity proof object on the JOSE path, so pass an empty one.
+        check_validity_window(credential, {}, now=None, leeway_s=self._leeway)
 
         issuer, subject = self._reconcile(claims, credential)
         if expected_types:

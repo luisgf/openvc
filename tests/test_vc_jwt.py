@@ -18,6 +18,8 @@ from openvc.keys import Ed25519SigningKey, P256SigningKey
 from openvc.proof._jws import sign_compact
 from openvc.proof.errors import (
     ClaimsInvalid,
+    CredentialExpired,
+    CredentialNotYetValid,
     MalformedToken,
     ProofError,
     SignatureInvalid,
@@ -150,6 +152,37 @@ def test_verify_not_yet_valid_fails_closed():
     token = _signed(key, {"iss": ISSUER, "nbf": now + 3600, "vc": _credential()})
     with pytest.raises(ClaimsInvalid):
         VcJwtProofSuite().verify(token, public_key_jwk=key.public_jwk())
+
+
+def test_verify_rejects_expired_credential_body_without_jwt_exp():
+    # Defence in depth: an issuer (EBSI VCDM 2.0 among them) may encode expiry ONLY in
+    # the credential body (vc.validUntil), with no JWT `exp`. The body validity window
+    # must still reject it — otherwise an expired credential verifies.
+    key = P256SigningKey.generate(kid="k")
+    token = _signed(key, {"iss": ISSUER, "nbf": int(time.time()) - 3600,   # no JWT `exp`
+                          "vc": _credential(validUntil="2020-01-01T00:00:00Z")})
+    with pytest.raises(CredentialExpired):
+        VcJwtProofSuite().verify(token, public_key_jwk=key.public_jwk())
+
+
+def test_verify_rejects_not_yet_valid_credential_body():
+    # The mirror of the above for VCDM 2.0 `validFrom` (1.1 `issuanceDate`) in the body.
+    key = P256SigningKey.generate(kid="k")
+    token = _signed(key, {"iss": ISSUER, "nbf": int(time.time()) - 3600,
+                          "vc": _credential(validFrom="2999-01-01T00:00:00Z")})
+    with pytest.raises(CredentialNotYetValid):
+        VcJwtProofSuite().verify(token, public_key_jwk=key.public_jwk())
+
+
+def test_verify_accepts_credential_body_within_window():
+    # The positive: a body window that is currently valid (past validFrom, future
+    # validUntil) verifies — the new check does not reject well-formed credentials.
+    key = P256SigningKey.generate(kid="k")
+    token = _signed(key, {"iss": ISSUER, "nbf": int(time.time()) - 3600,
+                          "vc": _credential(validFrom="2020-01-01T00:00:00Z",
+                                            validUntil="2999-01-01T00:00:00Z")})
+    result = VcJwtProofSuite().verify(token, public_key_jwk=key.public_jwk())
+    assert result.issuer == ISSUER
 
 
 # --------------------------------------------------------------------------- #

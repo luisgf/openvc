@@ -31,7 +31,9 @@ import pytest
 
 from openvc.did.base import parse_did_document
 from openvc.keys import P256SigningKey
+from openvc.proof.errors import CredentialExpired
 from openvc.proof.vc_jwt import VcJwtProofSuite
+from openvc_ebsi.errors import MalformedRegistryResponse
 from openvc_ebsi.http import (
     EBSI_BASE,
     EBSI_HOSTS,
@@ -287,6 +289,73 @@ def test_tir_v5_pagination_does_not_follow_next_off_origin() -> None:
     assert evil not in fetch.calls                         # never fetched the foreign host
 
 
+def test_tir_v5_malformed_registry_response_is_typed_error() -> None:
+    # A non-object body (JSON `null` -> None, or an array/string/number — a flaky or
+    # compromised registry) must fail closed as the typed EbsiError family, never leak a
+    # bare AttributeError from a `.get` on a non-dict.
+    tir = TirV5()
+    decode = VcJwtProofSuite().peek_claims
+    for bad in (None, [1, 2, 3], "oops", 42):
+        with pytest.raises(MalformedRegistryResponse):
+            tir.parse_issuer(bad, base=PILOT_BASE, did="did:ebsi:z",
+                             fetch=lambda u: {}, decode=decode)
+    # a well-formed issuer whose /attributes PAGE comes back as a non-object fails too
+    attrs_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/did:ebsi:z/attributes"
+    issuer = {"did": "did:ebsi:z", "hasAttributes": True, "attributes": attrs_url}
+    with pytest.raises(MalformedRegistryResponse):
+        tir.parse_issuer(issuer, base=PILOT_BASE, did="did:ebsi:z",
+                         fetch=lambda u: None, decode=decode)      # null attributes page
+
+
+def test_tir_v5_total_true_bool_does_not_truncate_pagination() -> None:
+    # `"total": true` (a JSON bool) must NOT be read as int 1 and stop the walk after the
+    # first page — bool is an int subclass, so the guard excludes it explicitly.
+    issuer = _load("tir_v5_issuer.json")
+    attributes = _load("tir_v5_attributes.json")
+    revisions = _load("tir_v5_revisions.json")
+    did = issuer["did"]
+    items = attributes["items"]
+    page1_url = issuer["attributes"]
+    page2_url = page1_url + "?page[after]=1"
+    page1 = {"items": items[:2], "total": True, "links": {"next": page2_url}}  # bool total
+    page2 = {"items": items[2:], "total": True, "links": {}}
+    issuer_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}"
+    routes: dict[str, dict] = {issuer_url: issuer, page1_url: page1, page2_url: page2}
+    for item in items:
+        routes[item["href"]] = revisions[item["id"]]
+
+    fetch = StubFetch(routes)
+    resolver = DidEbsiResolver(fetch, decode_jwt=VcJwtProofSuite().peek_claims,
+                               tir=TirV5(), base=PILOT_BASE)
+    rec = resolver.issuer_record(did)
+    assert len(rec.accreditations) == 3            # both pages read; total:true didn't stop us
+    assert page2_url in fetch.calls
+
+
+def test_tir_v5_pagination_caps_total_items() -> None:
+    # The item cap bounds total revision fetches even for one huge page — a compromised
+    # registry cannot fan a single verify into unbounded outbound requests.
+    issuer = _load("tir_v5_issuer.json")
+    attributes = _load("tir_v5_attributes.json")
+    revisions = _load("tir_v5_revisions.json")
+    did = issuer["did"]
+    attrs_url = issuer["attributes"]
+    listing = {"items": attributes["items"]}                   # 3 items, single page
+    issuer_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}"
+    routes: dict[str, dict] = {issuer_url: issuer, attrs_url: listing}
+    for item in attributes["items"]:
+        routes[item["href"]] = revisions[item["id"]]
+
+    fetch = StubFetch(routes)
+    tir = TirV5()
+    tir._MAX_ATTRIBUTE_ITEMS = 2                                # shrink the cap for the test
+    resolver = DidEbsiResolver(fetch, decode_jwt=VcJwtProofSuite().peek_claims,
+                               tir=tir, base=PILOT_BASE)
+    rec = resolver.issuer_record(did)
+    assert len(rec.accreditations) == 2                        # capped at 2 of 3
+    assert attributes["items"][2]["href"] not in fetch.calls   # 3rd revision never fetched
+
+
 # --------------------------------------------------------------------------- #
 # Offline: VCDM 1.1 / 2.0 dual envelope (Conformance v4 — issue #64)
 # --------------------------------------------------------------------------- #
@@ -327,6 +396,36 @@ def test_verify_ebsi_badge_accepts_vcdm2_envelope() -> None:
     assert result.subject == "did:key:z6Mkexample"
     assert result.trusted is False
     assert result.credential["validFrom"] == "2025-01-01T00:00:00Z"    # the 2.0 body round-trips
+
+
+def test_verify_ebsi_badge_rejects_expired_vcdm2_envelope() -> None:
+    # The temporal gap the adversarial review surfaced: a VCDM 2.0 credential that
+    # encodes expiry only in vc.validUntil (no JWT `exp`, as EBSI's signer emits) must be
+    # rejected end-to-end, not accepted because the JWT carried no expiry claim.
+    did = "did:ebsi:zZeKyEJfUTGwajhNyNX928z"
+    kid = f"{did}#key-1"
+    sk = P256SigningKey.generate(kid=kid)
+    suite = VcJwtProofSuite()
+    credential = {
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "id": "urn:uuid:2f8a1c30-0000-4000-8000-0000000000e2",
+        "type": ["VerifiableCredential", "VerifiableAttestation"],
+        "issuer": did,
+        "validFrom": "2020-01-01T00:00:00Z",
+        "validUntil": "2021-01-01T00:00:00Z",                           # expired years ago
+        "credentialSubject": {"id": "did:key:z6Mkexample"},
+    }
+    token = suite.sign(credential, signing_key=sk)                      # sign emits no JWT exp
+    did_doc = {"didDocument": {
+        "id": did,
+        "verificationMethod": [{"id": kid, "type": "JsonWebKey2020",
+                                "controller": did, "publicKeyJwk": sk.public_jwk()}],
+        "assertionMethod": [kid]}}
+    routes = {f"{PILOT_BASE}/did-registry/v5/identifiers/{did}": did_doc}
+    resolver = DidEbsiResolver(StubFetch(routes), decode_jwt=suite.peek_claims, base=PILOT_BASE)
+
+    with pytest.raises(CredentialExpired):                              # fails closed at verify
+        verify_ebsi_badge(token, resolver=resolver, proof_suite=suite, require_trust=False)
 
 
 # --------------------------------------------------------------------------- #
