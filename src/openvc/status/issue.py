@@ -12,7 +12,7 @@ updates in order to revoke:
   ``DataIntegrityProofSuite.add_proof``): the status list is an ordinary VC.
 * :func:`build_status_list_token` / :func:`verify_status_list_token` — an IETF
   **status-list token** (``typ: statuslist+jwt``), signed and verified through the
-  shared JOSE path (allow-listed ``{ES256, EdDSA}``).
+  shared JOSE path (allow-listed ``{ES256, ES384, EdDSA, Ed25519}``).
 * :func:`build_status_list_entry` / :func:`build_token_status_reference` — the tiny
   pointer an issuer embeds in each *issued* credential/token so a verifier knows
   which list bit to read.
@@ -145,7 +145,7 @@ def build_status_list_token(
     *uri* (the ``sub`` claim, the list's own URL) is what a referenced token's
     ``status.status_list.uri`` points at; *status_list* is the packed multi-bit
     list (from :func:`~openvc.status.token_status_list.new_status_list` +
-    ``set_status``). Signed via the allow-listed ``{ES256, EdDSA}`` path, so an
+    ``set_status``). Signed via the allow-listed ``{ES256, ES384, EdDSA, Ed25519}`` path, so an
     HSM/Vault key works. *issued_at* / *expires* accept a datetime or epoch int."""
     _check_bits(bits)
     payload: dict[str, Any] = {
