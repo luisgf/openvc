@@ -9,7 +9,7 @@ verifier (``aud``) and a one-time challenge (``nonce``) so it cannot be replayed
     verifier-> verify(vp, ..., audience, nonce)                 (holder sig + aud/nonce
                                                                  + every embedded VC)
 
-Verification checks the holder signature (allow-listed ``{ES256, EdDSA}``), the
+Verification checks the holder signature (allow-listed ``{ES256, ES384, EdDSA, Ed25519}``), the
 temporal claims, ``aud`` and ``nonce``, then **verifies each embedded credential
 through the generic pipeline** (:func:`openvc.verify.verify_credential`) — so a VP
 is only accepted when the holder is authentic *and* every credential in it is.

@@ -19,7 +19,7 @@ Two things make this safe:
   host). Without it, a holder of *any* certificate under a trusted anchor could
   forge a credential naming an arbitrary issuer.
 
-Only an **EC P-256** leaf is usable (the JOSE allow-list is ``{ES256, EdDSA}``; an
+Only an **EC P-256** leaf is usable (the JOSE allow-list is ``{ES256, ES384, EdDSA, Ed25519}``; an
 RSA leaf is rejected by the algorithm allow-list anyway). openvc ships no root
 store — the trust anchors are the caller's.
 """

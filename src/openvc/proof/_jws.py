@@ -5,7 +5,7 @@ parsing, and signature verification, shared by the JOSE-secured formats.
 ``VcJwtProofSuite.sign`` was the only place that assembled a compact JWS. This
 lifts that assembly out so a **non-VC** token — notably the IETF status-list token
 (``typ: statuslist+jwt``, see :mod:`openvc.status.issue`) — signs through the same
-allow-listed ``{ES256, EdDSA}`` :class:`~openvc.proof.vc_jwt.SigningKey` path,
+allow-listed ``{ES256, ES384, EdDSA, Ed25519}`` :class:`~openvc.proof.vc_jwt.SigningKey` path,
 without duplicating the base64url/JSON/signature dance or widening the algorithm
 policy. Header and payload are serialised with compact separators and signed
 byte-for-byte identically to the previous inline code, so existing tokens are
@@ -42,7 +42,7 @@ def sign_compact(
     """Assemble a signed compact JWS ``b64url(header).b64url(payload).b64url(sig)``.
 
     The algorithm is taken from the key and allow-listed BEFORE signing (the same
-    ``{ES256, EdDSA}`` policy a verifier enforces); the raw signature comes from
+    ``{ES256, ES384, EdDSA, Ed25519}`` policy a verifier enforces); the raw signature comes from
     the :class:`SigningKey` backend, so an HSM/Vault key never leaves its boundary.
     """
     if signing_key.alg not in ALLOWED_ALGS:
