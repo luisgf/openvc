@@ -4,12 +4,24 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.13.2] — unreleased
+## [1.14.0] — unreleased
 
 Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
 
 ### Added
 
+- **EBSI production-launch readiness.** The `openvc_ebsi` plugin is ready for EBSI's
+  **Q4 2026 business/production launch** (EUROPEUM-EDIC, `ebsi.eu` family): `for_ebsi` gains a
+  **`production`** environment (`api.ebsi.eu`), seeding the https-only SSRF allow-list and
+  `EBSI_BASE` for the cutover. The **TIR v5 `/attributes` listing is now walked across every
+  page** — the adapter followed only the first page before, silently dropping an issuer's later
+  accreditations (a fail-closed trust gap); pagination follows the JSON:API `links.next` cursor
+  bounded by `total`, a per-origin check, a seen-page guard (EBSI returns a self-referential
+  `next` on the last page — following it blindly looped forever), and a hard page cap, all
+  through the SSRF-guarded fetch. `verify_ebsi_badge` is confirmed to verify the **VCDM 1.1 and
+  2.0 dual envelopes** Conformance v4 issues (2.0 keeps the JWT `vc` wrapper, with
+  `validFrom`/`validUntil`), covered by a regression test. Read-only stays read-only.
+  ([#64](https://github.com/luisgf/openvc/issues/64))
 - **ML-DSA (RFC 9964) design ADR** ([ADR-0004](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0004-ml-dsa-design.md)).
   The post-quantum spike concludes: `ML-DSA-44/65/87` VC-JWT / SD-JWT VC would land behind the
   existing `SigningKey` protocol as an **explicitly-experimental opt-in** — a `[pq]` extra pinning

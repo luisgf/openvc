@@ -35,7 +35,8 @@ Principles baked in below
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
+from urllib.parse import urlparse
 
 from openvc.did.base import DidDocument, parse_did_document
 from .models import Accreditation, IssuerRecord
@@ -43,6 +44,14 @@ from .models import Accreditation, IssuerRecord
 # Injected capabilities (keep transport + crypto out of the adapters).
 Fetch = Callable[[str], dict[str, Any]]          # GET a URL -> JSON
 DecodeJwt = Callable[[str], dict[str, Any]]      # VC-JWT body -> claims (proof suite)
+
+
+def _origin(url: str) -> str:
+    """``scheme://host`` (lowercased) — used to keep pagination on the listing's own
+    origin. A belt-and-suspenders check on top of the HTTP client's SSRF allow-list:
+    a ``links.next`` cursor may only advance within the same origin as the listing."""
+    p = urlparse(url)
+    return f"{p.scheme.lower()}://{(p.hostname or '').lower()}"
 
 
 def _flatten_accredited_for(accredited_for: Any) -> tuple[str, ...]:
@@ -145,8 +154,48 @@ class TirV5(TirAdapter):
     body lives one fetch deeper, in a revision. Two+ calls, different shape."""
     version = "v5"
 
+    # A registry with many accreditations paginates `/attributes`; this bounds the
+    # walk so a registry that keeps handing out a `next` cursor can never spin forever.
+    _MAX_ATTRIBUTE_PAGES = 50
+
     def issuer_url(self, base: str, did: str) -> str:
         return f"{base}/trusted-issuers-registry/{self.version}/issuers/{did}"
+
+    def _iter_attribute_items(self, attributes_url: str, fetch: Fetch) -> Iterator[dict[str, Any]]:
+        """Yield every attribute-listing item across EBSI's paginated `/attributes`.
+
+        The v5 listing is JSON:API-style — ``items`` plus a ``links.next`` cursor and a
+        ``total``. Two production traps this closes: an issuer with more accreditations
+        than one page (the old code read only the first page and silently dropped the
+        rest — a fail-*closed* trust gap), and EBSI returning ``links.next`` even on the
+        last page, sometimes pointing at the *same* URL (following it blindly loops
+        forever). Stop when we have seen ``total`` items, or ``next`` is absent / already
+        visited / off the listing's origin, or a page yields no items; a hard page cap
+        backstops all of it. Every page is fetched through the injected SSRF-guarded
+        ``fetch``, and ``next`` may only advance within the listing's own origin — a
+        compromised registry cannot pivot pagination elsewhere."""
+        origin = _origin(attributes_url)
+        url: str | None = attributes_url
+        seen: set[str] = set()
+        collected = 0
+        total: int | None = None
+        while url is not None and url not in seen and len(seen) < self._MAX_ATTRIBUTE_PAGES:
+            seen.add(url)
+            page = fetch(url)
+            items = page.get("items")
+            if not isinstance(items, list) or not items:
+                break
+            for item in items:
+                if isinstance(item, dict):
+                    yield item
+                    collected += 1
+            if total is None:
+                t = page.get("total")
+                total = t if isinstance(t, int) and t >= 0 else None
+            if total is not None and collected >= total:
+                break
+            nxt = (page.get("links") or {}).get("next")
+            url = nxt if isinstance(nxt, str) and nxt and _origin(nxt) == origin else None
 
     def parse_issuer(self, raw: Any, *, base: str, did: str, fetch: Any,
                      decode: Any) -> IssuerRecord:
@@ -156,8 +205,7 @@ class TirV5(TirAdapter):
             # ADR-0001 D6: the v5 issuer response carries the attributes URL in its
             # body (HATEOAS); follow it rather than reconstructing the path.
             attributes_url = raw.get("attributes") or (self.issuer_url(base, did) + "/attributes")
-            listing = fetch(attributes_url)
-            for item in listing.get("items", []):
+            for item in self._iter_attribute_items(attributes_url, fetch):
                 href = item.get("href")
                 if not href:
                     continue
