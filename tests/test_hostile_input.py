@@ -17,11 +17,13 @@ import json
 from pathlib import Path
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from openvc import verify_credential, verify_many
 from openvc.errors import OpenvcError
 from openvc.proof._jcs import JcsError, canonicalize
-from openvc.proof.sd_jwt import SdJwtVcProofSuite
+from openvc.proof.sd_jwt import SdJwtError, SdJwtVcProofSuite, _unpack
 from openvc.proof.vc_jwt import VcJwtProofSuite
 
 # JSON values that are valid JSON but not an object — the header/payload shapes that
@@ -83,6 +85,72 @@ def test_verify_many_isolates_a_non_object_payload():
     results = verify_many([hostile, "not.a.jwt", hostile])
     assert len(results) == 3
     assert all((not r.ok) and isinstance(r.error, OpenvcError) for r in results)
+
+
+# --- hostile recursion: deeply-nested JSON / chained disclosures (#117 / R1) --- #
+# A deeply-nested (but valid) JSON header/payload/disclosure makes json.loads raise
+# RecursionError — a RuntimeError, NOT a ValueError — which used to escape OpenvcError
+# and (via the untrusted peek) abort a whole verify_many batch. And chained disclosures
+# make _unpack recurse without bound even when each disclosure survives json.loads.
+
+def _deep_json_b64(depth: int = 6000) -> str:
+    """base64url of JSON nested `depth` levels — past every supported interpreter's
+    recursion limit, so ``json.loads`` raises ``RecursionError``."""
+    return _b64u(b"[" * depth + b"]" * depth)
+
+
+def _deep_sd_jwt() -> str:
+    """An SD-JWT whose issuer-JWT payload is deeply-nested (valid) JSON."""
+    header = _b64u(json.dumps({"alg": "ES256", "typ": "vc+sd-jwt"}).encode())
+    return f"{header}.{_deep_json_b64()}.{_b64u(b'x' * 64)}~"
+
+
+def test_sd_jwt_deeply_nested_payload_is_typed():
+    hostile = _deep_sd_jwt()
+    with pytest.raises(OpenvcError):          # untrusted peek (key selection) path
+        SdJwtVcProofSuite().peek_issuer(hostile)
+    with pytest.raises(OpenvcError):          # full verify path
+        verify_credential(hostile)
+
+
+def test_sd_jwt_deeply_nested_disclosure_is_typed():
+    with pytest.raises(OpenvcError):
+        SdJwtVcProofSuite()._index_disclosures([_deep_json_b64()], "sha-256")
+
+
+def test_sd_jwt_unpack_is_depth_bounded():
+    """Each disclosure discloses an object carrying the NEXT digest: individually shallow
+    (each survives json.loads), but chaining them makes _unpack recurse without bound.
+    The depth guard fails closed with a typed SdJwtError."""
+    disclosures = {f"d{i}": ["salt", f"c{i}", {"_sd": [f"d{i + 1}"]}] for i in range(300)}
+    disclosures["d300"] = ["salt", "c300", "leaf"]
+    with pytest.raises(SdJwtError):
+        _unpack({"_sd": ["d0"]}, disclosures, set(), set())
+
+
+def test_verify_many_isolates_a_deeply_nested_sd_jwt():
+    """The R1 regression: a deeply-nested SD-JWT becomes a fail-closed BatchResult, never
+    aborts the batch with an uncaught RecursionError."""
+    hostile = _deep_sd_jwt()
+    results = verify_many([hostile, "not.a.jwt", hostile])
+    assert len(results) == 3
+    assert all((not r.ok) and isinstance(r.error, OpenvcError) for r in results)
+
+
+@settings(max_examples=200)
+@given(st.recursive(
+    st.none() | st.booleans() | st.integers() | st.text(max_size=8),
+    lambda kids: (st.lists(kids, max_size=4)
+                  | st.dictionaries(st.text(max_size=8), kids, max_size=4)),
+    max_leaves=40,
+))
+def test_sd_jwt_unpack_only_ever_raises_typed(value):
+    """Property: _unpack over arbitrary JSON either returns or raises a typed OpenvcError —
+    never a bare exception (closes the sd_jwt property-fuzz gap noted in docs/audit)."""
+    try:
+        _unpack(value, {}, set(), set())
+    except OpenvcError:
+        pass
 
 
 def test_verify_vp_token_typed_on_non_object_payload():

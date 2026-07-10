@@ -7,8 +7,8 @@ vetting the project) needs to scope and start a review of openvc's security
 core. It is self-review documentation — the *funded external audit* itself is
 gated on funding (see §5).
 
-Anchors are pinned to **v1.20.0 (`d378b99`)**; re-anchor line numbers against the
-commit under review.
+Anchors are pinned to **v1.20.1**; re-anchor line numbers against the commit
+under review.
 
 ## 1. What openvc is (in one paragraph)
 
@@ -48,7 +48,7 @@ Ranked by attacker leverage against the one property — **no wrong-accept**:
 3. **The hand-rolled attacker-facing parsers** — CBOR, COSE, mdoc, JCS,
    multibase, SD-JWT, ecdsa-sd, bitstring, decompress, and the two XML paths
    (threat model §6). Depth/size bounds and typed-error hygiene. Start with
-   residual risks **R1–R3**.
+   residual risks **R2–R3** (**R1** was resolved in v1.20.1).
 4. **The SSRF surface** — `fetch.py` (IP-pin, forbidden ranges, redirect
    refusal), the resolver opt-out boundary, and the EBSI host allow-list
    (§7, R4–R5).
@@ -58,7 +58,8 @@ Ranked by attacker leverage against the one property — **no wrong-accept**:
 
 The residual-risk register (R1–R8) is deliberately the reviewer's shortcut to
 the soft spots we already know about; **R1** (SD-JWT unbounded recursion →
-batch-abort DoS) is the top harden-next item.
+batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117)),
+leaving the typed-error-hygiene items **R2–R3** at the top of the harden-next list.
 
 ## 4. How to reproduce the evidence
 

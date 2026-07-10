@@ -6,8 +6,8 @@
 > citations, the per-suite and per-parser attack-surface tables, the fail-closed
 > **invariants catalog**, and an honest **residual-risk register** — the
 > material an external reviewer starts from. Line numbers are anchors **as of
-> v1.20.0 (`d378b99`)**; treat them as entry points, not guarantees, and
-> re-anchor against the reviewed commit.
+> v1.20.1**; treat them as entry points, not guarantees, and re-anchor against
+> the reviewed commit.
 
 Part of the external-audit pack ([README](README.md)) for
 [#75](https://github.com/luisgf/openvc/issues/75).
@@ -116,7 +116,7 @@ finite input", with no explicit constant.
 | mdoc `DeviceResponse` | OpenID4VP `vp_token` | Inherits CBOR; **depth counter resets at each embedded `#6.24`** (R3) | `MdocError` family; CBOR errors re-wrapped | `src/openvc/mdoc.py:307,315,365,377` |
 | multibase / base58 / varint | `publicKeyMultibase`, `proofValue` | base58 **≤4096**; varint **≤9 bytes** | `MultibaseError` (typed) | `src/openvc/multibase.py:18,21,30-31,73-74` |
 | JCS canonicalizer (RFC 8785) | JCS DI unsecured doc + proofConfig | Depth **100**; IEEE-754 range enforced; NaN/Inf rejected | `JcsError` — **not** an `OpenvcError` (R2) | `src/openvc/proof/_jcs.py:18,27,148-149` |
-| SD-JWT `_unpack` / JWS decode | Holder presentation | **None** — no depth bound on `_unpack`/`json.loads` (R1) | `SdJwtError`/`MalformedToken`; but `RecursionError` escapes (R1) | `src/openvc/proof/sd_jwt.py:116,386,425` |
+| SD-JWT `_unpack` / JWS decode | Holder presentation | Depth **100**; `RecursionError` mapped to typed (v1.20.1, was R1) | `SdJwtError`/`MalformedToken` (typed) | `src/openvc/proof/sd_jwt.py:66,121,397` |
 | ecdsa-sd proofValue | DI selective-disclosure proof | Reuses CBOR (depth 64) + strict 5-element subset gate | `ProofValueMalformed` (typed) | `src/openvc/proof/ecdsa_sd.py:45,103-121,139-141` |
 | Bitstring status | Resolved status VC `encodedList` | Delegates 16 MiB decompress cap; index bounds-checked | `StatusListError` (typed) | `src/openvc/status/bitstring.py:38,43-50` |
 | Decompress (gzip/zlib) | Issuer status bytes (**not** covered by the 1 MiB fetch cap) | **16 MiB**, incremental | `DecompressionBomb` — **not** an `OpenvcError`, re-wrapped at call sites (R2) | `src/openvc/status/_decompress.py:23,28,38-66` |
@@ -165,24 +165,27 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I13 | Trust-list XML refuses DOCTYPE (XXE + expansion closed) | `trustlist/parse.py:108-120` | `test_trustlist.py:104,121` |
 | I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py` |
 | I15 | `verify_many` isolates per-credential — one bad item never aborts the batch | `verify.py:458-465` | `test_hostile_input.py:79-85` |
+| I16 | SD-JWT recursion bounded at depth 100; `RecursionError` mapped to a typed error | `proof/sd_jwt.py:66,129,397,439` | `test_hostile_input.py` |
 
 ## 9. Residual risks & known limitations
 
 The honest register. None is a wrong-accept (I1–I7 hold); the open items are
 **availability / typed-error-hygiene** hardening and documented caveats — the
-"harden next" list an external reviewer should weigh. Ranked by our assessment.
+"harden next" list an external reviewer should weigh. Ranked by our assessment;
+items marked **✅ Resolved** have since been fixed and stay here as an audit trail.
 
-- **R1 — SD-JWT `_unpack` / `json.loads` lack a nesting bound → batch-abort DoS.**
-  `_unpack` (`src/openvc/proof/sd_jwt.py:116`) recurses with no depth parameter,
-  and `_decode_jws`/`_index_disclosures` catch only
-  `(ValueError, json.JSONDecodeError)` (`:386,425`). Hostile deeply-nested JSON
-  makes `json.loads` (and `_unpack`) raise `RecursionError`, which is **not** an
-  `OpenvcError`. Because `verify_many` isolates items with `except OpenvcError`
-  (`src/openvc/verify.py:464`), an uncaught `RecursionError` **escapes
-  per-credential isolation and aborts the whole batch** — unlike CBOR (depth 64)
-  and JCS (depth 100), which are bounded. *Impact:* DoS only, no wrong-accept.
-  *Fix:* add a depth bound to `_unpack` and/or map `RecursionError` → typed
-  `MalformedToken`, matching the other codecs. **Top harden-next item.**
+- **R1 — SD-JWT `_unpack` / `json.loads` nesting bound. ✅ Resolved in v1.20.1
+  ([#117](https://github.com/luisgf/openvc/issues/117)).** `_unpack`
+  (`src/openvc/proof/sd_jwt.py:121`) recursed with no depth parameter, and
+  `_decode_jws`/`_index_disclosures` caught only `(ValueError, json.JSONDecodeError)`.
+  Hostile deeply-nested JSON — or a **chain** of disclosures (each disclosing an object
+  carrying the next `_sd` digest, individually shallow) — made `json.loads` (and
+  `_unpack`) raise `RecursionError`, which is **not** an `OpenvcError`. Because
+  `verify_many` isolates items with `except OpenvcError` (`src/openvc/verify.py:464`),
+  that uncaught `RecursionError` escaped per-credential isolation and **aborted the whole
+  batch** (DoS; no wrong-accept). **Fixed:** `_unpack` now caps depth at 100
+  (`sd_jwt.py:66,129`) and the `json.loads` sites map `RecursionError` to a typed error
+  (`sd_jwt.py:397,439`) — invariant **I16**, pinned by `test_hostile_input.py`.
 - **R2 — Two typed errors escape the `OpenvcError` hierarchy.**
   `JcsError(Exception)` (`src/openvc/proof/_jcs.py:27`) and
   `DecompressionBomb(Exception)` (`src/openvc/status/_decompress.py:28`) do not

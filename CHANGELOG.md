@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.20.1] — unreleased
 
 ### Added
 
@@ -20,6 +20,20 @@ All notable changes to **openvc** are documented here. The format follows
   with the suggested review scope and EU funding routes. No code change — the
   external audit itself stays gated on funding.
   ([#75](https://github.com/luisgf/openvc/issues/75))
+
+### Security
+
+- **SD-JWT VC: bound parser recursion — fail closed on hostile nesting.** The
+  selective-disclosure `_unpack` and the `json.loads` boundaries (`_decode_jws`,
+  `_index_disclosures`) had no nesting bound: a deeply-nested (but valid) JSON
+  header/payload/disclosure — or a **chain** of disclosures each disclosing an object
+  carrying the next `_sd` digest — raised `RecursionError` (a `RuntimeError`, not an
+  `OpenvcError`). On the untrusted peek path that escaped `verify_many`'s
+  per-credential isolation and **aborted the whole batch** (denial-of-service; not a
+  wrong-accept). `_unpack` now caps recursion at depth 100 (parity with `cbor`=64 /
+  `_jcs`=100) and the `json.loads` sites map `RecursionError` to a typed error, so
+  hostile input fails closed. Resolves the **R1** residual risk from the audit pack.
+  ([#117](https://github.com/luisgf/openvc/issues/117))
 
 ## [1.20.0] — 2026-07-10
 
@@ -1173,6 +1187,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.20.1]: https://github.com/luisgf/openvc/releases/tag/v1.20.1
 [1.20.0]: https://github.com/luisgf/openvc/releases/tag/v1.20.0
 [1.19.3]: https://github.com/luisgf/openvc/releases/tag/v1.19.3
 [1.19.1]: https://github.com/luisgf/openvc/releases/tag/v1.19.1
