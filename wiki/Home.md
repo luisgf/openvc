@@ -49,15 +49,18 @@ src/openvc/                 core — knows nothing about EBSI or badges
     aio.py                  verify_credential_async / verify_many_async
     openid4vp.py            verify_vp_token: stateless OpenID4VP 1.0 verifier
     jwe.py                  decrypt_compact: JWE ECDH-ES decrypt (HAIP responses)
+    mdoc.py                 ISO 18013-5 mso_mdoc verification (experimental)
+    cose.py / cbor.py       hand-rolled COSE_Sign1/Mac0 + bounded CBOR (mdoc, no deps)
     proof/                  the proof suites (vc_jwt, sd_jwt, vp_jwt, data_integrity,
                             di_ecdsa_rdfc, di_jcs, ecdsa_sd) + shared error taxonomy
-    did/                    did:key, did:jwk, did:web resolvers + registry
-    keys.py                 Ed25519 / P-256 / P-384 SigningKey backends
+    did/                    did:key, did:jwk, did:web, did:webvh resolvers + registry
+    keys.py                 Ed25519 / P-256 / P-384 + ML-DSA (RFC 9964) SigningKey backends
     fetch.py                SSRF- and DNS-rebinding-safe https fetch
     resolvers.py            blessed SSRF-guarded status / schema / type-metadata resolvers
     cache.py                opt-in TTL caching for DID resolution
     jwt_vc_issuer.py        issuer keys via /.well-known/jwt-vc-issuer
     x5c.py                  X.509 x5c chain trust + SAN issuer binding
+    rp_cert.py              EUDI relying-party access certificates (WRPAC, ETSI TS 119 475)
     trustlist/              EU Trusted Lists (LOTL → TL) → X.509 anchors
     status/                 W3C Bitstring + IETF Token Status List (check + issue)
     schema.py               credentialSchema validation (opt-in)
