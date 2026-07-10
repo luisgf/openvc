@@ -181,7 +181,7 @@ class EbsiHttpClient:
             if status == 200:
                 try:
                     data = json.loads(body or b"")
-                except ValueError as exc:                # a 200 with a non-JSON body
+                except (ValueError, RecursionError) as exc:   # non-JSON or hostile-depth body
                     raise MalformedRegistryResponse(
                         f"registry returned a 200 with a non-JSON body: {url}") from exc
                 if not isinstance(data, dict):           # null / array / string / number

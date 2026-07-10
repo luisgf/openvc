@@ -59,6 +59,11 @@ _ISSUER_TYP = "dc+sd-jwt"                       # current draft (older: vc+sd-jw
 _ACCEPTED_ISSUER_TYP = frozenset({"dc+sd-jwt", "vc+sd-jwt"})
 _KB_TYP = "kb+jwt"
 _SALT_BYTES = 16                               # 128-bit salt (spec minimum)
+# Nesting bound for _unpack, parity with the sibling codecs (cbor.py=64, _jcs.py=100).
+# A hostile presentation can nest claims deeply, or chain disclosures (each disclosing an
+# object that carries the next _sd digest) so _unpack recurses far past what json.loads'
+# own limit bounds. Fail closed with a typed error before Python raises RecursionError.
+_MAX_DEPTH = 100
 
 
 class SdJwtError(ProofError):
@@ -113,10 +118,16 @@ def _sd_digests(sd: Any) -> list[str]:
     return sd
 
 
-def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[str]) -> Any:
+def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[str],
+            depth: int = 0) -> Any:
     """Rebuild *node*, replacing ``_sd`` digests and ``{"...": digest}`` array
     elements with the disclosed values. Rejects duplicate digests, digests reused
-    by two disclosures, and disclosures that would overwrite an existing claim."""
+    by two disclosures, and disclosures that would overwrite an existing claim.
+
+    ``depth`` bounds recursion (claims nesting *and* chained disclosures) so hostile
+    input fails closed with a typed :class:`SdJwtError` before Python's RecursionError."""
+    if depth > _MAX_DEPTH:
+        raise SdJwtError(f"claim/disclosure nesting exceeds the maximum depth of {_MAX_DEPTH}")
     if isinstance(node, dict):
         result: dict[str, Any] = {}
         for key, value in node.items():
@@ -124,7 +135,7 @@ def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[s
                 continue                       # processed below
             if key == "...":
                 raise SdJwtError("'...' is only valid as an array element")
-            result[key] = _unpack(value, disclosures, used, seen)
+            result[key] = _unpack(value, disclosures, used, seen, depth + 1)
         for digest in _sd_digests(node.get("_sd")):
             if digest in seen:
                 raise SdJwtError("duplicate digest in payload")
@@ -142,7 +153,7 @@ def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[s
             if name in result:
                 raise SdJwtError(f"disclosure would overwrite claim {name!r}")
             used.add(digest)
-            result[name] = _unpack(disclosure[2], disclosures, used, seen)
+            result[name] = _unpack(disclosure[2], disclosures, used, seen, depth + 1)
         return result
     if isinstance(node, list):
         out: list[Any] = []
@@ -160,9 +171,9 @@ def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[s
                 if len(disclosure) != 2:
                     raise SdJwtError("array disclosure must be [salt, value]")
                 used.add(digest)
-                out.append(_unpack(disclosure[1], disclosures, used, seen))
+                out.append(_unpack(disclosure[1], disclosures, used, seen, depth + 1))
             else:
-                out.append(_unpack(element, disclosures, used, seen))
+                out.append(_unpack(element, disclosures, used, seen, depth + 1))
         return out
     return node
 
@@ -383,7 +394,10 @@ class SdJwtVcProofSuite:
             header = json.loads(_b64url_decode(header_b64))
             payload = json.loads(_b64url_decode(payload_b64))
             signature = _b64url_decode(sig_b64)
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, json.JSONDecodeError, RecursionError) as exc:
+            # RecursionError: a deeply-nested (valid) JSON header/payload overruns the
+            # interpreter limit; catch it here (the stack has unwound to this frame) and
+            # surface it typed, so it never escapes OpenvcError and aborts verify_many.
             raise MalformedToken("not a valid compact JWS") from exc
         if not isinstance(header, dict) or not isinstance(payload, dict):
             # A JOSE header/payload that is valid JSON but not an object (e.g. `[0]`)
@@ -422,7 +436,7 @@ class SdJwtVcProofSuite:
         for disclosure in disclosures:
             try:
                 parsed = json.loads(_b64url_decode(disclosure))
-            except (ValueError, json.JSONDecodeError) as exc:
+            except (ValueError, json.JSONDecodeError, RecursionError) as exc:
                 raise SdJwtError("a disclosure is not valid base64url JSON") from exc
             if not isinstance(parsed, list) or len(parsed) not in (2, 3):
                 raise SdJwtError("a disclosure must be a 2- or 3-element array")

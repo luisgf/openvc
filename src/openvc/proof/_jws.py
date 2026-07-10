@@ -63,7 +63,7 @@ def parse_compact(token: str) -> tuple[dict[str, Any], dict[str, Any], bytes, by
         header = json.loads(b64url_decode(header_b64))
         payload = json.loads(b64url_decode(payload_b64))
         signature = b64url_decode(sig_b64)
-    except (ValueError, json.JSONDecodeError) as exc:
+    except (ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise MalformedToken("not a valid compact JWS (need 3 base64url JSON parts)") from exc
     if not isinstance(header, dict) or not isinstance(payload, dict):
         raise MalformedToken("JWS header and payload must be JSON objects")

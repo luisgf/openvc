@@ -39,6 +39,21 @@ def _resolver(log_text: str) -> DidWebvhResolver:
     return DidWebvhResolver(fetch=lambda _url: log_text)
 
 
+def test_scid_replace_is_depth_bounded():
+    """A did:webvh genesis entry nested past the SCID-replace depth bound fails closed as
+    a typed DidWebvhError, never a bare RecursionError — which (via the untrusted resolve
+    path) would escape verify_many's per-credential isolation and abort the batch
+    (adversarial re-review of #117)."""
+    from openvc.did.did_webvh import _deep_replace_scid
+    deep: dict = {}
+    node = deep
+    for _ in range(300):                 # > _MAX_SCID_DEPTH (100), < the interpreter limit
+        node["a"] = {}
+        node = node["a"]
+    with pytest.raises(DidWebvhError):
+        _deep_replace_scid(deep, "some-scid")
+
+
 # --------------------------------------------------------------------------- #
 # identifier -> URL
 # --------------------------------------------------------------------------- #

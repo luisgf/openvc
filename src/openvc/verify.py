@@ -255,7 +255,7 @@ def _unwrap_enveloped(doc: dict[str, Any]) -> Any:
             return payload                               # an SD-JWT string
         if media in ("application/vc+ld+json", "application/vc", "application/ld+json"):
             return json.loads(payload)                   # a JSON VC (embedded proof)
-    except ValueError as exc:                            # bad base64 / utf-8 / JSON
+    except (ValueError, RecursionError) as exc:          # bad base64/utf-8/JSON or hostile depth
         raise UnknownCredentialFormat(
             f"malformed enveloped payload for media {media!r}: {exc}") from exc
     raise UnknownCredentialFormat(f"unsupported enveloped media type {media!r}")
@@ -411,8 +411,8 @@ def _bytes_to_credential(raw: bytes) -> Any:
             f"JsonSchemaCredential bytes are not valid UTF-8: {exc}") from exc
     try:
         obj = json.loads(text)
-    except ValueError:
-        return text                       # not JSON -> a compact JWS (VC-JWT)
+    except (ValueError, RecursionError):
+        return text                       # not JSON / hostile depth -> a compact JWS (VC-JWT)
     return obj if isinstance(obj, dict) else text
 
 

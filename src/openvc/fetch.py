@@ -165,7 +165,7 @@ def https_json_fetch(
     raw = _https_fetch_guarded(url, timeout_s=timeout_s, max_bytes=max_bytes)
     try:
         data = json.loads(raw)
-    except (ValueError, json.JSONDecodeError) as exc:
+    except (ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise DidResolutionError(f"response is not JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise DidResolutionError("response must be a JSON object")

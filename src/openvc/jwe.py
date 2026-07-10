@@ -110,7 +110,7 @@ def decrypt_compact(token: str, *, key: KeyAgreementKey) -> bytes:
 
     try:
         header = json.loads(_b64url_decode(protected_b64))
-    except (ValueError, json.JSONDecodeError) as exc:
+    except (ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise JweMalformed(f"invalid JWE protected header: {exc}") from exc
     if not isinstance(header, dict):
         raise JweMalformed("JWE protected header must be a JSON object")

@@ -35,7 +35,7 @@ class DidJwkResolver:
         try:
             raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
             jwk: Any = json.loads(raw)
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise DidResolutionError(f"did:jwk is not valid base64url JSON: {exc}") from exc
         if not isinstance(jwk, dict) or "kty" not in jwk:
             raise DidResolutionError("did:jwk did not decode to a JWK object")

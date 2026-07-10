@@ -57,6 +57,9 @@ _MULTIHASH_SHA256_PREFIX = b"\x12\x20"      # multihash: sha2-256 (0x12), 32-byt
 _ED25519_MULTICODEC = 0xED                  # multicodec ed25519-pub varint head
 _EDDSA_JCS = "eddsa-jcs-2022"
 _MAX_LOG_ENTRIES = 1000          # bound a runaway log (the fetch already bounds total bytes)
+_MAX_SCID_DEPTH = 100            # bound _deep_replace_scid over the attacker-controlled genesis
+#                                  entry (parity with _jcs / cbor / sd_jwt) — fail closed typed
+#                                  before Python's RecursionError
 
 
 class DidWebvhError(DidResolutionError):
@@ -98,16 +101,22 @@ def _multihash_b58(data: bytes) -> str:
     return b58btc_encode(_MULTIHASH_SHA256_PREFIX + hashlib.sha256(data).digest())
 
 
-def _deep_replace_scid(obj: Any, scid: str) -> Any:
+def _deep_replace_scid(obj: Any, scid: str, depth: int = 0) -> Any:
     """Replace every occurrence of *scid* with the ``{SCID}`` placeholder in all string
     values — the genesis entry carries the SCID in ``parameters.scid`` AND inside the DID
-    string in ``state`` (id/controller/verificationMethod ids)."""
+    string in ``state`` (id/controller/verificationMethod ids).
+
+    ``depth`` bounds recursion over the attacker-controlled genesis entry: a hostile
+    deeply-nested entry (in the band that survives ``json.loads`` but overruns the C stack)
+    fails closed with a typed :class:`DidWebvhError`, not a bare ``RecursionError``."""
+    if depth > _MAX_SCID_DEPTH:
+        raise DidWebvhError(f"genesis entry nesting exceeds the maximum depth of {_MAX_SCID_DEPTH}")
     if isinstance(obj, str):
         return obj.replace(scid, _SCID_PLACEHOLDER)
     if isinstance(obj, list):
-        return [_deep_replace_scid(x, scid) for x in obj]
+        return [_deep_replace_scid(x, scid, depth + 1) for x in obj]
     if isinstance(obj, dict):
-        return {k: _deep_replace_scid(v, scid) for k, v in obj.items()}
+        return {k: _deep_replace_scid(v, scid, depth + 1) for k, v in obj.items()}
     return obj
 
 
@@ -371,7 +380,7 @@ class _WebvhReplay:
                 raise DidWebvhError(f"did.jsonl exceeds {_MAX_LOG_ENTRIES} entries")
             try:
                 obj = json.loads(line)
-            except (ValueError, json.JSONDecodeError) as exc:
+            except (ValueError, json.JSONDecodeError, RecursionError) as exc:
                 raise DidWebvhError(f"did.jsonl line is not valid JSON: {exc}") from exc
             if not isinstance(obj, dict):
                 raise DidWebvhError("each did.jsonl line must be a JSON object")

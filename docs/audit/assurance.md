@@ -55,15 +55,15 @@ facing parser is currently guarded by **example-based negative tests only**.
 | `proof/_jcs` | ❌ | ✅ depth/non-finite/surrogate (`test_di_jcs.py:388,415`) | **Gap** |
 | `cose` | ❌ | ✅ rich (`test_cose.py:72-212`) | **Gap** |
 | `mdoc` | ❌ | ✅ rich, parametrized malformed (`test_mdoc.py:365`) | **Gap** |
-| `proof/sd_jwt` | ❌ | ✅ rich (`test_sd_jwt.py`) | **Gap** (see R1) |
+| `proof/sd_jwt` | ✅ (`test_hostile_input.py`) | ✅ rich (`test_sd_jwt.py`) + nesting/recursion | Strong |
 | `jwe` | ❌ | ✅ rich (`test_jwe.py:167-294`) | **Gap** |
 | `trustlist/parse` (XML) | ❌ | ✅ XXE/entity-bomb/oversize (`test_trustlist.py:104-144`) | **Gap** |
 | `trustlist/xades` (XML) | ❌ | ✅ DTD/tamper/forged (`test_trustlist_xades.py:123-229`) | **Gap** |
 
-**Highest-value property-fuzz targets:** `cose`, `mdoc`, `sd_jwt`, `jwe`, and
-the two XML parsers — they consume the most complex attacker-controlled
-structure and currently have zero randomized coverage. The `sd_jwt` gap
-compounds residual risk **R1** (unbounded recursion) in the threat model.
+**Highest-value property-fuzz targets:** `cose`, `mdoc`, `jwe`, and the two XML
+parsers — they consume the most complex attacker-controlled structure and
+currently have zero randomized coverage. (`sd_jwt` shared this gap until v1.20.1,
+when its recursion/nesting harness landed alongside the **R1** fix.)
 
 ## 3. Negative / tamper coverage by suite
 
@@ -105,6 +105,7 @@ recent first (`git log`, short hashes).
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
+- `#117` — fail closed on hostile deeply-nested JSON pipeline-wide: SD-JWT `_unpack` depth bound + `RecursionError` mapped typed at every attacker-facing `json.loads` (v1.20.1); closes audit R1
 - `291f79d` — library-wide `OpenvcError` root (one catchable root)
 - `b4e335e` — unify proof error taxonomy + rename ecdsa_sd codecs
 - `a5d6796` — fail closed on a non-numeric SD-JWT `exp`/`nbf`

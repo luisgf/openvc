@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.20.1] — unreleased
 
 ### Added
 
@@ -20,6 +20,24 @@ All notable changes to **openvc** are documented here. The format follows
   with the suggested review scope and EU funding routes. No code change — the
   external audit itself stays gated on funding.
   ([#75](https://github.com/luisgf/openvc/issues/75))
+
+### Security
+
+- **Fail closed on hostile deeply-nested JSON across the verify pipeline.** A
+  deeply-nested (but valid) JSON credential — an SD-JWT header/payload/disclosure, a
+  **chain** of SD-JWT disclosures each carrying the next `_sd` digest, a VC-JWT
+  header/payload, or an enveloped VC's `data:` payload — made `json.loads` (or the
+  SD-JWT `_unpack` recursion) raise `RecursionError` (a `RuntimeError`, not an
+  `OpenvcError`). On the untrusted peek/unwrap path that escaped `verify_many`'s
+  per-credential isolation and **aborted the whole batch** (denial-of-service; not a
+  wrong-accept) — reachable unauthenticated and, on CPython 3.10–3.13, with ~1 KB of
+  input. SD-JWT `_unpack` now caps recursion at depth 100 (parity with `cbor`=64 /
+  `_jcs`=100), the did:webvh genesis SCID walk (`_deep_replace_scid`) is depth-bounded
+  too, and **every attacker-facing `json.loads`** — SD-JWT, VC-JWT peek/verify, `_jws`,
+  the enveloped unwrap, `jwe`, and the `did:jwk` / `did:webvh` / fetch / status-resolver
+  paths — now maps `RecursionError` to a typed error, so hostile input fails closed and
+  `verify_many` isolates it across all formats. Resolves the **R1** residual risk from
+  the audit pack. ([#117](https://github.com/luisgf/openvc/issues/117))
 
 ## [1.20.0] — 2026-07-10
 
@@ -1173,6 +1191,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.20.1]: https://github.com/luisgf/openvc/releases/tag/v1.20.1
 [1.20.0]: https://github.com/luisgf/openvc/releases/tag/v1.20.0
 [1.19.3]: https://github.com/luisgf/openvc/releases/tag/v1.19.3
 [1.19.1]: https://github.com/luisgf/openvc/releases/tag/v1.19.1
