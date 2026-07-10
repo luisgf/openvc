@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import pathlib
 
 import pytest
@@ -124,13 +125,25 @@ def _self_signed(cn, key, *, not_after=_FUTURE):
     return cert, key
 
 
-def _ds_cert(iaca_cn, iaca_key, ds_key, *, not_after=_FUTURE):
-    return (x509.CertificateBuilder()
-            .subject_name(_name("utopia ds test")).issuer_name(_name(iaca_cn))
-            .public_key(ds_key.public_key()).serial_number(x509.random_serial_number())
-            .not_valid_before(_PAST).not_valid_after(not_after)
-            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-            .sign(iaca_key, hashes.SHA256()))
+_MDOC_DS_EKU = x509.ExtendedKeyUsage([x509.ObjectIdentifier("1.0.18013.5.1.2")])
+
+
+def _ds_cert(iaca_cn, iaca_key, ds_key, *, not_after=_FUTURE, ds_eku=True):
+    builder = (x509.CertificateBuilder()
+               .subject_name(_name("utopia ds test")).issuer_name(_name(iaca_cn))
+               .public_key(ds_key.public_key()).serial_number(x509.random_serial_number())
+               .not_valid_before(_PAST).not_valid_after(not_after)
+               .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True))
+    if ds_eku:                                        # ISO 18013-5 Annex B document-signer EKU
+        builder = builder.add_extension(_MDOC_DS_EKU, critical=False)
+    return builder.sign(iaca_key, hashes.SHA256())
+
+
+def _mac0(payload, mac_key, *, detached=False):
+    protected = cbor.encode({1: 5})                   # HMAC 256/256 (COSE alg 5)
+    tbm = cbor.encode(["MAC0", protected, b"", payload])
+    tag = hmac.new(mac_key, tbm, hashlib.sha256).digest()
+    return [protected, {}, (None if detached else payload), tag]
 
 
 def _cose_sign1(payload, priv, *, x5chain=None, detached=False):
@@ -159,13 +172,14 @@ def _tdate(when):
 def _build_online(
     *, session_transcript, items=None, doc_type=DOCTYPE, mso_doc_type=None,
     digest_alg="SHA-256", valid_from=_PAST, valid_until=_FUTURE, tamper_digest_id=None,
-    device_key=None, device_signature=True, wrong_device_key=False,
+    device_key=None, device_signature=True, wrong_device_key=False, device_mac_key=None,
+    ds_eku=True,
 ):
     """A full DeviceResponse with real crypto. Returns (device_response_bytes, iaca_cert)."""
     iaca_key = ec.generate_private_key(ec.SECP256R1())
     iaca, _ = _self_signed("utopia iaca test", iaca_key)
     ds_key = ec.generate_private_key(ec.SECP256R1())
-    ds_der = _ds_cert("utopia iaca test", iaca_key, ds_key).public_bytes(
+    ds_der = _ds_cert("utopia iaca test", iaca_key, ds_key, ds_eku=ds_eku).public_bytes(
         serialization.Encoding.DER)
     device_key = device_key or ec.generate_private_key(ec.SECP256R1())
 
@@ -200,9 +214,11 @@ def _build_online(
         ["DeviceAuthentication", cbor.CborRaw(session_transcript), doc_type,
          cbor.CborRaw(device_ns_bytes)])
     da_bytes = cbor.encode(cbor.CborTag(24, device_authentication))
-    dev_sig = _cose_sign1(da_bytes, signed_key, detached=True)
-    device_signed = {"nameSpaces": cbor.decode(device_ns_bytes),
-                     "deviceAuth": {"deviceSignature": dev_sig}}
+    if device_mac_key is not None:                    # ISO 18013-5 proximity DeviceMac
+        device_auth = {"deviceMac": _mac0(da_bytes, device_mac_key, detached=True)}
+    else:
+        device_auth = {"deviceSignature": _cose_sign1(da_bytes, signed_key, detached=True)}
+    device_signed = {"nameSpaces": cbor.decode(device_ns_bytes), "deviceAuth": device_auth}
 
     document = {"docType": doc_type, "issuerSigned": issuer_signed,
                 "deviceSigned": device_signed}
@@ -235,6 +251,42 @@ def test_online_expected_doc_type_enforced():
     with pytest.raises(mdoc.MdocDocTypeMismatch):
         mdoc.verify_device_response(dr, trust_anchors=[iaca], session_transcript=st,
                                     now=NOW, expected_doc_type="org.iso.18013.5.1.other")
+
+
+def test_ds_cert_without_mdoc_eku_rejected():
+    # #105: a leaf that chains to the IACA but lacks the DS EKU 1.0.18013.5.1.2 must not
+    # be accepted as an mdoc document signer (ISO 18013-5 Annex B).
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st, ds_eku=False)
+    with pytest.raises(mdoc.MdocTrustError):
+        mdoc.verify_device_response(dr, trust_anchors=[iaca], session_transcript=st, now=NOW)
+
+
+def test_online_device_mac_verifies():
+    # #105: cover the DeviceMac (proximity) branch of device authentication with a known
+    # ISO 18013-5 session EMacKey.
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    emac = b"\x11" * 32
+    dr, iaca = _build_online(session_transcript=st, device_mac_key=emac)
+    results = mdoc.verify_device_response(
+        dr, trust_anchors=[iaca], session_transcript=st, now=NOW, device_mac_key=emac)
+    assert len(results) == 1 and results[0].device_signed is True
+
+
+def test_device_mac_without_emac_key_fails_closed():
+    # a DeviceMac response verified without the EMacKey must fail closed, not silently pass.
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st, device_mac_key=b"\x22" * 32)
+    with pytest.raises(mdoc.MdocDeviceAuthError):
+        mdoc.verify_device_response(dr, trust_anchors=[iaca], session_transcript=st, now=NOW)
+
+
+def test_device_mac_wrong_emac_key_fails_closed():
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st, device_mac_key=b"\x11" * 32)
+    with pytest.raises(mdoc.MdocDeviceAuthError):
+        mdoc.verify_device_response(dr, trust_anchors=[iaca], session_transcript=st,
+                                    now=NOW, device_mac_key=b"\x99" * 32)
 
 
 # --------------------------------------------------------------------------- #

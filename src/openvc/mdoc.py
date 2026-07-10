@@ -32,7 +32,7 @@ from typing import Any, Callable, Sequence
 
 from . import cbor, cose
 from .errors import OpenvcError
-from .x5c import X5cError, resolve_mdoc_signer_key
+from .x5c import X5cError, check_mdoc_signed_within_ds_validity, resolve_mdoc_signer_key
 
 __all__ = [
     "MdocError",
@@ -294,6 +294,11 @@ def _verify_issuer_signed(
     if hasher is None:
         raise MdocMalformed(f"MSO digestAlgorithm {alg_name!r} is not SHA-256/384/512")
     validity = _check_validity(mso, instant, leeway_s)
+    if validity.signed is not None:                   # bind `signed` to the DS cert window
+        try:
+            check_mdoc_signed_within_ds_validity(chain, validity.signed)
+        except X5cError as exc:
+            raise MdocValidityError(str(exc)) from exc
     namespaces = _verify_value_digests(issuer_signed, mso, hasher)
     return _IssuerParts(doc_type, namespaces, issuer_key, validity, mso)
 
@@ -402,6 +407,8 @@ def _check_validity(mso: dict[Any, Any], instant: datetime, leeway_s: int) -> Md
     signed = _parse_date(info.get(_VI_SIGNED))
     valid_from = _parse_date(info.get(_VI_VALID_FROM))
     valid_until = _parse_date(info.get(_VI_VALID_UNTIL))
+    if signed is None:
+        raise MdocMalformed("MSO validityInfo needs a signed time (ISO 18013-5 §9.1.2.4)")
     if valid_from is None or valid_until is None:
         raise MdocMalformed("MSO validityInfo needs both validFrom and validUntil")
     leeway = timedelta(seconds=leeway_s)

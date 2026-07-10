@@ -31,7 +31,7 @@ from typing import Any, Mapping
 
 from ..errors import OpenvcError
 from ..keys import verify_signature
-from ..multibase import decode_multibase, encode_multibase
+from ..multibase import encode_multibase
 from ._verify_common import (
     ALG_PROFILE,
     DEFAULT_LEEWAY_S,
@@ -39,6 +39,7 @@ from ._verify_common import (
     check_proof_purpose,
     check_validity_window,
     match_alg,
+    prepare_di_proof,
     resolve_verification_key,
 )
 from .contexts import document_loader
@@ -170,25 +171,8 @@ class EcdsaRdfcProofSuite:
         curve-selected digest and the accepted JWK ``kty``/``crv`` follow from the key
         via ``_match_alg``, so a cross-type key fails closed before the crypto runs.
         """
-        proof = secured.get("proof")
-        if not isinstance(proof, dict):
-            raise ProofMalformed("credential has no proof object")
-        if proof.get("type") != PROOF_TYPE:
-            raise ProofMalformed(f"unexpected proof type {proof.get('type')!r}")
-        if proof.get("cryptosuite") != ECDSA_RDFC_CRYPTOSUITE:
-            raise UnsupportedCryptosuite(
-                f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
-        proof_value = proof.get("proofValue")
-        if not isinstance(proof_value, str):
-            raise ProofMalformed("proof has no proofValue")
-
-        try:
-            signature = decode_multibase(proof_value)
-        except Exception as exc:
-            raise ProofMalformed(f"invalid proofValue: {exc}") from exc
-
-        proof_config = {k: v for k, v in proof.items() if k != "proofValue"}
-        proof_config["@context"] = secured.get("@context")
+        proof, proof_config, signature = prepare_di_proof(
+            secured, proof_type=PROOF_TYPE, cryptosuite=ECDSA_RDFC_CRYPTOSUITE)
 
         unsecured = _unsecured(secured)
         jwk = public_key_jwk or resolve_verification_key(

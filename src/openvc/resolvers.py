@@ -24,6 +24,16 @@ resolver deliberately opts out of the guard.
         cred, resolver=reg,
         resolve_status_list=default_status_list_resolver(resolver=reg),
         resolve_credential_schema=default_credential_schema_resolver())
+
+**Caching for high-volume verification.** A default status resolver **fetches and
+re-verifies** the status list on every call — a batch of N credentials from one issuer
+would otherwise download and verify one shared list N times. :func:`openvc.verify.verify_many`
+(and its async twin) already deduplicate this *within a call* via
+:func:`openvc.cache.batch_resolvers` (each distinct issuer / status list resolved once). For
+repeated **single** ``verify_credential`` calls in a long-lived verifier, wrap your resolvers
+with :func:`openvc.cache.cached_resolve` (a short-TTL memo) and your DID resolver with
+:class:`openvc.cache.CachingDidResolver`, so a hot status list / DID document is not refetched
+per credential.
 """
 from __future__ import annotations
 

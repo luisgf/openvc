@@ -229,6 +229,66 @@ def test_data_integrity_async_wrong_issuer_binding_fails():
         _run(verify_credential_async(secured, resolver=as_async_resolver(reg)))
 
 
+def test_sd_jwt_async_matches_sync():
+    # #108: the SD-JWT VC path had no async coverage.
+    from openvc.proof.sd_jwt import SdJwtVcProofSuite
+    did = "did:example:sdissuer"
+    vm = f"{did}#k"
+    key = P256SigningKey.generate(kid=vm)
+    sd = SdJwtVcProofSuite().issue(
+        {"iss": did, "sub": "did:example:alice", "given_name": "Ada"},
+        signing_key=key, vct="https://credentials.example/id", disclosable=["given_name"])
+    reg = _sync_registry([(did, vm, key.public_jwk())])
+    sync = verify_credential(sd, resolver=reg)
+    asyncr = _run(verify_credential_async(sd, resolver=as_async_resolver(reg)))
+    assert asyncr.format == sync.format
+    assert asyncr.issuer == sync.issuer == did
+    assert asyncr.credential["given_name"] == "Ada"
+
+
+def test_data_integrity_rdfc_async_matches_sync():
+    # #108: only the JCS DI path was covered async; the RDF (pyld) path was not.
+    pytest.importorskip("pyld")
+    from openvc.proof.data_integrity import DataIntegrityProofSuite
+    did = "did:example:rdfc"
+    vm = f"{did}#k"
+    key = Ed25519SigningKey.generate(kid=vm)
+    doc = {
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiableCredential"],
+        "issuer": did,
+        "validFrom": "2020-01-01T00:00:00Z",
+        "credentialSubject": {"id": "did:example:alice", "score": 42},
+    }
+    secured = DataIntegrityProofSuite().add_proof(doc, signing_key=key, verification_method=vm)
+    reg = _sync_registry([(did, vm, key.public_jwk())])
+    sync = verify_credential(secured, resolver=reg)
+    asyncr = _run(verify_credential_async(secured, resolver=as_async_resolver(reg)))
+    assert asyncr.format == sync.format == "data-integrity:eddsa-rdfc-2022"
+    assert asyncr.issuer == sync.issuer == did
+
+
+def test_default_status_list_resolver_async_fetches_and_verifies():
+    # #108: the default_*_resolver_async factories were 0-covered.
+    import json
+    from openvc.proof.di_jcs import EddsaJcsProofSuite
+    from openvc.resolvers import default_status_list_resolver_async
+    from openvc.status import build_status_list_credential
+    did, vm = "did:example:statusissuer", "did:example:statusissuer#k"
+    key = Ed25519SigningKey.generate(kid=vm)
+    status_vc = build_status_list_credential(
+        id="https://status.example/1", issuer=did, bitstring=bytes(32))
+    signed = EddsaJcsProofSuite().add_proof(status_vc, signing_key=key, verification_method=vm)
+    reg = _sync_registry([(did, vm, key.public_jwk())])
+
+    async def _fetch(url):
+        return json.dumps(signed)
+
+    resolve = default_status_list_resolver_async(resolver=as_async_resolver(reg), fetch=_fetch)
+    out = _run(resolve("https://status.example/1"))
+    assert out["issuer"] == did and out["type"][1] == "BitstringStatusListCredential"
+
+
 # --------------------------------------------------------------------------- #
 # Status (W3C) — async, revoked / ok / fail-closed parity
 # --------------------------------------------------------------------------- #

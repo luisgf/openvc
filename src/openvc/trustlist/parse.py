@@ -33,6 +33,7 @@ ADD = "http://uri.etsi.org/02231/v2/additionaltypes#"
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 
 DEFAULT_MAX_BYTES = 16 * 1024 * 1024        # 16 MiB — generous for a national TL
+DEFAULT_MAX_ELEMENTS = 500_000              # ADR-0003 D4: bound the element count too
 
 _NS_SEP = "\x01"
 
@@ -91,7 +92,8 @@ def parse_trust_list(xml: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Trust
 # Hardened XML parse
 # --------------------------------------------------------------------------- #
 
-def _hardened_parse(xml: bytes, *, max_bytes: int) -> Element:
+def _hardened_parse(xml: bytes, *, max_bytes: int,
+                    max_elements: int = DEFAULT_MAX_ELEMENTS) -> Element:
     if not isinstance(xml, (bytes, bytearray)):
         raise TrustListParseError(
             f"trust list must be bytes, got {type(xml).__name__}")
@@ -106,9 +108,17 @@ def _hardened_parse(xml: bytes, *, max_bytes: int) -> Element:
     def _forbid_dtd(*_a: Any) -> None:
         raise TrustListParseError("DOCTYPE/DTD is not allowed in a trust list")
 
+    count = [0]
+
+    def _start(name: str, attrs: dict) -> None:
+        count[0] += 1
+        if count[0] > max_elements:            # ADR-0003 D4: a max-bytes cap AND an element cap
+            raise TrustListParseError(
+                f"trust list exceeds the {max_elements}-element cap")
+        builder.start(_qname(name), {_qname(k): v for k, v in attrs.items()})
+
     parser.StartDoctypeDeclHandler = _forbid_dtd
-    parser.StartElementHandler = lambda name, attrs: builder.start(
-        _qname(name), {_qname(k): v for k, v in attrs.items()})
+    parser.StartElementHandler = _start
     parser.EndElementHandler = lambda name: builder.end(_qname(name))
     parser.CharacterDataHandler = builder.data
     try:

@@ -112,6 +112,11 @@ class TypeMismatch(VerificationError): ...
 class IssuerBindingError(VerificationError): ...
 
 
+class StatusListIssuerUntrusted(VerificationError):
+    """The resolved status list's issuer is neither the credential's issuer nor an
+    allow-listed delegate, and ``require_status_issuer_binding`` is set (ADR-0006)."""
+
+
 class StatusUnavailable(VerificationError):
     """The credential declares a status but no resolver was given and
     ``require_status`` is set (fail-closed)."""
@@ -142,6 +147,11 @@ class VerificationPolicy:
     require_status: bool = True
     require_schema: bool = False
     now: datetime | None = None
+    # Status-list issuer trust (ADR-0006). Off by default (a status list is authenticated
+    # but its issuer is unconstrained — delegation is spec-legal). Opt in to bind the status
+    # list's issuer to the credential's issuer; the allow-list adds trusted delegates.
+    require_status_issuer_binding: bool = False
+    status_issuer_allowlist: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -475,7 +485,8 @@ def _verify_vc_jwt(token: str, policy: VerificationPolicy, resolver: Any,
     _check_types(verified.credential, policy.expected_types)
     # W3C status is in the vc object; an IETF `status` claim is in the JWT payload
     status = _check_status(verified.credential, verified.claims, policy,
-                           resolve_status_list, resolve_status_list_token)
+                           resolve_status_list, resolve_status_list_token,
+                           credential_issuer=verified.issuer)
     schema = _check_schema(verified.credential, policy, resolve_credential_schema,
                            verify_inner)
     return VerificationResult(
@@ -501,7 +512,8 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct)
     # the disclosed claims may carry either a W3C credentialStatus or an IETF status
     status = _check_status(verified.claims, verified.claims, policy,
-                           resolve_status_list, resolve_status_list_token)
+                           resolve_status_list, resolve_status_list_token,
+                           credential_issuer=verified.issuer)
     # SD-JWT: only disclosed claims are visible; a withheld credentialSchema cannot
     # be validated (same selective-disclosure caveat as status).
     schema = _check_schema(verified.claims, policy, resolve_credential_schema,
@@ -548,7 +560,8 @@ def _verify_data_integrity(
     # DI credentials use W3C credentialStatus, but pass the doc as the IETF source
     # too so a (non-conformant) token `status` on one is not silently skipped
     status = _check_status(verified.credential, verified.credential, policy,
-                           resolve_status_list, resolve_status_list_token)
+                           resolve_status_list, resolve_status_list_token,
+                           credential_issuer=verified.issuer)
     schema = _check_schema(verified.credential, policy, resolve_credential_schema,
                            verify_inner)
     return VerificationResult(
@@ -638,18 +651,60 @@ def _check_types(credential: dict[str, Any], expected: Sequence[str] | None) -> 
         raise TypeMismatch(f"credential is missing required type(s): {missing}")
 
 
+def _enforce_status_issuer(status_obj: Any, field: str,
+                           credential_issuer: str, policy: VerificationPolicy) -> None:
+    """Bind a resolved status list's issuer to the credential's (ADR-0006): it must equal
+    the credential issuer or be an allow-listed delegate, else fail closed."""
+    si = status_obj.get(field) if isinstance(status_obj, dict) else None
+    if isinstance(si, dict):                           # W3C issuer may be {"id": ...}
+        si = si.get("id")
+    if not isinstance(si, str) or not si:
+        raise StatusListIssuerUntrusted("resolved status list has no issuer to bind against")
+    if si == credential_issuer:
+        return
+    if policy.status_issuer_allowlist and si in policy.status_issuer_allowlist:
+        return
+    raise StatusListIssuerUntrusted(
+        f"status list issuer {si!r} is not the credential issuer {credential_issuer!r} "
+        "nor an allow-listed delegate (require_status_issuer_binding)")
+
+
+def _bind_status_issuer(inner: Any, credential_issuer: str,
+                        policy: VerificationPolicy, *, field: str) -> Any:
+    """Wrap a status resolver so the resolved list's issuer is checked (W3C reads
+    ``issuer``, the IETF token claims read ``iss``)."""
+    if inner is None:
+        return None
+
+    def resolve(uri: str) -> Any:
+        obj = inner(uri)
+        _enforce_status_issuer(obj, field, credential_issuer, policy)
+        return obj
+    return resolve
+
+
 def _check_status(
     w3c_source: dict[str, Any],
     ietf_source: dict[str, Any] | None,
     policy: VerificationPolicy,
     resolve_status_list: Any,
     resolve_status_list_token: Any,
+    credential_issuer: str | None = None,
 ) -> Union[StatusResult, TokenStatusResult, None]:
     """Enforce BOTH status conventions the credential might declare — the W3C
     ``credentialStatus`` (on *w3c_source*) and the IETF ``status`` reference (on
     *ietf_source*, if any). Checking both for every format stops a status declared
     in the shape that does not match the proof format from being silently skipped.
     Returns the resolved result (W3C preferred), or None."""
+    if policy.require_status_issuer_binding:
+        if not credential_issuer:
+            raise StatusListIssuerUntrusted(
+                "require_status_issuer_binding is set but the credential has no issuer")
+        resolve_status_list = _bind_status_issuer(
+            resolve_status_list, credential_issuer, policy, field="issuer")
+        resolve_status_list_token = _bind_status_issuer(
+            resolve_status_list_token, credential_issuer, policy, field="iss")
+
     result: Union[StatusResult, TokenStatusResult, None] = None
 
     entries = parse_status_entries(w3c_source)
@@ -745,6 +800,7 @@ __all__ = [
     "BatchResult",
     "IssuerBindingError",
     "KeyResolutionFailed",
+    "StatusListIssuerUntrusted",
     "StatusUnavailable",
     "TypeMismatch",
     "UnknownCredentialFormat",

@@ -4,6 +4,62 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Part of the [Depth — mdoc, status trust & parity](https://github.com/luisgf/openvc/milestone/10)
+milestone — the second wave from the 2026-07-10 internal audit.
+
+### Added
+
+- **Opt-in status-list issuer binding ([ADR-0006](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0006-status-list-issuer-binding.md)).**
+  `VerificationPolicy` gains `require_status_issuer_binding` — bind the resolved status
+  list's issuer to the credential's issuer — and `status_issuer_allowlist` for trusted
+  delegates. A status list is authenticated but its issuer was otherwise unconstrained, so
+  a compromised status host serving a list signed by an attacker key could silently
+  "un-revoke" a credential; enabling the binding closes that. Off by default (delegation is
+  spec-legal — no behaviour change); a mismatch raises the new typed
+  `StatusListIssuerUntrusted`. Enforced in both the sync and async pipelines.
+  ([#106](https://github.com/luisgf/openvc/issues/106))
+
+### Changed
+
+- **Performance: the bundled JSON-LD context is parsed once, not per proof.** RDF Data
+  Integrity canonicalization re-read and re-parsed the bundled `credentials/v2` context from
+  disk on every sign/verify; it is now parsed once and shared read-only (still a fresh
+  top-level dict per call, so an injected `extra_contexts` can't pollute the cache). The
+  three whole-document DI suites (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, JCS) now share one
+  proof-preamble helper (`_verify_common.prepare_di_proof`), so the fail-closed proof
+  validation cannot drift between them — behaviour is byte-for-byte identical (pinned by the
+  golden fixtures). `openvc.resolvers` documents `openvc.cache.cached_resolve` /
+  `CachingDidResolver` for high-volume verifiers (`verify_many` already deduplicates status /
+  DID resolution within a call). ([#110](https://github.com/luisgf/openvc/issues/110))
+
+### Fixed
+
+- **EBSI: the recursive trust-chain walk now accepts a wildcard accreditation, matching the
+  single-level policy.** An accreditation with no `credentialType` restriction (an
+  unrestricted delegation) was accepted by `openvc_ebsi.verify`'s single-level check but
+  rejected at the leaf of the recursive `verify_trust_chain`; the two now agree — a wildcard
+  delegates the credential's types. ([#109](https://github.com/luisgf/openvc/issues/109))
+
+### Security
+
+- **mdoc: the document-signer certificate profile is now enforced.** `resolve_mdoc_signer_key`
+  requires the leaf to carry the ISO 18013-5 Annex B document-signer ExtendedKeyUsage
+  (`1.0.18013.5.1.2`) — previously any certificate that chained to a trusted IACA anchor
+  (a TLS leaf, a DS for another purpose) was accepted as an MSO signer. The MSO `validityInfo`
+  must now carry `signed`, and `signed` must fall within the document-signer certificate's own
+  validity window (ISO 18013-5 §9.3.1). Verified against the real Annex D reference certificate,
+  which carries the EKU. ([#105](https://github.com/luisgf/openvc/issues/105))
+- **XAdES trusted-list verification hardened.** A Trusted List's XAdES / XML-DSig signature
+  is now verified with a pinned algorithm profile (RSA / ECDSA — including RSA-PSS — over
+  SHA-256/384/512; HMAC, DSA, SHA-1 and SHA-224 rejected) and **exactly one Reference**, and
+  the verified subtree must be the **document root** — an XML-Signature-Wrapping guard, so a
+  signature valid over a fragment cannot leave unsigned `TrustServiceProvider` / certificate
+  nodes outside the signed scope for the parser to harvest. The TL parser also enforces a
+  **max element count** (ADR-0003 D4) alongside the existing byte cap.
+  ([#107](https://github.com/luisgf/openvc/issues/107))
+
 ## [1.19.3] — 2026-07-10
 
 Part of the [Correctness & fail-closed hardening](https://github.com/luisgf/openvc/milestone/9)

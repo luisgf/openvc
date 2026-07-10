@@ -64,6 +64,7 @@ from .verify import (
     FORMAT_VC_JWT,
     BatchResult,
     KeyResolutionFailed,
+    StatusListIssuerUntrusted,
     StatusUnavailable,
     UnknownCredentialFormat,
     VerificationPolicy,
@@ -72,6 +73,7 @@ from .verify import (
     _bind_issuer_to_verification_method,
     _bytes_to_credential,
     _check_types,
+    _enforce_status_issuer,
     _fail_closed,
     _unwrap_enveloped,
     detect_format,
@@ -234,7 +236,8 @@ async def _verify_vc_jwt_async(
     verified = suite.verify(token, public_key_jwk=jwk, audience=policy.audience)
     _check_types(verified.credential, policy.expected_types)
     status = await _check_status_async(verified.credential, verified.claims, policy,
-                                       resolve_status_list, resolve_status_list_token)
+                                       resolve_status_list, resolve_status_list_token,
+                                       credential_issuer=verified.issuer)
     schema = await _check_schema_async(verified.credential, policy,
                                        resolve_credential_schema, verify_inner)
     return VerificationResult(
@@ -260,7 +263,8 @@ async def _verify_sd_jwt_async(
         sd_jwt, public_key_jwk=jwk, audience=policy.audience, nonce=policy.nonce,
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct)
     status = await _check_status_async(verified.claims, verified.claims, policy,
-                                       resolve_status_list, resolve_status_list_token)
+                                       resolve_status_list, resolve_status_list_token,
+                                       credential_issuer=verified.issuer)
     schema = await _check_schema_async(verified.claims, policy,
                                        resolve_credential_schema, verify_inner)
     return VerificationResult(
@@ -304,7 +308,8 @@ async def _verify_data_integrity_async(
     _bind_issuer_to_verification_method(verified)
     _check_types(verified.credential, policy.expected_types)
     status = await _check_status_async(verified.credential, verified.credential, policy,
-                                       resolve_status_list, resolve_status_list_token)
+                                       resolve_status_list, resolve_status_list_token,
+                                       credential_issuer=verified.issuer)
     schema = await _check_schema_async(verified.credential, policy,
                                        resolve_credential_schema, verify_inner)
     return VerificationResult(
@@ -411,16 +416,40 @@ async def _preresolved_di_resolver(doc: dict[str, Any], resolver: Any) -> Any:
 
 # -- async status / schema (mirror openvc.verify._check_status/_check_schema) - #
 
+def _bind_status_issuer_async(inner: Any, credential_issuer: str,
+                              policy: VerificationPolicy, *, field: str) -> Any:
+    """Async twin of ``openvc.verify._bind_status_issuer`` — wraps an async status
+    resolver so the resolved list's issuer is bound to the credential's (ADR-0006)."""
+    if inner is None:
+        return None
+
+    async def resolve(uri: str) -> Any:
+        obj = await inner(uri)
+        _enforce_status_issuer(obj, field, credential_issuer, policy)
+        return obj
+    return resolve
+
+
 async def _check_status_async(
     w3c_source: dict[str, Any],
     ietf_source: dict[str, Any] | None,
     policy: VerificationPolicy,
     resolve_status_list: Any,
     resolve_status_list_token: Any,
+    credential_issuer: str | None = None,
 ) -> "Union[StatusResult, TokenStatusResult, None]":
     """Async twin of ``openvc.verify._check_status`` — identical gating (revoked /
     suspended raise; a declared-but-unresolvable status fails closed), awaiting the
     async status checks."""
+    if policy.require_status_issuer_binding:
+        if not credential_issuer:
+            raise StatusListIssuerUntrusted(
+                "require_status_issuer_binding is set but the credential has no issuer")
+        resolve_status_list = _bind_status_issuer_async(
+            resolve_status_list, credential_issuer, policy, field="issuer")
+        resolve_status_list_token = _bind_status_issuer_async(
+            resolve_status_list_token, credential_issuer, policy, field="iss")
+
     result: Union[StatusResult, TokenStatusResult, None] = None
 
     entries = parse_status_entries(w3c_source)

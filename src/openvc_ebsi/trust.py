@@ -76,6 +76,8 @@ def _pick_accreditation(
     for acc in record.accreditations:
         if acc.is_revoked:
             continue
+        if not acc.credential_types:             # unrestricted (wildcard) — accept, matching
+            return acc                           # the single-level policy in openvc_ebsi.verify
         authorised = set(acc.credential_types)
         if leaf:
             if authorised & needed:
@@ -183,7 +185,10 @@ def verify_trust_chain(
                     f"the accreditation for {current!r} is revoked via its status list")
 
         if is_leaf:                                  # fix the delegated scope
-            scope = set(acc.credential_types) & set(credential_types)
+            # a wildcard leaf (no type restriction) delegates the credential's types;
+            # otherwise the scope is what the leaf accreditation and the credential share
+            scope = (set(credential_types) if not acc.credential_types
+                     else set(acc.credential_types) & set(credential_types))
         hops.append(TrustHop(subject=current, accreditor=accreditor, accreditation=acc))
 
         if accreditor in anchors:                    # reached the trust root
