@@ -4,7 +4,10 @@ openvc verifies Verifiable Credentials, handles signing keys, and dereferences
 issuer-named URLs over the network. This page states what it defends, against
 whom, and how — the reference an auditor (or an integrator) starts from. The
 per-control hardening notes are in
-[SECURITY.md](https://github.com/luisgf/openvc/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/luisgf/openvc/blob/main/SECURITY.md); the
+code-cited auditor annex (per-parser tables, the fail-closed invariants catalog,
+the residual-risk register, and the fuzz-coverage / adversarial-review history)
+is the [external-audit pack](https://github.com/luisgf/openvc/tree/main/docs/audit).
 
 ## Assets
 

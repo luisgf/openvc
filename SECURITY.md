@@ -49,7 +49,10 @@ Areas most relevant to security, and how the library is designed to fail closed:
   before trusting it. A custom resolver deliberately opts out of that guard.
 
 For the full assets / trust-boundaries / attacker-capabilities picture, see the
-[threat model](https://github.com/luisgf/openvc/wiki/Security-Model).
+[threat model](https://github.com/luisgf/openvc/wiki/Security-Model). The
+code-cited auditor annex — per-parser attack-surface tables, the fail-closed
+invariants catalog, the residual-risk register, and the fuzz-coverage / review
+history — is the [external-audit pack](https://github.com/luisgf/openvc/tree/main/docs/audit).
 
 If you believe any of these controls can be bypassed, that is exactly the kind of
 report we want.
