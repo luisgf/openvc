@@ -21,7 +21,11 @@ All notable changes to **openvc** are documented here. The format follows
   **Experimental**: no golden-fixture conformance claim (no stable third-party ML-DSA VC vectors
   yet), Data Integrity PQ cryptosuites stay out (W3C FPWD), JOSE-only. Implements
   [ADR-0004](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0004-ml-dsa-design.md).
-  ([#72](https://github.com/luisgf/openvc/issues/72))
+  Hardened by an adversarial review — no forgery, opt-in bypass or downgrade was achievable
+  (the default suites reject `ML-DSA-*` before any crypto) — which also tightened two
+  fail-closed contract gaps it found: a malformed `AKP` JWK now raises a typed `ProofError`
+  (not a bare `InvalidKey`), and non-finite `exp` / `nbf` are rejected on both the ML-DSA and
+  the PyJWT paths. ([#72](https://github.com/luisgf/openvc/issues/72))
 
 ## [1.18.0] — 2026-07-10
 

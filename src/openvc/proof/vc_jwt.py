@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -209,7 +210,7 @@ class VcJwtProofSuite:
                 )
             except pyjwt.InvalidSignatureError as exc:
                 raise SignatureInvalid(str(exc)) from exc
-            except pyjwt.PyJWTError as exc:
+            except (pyjwt.PyJWTError, OverflowError) as exc:  # +Inf exp -> OverflowError in PyJWT
                 raise ClaimsInvalid(str(exc)) from exc
 
         credential = claims.get("vc")
@@ -278,7 +279,7 @@ class VcJwtProofSuite:
     ) -> dict[str, Any]:
         """Verify an ML-DSA VC-JWT: signature via the dependency-light primitive (PyJWT
         has no ML-DSA), then the JWT claims validated here."""
-        from ..keys import verify_signature
+        from ..keys import KeyBackendError, verify_signature
         try:
             header_b64, payload_b64, sig_b64 = token.split(".")
         except ValueError as exc:
@@ -289,8 +290,13 @@ class VcJwtProofSuite:
             payload = _b64url_decode(payload_b64)
         except (ValueError, TypeError) as exc:
             raise MalformedToken("token is not valid base64url") from exc
-        if not verify_signature(alg=alg, public_jwk=public_key_jwk,
-                                signing_input=signing_input, signature=signature):
+        try:
+            ok = verify_signature(alg=alg, public_jwk=public_key_jwk,
+                                  signing_input=signing_input, signature=signature)
+        except KeyBackendError as exc:                 # malformed/mismatched AKP JWK, or
+            raise SignatureInvalid(                    # ML-DSA unavailable -> typed ProofError
+                f"could not verify {alg} signature: {exc}") from exc
+        if not ok:
             raise SignatureInvalid(f"{alg} signature does not verify")
         try:
             claims = json.loads(payload)
@@ -309,13 +315,15 @@ class VcJwtProofSuite:
         now = int(time.time())
         exp, nbf = claims.get("exp"), claims.get("nbf")
         if exp is not None:
-            if isinstance(exp, bool) or not isinstance(exp, (int, float)):
-                raise ClaimsInvalid("'exp' must be a numeric date")
+            # NaN/Inf survive isinstance(float) and make every comparison False (never
+            # expires) — reject non-finite, as the PyJWT path does (RFC 7519 NumericDate).
+            if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
+                raise ClaimsInvalid("'exp' must be a finite numeric date")
             if now > exp + self._leeway:
                 raise ClaimsInvalid("token has expired")
         if nbf is not None:
-            if isinstance(nbf, bool) or not isinstance(nbf, (int, float)):
-                raise ClaimsInvalid("'nbf' must be a numeric date")
+            if isinstance(nbf, bool) or not isinstance(nbf, (int, float)) or not math.isfinite(nbf):
+                raise ClaimsInvalid("'nbf' must be a finite numeric date")
             if now < nbf - self._leeway:
                 raise ClaimsInvalid("token is not yet valid")
         if audience is not None:

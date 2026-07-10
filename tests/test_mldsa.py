@@ -147,6 +147,35 @@ def test_vc_jwt_mldsa_wrong_key_rejected():
         VcJwtProofSuite(allow_pq=True).verify(token, public_key_jwk=other.public_jwk())
 
 
+def test_vc_jwt_mldsa_malformed_jwk_is_typed_proof_error():
+    # a malformed AKP JWK must fail as a typed ProofError (SignatureInvalid), not leak a
+    # bare InvalidKey past `except ProofError` (adversarial-review finding #1).
+    from openvc.proof.errors import ProofError
+    key = MLDSASigningKey.generate(kid="k", alg="ML-DSA-65")
+    token = VcJwtProofSuite(allow_pq=True).sign(_CRED, signing_key=key)
+    for bad in ({"kty": "AKP", "alg": "ML-DSA-65"},               # no 'pub'
+                {"kty": "AKP", "alg": "ML-DSA-65", "pub": "AAAA"}):   # wrong-length pub
+        with pytest.raises(ProofError):
+            VcJwtProofSuite(allow_pq=True).verify(token, public_key_jwk=bad)
+
+
+@pytest.mark.parametrize("exp", [float("nan"), float("inf")], ids=["nan", "inf"])
+def test_vc_jwt_mldsa_non_finite_exp_rejected(exp):
+    # NaN/Inf exp would make every expiry comparison False (never expires) — reject it
+    # (adversarial-review finding #2); the PyJWT path rejects the same.
+    key = MLDSASigningKey.generate(kid="k", alg="ML-DSA-65")
+
+    def _b(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    header = _b({"alg": "ML-DSA-65", "typ": "JWT", "kid": key.kid})
+    payload = _b({"iss": "did:example:iss", "exp": exp, "vc": _CRED})
+    sig = base64.urlsafe_b64encode(key.sign(f"{header}.{payload}".encode())).rstrip(b"=").decode()
+    with pytest.raises(ClaimsInvalid):
+        VcJwtProofSuite(allow_pq=True, leeway_s=0).verify(
+            f"{header}.{payload}.{sig}", public_key_jwk=key.public_jwk())
+
+
 # --------------------------------------------------------------------------- #
 # SD-JWT VC — opt-in only
 # --------------------------------------------------------------------------- #
