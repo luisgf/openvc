@@ -9,6 +9,18 @@ All notable changes to **openvc** are documented here. The format follows
 Part of the [Depth — mdoc, status trust & parity](https://github.com/luisgf/openvc/milestone/10)
 milestone — the second wave from the 2026-07-10 internal audit.
 
+### Added
+
+- **Opt-in status-list issuer binding ([ADR-0006](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0006-status-list-issuer-binding.md)).**
+  `VerificationPolicy` gains `require_status_issuer_binding` — bind the resolved status
+  list's issuer to the credential's issuer — and `status_issuer_allowlist` for trusted
+  delegates. A status list is authenticated but its issuer was otherwise unconstrained, so
+  a compromised status host serving a list signed by an attacker key could silently
+  "un-revoke" a credential; enabling the binding closes that. Off by default (delegation is
+  spec-legal — no behaviour change); a mismatch raises the new typed
+  `StatusListIssuerUntrusted`. Enforced in both the sync and async pipelines.
+  ([#106](https://github.com/luisgf/openvc/issues/106))
+
 ### Security
 
 - **mdoc: the document-signer certificate profile is now enforced.** `resolve_mdoc_signer_key`
