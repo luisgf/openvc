@@ -350,6 +350,26 @@ def test_verify_vp_token_mso_mdoc_dc_api():
     assert pres.credentials[0].elements(NS)["family_name"] == "Doe"
 
 
+def test_verify_vp_token_enforces_dcql_doctype_value():
+    from openvc.openid4vp import verify_vp_token
+
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st)          # docType == DOCTYPE (mDL)
+    match = {"credentials": [{"id": "mdl", "format": "mso_mdoc",
+                              "meta": {"doctype_value": DOCTYPE}}]}
+    ok = verify_vp_token({"mdl": [_b64url(dr)]}, dcql_query=match, nonce=NONCE,
+                         expected_origins=[ORIGIN], trust_anchors=[iaca], now=NOW)
+    assert ok.for_query("mdl")[0].credentials[0].doc_type == DOCTYPE
+
+    # a genuine, IACA-sealed, device-bound mdoc of a DIFFERENT docType than the query asked
+    # for must be rejected (the mdoc analogue of SD-JWT vct_values enforcement)
+    other = {"credentials": [{"id": "mdl", "format": "mso_mdoc",
+                              "meta": {"doctype_value": "org.iso.18013.5.1.PhotoID"}}]}
+    with pytest.raises(mdoc.MdocDocTypeMismatch):
+        verify_vp_token({"mdl": [_b64url(dr)]}, dcql_query=other, nonce=NONCE,
+                        expected_origins=[ORIGIN], trust_anchors=[iaca], now=NOW)
+
+
 def test_verify_vp_token_tries_each_expected_origin():
     from openvc.openid4vp import verify_vp_token
 

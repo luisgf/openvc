@@ -89,6 +89,10 @@ def test_decode_from_walks_concatenated_items():
     (b"\x63\xff\xff\xff", "invalid utf-8 text"),
     (b"\xa1\xa0\x00", "map key is a map (out of profile / unhashable)"),
     (b"\xfa\x47\xc3\x50\x00", "float (single-precision) rejected"),
+    (b"\xf9\x00\x14", "float16 whose bits == 20 must NOT decode as False"),
+    (b"\xf9\x00\x16", "float16 whose bits == 22 must NOT decode as None"),
+    (b"\xfa\x00\x00\x00\x14", "float32 whose bits == 20 must NOT decode as False"),
+    (b"\xf8\x14", "non-preferred 1-byte simple value form rejected"),
     (b"\xf7", "the 'undefined' simple value rejected"),
     (b"", "empty input"),
 ])

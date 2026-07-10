@@ -231,14 +231,18 @@ def _decode_at(data: bytes, i: int, depth: int) -> tuple[Any, int]:
     if major == 6:
         value, i = _decode_at(data, i, depth + 1)
         return CborTag(n, value, raw=data[start:i]), i
-    # major == 7: simple values (20 false, 21 true, 22 null); floats/undefined rejected.
-    if n == 20:
+    # major == 7: accept ONLY the canonical single-byte simple values false / true / null
+    # (additional-info 20 / 21 / 22). Floats (25/26/27), the 1-byte simple form (24), and
+    # 'undefined' (23) are rejected — gate on the info byte, NOT the decoded argument, so a
+    # float whose argument bytes happen to equal 20/21/22 cannot masquerade as a simple value.
+    info = data[start] & 0x1F
+    if info == 20:
         return False, i
-    if n == 21:
+    if info == 21:
         return True, i
-    if n == 22:
+    if info == 22:
         return None, i
-    raise CborError(f"CBOR: unsupported simple/float value ({n})")
+    raise CborError(f"CBOR: unsupported simple/float value (additional-info {info})")
 
 
 def decode(data: bytes) -> Any:

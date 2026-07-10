@@ -28,9 +28,11 @@ Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc
   fixture for device authentication and the negative paths. **No new runtime dependency** — COSE and
   the extended CBOR are hand-rolled. The redirect / `direct_post` mdoc handover is not yet wired; the
   surface ships experimental until interop-tested against the EUDI reference wallet. Hardened by an
-  adversarial review (COSE alg allow-list before any crypto; digests over bytes-as-received; no
-  binding/replay/downgrade bypass; fail-closed parsing of attacker-controlled CBOR).
-  ([#86](https://github.com/luisgf/openvc/issues/86))
+  adversarial review — no forgery or replay was achievable (COSE alg allow-list before any crypto,
+  digests over bytes-as-received, origin-bound `SessionTranscript`, fail-closed CBOR parsing) — which
+  also tightened two contract gaps it found: DCQL `meta.doctype_value` is now enforced for `mso_mdoc`
+  (the mdoc analogue of `vct_values`), and the CBOR codec rejects float / non-canonical simple values
+  outright rather than aliasing them to `false`/`true`/`null`. ([#86](https://github.com/luisgf/openvc/issues/86))
 
 ### Changed
 

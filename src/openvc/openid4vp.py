@@ -435,7 +435,7 @@ def _verify_one(
     # peekable `aud`, so it is handled before the JOSE / LDP audience is computed.
     if fmt == FORMAT_MSO_MDOC:
         return _verify_mso_mdoc(
-            query_id, presentation, nonce=nonce, expected_origins=expected_origins,
+            query_id, query, presentation, nonce=nonce, expected_origins=expected_origins,
             trust_anchors=trust_anchors, now=now, leeway_s=leeway_s,
             jwk_thumbprint=mdoc_jwk_thumbprint)
     # The audience is the client_id (redirect flow) or the DC-API calling origin.
@@ -485,8 +485,23 @@ def _b64url_to_bytes(query_id: str, value: str) -> bytes:
             f"base64url: {exc}") from exc
 
 
+def _mdoc_doctype_value(query_id: str, query: Mapping[str, Any]) -> str | None:
+    # DCQL meta.doctype_value constrains the acceptable mdoc docType for an mso_mdoc query
+    # (OpenID4VP DCQL §6.3.2) — the mdoc analogue of SD-JWT's meta.vct_values. If the query
+    # named it, the presented docType MUST equal it (the "right credential"). A malformed
+    # constraint fails safe rather than silently widening.
+    meta = query.get("meta")
+    doctype = meta.get("doctype_value") if isinstance(meta, Mapping) else None
+    if doctype is None:
+        return None
+    if not isinstance(doctype, str) or not doctype:
+        raise VpTokenMalformed(
+            f"Credential Query {query_id!r}: meta.doctype_value must be a non-empty string")
+    return doctype
+
+
 def _verify_mso_mdoc(
-    query_id: str, presentation: Any, *,
+    query_id: str, query: Mapping[str, Any], presentation: Any, *,
     nonce: str, expected_origins: Sequence[str] | None,
     trust_anchors: Sequence[Any] | None, now: datetime | None, leeway_s: int,
     jwk_thumbprint: bytes | None,
@@ -504,6 +519,7 @@ def _verify_mso_mdoc(
         raise VpTokenMalformed(
             f"an {FORMAT_MSO_MDOC} Presentation for {query_id!r} must be a base64url "
             f"string (the DeviceResponse)")
+    expected_doc_type = _mdoc_doctype_value(query_id, query)
     device_response = _b64url_to_bytes(query_id, presentation)
 
     # The DeviceAuth binds to exactly one origin's SessionTranscript; statelessly we do
@@ -516,7 +532,8 @@ def _verify_mso_mdoc(
         try:
             documents = mdoc.verify_device_response(
                 device_response, trust_anchors=trust_anchors,
-                session_transcript=transcript, now=now, leeway_s=leeway_s)
+                session_transcript=transcript, now=now, leeway_s=leeway_s,
+                expected_doc_type=expected_doc_type)
         except mdoc.MdocDeviceAuthError as exc:
             last_error = exc
             continue
