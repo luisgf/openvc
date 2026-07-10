@@ -176,7 +176,12 @@ def parse_did_document(raw: dict[str, Any]) -> DidDocument:
     """Parse a W3C DID document. Tolerates a `didDocument` wrapper or a bare doc
     (the EBSI DID Registry returns it bare, as application/did+ld+json). Verification
     methods may carry ``publicKeyJwk`` or a ``publicKeyMultibase`` Multikey (did:webvh and
-    modern did:web documents use the latter)."""
+    modern did:web documents use the latter).
+
+    The parser is **context-agnostic** — it reads the document *shape*
+    (``verificationMethod`` / relationships), never ``@context`` — so **DID 1.1 / CID 1.0**
+    documents (the ``https://www.w3.org/ns/did/v1.1`` context) resolve unchanged. The DID 1.1
+    relationship-semantics diff is revisited when it reaches Proposed Recommendation."""
     doc = raw.get("didDocument", raw)
     vms = [
         VerificationMethod(

@@ -68,6 +68,15 @@ doc = resolver.resolve("did:webvh:QmSCID…:issuer.example")
 Verify-side only: openvc resolves and validates a log; creating, rotating or witnessing
 one (issuer-side tooling) is out of scope.
 
+### DID 1.1 / CID 1.0 documents
+
+`parse_did_document` is **context-agnostic** — it reads the document *shape*
+(`verificationMethod` / relationships), never `@context`. So **DID 1.1** (Candidate
+Recommendation, rebased on **CID 1.0**, `https://www.w3.org/ns/did/v1.1`) documents resolve
+unchanged the day issuers emit them — the `Multikey` verification method and the standard
+relationships are already handled. The DID 1.1 relationship-semantics diff is revisited
+when it reaches Proposed Recommendation (nothing speculative before then).
+
 ## What the SSRF guard guarantees
 
 Every issuer-named URL (`did:web` documents, well-known metadata, status

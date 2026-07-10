@@ -4,6 +4,18 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.1] — unreleased
+
+### Added
+
+- **DID 1.1 / CID 1.0 document tolerance, pinned.** `parse_did_document` is context-agnostic
+  (it reads the document *shape*, not `@context`), so DID 1.1 documents — rebased on CID 1.0,
+  using the `https://www.w3.org/ns/did/v1.1` context, with `Multikey` verification methods —
+  already resolve unchanged. Conformance tests now **pin** that tolerance (parse + end-to-end
+  verification through the pipeline) so a future change cannot silently start rejecting DID 1.1
+  the day issuers emit it. No behaviour change; the relationship-semantics diff is revisited when
+  DID 1.1 reaches Proposed Recommendation. ([#76](https://github.com/luisgf/openvc/issues/76))
+
 ## [1.19.0] — 2026-07-10
 
 ### Added
@@ -1019,6 +1031,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.19.1]: https://github.com/luisgf/openvc/releases/tag/v1.19.1
 [1.19.0]: https://github.com/luisgf/openvc/releases/tag/v1.19.0
 [1.18.0]: https://github.com/luisgf/openvc/releases/tag/v1.18.0
 [1.17.0]: https://github.com/luisgf/openvc/releases/tag/v1.17.0
