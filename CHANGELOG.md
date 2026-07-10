@@ -43,6 +43,16 @@ Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc
   surface and **no runtime dependency** (stdlib `http.server`); see `tests/tools/README.md`.
   ([#69](https://github.com/luisgf/openvc/issues/69))
 
+- **Walkthrough: a Spanish university credential end to end.** A runnable
+  `examples/11_spanish_university_credential.py` and a wiki walkthrough verify a
+  higher-education diploma with openvc alone — the issuer's document-signer chains to an
+  **FNMT-RCM** anchor (the EU LOTL → Spanish TLv6 trusted list → `x5c`) and the diploma is an
+  **SD-JWT VC** (DC4EU EUHED shape) verified with that FNMT-anchored key and the holder's key
+  binding, offline. The walkthrough also maps the complementary EBSI TIR accreditation path
+  (`verify_ebsi_badge`). Docs only. (Filed [#94](https://github.com/luisgf/openvc/issues/94) —
+  emit an `x5c` header on SD-JWT VC issuance so `verify_credential` anchors it in one call.)
+  ([#70](https://github.com/luisgf/openvc/issues/70))
+
 ### Changed
 
 - **CBOR codec factored into a dependency-free `openvc.cbor` module** (ADR-0005 D4), extended to the

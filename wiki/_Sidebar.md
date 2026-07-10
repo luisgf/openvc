@@ -20,6 +20,10 @@
 - [Trust anchors: EU TL & EBSI](Trust)
 - [Async verification](Async-Verification)
 
+**Walkthroughs**
+
+- [Spanish university credential](Spanish-University-Credential)
+
 **Operating**
 
 - [Keys & HSM backends](Keys-and-HSM)

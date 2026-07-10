@@ -21,6 +21,7 @@ python examples/01_verify_pipeline.py
 | `08_openid4vp_verify.py` | verify a stateless OpenID4VP 1.0 `vp_token`: a holder presents an SD-JWT VC + KB-JWT bound to the verifier's `nonce`/`client_id`; the verifier checks the DCQL-keyed shape and the binding |
 | `09_haip_encrypted_response.py` | HAIP `direct_post.jwt`: the wallet returns the `vp_token` inside a JWE (`ECDH-ES`/AES-GCM); the verifier decrypts with its `KeyAgreementKey` and verifies in one call (`verify_encrypted_vp_response`) |
 | `10_sd_jwt_type_metadata.py` | SD-JWT VC Type Metadata: an issuer pins the type with `vct#integrity`; the verifier resolves the metadata, checks integrity + `vct`, and validates the claims against the type's `claims` metadata |
+| `11_spanish_university_credential.py` | a Spanish university diploma end to end: the issuer's document-signer chains to an **FNMT** anchor (the Spanish trusted list / `x5c`), and the diploma is an **SD-JWT VC** verified with that FNMT-anchored key + holder binding — trust + credential, offline ([walkthrough](https://github.com/luisgf/openvc/wiki/Spanish-University-Credential)) |
 
 `_common.py` holds the shared `did_key_ed25519()` / `did_key_p256()` helpers that
 mint a signing key already keyed to its `did:key` verification method.
