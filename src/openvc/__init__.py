@@ -2,7 +2,7 @@
 
 # Single source of truth for the version (pyproject reads it by AST — keep it a
 # plain string literal). The /release skill bumps this line.
-__version__ = "1.19.3"
+__version__ = "1.20.0"
 
 # The one-call verification pipeline is the headline API (see openvc.verify); the
 # signing backends (Ed25519 / P256 / P384), the SigningKey protocol and the
