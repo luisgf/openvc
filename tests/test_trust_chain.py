@@ -286,3 +286,22 @@ def test_verify_badge_recursive_checks_accreditation_status():
     with pytest.raises(AccreditationRevoked):
         verify_ebsi_badge(c.token, resolver=c.resolver, proof_suite=c.suite,
                           trust_anchors={ROOT}, resolve_status_list=resolve)
+
+
+def test_pick_accreditation_accepts_wildcard_consistent_with_single_level():
+    # #109: a wildcard (no type restriction) accreditation is accepted by the single-level
+    # policy (openvc_ebsi.verify) but was rejected at the leaf by the recursive walk; the
+    # two now agree — an unrestricted accreditation is accepted in both, at the leaf and above.
+    from openvc_ebsi.models import Accreditation, IssuerRecord
+    from openvc_ebsi.trust import _pick_accreditation
+
+    wildcard = Accreditation(attribute_id="a", issuer_type="TI", tao="did:ebsi:tao",
+                             root_tao=None, credential_types=())
+    record = IssuerRecord(did="did:ebsi:leaf", has_attributes=True, accreditations=(wildcard,))
+    assert _pick_accreditation(record, {"SomeType"}, leaf=True) is wildcard
+    assert _pick_accreditation(record, {"SomeType"}, leaf=False) is wildcard
+
+    restricted = Accreditation(attribute_id="b", issuer_type="TI", tao="did:ebsi:tao",
+                               root_tao=None, credential_types=("OtherType",))
+    rec2 = IssuerRecord(did="did:ebsi:leaf", has_attributes=True, accreditations=(restricted,))
+    assert _pick_accreditation(rec2, {"SomeType"}, leaf=True) is None

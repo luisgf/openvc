@@ -21,6 +21,14 @@ milestone — the second wave from the 2026-07-10 internal audit.
   `StatusListIssuerUntrusted`. Enforced in both the sync and async pipelines.
   ([#106](https://github.com/luisgf/openvc/issues/106))
 
+### Fixed
+
+- **EBSI: the recursive trust-chain walk now accepts a wildcard accreditation, matching the
+  single-level policy.** An accreditation with no `credentialType` restriction (an
+  unrestricted delegation) was accepted by `openvc_ebsi.verify`'s single-level check but
+  rejected at the leaf of the recursive `verify_trust_chain`; the two now agree — a wildcard
+  delegates the credential's types. ([#109](https://github.com/luisgf/openvc/issues/109))
+
 ### Security
 
 - **mdoc: the document-signer certificate profile is now enforced.** `resolve_mdoc_signer_key`
