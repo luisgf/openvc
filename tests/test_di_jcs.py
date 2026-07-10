@@ -523,3 +523,17 @@ def test_no_pyld_dependency():
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("value,expected", [
+    (2**53 - 1, b"9007199254740991"),      # within the safe range: exact
+    (2**53,     b"9007199254740992"),      # boundary: exact as a double
+    (2**53 + 1, b"9007199254740992"),      # beyond: rounds to the nearest double
+    (10**21,    b"1e+21"),                  # large integer -> ECMAScript exponent form
+    (-(10**21), b"-1e+21"),
+])
+def test_large_integers_serialize_as_doubles_rfc8785(value, expected):
+    # RFC 8785 §3.2.2.3: JSON numbers are IEEE-754 doubles; an integer beyond ±2^53 is not
+    # exact and must serialise through the double path, matching every conformant impl
+    # (#102/M7). str(value) would diverge and silently break cross-implementation interop.
+    assert canonicalize(value) == expected

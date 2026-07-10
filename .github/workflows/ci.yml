@@ -7,10 +7,21 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege by default; the publish job widens this for OIDC.
+permissions:
+  contents: read
+
+# Supersede in-progress runs for the same PR ref, but never cancel a main/tag build
+# (a cancelled tag build would skip the publish).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -41,7 +52,7 @@ jobs:
       - name: Test (pytest + coverage)
         run: >-
           pytest -q --cov=openvc --cov=openvc_ebsi
-          --cov-report=term-missing --cov-fail-under=80
+          --cov-report=term-missing --cov-fail-under=85
 
   publish:
     name: Publish to PyPI
@@ -52,9 +63,11 @@ jobs:
     needs: test
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: pypi
     permissions:
-      id-token: write        # OIDC token for Trusted Publishing
+      contents: read         # checkout (a job-level permissions block replaces the
+      id-token: write        # workflow default, so re-grant read) + OIDC for publishing
     steps:
       - uses: actions/checkout@v7
 

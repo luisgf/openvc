@@ -26,6 +26,7 @@ import ipaddress
 import json
 import socket
 import ssl
+import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -93,7 +94,23 @@ def _https_get(
         conn.request("GET", target, headers={
             "Accept": "application/did+ld+json, application/json"})
         resp = conn.getresponse()
-        return resp.status, resp.read(max_bytes + 1)
+        # Read against a total wall-clock deadline, not only the per-socket timeout: a hostile
+        # server dripping one byte before each recv could otherwise hold the connection (and,
+        # on the async path, a to_thread worker) for timeout × number-of-recv. read1 does at
+        # most one recv per call, so the deadline is actually enforced between reads.
+        deadline = time.monotonic() + timeout
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            if time.monotonic() > deadline:
+                raise DidResolutionError(
+                    f"read exceeded {timeout:g}s deadline for https://{hostname}{target}")
+            chunk = resp.read1(min(remaining, 65536))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return resp.status, b"".join(chunks)
     except (OSError, http.client.HTTPException) as exc:
         raise DidResolutionError(f"fetch failed for https://{hostname}{target}: {exc}") from exc
     finally:

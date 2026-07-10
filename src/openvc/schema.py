@@ -199,9 +199,11 @@ def parse_credential_schemas(credential: dict[str, Any]) -> list[CredentialSchem
         if not chosen:
             raise SchemaResolutionError("credentialSchema entry needs a type")
         sri = raw.get("digestSRI")
-        refs.append(CredentialSchemaRef(
-            id=sid, type=chosen,
-            digest_sri=sri if isinstance(sri, str) else None))
+        if sri is not None and not isinstance(sri, str):
+            # A present-but-malformed integrity pin must fail closed, not silently degrade
+            # to "no pin" — otherwise a compromised schema host would go unnoticed.
+            raise SchemaResolutionError("credentialSchema digestSRI must be a string")
+        refs.append(CredentialSchemaRef(id=sid, type=chosen, digest_sri=sri))
     return refs
 
 

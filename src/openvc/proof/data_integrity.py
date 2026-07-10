@@ -254,12 +254,16 @@ def _verify_ed25519(jwk: dict[str, Any], data: bytes, signature: bytes) -> bool:
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-    if jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519" or "x" not in jwk:
+    if jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519" or not isinstance(jwk.get("x"), str):
         raise ProofMalformed("public key is not an Ed25519 (OKP) JWK")
     import base64
-    raw = base64.urlsafe_b64decode(jwk["x"] + "=" * (-len(jwk["x"]) % 4))
     try:
-        Ed25519PublicKey.from_public_bytes(raw).verify(signature, data)
+        raw = base64.urlsafe_b64decode(jwk["x"] + "=" * (-len(jwk["x"]) % 4))
+        public_key = Ed25519PublicKey.from_public_bytes(raw)
+    except (ValueError, TypeError) as exc:                # bad base64 / wrong key length
+        raise ProofMalformed(f"malformed Ed25519 public key: {exc}") from exc
+    try:
+        public_key.verify(signature, data)
         return True
     except InvalidSignature:
         return False

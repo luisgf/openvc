@@ -184,6 +184,31 @@ def test_witness_policy_fails_closed():
         _resolver(_log("witness-threshold")).resolve(_did("witness-threshold"))
 
 
+@pytest.mark.parametrize("witness", [
+    {"threshold": 1},                          # the plain integer case
+    {"threshold": 1.5},                        # float — used to bypass the int-only gate
+    {"threshold": "1"},                        # string — likewise
+    {"threshold": True},                       # bool truthy
+    {"witnesses": [{"id": "did:key:zW"}]},     # a witnesses list with no threshold at all
+    {"threshold": 2, "witnesses": [{"id": "did:key:zW"}]},
+], ids=["int", "float", "string", "bool", "witnesses-no-threshold", "both"])
+def test_witness_policy_active_closes_every_shape(witness):
+    """#100: an active witness policy must be recognised regardless of the threshold's
+    type — a float/string threshold or a bare witnesses list used to slip past the
+    integer-only gate and silently downgrade trust."""
+    from openvc.did.did_webvh import _witness_policy_active
+    assert _witness_policy_active(witness) is True
+
+
+@pytest.mark.parametrize("witness", [
+    {}, None, "nonsense", {"threshold": 0}, {"threshold": False}, {"witnesses": []},
+], ids=["empty", "none", "not-a-dict", "threshold-0", "threshold-false", "empty-witnesses"])
+def test_witness_policy_inactive_still_resolves(witness):
+    """No policy (absent, empty, or explicitly disabled) must NOT trigger the refusal."""
+    from openvc.did.did_webvh import _witness_policy_active
+    assert _witness_policy_active(witness) is False
+
+
 def test_non_string_updatekey_fails_closed():
     # A non-string updateKeys element must fail closed, not crash _prerotation_hash with a
     # bare AttributeError before the entryHash/proof checks (adversarial-review LOW-1).

@@ -225,13 +225,17 @@ def verify_vp_token(
     contexts beyond the bundled ones (RDF cryptosuites only).
 
     Every Presentation is cryptographically holder-bound (the KB-JWT for
-    ``dc+sd-jwt``, the holder signature for ``jwt_vc_json`` and ``ldp_vc``), and the
-    reported ``holder`` is the **authenticated** identity — the KB/holder signer, not
-    a self-asserted field. *require_holder_binding* additionally requires, for the W3C
-    VP formats (``ldp_vc``, ``jwt_vc_json``), that every embedded credential was issued
-    to that holder (``credentialSubject.id == holder``) — so a presenter cannot pass
-    off a third party's credential as their own; off by default (a holder may
-    legitimately present another party's credential).
+    ``dc+sd-jwt``, the holder signature for ``jwt_vc_json`` and ``ldp_vc``). For the W3C
+    VP formats (``jwt_vc_json`` / ``ldp_vc``) the reported ``holder`` is the
+    **authenticated signer** — the controller of the verificationMethod whose key signed,
+    never a self-asserted field. For ``dc+sd-jwt`` it is the issuer-signed ``sub``: the
+    KB-JWT proves the presenter holds the ``cnf`` key the issuer bound to ``sub``, so
+    ``sub`` is trustworthy, though it is the issuer's identifier for the holder rather
+    than the KB signer's own key thumbprint. *require_holder_binding* additionally
+    requires, for the W3C VP formats (``ldp_vc``, ``jwt_vc_json``), that every embedded
+    credential was issued to that holder (``credentialSubject.id == holder``) — so a
+    presenter cannot pass off a third party's credential as their own; off by default
+    (a holder may legitimately present another party's credential).
 
     With no ``credential_sets``, every Credential Query is required and its absence is
     rejected. When the query *does* carry ``credential_sets``, per-query completeness
@@ -447,7 +451,7 @@ def _verify_one(
     if fmt == FORMAT_JWT_VC:
         return _verify_jwt_vp(
             query_id, presentation,
-            nonce=nonce, client_id=aud, resolver=resolver, leeway_s=leeway_s,
+            nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
             require_holder_binding=require_holder_binding)
     if fmt == FORMAT_LDP_VC:
         return _verify_ldp_vp(
@@ -584,19 +588,26 @@ def _verify_sd_jwt_vc(
 
 def _verify_jwt_vp(
     query_id: str, presentation: Any, *,
-    nonce: str, client_id: str, resolver: Any, leeway_s: int,
+    nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
     require_holder_binding: bool = False,
 ) -> VerifiedPresentation:
     from .proof.vp_jwt import VpJwtProofSuite
+    from .verify import VerificationPolicy
 
     if not isinstance(presentation, str):
         raise VpTokenMalformed(
             f"a {FORMAT_JWT_VC} Presentation for {query_id!r} must be a compact JWT string")
+    # Credential-level status is out of scope for this layer (see the module docstring), and
+    # verify_vp_token exposes no status resolver — so the embedded VCs must NOT inherit the
+    # pipeline's require_status=True default (which would reject any VC carrying a
+    # credentialStatus). Forward the same status-off policy the sd-jwt and ldp paths use,
+    # with the pinned now/leeway so the embedded temporal check matches the presentation's.
+    policy = VerificationPolicy(require_status=False, now=now, leeway_s=leeway_s)
     # resolver mode authenticates the holder from `iss`, so require_holder_binding binds
     # subject==holder without needing expected_holder (VP-JWT enforces that invariant).
     verified = VpJwtProofSuite(leeway_s=leeway_s).verify(
         presentation, audience=client_id, nonce=nonce, resolver=resolver,
-        require_holder_binding=require_holder_binding)
+        require_holder_binding=require_holder_binding, policy=policy)
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_JWT_VC, holder=verified.holder,
         credentials=tuple(verified.credentials), raw=verified)

@@ -57,6 +57,29 @@ Untrusted input crosses into openvc at:
   SSRF-guarded by default; nothing is fetched from an allow-list openvc did not vet.
 - **HSM-friendly.** Key material need never enter the process.
 
+## Observability
+
+openvc is silent and dependency-free by default: it attaches a `NullHandler` to the
+`openvc` logger and uses a no-op span hook. Two opt-ins let an operator see *why* a
+verification accepted or rejected a credential, without pulling in a tracing dependency.
+
+<!-- docs: no-run -->
+```python
+import logging
+from openvc.observability import set_span_hook
+
+# 1. Structured logs: the "openvc" logger is silent until you attach a handler.
+logging.getLogger("openvc").setLevel(logging.DEBUG)
+logging.basicConfig()
+
+# 2. Spans: bridge to your tracer (OpenTelemetry, ...); a no-op until set.
+set_span_hook(lambda name, attrs: tracer.start_as_current_span(name, attributes=attrs))
+```
+
+Neither logs nor spans carry credential contents or private key material — only format,
+DIDs and outcomes — so enabling them does not widen the attack surface. See the
+[Observability API](https://luisgf.github.io/openvc/api/observability/).
+
 ## Out of scope
 
 - Compromise of a trusted anchor, of the host, or of the `SigningKey` backend.

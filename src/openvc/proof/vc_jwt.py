@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import base64
 import json
-import math
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -47,7 +46,7 @@ from .errors import (  # noqa: F401
     SignatureInvalid,
     UnsupportedAlgorithm,
 )
-from ._verify_common import check_validity_window
+from ._verify_common import check_jwt_temporal, check_validity_window
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -149,11 +148,18 @@ class VcJwtProofSuite:
             payload = json.loads(_b64url_decode(payload_b64))
         except (ValueError, json.JSONDecodeError) as exc:
             raise MalformedToken("header/payload is not valid base64url JSON") from exc
+        if not isinstance(header, dict) or not isinstance(payload, dict):
+            # Valid JSON but not an object (e.g. `[0]`) must fail closed as a typed
+            # MalformedToken, not a bare AttributeError that escapes OpenvcError.
+            raise MalformedToken("JWS header and payload must be JSON objects")
 
-        iss = payload.get("iss") or (payload.get("vc", {}) or {}).get("issuer")
+        iss = payload.get("iss")
+        if not iss:
+            vc = payload.get("vc")
+            iss = vc.get("issuer") if isinstance(vc, dict) else None
         if isinstance(iss, dict):          # issuer can be an object {"id": ...}
             iss = iss.get("id")
-        if not iss:
+        if not iss or not isinstance(iss, str):
             raise MalformedToken("no issuer (iss / vc.issuer) present")
         return iss, header.get("kid")
 
@@ -162,9 +168,12 @@ class VcJwtProofSuite:
         Used to read TIR accreditation bodies before the trust-chain walk."""
         _, payload_b64, _ = _split(token)
         try:
-            return json.loads(_b64url_decode(payload_b64))
+            payload = json.loads(_b64url_decode(payload_b64))
         except (ValueError, json.JSONDecodeError) as exc:
             raise MalformedToken("payload is not valid base64url JSON") from exc
+        if not isinstance(payload, dict):
+            raise MalformedToken("JWS payload must be a JSON object")
+        return payload
 
     # -- verification ------------------------------------------------------ #
 
@@ -182,6 +191,8 @@ class VcJwtProofSuite:
             header = json.loads(_b64url_decode(header_b64))
         except (ValueError, json.JSONDecodeError) as exc:
             raise MalformedToken("invalid JWS header") from exc
+        if not isinstance(header, dict):
+            raise MalformedToken("JWS header must be a JSON object")
 
         alg = header.get("alg")
         if alg not in self._algs:                          # allow-list BEFORE crypto
@@ -309,23 +320,10 @@ class VcJwtProofSuite:
 
     def _check_jwt_claims(self, claims: dict[str, Any], audience: str | None) -> None:
         # Mirror the PyJWT gate for the ML-DSA path: require iss, enforce exp/nbf with the
-        # suite leeway, check aud when expected. Fail closed and typed.
+        # suite leeway (shared non-finite-safe helper), check aud when expected.
         if not isinstance(claims.get("iss"), str):
             raise ClaimsInvalid("the 'iss' claim is required")
-        now = int(time.time())
-        exp, nbf = claims.get("exp"), claims.get("nbf")
-        if exp is not None:
-            # NaN/Inf survive isinstance(float) and make every comparison False (never
-            # expires) — reject non-finite, as the PyJWT path does (RFC 7519 NumericDate).
-            if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
-                raise ClaimsInvalid("'exp' must be a finite numeric date")
-            if now > exp + self._leeway:
-                raise ClaimsInvalid("token has expired")
-        if nbf is not None:
-            if isinstance(nbf, bool) or not isinstance(nbf, (int, float)) or not math.isfinite(nbf):
-                raise ClaimsInvalid("'nbf' must be a finite numeric date")
-            if now < nbf - self._leeway:
-                raise ClaimsInvalid("token is not yet valid")
+        check_jwt_temporal(claims, leeway_s=self._leeway, subject="token")
         if audience is not None:
             aud = claims.get("aud")
             auds = aud if isinstance(aud, list) else [aud]
@@ -343,6 +341,13 @@ class VcJwtProofSuite:
         if alg in ("EdDSA", "Ed25519") and (
                 jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519"):
             raise ProofError(f"{alg} requires an OKP Ed25519 key, got "
+                             f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
+        # Pin the EC curve to the alg too, so ES256 cannot verify against a P-384 key (PyJWT's
+        # ECAlgorithm would load whatever curve the JWK declares and hash by the alg) — matching
+        # the curve-pinned openvc.keys.verify_signature used on the SD-JWT / VP / status paths.
+        _EC_CRV = {"ES256": "P-256", "ES384": "P-384"}
+        if alg in _EC_CRV and (jwk.get("kty") != "EC" or jwk.get("crv") != _EC_CRV[alg]):
+            raise ProofError(f"{alg} requires an EC {_EC_CRV[alg]} key, got "
                              f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
         try:
             if alg in ("ES256", "ES384"):

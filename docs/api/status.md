@@ -12,3 +12,10 @@ plus the issuer-side builders.
 ## Issuing
 
 ::: openvc.status.issue
+
+## Resolver factories
+
+The batteries-included status-list resolvers the pipeline accepts (and their async
+twins), which fetch and verify a referenced status list before reading its bits.
+
+::: openvc.resolvers

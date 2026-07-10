@@ -41,6 +41,11 @@ __all__ = [
 ALLOWED_ALG = frozenset({"ECDH-ES"})               # direct key agreement, empty encrypted_key
 ALLOWED_ENC = {"A128GCM": 16, "A256GCM": 32}       # content encryption -> CEK length (bytes)
 
+# A HAIP Authorization Response JWE wraps a vp_token (possibly several credentials), but a
+# verifier must still bound an attacker-supplied token before base64-decoding it. 2 MiB is
+# far above any legitimate response yet caps the memory a hostile blob can force.
+MAX_JWE_BYTES = 2 * 1024 * 1024
+
 
 class JweError(OpenvcError):
     """Base class for JWE decryption failures."""
@@ -96,6 +101,8 @@ def decrypt_compact(token: str, *, key: KeyAgreementKey) -> bytes:
     :class:`JweMalformed` for a bad shape/header/ephemeral key, and
     :class:`JweDecryptionFailed` if the authentication tag does not verify.
     """
+    if len(token) > MAX_JWE_BYTES:
+        raise JweMalformed(f"JWE token exceeds {MAX_JWE_BYTES} bytes")
     parts = token.split(".")
     if len(parts) != 5:
         raise JweMalformed("a JWE Compact token has 5 base64url parts")

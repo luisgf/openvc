@@ -4,6 +4,75 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Part of the [Correctness & fail-closed hardening](https://github.com/luisgf/openvc/milestone/9)
+milestone — the 2026-07-10 internal-audit hardening wave.
+
+### Fixed
+
+- **Typed-error boundary on hostile input — a non-object JOSE header/payload no longer
+  crashes untyped or aborts a batch.** A credential or `vp_token` whose JOSE header or
+  payload is valid JSON but *not an object* (e.g. a bare array `[0]`) reached the
+  untrusted *peek* path and raised a bare `AttributeError`, which escaped the
+  `OpenvcError` family and — through `verify_many` — aborted the entire batch, breaking
+  both the fail-closed typed-error contract and the documented per-item isolation.
+  `peek_issuer` / `peek_claims` and the SD-JWT decoder now reject a non-object
+  header/payload with a typed `MalformedToken`. The same pass closes sibling untyped
+  escapes on attacker-controlled input: `ecdsa_sd.verify` (a hostile `proofValue` or an
+  unknown `@context` now raise `ProofValueMalformed` / `ProofMalformed` instead of a raw
+  pyld error), a malformed Ed25519 JWK (`ProofMalformed`), a lone surrogate in JCS
+  (`JcsError`), and a non-JSON-object EBSI registry `200` (`MalformedRegistryResponse`).
+  ([#99](https://github.com/luisgf/openvc/issues/99))
+- **Verify-path consistency & fail-closed defaults across formats.** Several checks were
+  hardened on one proof family but not its siblings: the JOSE temporal check is now
+  single-sourced (`_verify_common.check_jwt_temporal`) and rejects a **non-finite**
+  `exp`/`nbf` (`NaN`/`Infinity`, which `json.loads` accepts and which never expires) on
+  the SD-JWT VC and VP-JWT paths too, not only VC-JWT; VC-JWT now **pins the EC curve to
+  the alg** (an `ES256` header can no longer verify against a P-384 key), matching
+  `keys.verify_signature`; `verify_vp_token`'s `jwt_vc_json` lane forwards
+  `require_status=False` like the `dc+sd-jwt` and `ldp_vc` lanes, so an embedded VC that
+  carries a `credentialStatus` is no longer wrongly rejected with `StatusUnavailable`;
+  `did:web` now requires the resolved document's `id` to equal the requested DID (a
+  missing `id` no longer skips the binding); and a malformed (non-string)
+  `credentialSchema.digestSRI` fails closed instead of silently dropping the integrity
+  pin. ([#101](https://github.com/luisgf/openvc/issues/101))
+
+### Security
+
+- **`did:webvh` witness-policy refusal is no longer bypassable via a non-integer
+  threshold.** A log declaring a witness policy with a float or string `threshold`, or a
+  `witnesses` list with no `threshold` at all, slipped past the integer-only fail-closed
+  gate — so a single compromised `updateKey` could forge an entry and silently downgrade
+  a witness-protected DID to the un-witnessed trust model. openvc still cannot verify
+  witness co-signatures, so any *active* policy (a `threshold` of any type that is not an
+  explicit `0`/`false`, or a non-empty `witnesses` list) is now refused.
+  ([#100](https://github.com/luisgf/openvc/issues/100))
+- **SD-JWT key binding is no longer accepted without a verifier nonce/aud to bind it.**
+  When a verifier set `require_key_binding=True` but passed neither `nonce` nor
+  `audience`, the KB-JWT's signature and `sd_hash` were checked but not its binding to a
+  challenge/verifier — so a presentation built for verifier A satisfied verifier B
+  (replay). Requiring key binding now also requires a non-null `nonce` and `audience`,
+  matching VP-JWT's "no unbound mode". ([#101](https://github.com/luisgf/openvc/issues/101))
+- **Codec strictness pass on attacker-controlled bytes.** Three hand-rolled decoders were
+  tightened to their RFC/ISO contracts: the CBOR decoder now **rejects duplicate map keys**
+  (RFC 8949 §5.6 / COSE + ISO 18013-5 deterministic encoding) instead of keeping the last;
+  COSE reads the signature `alg` **only from the protected header** (RFC 9052 §3.1 — an
+  `alg` in the unsigned unprotected header is no longer honoured; the `x5chain` unprotected
+  fallback is unchanged) and **rejects a `crit` header** listing any label it does not
+  process; and the JCS canonicalizer serialises integers beyond ±2^53 **as IEEE-754
+  doubles** (RFC 8785 §3.2.2.3) so a JCS credential with a large integer canonicalizes
+  identically to other implementations. ([#102](https://github.com/luisgf/openvc/issues/102))
+- **Uniform resource limits on the network and codec surface.** The EBSI HTTP client now
+  streams responses under a **size cap** and a **total wall-clock deadline** (it previously
+  had only a per-socket timeout and no size bound, so a large or slow-drip body from an
+  allow-listed host could exhaust memory or pin the client); the general `did:web` fetch
+  gained the same wall-clock deadline (chunked `read1`); `jwe.decrypt_compact` bounds the
+  token size before decoding; `multibase` caps the base58 input length (its decode is
+  O(n²)) and the multicodec varint length; and the EBSI `Retry-After` header now honours
+  the HTTP-date form as well as delta-seconds.
+  ([#103](https://github.com/luisgf/openvc/issues/103))
+
 ## [1.19.1] — 2026-07-10
 
 ### Added

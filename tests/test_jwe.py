@@ -289,3 +289,12 @@ def test_agreement_key_rejects_non_p256_private():
     from cryptography.hazmat.primitives.asymmetric import ec as _ec
     with pytest.raises(InvalidKey):
         P256KeyAgreementKey(_ec.generate_private_key(_ec.SECP384R1()), kid="k")
+
+
+def test_oversized_jwe_token_is_rejected():
+    # #103: bound an attacker-supplied token before base64-decoding it.
+    from openvc.jwe import MAX_JWE_BYTES, decrypt_compact
+    from openvc.keys import P256KeyAgreementKey
+    huge = "a" * (MAX_JWE_BYTES + 1)
+    with pytest.raises(JweMalformed):
+        decrypt_compact(huge, key=P256KeyAgreementKey.generate("k"))

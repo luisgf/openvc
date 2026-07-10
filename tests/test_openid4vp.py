@@ -115,6 +115,30 @@ def test_jwt_vc_presentation_verifies_and_cascades(issuer, holder):
     assert p.credentials[0].issuer == issuer[1]
 
 
+def test_jwt_vc_with_credential_status_still_verifies(issuer, holder):
+    """#101/M3: status is out of scope for verify_vp_token, so an embedded jwt_vc_json VC
+    that carries a credentialStatus must NOT be rejected — the jwt_vc path forwards
+    require_status=False like the sd-jwt and ldp paths (it used to inherit the pipeline's
+    require_status=True default and fail with StatusUnavailable)."""
+    issuer_key, issuer_did = issuer
+    holder_key, holder_did = holder
+    vc = VcJwtProofSuite().sign(
+        {"@context": ["https://www.w3.org/ns/credentials/v2"],
+         "type": ["VerifiableCredential"], "issuer": issuer_did,
+         "credentialSubject": {"id": holder_did},
+         "credentialStatus": {"id": "https://status.example/1#0",
+                              "type": "BitstringStatusListEntry",
+                              "statusPurpose": "revocation", "statusListIndex": "0",
+                              "statusListCredential": "https://status.example/1"}},
+        signing_key=issuer_key)
+    vp = VpJwtProofSuite().sign([vc], holder_key=holder_key, audience=CLIENT_ID, nonce=NONCE)
+    result = verify_vp_token(
+        {"vp1": [vp]}, dcql_query={"credentials": [{"id": "vp1", "format": FORMAT_JWT_VC}]},
+        nonce=NONCE, client_id=CLIENT_ID)
+    (p,) = result.for_query("vp1")
+    assert p.credentials[0].issuer == issuer_did     # cascaded and verified, status skipped
+
+
 def test_vp_token_accepts_a_json_string(issuer, holder):
     import json
     pres = _sd_jwt_presentation(issuer, holder)

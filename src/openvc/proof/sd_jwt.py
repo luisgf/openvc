@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from ..keys import KeyBackendError, verify_signature
+from ._verify_common import check_jwt_temporal
 from .errors import (
     ClaimsInvalid,
     MalformedToken,
@@ -384,6 +385,11 @@ class SdJwtVcProofSuite:
             signature = _b64url_decode(sig_b64)
         except (ValueError, json.JSONDecodeError) as exc:
             raise MalformedToken("not a valid compact JWS") from exc
+        if not isinstance(header, dict) or not isinstance(payload, dict):
+            # A JOSE header/payload that is valid JSON but not an object (e.g. `[0]`)
+            # must fail closed as a typed MalformedToken, never a bare AttributeError
+            # on the peek path — which would escape OpenvcError and abort verify_many.
+            raise MalformedToken("JWS header and payload must be JSON objects")
         signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
         return header, payload, signing_input, signature
 
@@ -407,22 +413,9 @@ class SdJwtVcProofSuite:
             raise SignatureInvalid(f"{what} signature failed")
 
     def _check_temporal(self, claims: dict[str, Any]) -> None:
-        # a present-but-non-numeric exp/nbf fails CLOSED (NumericDate per RFC 7519),
-        # matching the Data Integrity and status-list temporal checks — skipping it
-        # would let a token with a malformed exp bypass its expiry.
-        now = int(time.time())
-        exp = claims.get("exp")
-        if exp is not None:
-            if isinstance(exp, bool) or not isinstance(exp, (int, float)):
-                raise ClaimsInvalid("exp claim must be a numeric timestamp")
-            if now > exp + self._leeway:
-                raise ClaimsInvalid("token has expired")
-        nbf = claims.get("nbf")
-        if nbf is not None:
-            if isinstance(nbf, bool) or not isinstance(nbf, (int, float)):
-                raise ClaimsInvalid("nbf claim must be a numeric timestamp")
-            if now + self._leeway < nbf:
-                raise ClaimsInvalid("token is not yet valid")
+        # NumericDate exp/nbf, fail-closed and non-finite-safe, single-sourced across the
+        # JOSE suites (openvc.proof._verify_common.check_jwt_temporal).
+        check_jwt_temporal(claims, leeway_s=self._leeway, subject="token")
 
     def _index_disclosures(self, disclosures: list[str], hash_name: str) -> dict[str, list]:
         by_digest: dict[str, list] = {}
@@ -451,6 +444,15 @@ class SdJwtVcProofSuite:
         nonce: str | None,
         required: bool,
     ) -> bool:
+        if required and (audience is None or nonce is None):
+            # A KB-JWT proves possession of the holder key and that these disclosures were
+            # presented, but only the aud+nonce bind it to THIS verifier and challenge.
+            # Requiring key binding without supplying them gives no replay protection —
+            # a presentation built for verifier A would satisfy verifier B. Fail closed,
+            # matching VP-JWT's "no unbound mode".
+            raise ClaimsInvalid(
+                "key binding required but no audience/nonce given to bind it against "
+                "(a KB-JWT without a verifier nonce and aud does not prevent replay)")
         if not kb_jwt:
             if required:
                 raise ClaimsInvalid("key binding required but no KB-JWT present")

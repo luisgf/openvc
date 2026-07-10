@@ -147,3 +147,11 @@ def test_decode_never_crashes(data):
         decode(data)
     except CborError:
         pass                                          # the one allowed failure
+
+
+def test_rejects_duplicate_map_keys():
+    # RFC 8949 §5.6 / COSE + ISO 18013-5 deterministic encoding: a decoder of untrusted
+    # bytes must reject duplicate map keys, not silently keep the last one (#102/M4).
+    with pytest.raises(CborError):
+        decode(bytes.fromhex("a2016161016162"))       # {1:'a', 1:'b'} — duplicate key 1
+    assert decode(bytes.fromhex("a2016161026162")) == {1: "a", 2: "b"}   # distinct keys are fine

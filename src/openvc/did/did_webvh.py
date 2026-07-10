@@ -197,6 +197,26 @@ def _parse_version_id(version_id: Any, expected_number: int) -> str:
     return entry_hash
 
 
+def _witness_policy_active(witness: Any) -> bool:
+    """Whether *witness* declares a policy that requires witness co-signatures.
+
+    A ``did:webvh`` witness parameter is ``{"threshold": N, "witnesses": [...]}``.
+    openvc cannot verify witness attestations, so ANY active policy must fail closed
+    (:meth:`resolve` refuses) rather than silently downgrade to the un-witnessed model.
+    The type of *threshold* is irrelevant to whether a policy is declared — a float,
+    a string, or an omitted threshold alongside a witnesses list all still bind — so
+    this treats any non-empty ``witnesses`` list, or any ``threshold`` that is not an
+    explicit zero/false disable, as an active policy.
+    """
+    if not isinstance(witness, dict) or not witness:
+        return False
+    witnesses = witness.get("witnesses")
+    if isinstance(witnesses, list) and len(witnesses) > 0:
+        return True
+    threshold = witness.get("threshold")
+    return threshold is not None and threshold != 0     # 0 / False disable; else it binds
+
+
 def _version_time(entry: dict[str, Any]) -> datetime:
     raw = entry.get("versionTime")
     if not isinstance(raw, str):
@@ -322,11 +342,10 @@ class _WebvhReplay:
             # does not verify witness attestations (verify-side witnessing is unsupported),
             # so a log that mandates them fails CLOSED rather than silently downgrading to
             # the un-witnessed trust model.
-            threshold = witness.get("threshold")
-            if isinstance(threshold, int) and not isinstance(threshold, bool) and threshold > 0:
+            if _witness_policy_active(witness):
                 raise DidWebvhError(
-                    f"entry {number}: a witness policy (threshold {threshold}) is declared, but "
-                    "verify-side witness verification is unsupported — refusing to downgrade trust")
+                    f"entry {number}: a witness policy ({witness!r}) is declared, but verify-side "
+                    "witness verification is unsupported — refusing to downgrade trust")
 
             new_state = entry.get("state")
             if not isinstance(new_state, dict):

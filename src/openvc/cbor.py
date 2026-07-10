@@ -226,6 +226,10 @@ def _decode_at(data: bytes, i: int, depth: int) -> tuple[Any, int]:
             if not isinstance(key, (int, bytes, str)) or isinstance(key, bool):
                 # a list/map/tag/bool key is unhashable or out of profile -> fail closed
                 raise CborError("CBOR: map key must be an integer, byte, or text string")
+            if key in out_map:
+                # RFC 8949 §5.6 / COSE + ISO 18013-5 deterministic encoding: a decoder of
+                # attacker bytes must reject duplicate keys, not silently keep the last.
+                raise CborError(f"CBOR: duplicate map key {key!r}")
             out_map[key] = val
         return out_map, i
     if major == 6:

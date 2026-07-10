@@ -100,3 +100,16 @@ def test_read_varint_truncated_raises():
         read_varint(b"\x80")             # continuation bit set but no next byte
     with pytest.raises(MultibaseError):
         read_varint(b"\xff\xff")         # runs off the end still expecting more
+
+
+def test_varint_is_length_bounded():
+    # #103: a long run of continuation bytes (0x80) must not build an unbounded shift/int.
+    with pytest.raises(MultibaseError):
+        read_varint(b"\x80" * 12)
+
+
+def test_base58_input_is_length_bounded():
+    # #103: base58 decode is O(n^2); a hostile over-long string fails closed, not with a
+    # multi-second big-int build.
+    with pytest.raises(MultibaseError):
+        b58btc_decode("1" * 5000)
