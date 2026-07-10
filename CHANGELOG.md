@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.17.0] — unreleased
+## [1.17.0] — 2026-07-10
 
 Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
 
@@ -982,6 +982,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.17.0]: https://github.com/luisgf/openvc/releases/tag/v1.17.0
 [1.16.0]: https://github.com/luisgf/openvc/releases/tag/v1.16.0
 [1.15.0]: https://github.com/luisgf/openvc/releases/tag/v1.15.0
 [1.14.0]: https://github.com/luisgf/openvc/releases/tag/v1.14.0

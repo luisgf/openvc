@@ -34,9 +34,10 @@ proof families (VC-JWT, SD-JWT VC, Data Integrity — RDF `eddsa-rdfc-2022` /
 `ecdsa-sd-2023`), `did:key` / `did:jwk` / `did:web` (+ `did:ebsi` in the plugin),
 `/.well-known/jwt-vc-issuer` and X.509 `x5c` issuer trust, both status-list encodings
 (W3C Bitstring + IETF Token Status List) with issuance, stateless OpenID4VP 1.0
-`vp_token` verification (SD-JWT VC, VP-JWT and `ldp_vc`) including HAIP encrypted
-responses, EU Trusted Lists (LOTL→TL, TLv6) as trust anchors, a core TTL cache, batch
-and async verification, and observability.
+`vp_token` verification (SD-JWT VC, VP-JWT, `ldp_vc` and — experimental — ISO 18013-5
+`mso_mdoc` over the Digital Credentials API) including HAIP encrypted responses, EU
+Trusted Lists (LOTL→TL, TLv6) as trust anchors, a core TTL cache, batch and async
+verification, and observability.
 
 ## Direction
 
@@ -58,11 +59,11 @@ sequence that; the out-of-scope list below is the standing boundary.
   received `vp_token`, decrypt a received JWE).
 - **ISO mdoc — engagement / proximity / issuance / COSE signing**: device engagement,
   NFC/BLE/QR proximity flows, issuance, and a COSE *signing* surface stay out. Server-side
-  *verification* of an OpenID4VP-delivered `mso_mdoc` is the exception:
-  [ADR-0005](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0005-mso-mdoc-verification.md)
-  (the [mdoc spike](https://github.com/luisgf/openvc/issues/65)) ruled it **in scope**,
-  read-only (IssuerAuth + DeviceAuth over the OpenID4VP SessionTranscript). It lands as its
-  own dedicated issue, sequenced with the [Digital Credentials API work](https://github.com/luisgf/openvc/issues/66).
+  *verification* of an OpenID4VP-delivered `mso_mdoc` is the exception, now **shipped**
+  (experimental): [ADR-0005](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0005-mso-mdoc-verification.md)
+  ruled it in scope and [#86](https://github.com/luisgf/openvc/issues/86) implemented it —
+  read-only IssuerAuth (COSE_Sign1 + `x5chain`→IACA + `valueDigests`) + DeviceAuth over the
+  Digital Credentials API SessionTranscript, hand-rolled COSE/CBOR with no new dependency.
 - **COSE/CWT (`vc+cose`) securing**: openvc is JOSE-first for EBSI/EUDI; a COSE
   signing surface duplicates the JOSE path against thin demand.
 - **BBS / bbs-2023** unlinkable selective disclosure — *deferred, not rejected*:
