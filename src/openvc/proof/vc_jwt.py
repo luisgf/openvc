@@ -149,11 +149,18 @@ class VcJwtProofSuite:
             payload = json.loads(_b64url_decode(payload_b64))
         except (ValueError, json.JSONDecodeError) as exc:
             raise MalformedToken("header/payload is not valid base64url JSON") from exc
+        if not isinstance(header, dict) or not isinstance(payload, dict):
+            # Valid JSON but not an object (e.g. `[0]`) must fail closed as a typed
+            # MalformedToken, not a bare AttributeError that escapes OpenvcError.
+            raise MalformedToken("JWS header and payload must be JSON objects")
 
-        iss = payload.get("iss") or (payload.get("vc", {}) or {}).get("issuer")
+        iss = payload.get("iss")
+        if not iss:
+            vc = payload.get("vc")
+            iss = vc.get("issuer") if isinstance(vc, dict) else None
         if isinstance(iss, dict):          # issuer can be an object {"id": ...}
             iss = iss.get("id")
-        if not iss:
+        if not iss or not isinstance(iss, str):
             raise MalformedToken("no issuer (iss / vc.issuer) present")
         return iss, header.get("kid")
 
@@ -162,9 +169,12 @@ class VcJwtProofSuite:
         Used to read TIR accreditation bodies before the trust-chain walk."""
         _, payload_b64, _ = _split(token)
         try:
-            return json.loads(_b64url_decode(payload_b64))
+            payload = json.loads(_b64url_decode(payload_b64))
         except (ValueError, json.JSONDecodeError) as exc:
             raise MalformedToken("payload is not valid base64url JSON") from exc
+        if not isinstance(payload, dict):
+            raise MalformedToken("JWS payload must be a JSON object")
+        return payload
 
     # -- verification ------------------------------------------------------ #
 
@@ -182,6 +192,8 @@ class VcJwtProofSuite:
             header = json.loads(_b64url_decode(header_b64))
         except (ValueError, json.JSONDecodeError) as exc:
             raise MalformedToken("invalid JWS header") from exc
+        if not isinstance(header, dict):
+            raise MalformedToken("JWS header must be a JSON object")
 
         alg = header.get("alg")
         if alg not in self._algs:                          # allow-list BEFORE crypto

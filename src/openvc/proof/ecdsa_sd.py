@@ -611,19 +611,36 @@ class EcdsaSdProofSuite:
             raise ProofMalformed("credential has no proof object")
         if proof.get("cryptosuite") != CRYPTOSUITE:
             raise UnsupportedCryptosuite(f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
-        parsed = decode_derived_proof(proof["proofValue"])
+        proof_value = proof.get("proofValue")
+        if not isinstance(proof_value, str):
+            raise ProofValueMalformed("proofValue is missing or not a string")
+        try:
+            parsed = decode_derived_proof(proof_value)
+        except ProofError:
+            raise
+        except (ValueError, KeyError, TypeError, IndexError) as exc:
+            raise ProofValueMalformed(f"malformed derived proof value: {exc}") from exc
 
         loader = document_loader(extra_contexts)
-        unsecured = {k: v for k, v in derived.items() if k != "proof"}
-        c14n_lines, _ = _canonicalize(_deskolemize_nquads(_to_nquads(unsecured, loader)))
-        relabel_map = {"_:" + k: "_:" + v for k, v in parsed["label_map"].items()}
-        relabeled = _relabel(c14n_lines, relabel_map)
+        try:
+            unsecured = {k: v for k, v in derived.items() if k != "proof"}
+            c14n_lines, _ = _canonicalize(_deskolemize_nquads(_to_nquads(unsecured, loader)))
+            relabel_map = {"_:" + k: "_:" + v for k, v in parsed["label_map"].items()}
+            relabeled = _relabel(c14n_lines, relabel_map)
 
-        mandatory_idx = set(parsed["mandatory_indexes"])
-        mandatory_lines = [ln for i, ln in enumerate(relabeled) if i in mandatory_idx]
-        non_mandatory = [ln for i, ln in enumerate(relabeled) if i not in mandatory_idx]
+            mandatory_idx = set(parsed["mandatory_indexes"])
+            mandatory_lines = [ln for i, ln in enumerate(relabeled) if i in mandatory_idx]
+            non_mandatory = [ln for i, ln in enumerate(relabeled) if i not in mandatory_idx]
 
-        proof_hash = _proof_config_hash(proof, derived.get("@context"), loader)
+            proof_hash = _proof_config_hash(proof, derived.get("@context"), loader)
+        except ProofError:
+            raise
+        except Exception as exc:
+            # pyld raises its own JsonLdError (e.g. an unknown @context) alongside the
+            # usual value/type errors — none is an OpenvcError. Surface a typed
+            # ProofMalformed so a hostile derived credential never escapes the family.
+            raise ProofMalformed(
+                f"could not canonicalize the derived credential: {exc}") from exc
         mandatory_hash = _sha256_lines(mandatory_lines)
         to_verify = proof_hash + parsed["public_key"] + mandatory_hash
 

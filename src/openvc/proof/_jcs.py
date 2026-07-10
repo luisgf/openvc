@@ -122,7 +122,13 @@ def _assemble_ecmascript(digits: str, k: int, n: int) -> str:
 
 def canonicalize(value: Any) -> bytes:
     """Return the RFC 8785 canonical UTF-8 encoding of a JSON value."""
-    return _serialize(value).encode("utf-8")
+    try:
+        return _serialize(value).encode("utf-8")
+    except UnicodeEncodeError as exc:
+        # `json.loads` can produce a lone surrogate (e.g. "\ud800"); it survives the
+        # escape pass and only fails at the final UTF-8 encode. Fail closed as JcsError
+        # so the module honours its own contract instead of leaking UnicodeEncodeError.
+        raise JcsError(f"string contains an unpaired surrogate: {exc}") from exc
 
 
 def _serialize(value: Any, depth: int = 0) -> str:

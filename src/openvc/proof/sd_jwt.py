@@ -384,6 +384,11 @@ class SdJwtVcProofSuite:
             signature = _b64url_decode(sig_b64)
         except (ValueError, json.JSONDecodeError) as exc:
             raise MalformedToken("not a valid compact JWS") from exc
+        if not isinstance(header, dict) or not isinstance(payload, dict):
+            # A JOSE header/payload that is valid JSON but not an object (e.g. `[0]`)
+            # must fail closed as a typed MalformedToken, never a bare AttributeError
+            # on the peek path — which would escape OpenvcError and abort verify_many.
+            raise MalformedToken("JWS header and payload must be JSON objects")
         signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
         return header, payload, signing_input, signature
 

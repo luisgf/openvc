@@ -4,6 +4,27 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Part of the [Correctness & fail-closed hardening](https://github.com/luisgf/openvc/milestone/9)
+milestone — the 2026-07-10 internal-audit hardening wave.
+
+### Fixed
+
+- **Typed-error boundary on hostile input — a non-object JOSE header/payload no longer
+  crashes untyped or aborts a batch.** A credential or `vp_token` whose JOSE header or
+  payload is valid JSON but *not an object* (e.g. a bare array `[0]`) reached the
+  untrusted *peek* path and raised a bare `AttributeError`, which escaped the
+  `OpenvcError` family and — through `verify_many` — aborted the entire batch, breaking
+  both the fail-closed typed-error contract and the documented per-item isolation.
+  `peek_issuer` / `peek_claims` and the SD-JWT decoder now reject a non-object
+  header/payload with a typed `MalformedToken`. The same pass closes sibling untyped
+  escapes on attacker-controlled input: `ecdsa_sd.verify` (a hostile `proofValue` or an
+  unknown `@context` now raise `ProofValueMalformed` / `ProofMalformed` instead of a raw
+  pyld error), a malformed Ed25519 JWK (`ProofMalformed`), a lone surrogate in JCS
+  (`JcsError`), and a non-JSON-object EBSI registry `200` (`MalformedRegistryResponse`).
+  ([#99](https://github.com/luisgf/openvc/issues/99))
+
 ## [1.19.1] — 2026-07-10
 
 ### Added

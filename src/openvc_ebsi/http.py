@@ -32,7 +32,7 @@ import httpx
 from openvc import __version__
 from openvc.cache import TtlCache
 
-from .errors import EbsiError
+from .errors import EbsiError, MalformedRegistryResponse
 
 # Hosts per EBSI environment (used to seed the SSRF allow-list).
 EBSI_HOSTS: dict[str, str] = {
@@ -140,7 +140,14 @@ class EbsiHttpClient:
                 continue
 
             if resp.status_code == 200:
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except ValueError as exc:                # a 200 with a non-JSON body
+                    raise MalformedRegistryResponse(
+                        f"registry returned a 200 with a non-JSON body: {url}") from exc
+                if not isinstance(data, dict):           # null / array / string / number
+                    raise MalformedRegistryResponse(
+                        f"registry returned a 200 that is not a JSON object: {url}")
                 self._cache.set(url, data)           # only cache successes
                 return data
             if resp.status_code == 404:
