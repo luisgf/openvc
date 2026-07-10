@@ -33,8 +33,11 @@ proof's ``authentication`` purpose with ``challenge`` = the request ``nonce`` an
 credentials are cascade-verified through :func:`openvc.verify_credential`. The RDF
 cryptosuites (``eddsa-rdfc-2022`` / ``ecdsa-rdfc-2019``) need the ``[data-integrity]``
 extra (``pyld``); the JCS ones (``eddsa-jcs-2022`` / ``ecdsa-jcs-2019``) do not.
-``mso_mdoc`` (ISO mdoc) raises :class:`UnsupportedPresentationFormat` — a follow-up,
-not silently skipped.
+``mso_mdoc`` (ISO 18013-5 mdoc) is verified over the **W3C Digital Credentials API**
+flow via :mod:`openvc.mdoc`: pass *trust_anchors* (the IACA roots) and *expected_origins*,
+and the holder binding is the ``DeviceAuth`` over the origin-bound ``SessionTranscript``
+this module builds. It ships **experimental** (ADR-0005) until interop-tested against the
+EUDI reference wallet; the redirect / ``direct_post`` mdoc handover is not yet wired.
 
 Credential-level revocation (status list) is out of scope for this layer: it verifies
 the presentation binding and each credential's proof + validity window. Apply status
@@ -43,6 +46,7 @@ policy separately with :func:`openvc.verify_credential` on the returned credenti
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -63,6 +67,7 @@ __all__ = [
     "OpenID4VPError",
     "VpTokenMalformed",
     "UnsupportedPresentationFormat",
+    "dcapi_session_transcript",
     "FORMAT_SD_JWT_VC",
     "FORMAT_JWT_VC",
     "FORMAT_LDP_VC",
@@ -168,6 +173,8 @@ def verify_vp_token(
     nonce: str,
     client_id: str | None = None,
     expected_origins: Sequence[str] | None = None,
+    trust_anchors: Sequence[Any] | None = None,
+    mdoc_jwk_thumbprint: bytes | None = None,
     resolver: Any = None,
     now: datetime | None = None,
     leeway_s: int = DEFAULT_LEEWAY_S,
@@ -196,10 +203,22 @@ def verify_vp_token(
     *resolver* resolves issuer/holder keys (a :class:`~openvc.did.base.DidResolverRegistry`);
     *now* pins the evaluation instant for the validity window.
 
+    An ``mso_mdoc`` Presentation (ISO 18013-5, **experimental**) is verified over the
+    Digital Credentials API flow: pass *trust_anchors* (the IACA root
+    :class:`~cryptography.x509.Certificate` objects the document signer must chain to) and
+    *expected_origins*; the value is a base64url ``DeviceResponse`` and the ``DeviceAuth``
+    is bound to the origin-bound ``SessionTranscript`` (:func:`dcapi_session_transcript`),
+    tried against each expected origin. *mdoc_jwk_thumbprint* is the verifier's
+    response-encryption key thumbprint for that transcript (``None`` when unencrypted).
+    The verified :class:`VerifiedPresentation` carries one :class:`openvc.mdoc.VerifiedMdoc`
+    per document in ``credentials``.
+
     Returns a :class:`VpTokenVerification`. Raises :class:`VpTokenMalformed` on a
-    shape violation, :class:`UnsupportedPresentationFormat` for ``mso_mdoc`` (and an
-    ``ldp_vc`` presentation whose Data Integrity cryptosuite is not one of the
-    whole-document suites), and the suite's own typed error (``SignatureInvalid`` /
+    shape violation, :class:`UnsupportedPresentationFormat` for an ``ldp_vc`` presentation
+    whose Data Integrity cryptosuite is not one of the whole-document suites (or an
+    ``mso_mdoc`` outside the Digital Credentials API flow), a typed
+    :class:`openvc.mdoc.MdocError` if an mdoc fails to verify or bind, and the suite's own
+    typed error (``SignatureInvalid`` /
     ``ClaimsInvalid`` / …) if any Presentation fails to verify or bind — a single
     failure rejects the whole response (fail closed). *extra_contexts* is passed to
     the Data Integrity path for ``ldp_vc`` presentations that reference JSON-LD
@@ -240,6 +259,8 @@ def verify_vp_token(
             verified.append(_verify_one(
                 query_id, query, presentation,
                 nonce=nonce, client_id=client_id, accepted_auds=accepted_auds,
+                expected_origins=expected_origins, trust_anchors=trust_anchors,
+                mdoc_jwk_thumbprint=mdoc_jwk_thumbprint,
                 resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
                 require_holder_binding=require_holder_binding))
     return VpTokenVerification(presentations=tuple(verified))
@@ -253,6 +274,8 @@ def verify_encrypted_vp_response(
     nonce: str,
     client_id: str | None = None,
     expected_origins: Sequence[str] | None = None,
+    trust_anchors: Sequence[Any] | None = None,
+    mdoc_jwk_thumbprint: bytes | None = None,
     resolver: Any = None,
     now: datetime | None = None,
     leeway_s: int = DEFAULT_LEEWAY_S,
@@ -283,8 +306,10 @@ def verify_encrypted_vp_response(
         raise VpTokenMalformed("decrypted response has no vp_token member")
     return verify_vp_token(
         payload["vp_token"], dcql_query=dcql_query, nonce=nonce, client_id=client_id,
-        expected_origins=expected_origins, resolver=resolver, now=now, leeway_s=leeway_s,
-        extra_contexts=extra_contexts, require_holder_binding=require_holder_binding)
+        expected_origins=expected_origins, trust_anchors=trust_anchors,
+        mdoc_jwk_thumbprint=mdoc_jwk_thumbprint, resolver=resolver, now=now,
+        leeway_s=leeway_s, extra_contexts=extra_contexts,
+        require_holder_binding=require_holder_binding)
 
 
 def _parse_vp_token(vp_token: Mapping[str, Any] | str) -> Mapping[str, Any]:
@@ -400,10 +425,19 @@ def _effective_audience(
 def _verify_one(
     query_id: str, query: Mapping[str, Any], presentation: Any, *,
     nonce: str, client_id: str | None, accepted_auds: frozenset[str] | None,
+    expected_origins: Sequence[str] | None, trust_anchors: Sequence[Any] | None,
+    mdoc_jwk_thumbprint: bytes | None,
     resolver: Any, now: datetime | None, leeway_s: int,
     extra_contexts: Mapping[str, dict] | None, require_holder_binding: bool,
 ) -> VerifiedPresentation:
     fmt = query["format"]
+    # mso_mdoc binds the holder through DeviceAuth over a SessionTranscript, not a
+    # peekable `aud`, so it is handled before the JOSE / LDP audience is computed.
+    if fmt == FORMAT_MSO_MDOC:
+        return _verify_mso_mdoc(
+            query_id, presentation, nonce=nonce, expected_origins=expected_origins,
+            trust_anchors=trust_anchors, now=now, leeway_s=leeway_s,
+            jwk_thumbprint=mdoc_jwk_thumbprint)
     # The audience is the client_id (redirect flow) or the DC-API calling origin.
     aud = _effective_audience(fmt, presentation, client_id, accepted_auds)
     if fmt == FORMAT_SD_JWT_VC:
@@ -420,11 +454,77 @@ def _verify_one(
             query_id, presentation, nonce=nonce, client_id=aud, resolver=resolver,
             now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
             require_holder_binding=require_holder_binding)
-    if fmt == FORMAT_MSO_MDOC:
-        raise UnsupportedPresentationFormat(
-            f"Credential Query {query_id!r} format {fmt!r} is not yet supported")
     raise UnsupportedPresentationFormat(
         f"Credential Query {query_id!r} has unknown format {fmt!r}")
+
+
+def dcapi_session_transcript(
+    origin: str, nonce: str, *, jwk_thumbprint: bytes | None = None,
+) -> bytes:
+    """Build the OpenID4VP-over-Digital-Credentials-API ``SessionTranscript`` (CBOR bytes)
+    that an mdoc ``DeviceAuth`` is bound to (OpenID4VP 1.0 Appendix B / ISO 18013-7):
+    ``[null, null, ["OpenID4VPDCAPIHandover", SHA-256(cbor([origin, nonce, jwk_thumbprint]))]]``.
+
+    *origin* is the calling web origin (e.g. ``https://verifier.example``), *nonce* the
+    Authorization Request nonce, and *jwk_thumbprint* the SHA-256 JWK thumbprint of the
+    verifier's response-encryption key (``None`` → CBOR ``null``, for an unencrypted
+    response). **Experimental**: track ISO 18013-7 / OpenID4VP as the handover finalises."""
+    from . import cbor
+
+    handover_info = cbor.encode([origin, nonce, jwk_thumbprint])
+    handover = ["OpenID4VPDCAPIHandover", hashlib.sha256(handover_info).digest()]
+    return cbor.encode([None, None, handover])
+
+
+def _b64url_to_bytes(query_id: str, value: str) -> bytes:
+    try:
+        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    except (ValueError, TypeError) as exc:            # binascii.Error is a ValueError
+        raise VpTokenMalformed(
+            f"the {FORMAT_MSO_MDOC} Presentation for {query_id!r} is not valid "
+            f"base64url: {exc}") from exc
+
+
+def _verify_mso_mdoc(
+    query_id: str, presentation: Any, *,
+    nonce: str, expected_origins: Sequence[str] | None,
+    trust_anchors: Sequence[Any] | None, now: datetime | None, leeway_s: int,
+    jwk_thumbprint: bytes | None,
+) -> VerifiedPresentation:
+    from . import mdoc
+
+    if expected_origins is None:
+        raise UnsupportedPresentationFormat(
+            f"Credential Query {query_id!r} format {FORMAT_MSO_MDOC!r} is only wired for "
+            f"the W3C Digital Credentials API flow — pass expected_origins")
+    if trust_anchors is None:
+        raise ClaimsInvalid(
+            "verifying an mso_mdoc needs trust_anchors (the IACA root certificates)")
+    if not isinstance(presentation, str):
+        raise VpTokenMalformed(
+            f"an {FORMAT_MSO_MDOC} Presentation for {query_id!r} must be a base64url "
+            f"string (the DeviceResponse)")
+    device_response = _b64url_to_bytes(query_id, presentation)
+
+    # The DeviceAuth binds to exactly one origin's SessionTranscript; statelessly we do
+    # not know which of expected_origins served this request, so try each and accept the
+    # one whose holder binding verifies. Only a DeviceAuth failure advances to the next
+    # candidate — an issuer-seal / digest / validity failure rejects immediately.
+    last_error: Exception | None = None
+    for origin in expected_origins:
+        transcript = dcapi_session_transcript(origin, nonce, jwk_thumbprint=jwk_thumbprint)
+        try:
+            documents = mdoc.verify_device_response(
+                device_response, trust_anchors=trust_anchors,
+                session_transcript=transcript, now=now, leeway_s=leeway_s)
+        except mdoc.MdocDeviceAuthError as exc:
+            last_error = exc
+            continue
+        return VerifiedPresentation(
+            query_id=query_id, format=FORMAT_MSO_MDOC, holder=None,
+            credentials=tuple(documents), raw=documents)
+    assert last_error is not None                     # expected_origins is non-empty here
+    raise last_error
 
 
 def _verify_sd_jwt_vc(

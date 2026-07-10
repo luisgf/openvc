@@ -170,8 +170,8 @@ cascade-verified through `verify_credential`. All four whole-document
 cryptosuites are accepted — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (need the
 `[data-integrity]` extra) and `eddsa-jcs-2022` / `ecdsa-jcs-2019` (pyld-free).
 A bare string or a bare credential (no VP wrapper) under an `ldp_vc` query is
-rejected: the holder binding lives only on a presentation proof. `mso_mdoc`
-stays unsupported.
+rejected: the holder binding lives only on a presentation proof. `mso_mdoc` is
+verified over the Digital Credentials API flow — see [ISO mdoc](#iso-mdoc-mso_mdoc) below.
 
 The reported `holder` is the **authenticated** identity — the DID that controls
 the `verificationMethod` that signed the proof, not a self-asserted `holder`
@@ -181,6 +181,54 @@ presenter actually owns a credential, compare its subject to `p.holder`, or pass
 VP formats (`ldp_vc`, `jwt_vc_json`), that every embedded credential was issued to
 the authenticated holder. It is off by default because a holder may legitimately
 present a third party's credential.
+
+## ISO mdoc (`mso_mdoc`)
+
+> **Experimental.** ISO 18013-5 mdoc is the second mandatory PID/QEAA format (CIR
+> (EU) 2024/2977), alongside SD-JWT VC. openvc verifies a received `mso_mdoc` over the
+> **W3C Digital Credentials API** flow; the surface ships behind an experimental label
+> until it is interop-tested against the EUDI reference wallet (ADR-0005).
+
+A wallet answering a `format: "mso_mdoc"` query returns a **base64url `DeviceResponse`**
+(ISO 18013-5 CBOR). `verify_vp_token` checks the two authentications ISO 18013-5 §9.1
+defines:
+
+- **Issuer data authentication** — the `IssuerAuth` `COSE_Sign1` over the Mobile
+  Security Object; the document-signer `x5chain` (COSE label 33) path-validated to a
+  caller-provided **IACA** trust anchor; the MSO `docType` and `validityInfo` window;
+  and, for every disclosed element, the recomputed digest matched against the MSO
+  `valueDigests`.
+- **Device authentication (holder binding)** — the `DeviceSignature` over the
+  origin-bound `SessionTranscript` (OpenID4VP 1.0 Appendix B / ISO 18013-7). openvc
+  builds the transcript from your `expected_origins` and the request `nonce`, and tries
+  each expected origin (the binding is cryptographic, so only the right origin verifies).
+
+Pass `trust_anchors` (the IACA root `x509.Certificate` objects — e.g. from
+[`openvc.trustlist`](Trust)) and `expected_origins`. Each verified document comes back
+as an `openvc.mdoc.VerifiedMdoc` in `credentials`:
+
+<!-- docs: no-run -->
+```python
+from openvc.openid4vp import verify_vp_token
+
+result = verify_vp_token(
+    vp_token,                                        # {"mdl": ["<base64url DeviceResponse>"]}
+    dcql_query={"credentials": [{"id": "mdl", "format": "mso_mdoc"}]},
+    nonce=NONCE,
+    expected_origins=["https://verifier.example.com"],
+    trust_anchors=iaca_roots)                        # IACA x509.Certificate anchors
+
+mdl = result.for_query("mdl")[0].credentials[0]      # a VerifiedMdoc
+assert mdl.device_signed                             # holder binding verified
+name = mdl.elements("org.iso.18013.5.1")["family_name"]
+```
+
+To verify the **issuer seal alone** of an mdoc at rest (no holder binding),
+`openvc.mdoc.verify_issuer_signed(document, trust_anchors=…)` returns the disclosed
+elements without device authentication. **Out of scope** (unchanged): device
+engagement, NFC/BLE/QR proximity, issuance/provisioning, and any COSE *signing* surface
+— openvc consumes and verifies. The redirect / `direct_post` mdoc handover is not yet
+wired; use the Digital Credentials API flow.
 
 ## Replay: what the bindings buy you
 

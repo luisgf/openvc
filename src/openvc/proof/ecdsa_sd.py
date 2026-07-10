@@ -41,6 +41,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from ..cbor import CborError, CborTag
+from ..cbor import decode as _cbor_decode
+from ..cbor import encode as _cbor_encode
 from ..keys import P256SigningKey, verify_signature
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
@@ -91,100 +94,52 @@ def _mb_decode(value: str) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
-# minimal CBOR (RFC 8949) for the fixed proof-value shape
-#   supported: unsigned int, byte string, text string, array, map(int->bytes)
+# CBOR proof-value codec — the ecdsa-sd shape is a strict SUBSET of the shared
+# openvc.cbor profile (ADR-0005 D4): unsigned int, byte/text string, array, map.
+# Delegate the bytes to openvc.cbor, but keep the strict subset contract — bool,
+# null, negatives, and tags are NOT in the proof value and must fail closed.
 # --------------------------------------------------------------------------- #
 
-def _cbor_head(major: int, n: int) -> bytes:
-    mt = major << 5
-    if n < 24:
-        return bytes((mt | n,))
-    if n < 0x100:
-        return bytes((mt | 24, n))
-    if n < 0x10000:
-        return bytes((mt | 25,)) + n.to_bytes(2, "big")
-    if n < 0x100000000:
-        return bytes((mt | 26,)) + n.to_bytes(4, "big")
-    return bytes((mt | 27,)) + n.to_bytes(8, "big")
+def _check_proof_subset(obj: Any, exc: type[EcdsaSdError]) -> None:
+    """Reject anything outside the ecdsa-sd proof-value shape (bool/null/tag/float/
+    negative int / foreign type) by raising *exc*, recursing into arrays and maps."""
+    if obj is None or isinstance(obj, (bool, float, CborTag)):
+        raise exc("value is not part of the ecdsa-sd proof-value shape")
+    if isinstance(obj, int):
+        if obj < 0:
+            raise exc("only unsigned integers are part of the proof-value shape")
+    elif isinstance(obj, (bytes, bytearray, str)):
+        pass
+    elif isinstance(obj, list):
+        for item in obj:
+            _check_proof_subset(item, exc)
+    elif isinstance(obj, dict):
+        for key, val in obj.items():
+            _check_proof_subset(key, exc)
+            _check_proof_subset(val, exc)
+    else:
+        raise exc(f"unsupported type {type(obj).__name__} in the proof-value shape")
 
 
 def encode_cbor(obj: Any) -> bytes:
-    """Encode *obj* as the deterministic CBOR subset (RFC 8949) the proof value uses."""
-    if isinstance(obj, bool):                       # bool is an int subclass — reject
-        raise EcdsaSdError("CBOR: booleans are not part of the proof-value shape")
-    if isinstance(obj, int):
-        if obj < 0:
-            raise EcdsaSdError("CBOR: only unsigned integers are supported")
-        return _cbor_head(0, obj)
-    if isinstance(obj, (bytes, bytearray)):
-        return _cbor_head(2, len(obj)) + bytes(obj)
-    if isinstance(obj, str):
-        raw = obj.encode("utf-8")
-        return _cbor_head(3, len(raw)) + raw
-    if isinstance(obj, list):
-        return _cbor_head(4, len(obj)) + b"".join(encode_cbor(x) for x in obj)
-    if isinstance(obj, dict):
-        # canonical: keys sorted ascending (all keys are unsigned ints here).
-        items = sorted(obj.items())
-        return _cbor_head(5, len(items)) + b"".join(
-            encode_cbor(k) + encode_cbor(v) for k, v in items)
-    raise EcdsaSdError(f"CBOR: unsupported type {type(obj).__name__}")
-
-
-def _cbor_read_head(data: bytes, i: int) -> tuple[int, int, int]:
-    if i >= len(data):
-        raise ProofValueMalformed("CBOR: truncated")
-    ib = data[i]
-    major, info = ib >> 5, ib & 0x1F
-    i += 1
-    if info < 24:
-        return major, info, i
-    nbytes = {24: 1, 25: 2, 26: 4, 27: 8}.get(info)
-    if nbytes is None:
-        raise ProofValueMalformed("CBOR: unsupported additional-info")
-    if i + nbytes > len(data):
-        raise ProofValueMalformed("CBOR: truncated length")
-    return major, int.from_bytes(data[i:i + nbytes], "big"), i + nbytes
-
-
-def _cbor_dec(data: bytes, i: int) -> tuple[Any, int]:
-    major, n, i = _cbor_read_head(data, i)
-    if major == 0:
-        return n, i
-    if major == 2:
-        if i + n > len(data):
-            raise ProofValueMalformed("CBOR: truncated byte string")
-        return data[i:i + n], i + n
-    if major == 3:
-        if i + n > len(data):
-            raise ProofValueMalformed("CBOR: truncated text string")
-        try:
-            return data[i:i + n].decode("utf-8"), i + n
-        except UnicodeDecodeError as exc:           # attacker bytes -> fail closed, typed
-            raise ProofValueMalformed(f"CBOR: text string is not valid UTF-8: {exc}") from exc
-    if major == 4:
-        out = []
-        for _ in range(n):
-            item, i = _cbor_dec(data, i)
-            out.append(item)
-        return out, i
-    if major == 5:
-        out_map: dict[Any, Any] = {}
-        for _ in range(n):
-            key, i = _cbor_dec(data, i)
-            val, i = _cbor_dec(data, i)
-            if not isinstance(key, (int, bytes, str)):   # a map/list key is unhashable
-                raise ProofValueMalformed("CBOR: map key must be an int, bytes, or text")
-            out_map[key] = val
-        return out_map, i
-    raise ProofValueMalformed(f"CBOR: unsupported major type {major}")
+    """Encode *obj* as the deterministic CBOR subset the proof value uses. Rejects
+    anything outside that subset (bool / negative / tag / null / …) with
+    :class:`EcdsaSdError` — the shared :mod:`openvc.cbor` codec is more permissive."""
+    _check_proof_subset(obj, EcdsaSdError)
+    try:
+        return _cbor_encode(obj)
+    except CborError as exc:
+        raise EcdsaSdError(str(exc)) from exc
 
 
 def decode_cbor(data: bytes) -> Any:
-    """Decode :func:`encode_cbor` output; raises ``ProofValueMalformed`` on bad input."""
-    obj, i = _cbor_dec(data, 0)
-    if i != len(data):
-        raise ProofValueMalformed("CBOR: trailing bytes after the top-level item")
+    """Decode a proof-value CBOR item; raises :class:`ProofValueMalformed` on malformed
+    bytes or on any value outside the ecdsa-sd subset (a tag, bool, null, or negative)."""
+    try:
+        obj = _cbor_decode(data)
+    except CborError as exc:
+        raise ProofValueMalformed(str(exc)) from exc
+    _check_proof_subset(obj, ProofValueMalformed)
     return obj
 
 
