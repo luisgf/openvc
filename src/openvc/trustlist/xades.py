@@ -49,17 +49,36 @@ def verify_xades_enveloped(
     (``signxml``) is not installed."""
     try:
         from cryptography.hazmat.primitives.serialization import Encoding
+        from lxml import etree
         from signxml import (
+            DigestAlgorithm,
             InvalidCertificate,
             InvalidDigest,
             InvalidInput,
             InvalidSignature,
+            SignatureConfiguration,
+            SignatureMethod,
             XMLVerifier,
         )
     except ImportError as exc:
         raise TrustListSignatureBackendUnavailable(
             "XAdES verification needs the trustlist extra: "
             "pip install openvc-core[trustlist]") from exc
+
+    # Pin the XAdES-BASELINE-B algorithm profile: RSA / ECDSA (incl. RSA-PSS) over
+    # SHA-256/384/512, exactly one Reference. This rejects HMAC, DSA, SHA-1/224 and SHA-3,
+    # and — with expect_references=1 — a second Reference smuggling in a wrapped fragment.
+    config = SignatureConfiguration(
+        signature_methods=frozenset({
+            SignatureMethod.RSA_SHA256, SignatureMethod.RSA_SHA384, SignatureMethod.RSA_SHA512,
+            SignatureMethod.ECDSA_SHA256, SignatureMethod.ECDSA_SHA384,
+            SignatureMethod.ECDSA_SHA512, SignatureMethod.SHA256_RSA_MGF1,
+            SignatureMethod.SHA384_RSA_MGF1, SignatureMethod.SHA512_RSA_MGF1,
+        }),
+        digest_algorithms=frozenset({
+            DigestAlgorithm.SHA256, DigestAlgorithm.SHA384, DigestAlgorithm.SHA512}),
+        expect_references=1,
+    )
 
     if not isinstance(xml, (bytes, bytearray)):
         raise TrustListSignatureError(
@@ -72,6 +91,14 @@ def verify_xades_enveloped(
         raise TrustListSignatureError("no expected signer certificates to verify against")
 
     data = bytes(xml)
+    # The document root tag, parsed with entities/DTD/network off, to assert the signature
+    # covers the WHOLE document (below) — signxml already rejects DTDs, this is defence in depth.
+    try:
+        root_tag = etree.fromstring(
+            data, etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)).tag
+    except etree.XMLSyntaxError as exc:
+        raise TrustListSignatureError(f"trust list is not well-formed XML: {exc}") from exc
+
     signxml_errors = (InvalidSignature, InvalidCertificate, InvalidDigest, InvalidInput)
     last_err: Exception | None = None
     for cert in certs:
@@ -81,11 +108,23 @@ def verify_xades_enveloped(
             last_err = exc
             continue
         try:
-            XMLVerifier().verify(data, x509_cert=pem)
-            return                             # authentic + signed by a vouched cert
+            result = XMLVerifier().verify(data, x509_cert=pem, expect_config=config)
         except signxml_errors as exc:
             last_err = exc
             continue
+        # XSW guard: consume signxml's verified subtree — it MUST be the document root, so a
+        # single valid Reference cannot cover only a fragment while unsigned nodes (extra
+        # TrustServiceProviders / certs) are wrapped outside the signed scope and later parsed.
+        if isinstance(result, list):               # expect_references=1 should preclude this
+            if len(result) != 1:
+                raise TrustListSignatureError(
+                    f"expected exactly one signed reference, got {len(result)}")
+            result = result[0]
+        signed = result.signed_xml
+        if signed is None or signed.tag != root_tag:
+            raise TrustListSignatureError(
+                "XAdES signature does not cover the whole trust list (XML signature wrapping)")
+        return                                 # authentic + signed by a vouched cert + full scope
     raise TrustListSignatureError(
         f"trust list signature did not verify against any of the {len(certs)} "
         f"expected signer certificate(s): {last_err}")

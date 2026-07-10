@@ -108,5 +108,5 @@ no_implicit_optional = true
 # Third-party deps behind optional extras that ship no type information.
 [[tool.mypy.overrides]]
 module = ["httpx", "httpx.*", "pyld", "pyld.*", "jsonschema", "jsonschema.*",
-          "referencing", "referencing.*"]
+          "referencing", "referencing.*", "lxml", "lxml.*"]
 ignore_missing_imports = true

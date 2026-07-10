@@ -109,6 +109,15 @@ def test_reject_doctype_entity_bomb():
         parse_trust_list(bomb)
 
 
+def test_parse_element_count_cap():
+    # ADR-0003 D4: a max element count bounds the parse in addition to the byte cap.
+    from openvc.trustlist.parse import _hardened_parse
+    xml = b"<a><b/><c/><d/><e/></a>"                    # 5 elements
+    with pytest.raises(TrustListParseError):
+        _hardened_parse(xml, max_bytes=10_000, max_elements=3)
+    _hardened_parse(xml, max_bytes=10_000, max_elements=100)   # under the cap: fine
+
+
 def test_reject_external_entity_xxe():
     xxe = (b'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]>'
            b'<TrustServiceStatusList xmlns="http://uri.etsi.org/02231/v2#">&x;'

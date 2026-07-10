@@ -30,6 +30,14 @@ milestone — the second wave from the 2026-07-10 internal audit.
   must now carry `signed`, and `signed` must fall within the document-signer certificate's own
   validity window (ISO 18013-5 §9.3.1). Verified against the real Annex D reference certificate,
   which carries the EKU. ([#105](https://github.com/luisgf/openvc/issues/105))
+- **XAdES trusted-list verification hardened.** A Trusted List's XAdES / XML-DSig signature
+  is now verified with a pinned algorithm profile (RSA / ECDSA — including RSA-PSS — over
+  SHA-256/384/512; HMAC, DSA, SHA-1 and SHA-224 rejected) and **exactly one Reference**, and
+  the verified subtree must be the **document root** — an XML-Signature-Wrapping guard, so a
+  signature valid over a fragment cannot leave unsigned `TrustServiceProvider` / certificate
+  nodes outside the signed scope for the parser to harvest. The TL parser also enforces a
+  **max element count** (ADR-0003 D4) alongside the existing byte cap.
+  ([#107](https://github.com/luisgf/openvc/issues/107))
 
 ## [1.19.3] — 2026-07-10
 
