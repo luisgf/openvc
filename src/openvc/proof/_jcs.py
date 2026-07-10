@@ -64,7 +64,18 @@ def _number(value: Any) -> str:
     if isinstance(value, bool):               # bool is an int subclass — not a JSON number
         raise JcsError("bool is not a JSON number")
     if isinstance(value, int):
-        return str(value)                     # integers are exact
+        # RFC 8785 §3.2.2.3: JSON numbers are IEEE-754 doubles. Within the safe integer
+        # range str(value) equals what ECMAScript emits, but beyond ±2^53 an integer
+        # cannot be represented exactly — it MUST go through the double formatting, or a
+        # JCS credential with a large integer canonicalizes differently from every other
+        # implementation (a silent interop break the self-consistent round-trip hides).
+        if -(2**53) < value < 2**53:
+            return str(value)
+        try:
+            as_double = float(value)
+        except OverflowError as exc:          # beyond the double range -> not valid I-JSON
+            raise JcsError(f"integer {value} exceeds the I-JSON number range") from exc
+        return _ecmascript_double(as_double)
     if isinstance(value, float):
         return _ecmascript_double(value)
     raise JcsError(f"unsupported number type {type(value).__name__}")

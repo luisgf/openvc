@@ -44,7 +44,12 @@ __all__ = [
 
 # COSE header labels (RFC 9052 §3.1, RFC 9360 §2).
 _HDR_ALG = 1
+_HDR_CRIT = 2
 _HDR_X5CHAIN = 33
+
+# Protected-header labels this verifier actually processes; a `crit` (label 2) listing any
+# label outside this set must fail closed (RFC 9052 §3.1).
+_KNOWN_CRIT_LABELS = frozenset({_HDR_ALG, _HDR_X5CHAIN})
 
 # COSE algorithm identifiers -> the JOSE name openvc.keys.verify_signature understands.
 # Deliberately narrow (the mdoc/EUDI profile is ES256; ES384 and EdDSA are the other
@@ -98,9 +103,10 @@ class CoseSign1:
 
     @property
     def alg(self) -> int:
-        """The signature algorithm (COSE label 1) from the protected header, else the
-        unprotected one. Raises :class:`CoseMalformed` if absent or not an integer."""
-        return _require_alg(self.protected_header, self.unprotected)
+        """The signature algorithm (COSE label 1) from the **protected** header. Raises
+        :class:`CoseMalformed` if absent or not an integer (RFC 9052 §3.1: `alg` is
+        integrity-critical, so it is never taken from the unsigned unprotected header)."""
+        return _require_alg(self.protected_header)
 
 
 @dataclass(frozen=True)
@@ -115,7 +121,7 @@ class CoseMac0:
 
     @property
     def alg(self) -> int:
-        return _require_alg(self.protected_header, self.unprotected)
+        return _require_alg(self.protected_header)
 
 
 def _unwrap(obj: Any, tag: int, kind: str) -> list[Any]:
@@ -142,13 +148,31 @@ def _parse_protected(protected: Any, kind: str) -> tuple[bytes, dict[Any, Any]]:
         raise CoseMalformed(f"{kind}: protected header is not valid CBOR: {exc}") from exc
     if not isinstance(header, dict):
         raise CoseMalformed(f"{kind}: protected header must be a CBOR map")
+    _reject_unhandled_crit(header, kind)
     return protected, header
 
 
-def _require_alg(protected_header: dict[Any, Any], unprotected: dict[Any, Any]) -> int:
-    alg = protected_header.get(_HDR_ALG, unprotected.get(_HDR_ALG))
+def _reject_unhandled_crit(header: dict[Any, Any], kind: str) -> None:
+    """RFC 9052 §3.1: if the protected header carries ``crit`` (label 2), every label it
+    lists is one the recipient MUST understand — so any label this verifier does not
+    process fails closed rather than being silently ignored."""
+    if _HDR_CRIT not in header:
+        return
+    crit = header[_HDR_CRIT]
+    if not isinstance(crit, list) or not crit:
+        raise CoseMalformed(f"{kind}: 'crit' (label 2) must be a non-empty array")
+    unknown = [lbl for lbl in crit if lbl not in _KNOWN_CRIT_LABELS]
+    if unknown:
+        raise CoseMalformed(f"{kind}: unsupported critical header label(s) {unknown!r}")
+
+
+def _require_alg(protected_header: dict[Any, Any]) -> int:
+    # RFC 9052 §3.1: `alg` is integrity-critical and MUST be read from the PROTECTED header
+    # only. The unprotected header is not covered by the signature, so honouring an `alg`
+    # there would let an attacker choose the verification algorithm on an unsigned field.
+    alg = protected_header.get(_HDR_ALG)
     if not isinstance(alg, int) or isinstance(alg, bool):
-        raise CoseMalformed("COSE header has no integer 'alg' (label 1)")
+        raise CoseMalformed("COSE protected header has no integer 'alg' (label 1)")
     return alg
 
 

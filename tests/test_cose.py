@@ -199,3 +199,20 @@ def test_mac0_non_hmac_alg_rejected():
     m = cose.parse_mac0(_mac0(b"p", b"k" * 32, alg=-7))    # -7 is a signature alg, not HMAC
     with pytest.raises(cose.CoseUnsupportedAlgorithm):
         cose.verify_mac0(m, mac_key=b"k" * 32, detached_payload=None)
+
+
+def test_alg_is_read_only_from_the_protected_header():
+    # RFC 9052 §3.1: `alg` is integrity-critical, so an `alg` present only in the unsigned
+    # unprotected header must not be honoured (#102/M5).
+    sign1 = [cbor.encode({}), {1: -7}, b"payload", b"\x00" * 64]   # alg only in unprotected
+    with pytest.raises(cose.CoseMalformed):
+        _ = cose.parse_sign1(sign1).alg
+
+
+def test_rejects_unhandled_crit_labels():
+    # RFC 9052 §3.1: a `crit` (label 2) listing a label this verifier does not process must
+    # fail closed; one listing only known labels is fine (#102/M6).
+    with pytest.raises(cose.CoseMalformed):
+        cose.parse_sign1([cbor.encode({1: -8, 2: [99]}), {}, b"p", b"\x00" * 64])
+    ok = cose.parse_sign1([cbor.encode({1: -8, 2: [1]}), {}, b"p", b"\x00" * 64])
+    assert ok.alg == -8

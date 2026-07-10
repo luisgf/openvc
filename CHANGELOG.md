@@ -54,6 +54,15 @@ milestone — the 2026-07-10 internal-audit hardening wave.
   challenge/verifier — so a presentation built for verifier A satisfied verifier B
   (replay). Requiring key binding now also requires a non-null `nonce` and `audience`,
   matching VP-JWT's "no unbound mode". ([#101](https://github.com/luisgf/openvc/issues/101))
+- **Codec strictness pass on attacker-controlled bytes.** Three hand-rolled decoders were
+  tightened to their RFC/ISO contracts: the CBOR decoder now **rejects duplicate map keys**
+  (RFC 8949 §5.6 / COSE + ISO 18013-5 deterministic encoding) instead of keeping the last;
+  COSE reads the signature `alg` **only from the protected header** (RFC 9052 §3.1 — an
+  `alg` in the unsigned unprotected header is no longer honoured; the `x5chain` unprotected
+  fallback is unchanged) and **rejects a `crit` header** listing any label it does not
+  process; and the JCS canonicalizer serialises integers beyond ±2^53 **as IEEE-754
+  doubles** (RFC 8785 §3.2.2.3) so a JCS credential with a large integer canonicalizes
+  identically to other implementations. ([#102](https://github.com/luisgf/openvc/issues/102))
 
 ## [1.19.1] — 2026-07-10
 
