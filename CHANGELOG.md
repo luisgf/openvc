@@ -4,6 +4,21 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Part of the [Depth — mdoc, status trust & parity](https://github.com/luisgf/openvc/milestone/10)
+milestone — the second wave from the 2026-07-10 internal audit.
+
+### Security
+
+- **mdoc: the document-signer certificate profile is now enforced.** `resolve_mdoc_signer_key`
+  requires the leaf to carry the ISO 18013-5 Annex B document-signer ExtendedKeyUsage
+  (`1.0.18013.5.1.2`) — previously any certificate that chained to a trusted IACA anchor
+  (a TLS leaf, a DS for another purpose) was accepted as an MSO signer. The MSO `validityInfo`
+  must now carry `signed`, and `signed` must fall within the document-signer certificate's own
+  validity window (ISO 18013-5 §9.3.1). Verified against the real Annex D reference certificate,
+  which carries the EKU. ([#105](https://github.com/luisgf/openvc/issues/105))
+
 ## [1.19.3] — 2026-07-10
 
 Part of the [Correctness & fail-closed hardening](https://github.com/luisgf/openvc/milestone/9)

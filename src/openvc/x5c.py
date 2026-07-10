@@ -190,6 +190,36 @@ def _leaf_ec_jwk(leaf: Any) -> dict[str, Any]:
     raise X5cError("mdoc signer leaf key is not EC P-256/P-384 or Ed25519")
 
 
+# ISO 18013-5 §B.1.1: the mdoc document-signer ExtendedKeyUsage. A cert that chains to a
+# trusted IACA is only a valid document signer if it carries this EKU — otherwise ANY leaf
+# under the IACA (a TLS server cert, another DS for a different purpose) could sign an MSO.
+_MDOC_DS_EKU_OID = "1.0.18013.5.1.2"
+
+
+def _require_mdoc_ds_eku(leaf: Any) -> None:
+    from cryptography import x509
+    try:
+        eku = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    except x509.ExtensionNotFound:
+        raise X5cError("mdoc document-signer certificate has no ExtendedKeyUsage "
+                       "(needs the mdoc DS EKU 1.0.18013.5.1.2)")
+    if x509.ObjectIdentifier(_MDOC_DS_EKU_OID) not in eku:
+        raise X5cError("mdoc document-signer certificate lacks the DS ExtendedKeyUsage "
+                       "1.0.18013.5.1.2 (ISO 18013-5 Annex B)")
+
+
+def check_mdoc_signed_within_ds_validity(x5chain: Sequence[Any], signed: datetime) -> None:
+    """ISO 18013-5 §9.3.1: the MSO ``signed`` time must fall within the document-signer
+    certificate's own validity window. (The chain *path* is validated at verification time
+    — the conservative policy — so a currently-expired DS is still rejected; this additionally
+    catches a ``signed`` inconsistent with the cert that produced it.) Raises :class:`X5cError`."""
+    leaf = _load_der_chain(x5chain)[0]
+    nb, na = leaf.not_valid_before_utc, leaf.not_valid_after_utc
+    if not (nb <= signed <= na):
+        raise X5cError(f"MSO signed {signed.isoformat()} is outside the document-signer "
+                       f"certificate validity [{nb.isoformat()} .. {na.isoformat()}]")
+
+
 def resolve_mdoc_signer_key(
     x5chain: Sequence[Any],
     *,
@@ -207,6 +237,7 @@ def resolve_mdoc_signer_key(
     unusable leaf key."""
     chain = _load_der_chain(x5chain)
     validate_cert_chain(chain[0], chain[1:], trust_anchors=trust_anchors, now=now)
+    _require_mdoc_ds_eku(chain[0])
     return _leaf_ec_jwk(chain[0])
 
 
@@ -215,4 +246,5 @@ __all__ = [
     "resolve_x5c_key",
     "validate_cert_chain",
     "resolve_mdoc_signer_key",
+    "check_mdoc_signed_within_ds_validity",
 ]
