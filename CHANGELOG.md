@@ -4,6 +4,23 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **External-audit pack** (`docs/audit/`) — audit-readiness groundwork for the
+  funded external review: a code-cited
+  [threat-model annex](https://github.com/luisgf/openvc/blob/main/docs/audit/threat-model.md)
+  (per-suite and per-parser attack-surface tables, the fail-closed invariants
+  catalog I1–I15, and a residual-risk register R1–R8), an
+  [assurance report](https://github.com/luisgf/openvc/blob/main/docs/audit/assurance.md)
+  (property-based fuzz coverage, the harden-next gap map, and the
+  adversarial-review history), and a
+  [reviewer index](https://github.com/luisgf/openvc/blob/main/docs/audit/README.md)
+  with the suggested review scope and EU funding routes. No code change — the
+  external audit itself stays gated on funding.
+  ([#75](https://github.com/luisgf/openvc/issues/75))
+
 ## [1.20.0] — 2026-07-10
 
 Part of the [Depth — mdoc, status trust & parity](https://github.com/luisgf/openvc/milestone/10)
