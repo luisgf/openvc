@@ -37,15 +37,17 @@ def _json_bytes(obj: Any) -> bytes:
 
 
 def sign_compact(
-    header: dict[str, Any], payload: dict[str, Any], *, signing_key: SigningKey
+    header: dict[str, Any], payload: dict[str, Any], *, signing_key: SigningKey,
+    allowed_algs: frozenset[str] = ALLOWED_ALGS,
 ) -> str:
     """Assemble a signed compact JWS ``b64url(header).b64url(payload).b64url(sig)``.
 
-    The algorithm is taken from the key and allow-listed BEFORE signing (the same
+    The algorithm is taken from the key and allow-listed BEFORE signing (the default
     ``{ES256, ES384, EdDSA, Ed25519}`` policy a verifier enforces); the raw signature comes from
-    the :class:`SigningKey` backend, so an HSM/Vault key never leaves its boundary.
+    the :class:`SigningKey` backend, so an HSM/Vault key never leaves its boundary. A caller
+    that opted into experimental post-quantum signing passes a widened *allowed_algs*.
     """
-    if signing_key.alg not in ALLOWED_ALGS:
+    if signing_key.alg not in allowed_algs:
         raise UnsupportedAlgorithm(f"key alg {signing_key.alg!r} not permitted")
     signing_input = f"{b64url_encode(_json_bytes(header))}.{b64url_encode(_json_bytes(payload))}"
     signature = signing_key.sign(signing_input.encode("ascii"))

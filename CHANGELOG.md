@@ -4,6 +4,25 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] — unreleased
+
+### Added
+
+- **ML-DSA (RFC 9964) post-quantum signing + verification — experimental opt-in.** New
+  `openvc.keys.MLDSASigningKey` (parameter sets `ML-DSA-44` / `ML-DSA-65` / `ML-DSA-87`) behind
+  the same `SigningKey` protocol — seed-only private keys, the RFC 9964 **`AKP`** JWK key type,
+  and external-mu (`sign_mu`) so an HSM keeps the private-key-never-in-process posture. VC-JWT and
+  SD-JWT VC issue/verify ML-DSA when a suite is constructed with **`allow_pq=True`**; it is
+  **never** in the default allow-list — the default suites reject `ML-DSA-*` before any crypto, and
+  opting in adds only the three names, never the classic weak algs. Verification routes through the
+  dependency-light `keys.verify_signature` (not PyJWT); `did:jwk` carries an `AKP` key unchanged.
+  Gated behind the new **`[pq]`** extra (`cryptography>=48` built against OpenSSL ≥ 3.5; check
+  `openvc.mldsa_available()`) — the core install is unchanged (`cryptography>=45` + `pyjwt`).
+  **Experimental**: no golden-fixture conformance claim (no stable third-party ML-DSA VC vectors
+  yet), Data Integrity PQ cryptosuites stay out (W3C FPWD), JOSE-only. Implements
+  [ADR-0004](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0004-ml-dsa-design.md).
+  ([#72](https://github.com/luisgf/openvc/issues/72))
+
 ## [1.18.0] — 2026-07-10
 
 ### Added
@@ -996,6 +1015,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.19.0]: https://github.com/luisgf/openvc/releases/tag/v1.19.0
 [1.18.0]: https://github.com/luisgf/openvc/releases/tag/v1.18.0
 [1.17.0]: https://github.com/luisgf/openvc/releases/tag/v1.17.0
 [1.16.0]: https://github.com/luisgf/openvc/releases/tag/v1.16.0

@@ -49,7 +49,7 @@ from .errors import (
     SignatureInvalid,
     UnsupportedAlgorithm,
 )
-from .vc_jwt import ALLOWED_ALGS, SigningKey
+from .vc_jwt import ALLOWED_ALGS, ALLOWED_ALGS_PQ, SigningKey
 
 DEFAULT_LEEWAY_S = 60
 _HASHES = {"sha-256": hashlib.sha256, "sha-384": hashlib.sha384, "sha-512": hashlib.sha512}
@@ -187,12 +187,16 @@ class SdJwtVcProofSuite:
     """SD-JWT VC issuance, holder presentation, and verification."""
 
     def __init__(
-        self, *, leeway_s: int = DEFAULT_LEEWAY_S, hash_name: str = _DEFAULT_HASH
+        self, *, leeway_s: int = DEFAULT_LEEWAY_S, hash_name: str = _DEFAULT_HASH,
+        allow_pq: bool = False,
     ) -> None:
         if hash_name not in _HASHES:
             raise SdJwtError(f"unsupported hash {hash_name!r}")
         self._leeway = leeway_s
         self._hash_name = hash_name
+        # allow_pq merges the EXPERIMENTAL ML-DSA algs into this suite's allow-list; the
+        # default suite rejects ML-DSA at the allow-list, before any crypto (ADR-0004).
+        self._algs = ALLOWED_ALGS | ALLOWED_ALGS_PQ if allow_pq else ALLOWED_ALGS
 
     # -- untrusted inspection --------------------------------------------- #
 
@@ -234,7 +238,7 @@ class SdJwtVcProofSuite:
         The leaf certificate's key MUST be the *signing_key*'s public key, and ``iss``
         must appear in the leaf's Subject Alternative Name, or verification fails closed.
         """
-        if signing_key.alg not in ALLOWED_ALGS:
+        if signing_key.alg not in self._algs:
             raise UnsupportedAlgorithm(f"key alg {signing_key.alg!r} not permitted")
 
         now = int(time.time())
@@ -290,7 +294,7 @@ class SdJwtVcProofSuite:
         """Holder side: attach a Key Binding JWT over the (all-disclosure)
         presentation, bound to *audience* and *nonce*. Returns the full
         ``<issuer-jwt>~<disclosures>~<KB-JWT>``."""
-        if holder_key.alg not in ALLOWED_ALGS:
+        if holder_key.alg not in self._algs:
             raise UnsupportedAlgorithm(f"holder key alg {holder_key.alg!r} not permitted")
         issuer_jwt, disclosures, _ = self._split(sd_jwt)
         presented = issuer_jwt + "~" + "".join(d + "~" for d in disclosures)
@@ -323,7 +327,7 @@ class SdJwtVcProofSuite:
         header, claims, signing_input, signature = self._decode_jws(issuer_jwt)
 
         alg = header.get("alg")
-        if alg not in ALLOWED_ALGS:                     # allow-list BEFORE crypto
+        if alg not in self._algs:                     # allow-list BEFORE crypto
             raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
         if header.get("typ") not in _ACCEPTED_ISSUER_TYP:
             raise SdJwtError(f"unexpected issuer JWT typ {header.get('typ')!r}")
@@ -455,7 +459,7 @@ class SdJwtVcProofSuite:
         if header.get("typ") != _KB_TYP:
             raise SdJwtError(f"KB-JWT typ must be {_KB_TYP!r}")
         alg = header.get("alg")
-        if alg not in ALLOWED_ALGS:
+        if alg not in self._algs:
             raise UnsupportedAlgorithm(f"KB-JWT algorithm {alg!r} is not permitted")
         if not isinstance(cnf, dict) or not isinstance(cnf.get("jwk"), dict):
             raise ClaimsInvalid("no cnf.jwk in the issuer JWT for key binding")

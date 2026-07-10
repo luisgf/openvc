@@ -362,6 +362,117 @@ class P256KeyAgreementKey:
 
 
 # --------------------------------------------------------------------------- #
+# ML-DSA (RFC 9964) — EXPERIMENTAL post-quantum signing (kty "AKP"), opt-in only
+# --------------------------------------------------------------------------- #
+
+# The three ML-DSA parameter sets registered as JOSE `alg` values (RFC 9964). The
+# parameter set lives in `alg`, not a `crv`: the AKP key type carries a seed-only
+# private key (`priv`) and the raw public key (`pub`).
+MLDSA_ALGS: frozenset[str] = frozenset({"ML-DSA-44", "ML-DSA-65", "ML-DSA-87"})
+_MLDSA_SEED_BYTES = 32
+
+
+def _mldsa_module() -> Any:
+    """Import the cryptography ML-DSA backend or raise a typed error. ML-DSA needs
+    ``cryptography>=48`` (the ``[pq]`` extra) built against OpenSSL >= 3.5."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric import mldsa
+    except ImportError as exc:                        # pragma: no cover - env dependent
+        raise InvalidKey(
+            "ML-DSA requires cryptography>=48: pip install 'openvc-core[pq]'") from exc
+    return mldsa
+
+
+def mldsa_available() -> bool:
+    """``True`` if ML-DSA is usable here — the module imports **and** the OpenSSL build
+    supports it (a wheel built against OpenSSL < 3.5 raises at first use even on
+    cryptography 49). Gate experimental ML-DSA paths and skip tests where unavailable."""
+    try:
+        _mldsa_module().MLDSA44PrivateKey.generate()
+        return True
+    except Exception:
+        return False
+
+
+def _mldsa_classes(alg: str) -> tuple[Any, Any]:
+    if alg not in MLDSA_ALGS:
+        raise InvalidKey(f"{alg!r} is not an ML-DSA algorithm")
+    mldsa = _mldsa_module()
+    suffix = alg.rsplit("-", 1)[-1]                   # "44" | "65" | "87"
+    return (getattr(mldsa, f"MLDSA{suffix}PrivateKey"),
+            getattr(mldsa, f"MLDSA{suffix}PublicKey"))
+
+
+class MLDSASigningKey:
+    """**Experimental** post-quantum ML-DSA (RFC 9964) signing key — opt-in, **not** a
+    production trust path (ADR-0004). Implements the :class:`SigningKey` protocol: ``alg``
+    is the parameter set (``ML-DSA-44`` / ``ML-DSA-65`` / ``ML-DSA-87``), the private key
+    is a 32-byte seed, and ``sign`` returns the raw ML-DSA signature — no R‖S transform,
+    it is already the JOSE-wire form.
+
+    An HSM/Vault backend uses external-mu (``sign_mu``) so the message never reaches the
+    device in the clear; this in-process backend is for dev, tests and low-assurance
+    issuance, exactly like the EC / Ed backends."""
+
+    def __init__(self, private_key: Any, kid: str, alg: str) -> None:
+        if alg not in MLDSA_ALGS:
+            raise InvalidKey(f"ML-DSA alg must be one of {sorted(MLDSA_ALGS)}, got {alg!r}")
+        self._sk = private_key
+        self._kid = kid
+        self._alg = alg
+
+    @property
+    def alg(self) -> str:
+        return self._alg
+
+    @property
+    def kid(self) -> str:
+        return self._kid
+
+    def sign(self, signing_input: bytes) -> bytes:
+        """Sign *signing_input*; returns the raw ML-DSA signature (JOSE-wire form)."""
+        try:
+            return self._sk.sign(signing_input)
+        except Exception as exc:                       # OpenSSL < 3.5 -> typed, fail closed
+            raise InvalidKey(f"ML-DSA signing failed ({self._alg}): {exc}") from exc
+
+    def public_jwk(self) -> dict[str, Any]:
+        """The public key as an RFC 9964 ``AKP`` JWK (``kty`` / ``alg`` / ``pub``)."""
+        return {"kty": "AKP", "alg": self._alg,
+                "pub": _b64url_encode(self._sk.public_key().public_bytes_raw())}
+
+    def private_jwk(self) -> dict[str, Any]:
+        """The private ``AKP`` JWK — adds the 32-byte seed ``priv``. Handle with care."""
+        return dict(self.public_jwk(), priv=_b64url_encode(self._sk.private_bytes_raw()))
+
+    @classmethod
+    def generate(cls, kid: str, *, alg: str = "ML-DSA-65") -> "MLDSASigningKey":
+        priv_cls, _ = _mldsa_classes(alg)
+        try:
+            return cls(priv_cls.generate(), kid, alg)
+        except InvalidKey:
+            raise
+        except Exception as exc:                       # OpenSSL < 3.5 -> typed
+            raise InvalidKey(f"ML-DSA unavailable ({alg}): {exc}") from exc
+
+    @classmethod
+    def from_seed(cls, seed: bytes, kid: str, *, alg: str = "ML-DSA-65") -> "MLDSASigningKey":
+        priv_cls, _ = _mldsa_classes(alg)
+        if len(seed) != _MLDSA_SEED_BYTES:
+            raise InvalidKey(f"ML-DSA seed must be {_MLDSA_SEED_BYTES} bytes, got {len(seed)}")
+        return cls(priv_cls.from_seed_bytes(seed), kid, alg)
+
+    @classmethod
+    def from_jwk(cls, jwk: dict[str, Any], kid: str) -> "MLDSASigningKey":
+        if jwk.get("kty") != "AKP" or "priv" not in jwk:
+            raise InvalidKey("not an AKP (ML-DSA) private JWK")
+        alg = jwk.get("alg")
+        if not isinstance(alg, str) or alg not in MLDSA_ALGS:
+            raise InvalidKey(f"unsupported AKP alg {alg!r}")
+        return cls.from_seed(_b64url_decode(jwk["priv"]), kid, alg=alg)
+
+
+# --------------------------------------------------------------------------- #
 # Dependency-light verification (for did:key self-contained verify + tests)
 # --------------------------------------------------------------------------- #
 
@@ -404,6 +515,11 @@ def verify_signature(
             ).public_key()
             pub.verify(der, signing_input, ec.ECDSA(hashes.SHA384()))
             return True
+        if alg in MLDSA_ALGS:                              # experimental PQ (RFC 9964)
+            _, pub_cls = _mldsa_classes(alg)               # typed InvalidKey if cryptography<48
+            pub_cls.from_public_bytes(_b64url_decode(public_jwk["pub"])).verify(
+                signature, signing_input)                  # raises InvalidSignature on failure
+            return True
         raise InvalidKey(f"unsupported alg {alg!r}")
     except InvalidSignature:
         return False
@@ -427,6 +543,8 @@ def signing_key_from_jwk(jwk: dict[str, Any], kid: str) -> "SigningKey":
         return P256SigningKey.from_jwk(jwk, kid)
     if kty == "EC" and crv == "P-384":
         return P384SigningKey.from_jwk(jwk, kid)
+    if kty == "AKP":                                   # experimental ML-DSA (RFC 9964)
+        return MLDSASigningKey.from_jwk(jwk, kid)
     raise InvalidKey(f"unsupported key type kty={kty!r} crv={crv!r}")
 
 
@@ -435,9 +553,12 @@ __all__ = [
     "InvalidKey",
     "KeyAgreementKey",
     "KeyBackendError",
+    "MLDSA_ALGS",
+    "MLDSASigningKey",
     "P256KeyAgreementKey",
     "P256SigningKey",
     "P384SigningKey",
+    "mldsa_available",
     "signing_key_from_jwk",
     "verify_signature",
 ]

@@ -53,6 +53,12 @@ from ._verify_common import check_validity_window
 # --------------------------------------------------------------------------- #
 
 ALLOWED_ALGS: frozenset[str] = frozenset({"ES256", "ES384", "EdDSA", "Ed25519"})
+
+# EXPERIMENTAL post-quantum algs (RFC 9964). NEVER in the default allow-list — merged in
+# only when a suite is constructed with allow_pq=True (ADR-0004 D5). The alg-confusion
+# defence is unchanged for everyone else: the allow-list check still runs before crypto,
+# and opting in adds ONLY these three names, never the classic weak algs.
+ALLOWED_ALGS_PQ: frozenset[str] = frozenset({"ML-DSA-44", "ML-DSA-65", "ML-DSA-87"})
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew on exp/nbf/iat
 
 # PyJWT (2.x) ships only the polymorphic "EdDSA"; teach a PRIVATE PyJWT instance the
@@ -122,8 +128,11 @@ def _split(token: str) -> tuple[str, str, str]:
 class VcJwtProofSuite:
     """VC-JWT (JOSE-secured Verifiable Credential) proof suite."""
 
-    def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S) -> None:
+    def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S, allow_pq: bool = False) -> None:
         self._leeway = leeway_s
+        # allow_pq merges the EXPERIMENTAL ML-DSA algs into this suite's allow-list; the
+        # default suite rejects ML-DSA at the allow-list, before any crypto (ADR-0004).
+        self._algs = ALLOWED_ALGS | ALLOWED_ALGS_PQ if allow_pq else ALLOWED_ALGS
 
     # -- untrusted inspection --------------------------------------------- #
 
@@ -174,30 +183,34 @@ class VcJwtProofSuite:
             raise MalformedToken("invalid JWS header") from exc
 
         alg = header.get("alg")
-        if alg not in ALLOWED_ALGS:                       # allow-list BEFORE crypto
+        if alg not in self._algs:                          # allow-list BEFORE crypto
             raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
 
-        key = self._jwk_to_key(public_key_jwk, alg)
-
-        try:
-            claims = _JWT.decode(                          # PyJWT instance that knows "Ed25519"
-                token,
-                key=key,
-                algorithms=[alg],                         # pinned, single alg
-                leeway=self._leeway,
-                audience=audience,
-                options={
-                    "require": ["iss"],
-                    "verify_signature": True,
-                    "verify_exp": True,
-                    "verify_nbf": True,
-                    "verify_aud": audience is not None,
-                },
-            )
-        except pyjwt.InvalidSignatureError as exc:
-            raise SignatureInvalid(str(exc)) from exc
-        except pyjwt.PyJWTError as exc:
-            raise ClaimsInvalid(str(exc)) from exc
+        if alg in ALLOWED_ALGS_PQ:
+            # ML-DSA is not a PyJWT algorithm — verify the signature through the
+            # dependency-light primitive and validate the JWT claims ourselves.
+            claims = self._verify_mldsa(token, alg, public_key_jwk, audience)
+        else:
+            key = self._jwk_to_key(public_key_jwk, alg)
+            try:
+                claims = _JWT.decode(                      # PyJWT instance that knows "Ed25519"
+                    token,
+                    key=key,
+                    algorithms=[alg],                     # pinned, single alg
+                    leeway=self._leeway,
+                    audience=audience,
+                    options={
+                        "require": ["iss"],
+                        "verify_signature": True,
+                        "verify_exp": True,
+                        "verify_nbf": True,
+                        "verify_aud": audience is not None,
+                    },
+                )
+            except pyjwt.InvalidSignatureError as exc:
+                raise SignatureInvalid(str(exc)) from exc
+            except pyjwt.PyJWTError as exc:
+                raise ClaimsInvalid(str(exc)) from exc
 
         credential = claims.get("vc")
         if not isinstance(credential, dict):
@@ -256,9 +269,60 @@ class VcJwtProofSuite:
         header = {"alg": signing_key.alg, "typ": "JWT", "kid": signing_key.kid}
 
         from ._jws import sign_compact          # local import breaks the _jws<->vc_jwt cycle
-        return sign_compact(header, payload, signing_key=signing_key)
+        return sign_compact(header, payload, signing_key=signing_key, allowed_algs=self._algs)
 
     # -- internals --------------------------------------------------------- #
+
+    def _verify_mldsa(
+        self, token: str, alg: str, public_key_jwk: dict[str, Any], audience: str | None,
+    ) -> dict[str, Any]:
+        """Verify an ML-DSA VC-JWT: signature via the dependency-light primitive (PyJWT
+        has no ML-DSA), then the JWT claims validated here."""
+        from ..keys import verify_signature
+        try:
+            header_b64, payload_b64, sig_b64 = token.split(".")
+        except ValueError as exc:
+            raise MalformedToken("not a compact JWS (need three parts)") from exc
+        signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+        try:
+            signature = _b64url_decode(sig_b64)
+            payload = _b64url_decode(payload_b64)
+        except (ValueError, TypeError) as exc:
+            raise MalformedToken("token is not valid base64url") from exc
+        if not verify_signature(alg=alg, public_jwk=public_key_jwk,
+                                signing_input=signing_input, signature=signature):
+            raise SignatureInvalid(f"{alg} signature does not verify")
+        try:
+            claims = json.loads(payload)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise MalformedToken("payload is not valid JSON") from exc
+        if not isinstance(claims, dict):
+            raise ClaimsInvalid("JWT payload must be a JSON object")
+        self._check_jwt_claims(claims, audience)
+        return claims
+
+    def _check_jwt_claims(self, claims: dict[str, Any], audience: str | None) -> None:
+        # Mirror the PyJWT gate for the ML-DSA path: require iss, enforce exp/nbf with the
+        # suite leeway, check aud when expected. Fail closed and typed.
+        if not isinstance(claims.get("iss"), str):
+            raise ClaimsInvalid("the 'iss' claim is required")
+        now = int(time.time())
+        exp, nbf = claims.get("exp"), claims.get("nbf")
+        if exp is not None:
+            if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+                raise ClaimsInvalid("'exp' must be a numeric date")
+            if now > exp + self._leeway:
+                raise ClaimsInvalid("token has expired")
+        if nbf is not None:
+            if isinstance(nbf, bool) or not isinstance(nbf, (int, float)):
+                raise ClaimsInvalid("'nbf' must be a numeric date")
+            if now < nbf - self._leeway:
+                raise ClaimsInvalid("token is not yet valid")
+        if audience is not None:
+            aud = claims.get("aud")
+            auds = aud if isinstance(aud, list) else [aud]
+            if audience not in auds:
+                raise ClaimsInvalid("audience mismatch")
 
     @staticmethod
     def _jwk_to_key(jwk: dict[str, Any], alg: str) -> Any:
@@ -315,6 +379,7 @@ class VcJwtProofSuite:
 
 __all__ = [
     "ALLOWED_ALGS",
+    "ALLOWED_ALGS_PQ",
     "ClaimsInvalid",
     "MalformedToken",
     "ProofError",

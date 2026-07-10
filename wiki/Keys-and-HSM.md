@@ -115,7 +115,8 @@ needs the *operation*, not the key material.
 Whatever the backend, the verifier accepts only `{ES256, ES384, EdDSA, Ed25519}` —
 checked **before** any crypto runs. RS\*/HS\*/`alg: none` are rejected
 outright; see the [Security model](Security-Model) for why this is
-non-negotiable.
+non-negotiable. An **experimental** opt-in widens this to post-quantum ML-DSA — see
+[Post-quantum](#post-quantum-ml-dsa-experimental) below; the default is unchanged.
 
 `Ed25519` is the [RFC 9864](https://www.rfc-editor.org/rfc/rfc9864)
 fully-specified name for EdDSA (which IANA has deprecated as polymorphic).
@@ -123,3 +124,35 @@ fully-specified name for EdDSA (which IANA has deprecated as polymorphic).
 key with `Ed25519SigningKey.generate(kid, alg="Ed25519")` (or `.from_jwk` /
 `.from_pem`). See [Versioning & deprecation](Versioning-and-Deprecation) for the
 migration and why `ESP256`/`ESP384` are not accepted yet.
+
+## Post-quantum: ML-DSA (experimental)
+
+> **Experimental — not a production trust path.** ML-DSA ([RFC 9964](https://www.rfc-editor.org/rfc/rfc9964))
+> ships behind an explicit opt-in, with **no golden-fixture conformance claim** (there are
+> no stable third-party ML-DSA VC vectors yet — the reason it is experimental). Design:
+> [ADR-0004](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0004-ml-dsa-design.md).
+
+`openvc.keys.MLDSASigningKey` is a post-quantum backend behind the **same `SigningKey`
+protocol**: `alg` is the parameter set (`ML-DSA-44` / `ML-DSA-65` / `ML-DSA-87`), the
+private key is a 32-byte seed, and the JWK is the RFC 9964 **`AKP`** key type
+(`kty: "AKP"`, `pub`, `priv` — no `crv`). It needs the `[pq]` extra (`cryptography>=48`
+built against OpenSSL ≥ 3.5); check availability with `openvc.mldsa_available()`.
+
+ML-DSA is **never** in the default allow-list — the default suites reject `ML-DSA-*`
+before any crypto. Opt in per suite with `allow_pq=True` (VC-JWT and SD-JWT VC only):
+
+<!-- docs: no-run -->
+```python
+from openvc import MLDSASigningKey
+from openvc.proof.vc_jwt import VcJwtProofSuite
+
+key = MLDSASigningKey.generate(kid="did:example:issuer#pq", alg="ML-DSA-65")
+token = VcJwtProofSuite(allow_pq=True).sign(credential, signing_key=key)
+result = VcJwtProofSuite(allow_pq=True).verify(token, public_key_jwk=key.public_jwk())
+```
+
+Opting in adds **only** the three ML-DSA names, never the classic weak algs. An HSM/Vault
+backend uses external-mu (`sign_mu`) so the message never reaches the device in the clear —
+the same private-key-never-in-process posture as the EC/Ed backends. Signatures are large
+(ML-DSA-65 ≈ 3.3 KB) — a caveat for SD-JWT VC and QR transport, not a blocker. Data
+Integrity quantum-resistant cryptosuites stay out (W3C FPWD); ML-DSA here is JOSE-only.
