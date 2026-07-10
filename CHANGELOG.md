@@ -32,11 +32,12 @@ All notable changes to **openvc** are documented here. The format follows
   per-credential isolation and **aborted the whole batch** (denial-of-service; not a
   wrong-accept) — reachable unauthenticated and, on CPython 3.10–3.13, with ~1 KB of
   input. SD-JWT `_unpack` now caps recursion at depth 100 (parity with `cbor`=64 /
-  `_jcs`=100), and **every attacker-facing `json.loads`** — SD-JWT, VC-JWT peek/verify,
-  `_jws`, the enveloped unwrap, `jwe`, and the `did:jwk` / `did:webvh` / fetch /
-  status-resolver paths — now maps `RecursionError` to a typed error, so hostile input
-  fails closed and `verify_many` isolates it across all formats. Resolves the **R1**
-  residual risk from the audit pack. ([#117](https://github.com/luisgf/openvc/issues/117))
+  `_jcs`=100), the did:webvh genesis SCID walk (`_deep_replace_scid`) is depth-bounded
+  too, and **every attacker-facing `json.loads`** — SD-JWT, VC-JWT peek/verify, `_jws`,
+  the enveloped unwrap, `jwe`, and the `did:jwk` / `did:webvh` / fetch / status-resolver
+  paths — now maps `RecursionError` to a typed error, so hostile input fails closed and
+  `verify_many` isolates it across all formats. Resolves the **R1** residual risk from
+  the audit pack. ([#117](https://github.com/luisgf/openvc/issues/117))
 
 ## [1.20.0] — 2026-07-10
 
