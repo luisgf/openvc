@@ -125,6 +125,30 @@ The full round-trip — including a stand-in wallet encryptor — is runnable in
 openvc only **decrypts** (a verifier act); producing JWEs for wallets is out
 of scope.
 
+## W3C Digital Credentials API (origin-bound)
+
+CIR (EU) 2025/1569 pins remote presentation to OpenID4VP **plus the W3C Digital
+Credentials API** (Chrome 141 / Safari 26 ship it). A DC-API-delivered response
+binds to the **calling web origin** rather than a redirect URI, so per OpenID4VP 1.0
+Appendix A its audience is always `origin:<origin>`, **never** the `client_id`. Pass
+`expected_origins` (the origins your verifier serves) instead of `client_id` — a
+Presentation is accepted only if its signed `aud` is `origin:<o>` for an `o` in the
+list:
+
+<!-- docs: no-run -->
+```python
+result = verify_vp_token(
+    vp_token, dcql_query=dcql_query, nonce=NONCE,
+    expected_origins=["https://verifier.example.com"])   # not client_id
+```
+
+The two response modes map to the two calls: **`dc_api`** (unencrypted) →
+`verify_vp_token`, **`dc_api.jwt`** (an encrypted JWE) → `verify_encrypted_vp_response`
+— both take `expected_origins`. Pass **exactly one** of `client_id` (redirect /
+`direct_post`) or `expected_origins` (DC API); the `nonce` binding is unchanged. This
+is stateless consume-and-verify — building the DC-API request is browser/wallet
+plumbing, out of scope.
+
 ## Data Integrity presentations
 
 A Data Integrity presentation binds with `challenge` / `domain` instead of

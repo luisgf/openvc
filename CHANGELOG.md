@@ -4,6 +4,24 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] — unreleased
+
+Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
+
+### Added
+
+- **OpenID4VP over the W3C Digital Credentials API — origin-bound `vp_token` verification.**
+  `verify_vp_token` / `verify_encrypted_vp_response` gain an **`expected_origins`** parameter for
+  the DC API flow (CIR (EU) 2025/1569 pins remote presentation to OpenID4VP + the DC API). A
+  DC-API-delivered response binds to the **calling web origin**, so per OpenID4VP 1.0 Appendix A
+  its audience is always **`origin:<origin>`**, never the `client_id`; a Presentation is accepted
+  only if its signed `aud` is `origin:<o>` for an `o` in `expected_origins`. The two response
+  modes map to the two calls: **`dc_api`** (unencrypted) → `verify_vp_token`, **`dc_api.jwt`**
+  (encrypted JWE) → `verify_encrypted_vp_response`. `client_id` is now optional — pass **exactly
+  one** of `client_id` (redirect / `direct_post`) or `expected_origins` (DC API); the `nonce`
+  binding, formats and holder-binding are unchanged. Stateless consume-and-verify — building the
+  DC-API request is browser/wallet plumbing, out of scope. ([#66](https://github.com/luisgf/openvc/issues/66))
+
 ## [1.15.0] — 2026-07-10
 
 Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
