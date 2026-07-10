@@ -45,8 +45,9 @@ def _did_web_url(did: str) -> str:
 def _validated_document(raw: dict[str, Any], did: str) -> DidDocument:
     """Parse *raw* and apply the did:web id integrity check (shared sync/async)."""
     doc = parse_did_document(raw)
-    if doc.id and doc.id != did:                    # basic integrity check
-        raise DidResolutionError(f"document id {doc.id!r} != requested {did!r}")
+    if doc.id != did:                               # bind the document to the requested DID —
+        raise DidResolutionError(                   # a missing/empty id fails too (did:webvh is
+            f"document id {doc.id!r} != requested {did!r}")   # strict here; don't be laxer)
     return doc
 
 

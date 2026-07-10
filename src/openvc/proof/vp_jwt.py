@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ._jws import parse_compact, sign_compact, verify_compact
+from ._verify_common import check_jwt_temporal
 from .vc_jwt import ClaimsInvalid, MalformedToken, SigningKey
 
 DEFAULT_LEEWAY_S = 60
@@ -204,19 +205,8 @@ class VpJwtProofSuite:
             raise ClaimsInvalid(f"could not resolve holder key: {exc}") from exc
 
     def _check_temporal(self, claims: dict[str, Any]) -> None:
-        now = int(time.time())
-        exp = claims.get("exp")
-        if exp is not None:
-            if isinstance(exp, bool) or not isinstance(exp, (int, float)):
-                raise ClaimsInvalid("exp claim must be a numeric timestamp")
-            if now > exp + self._leeway:
-                raise ClaimsInvalid("presentation has expired")
-        nbf = claims.get("nbf")
-        if nbf is not None:
-            if isinstance(nbf, bool) or not isinstance(nbf, (int, float)):
-                raise ClaimsInvalid("nbf claim must be a numeric timestamp")
-            if now + self._leeway < nbf:
-                raise ClaimsInvalid("presentation is not yet valid")
+        # single-sourced with the other JOSE suites; non-finite exp/nbf fails closed
+        check_jwt_temporal(claims, leeway_s=self._leeway, subject="presentation")
 
     @staticmethod
     def _check_audience(aud: Any, expected: str) -> None:

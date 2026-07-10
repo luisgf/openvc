@@ -18,12 +18,15 @@ can catch the whole verification-failure family with one ``except``.
 """
 from __future__ import annotations
 
+import math
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..observability import logger, span
 from .errors import (
+    ClaimsInvalid,
     CredentialExpired,
     CredentialNotYetValid,
     KeyResolutionError,
@@ -118,6 +121,34 @@ def check_validity_window(
     proof_expires = _bound(proof, "expires", "expirationDate")
     if proof_expires is not None and instant - leeway > proof_expires:
         raise CredentialExpired(f"proof expired at {proof_expires.isoformat()}")
+
+
+def check_jwt_temporal(
+    claims: dict[str, Any], *, leeway_s: int, subject: str = "token",
+    now: int | None = None,
+) -> None:
+    """Enforce a JWT's ``exp``/``nbf`` NumericDate claims, fail-closed.
+
+    Single-sources the JOSE temporal rule for the SD-JWT VC, VP-JWT and VC-JWT (ML-DSA)
+    paths so it cannot drift between them. A present ``exp``/``nbf`` that is boolean,
+    non-numeric, or **non-finite** (``NaN``/``Infinity`` — which ``json.loads`` accepts and
+    which would make every comparison ``False``, i.e. *never expire*) is rejected; skipping
+    that would be a fail-open expiry bypass. *now* pins the instant (epoch seconds) for
+    deterministic tests; ``None`` uses the current time.
+    """
+    current = int(time.time()) if now is None else now
+    exp = claims.get("exp")
+    if exp is not None:
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
+            raise ClaimsInvalid(f"{subject} exp must be a finite numeric timestamp")
+        if current > exp + leeway_s:
+            raise ClaimsInvalid(f"{subject} has expired")
+    nbf = claims.get("nbf")
+    if nbf is not None:
+        if isinstance(nbf, bool) or not isinstance(nbf, (int, float)) or not math.isfinite(nbf):
+            raise ClaimsInvalid(f"{subject} nbf must be a finite numeric timestamp")
+        if current + leeway_s < nbf:
+            raise ClaimsInvalid(f"{subject} is not yet valid")
 
 
 def check_proof_purpose(proof: dict[str, Any], expected: str | None) -> None:
@@ -248,6 +279,7 @@ __all__ = [
     "MalformedTimestamp",
     "PresentationBindingError",
     "ProofPurposeMismatch",
+    "check_jwt_temporal",
     "check_presentation_binding",
     "check_proof_purpose",
     "check_validity_window",

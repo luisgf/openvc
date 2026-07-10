@@ -24,6 +24,19 @@ milestone — the 2026-07-10 internal-audit hardening wave.
   pyld error), a malformed Ed25519 JWK (`ProofMalformed`), a lone surrogate in JCS
   (`JcsError`), and a non-JSON-object EBSI registry `200` (`MalformedRegistryResponse`).
   ([#99](https://github.com/luisgf/openvc/issues/99))
+- **Verify-path consistency & fail-closed defaults across formats.** Several checks were
+  hardened on one proof family but not its siblings: the JOSE temporal check is now
+  single-sourced (`_verify_common.check_jwt_temporal`) and rejects a **non-finite**
+  `exp`/`nbf` (`NaN`/`Infinity`, which `json.loads` accepts and which never expires) on
+  the SD-JWT VC and VP-JWT paths too, not only VC-JWT; VC-JWT now **pins the EC curve to
+  the alg** (an `ES256` header can no longer verify against a P-384 key), matching
+  `keys.verify_signature`; `verify_vp_token`'s `jwt_vc_json` lane forwards
+  `require_status=False` like the `dc+sd-jwt` and `ldp_vc` lanes, so an embedded VC that
+  carries a `credentialStatus` is no longer wrongly rejected with `StatusUnavailable`;
+  `did:web` now requires the resolved document's `id` to equal the requested DID (a
+  missing `id` no longer skips the binding); and a malformed (non-string)
+  `credentialSchema.digestSRI` fails closed instead of silently dropping the integrity
+  pin. ([#101](https://github.com/luisgf/openvc/issues/101))
 
 ### Security
 
@@ -35,6 +48,12 @@ milestone — the 2026-07-10 internal-audit hardening wave.
   witness co-signatures, so any *active* policy (a `threshold` of any type that is not an
   explicit `0`/`false`, or a non-empty `witnesses` list) is now refused.
   ([#100](https://github.com/luisgf/openvc/issues/100))
+- **SD-JWT key binding is no longer accepted without a verifier nonce/aud to bind it.**
+  When a verifier set `require_key_binding=True` but passed neither `nonce` nor
+  `audience`, the KB-JWT's signature and `sd_hash` were checked but not its binding to a
+  challenge/verifier — so a presentation built for verifier A satisfied verifier B
+  (replay). Requiring key binding now also requires a non-null `nonce` and `audience`,
+  matching VP-JWT's "no unbound mode". ([#101](https://github.com/luisgf/openvc/issues/101))
 
 ## [1.19.1] — 2026-07-10
 
