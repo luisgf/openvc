@@ -116,6 +116,10 @@ lists, remote HSM signing, EU Trusted Lists, EBSI — has a guide in the
   runs *before* any crypto (`alg:none`, RS\*, HS\* never reach a verifier); a
   declared credential status without a resolver rejects; an unparseable
   timestamp rejects; the JWT envelope is reconciled with the embedded credential.
+- **Post-quantum ready (experimental).** ML-DSA (RFC 9964, `ML-DSA-44/65/87`) signs and
+  verifies VC-JWT / SD-JWT VC behind an explicit opt-in (`allow_pq=True`) and the `[pq]`
+  extra — first-mover space; no maintained Python VC library signs ML-DSA today. Never a
+  default trust path; the allow-list above is unchanged unless you opt in.
 - **SSRF-guarded network.** Every issuer-named URL (`did:web`, well-known,
   status lists, schemas) goes through an https-only fetch that blocks
   private/loopback/link-local ranges, refuses redirects, and pins the

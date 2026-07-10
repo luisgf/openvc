@@ -274,3 +274,13 @@ def test_sign_sets_exp_when_requested():
     token = VcJwtProofSuite().sign(_credential(), signing_key=key, expires_in_s=3600)
     claims = VcJwtProofSuite().peek_claims(token)
     assert claims["exp"] - claims["iat"] == 3600
+
+
+@pytest.mark.parametrize("exp", [float("inf"), float("nan")], ids=["inf", "nan"])
+def test_non_finite_exp_fails_closed_typed(exp):
+    # a signed non-finite exp must fail closed as a typed ClaimsInvalid, never leak an
+    # OverflowError from PyJWT's decode (adversarial-review hardening, ML-DSA PR).
+    key = Ed25519SigningKey.generate(kid=f"{ISSUER}#k")
+    token = _signed(key, {"iss": ISSUER, "exp": exp, "vc": _credential()})
+    with pytest.raises(ClaimsInvalid):
+        VcJwtProofSuite().verify(token, public_key_jwk=key.public_jwk())

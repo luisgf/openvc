@@ -14,9 +14,11 @@ from .errors import OpenvcError  # noqa: E402
 from .keys import (  # noqa: E402
     Ed25519SigningKey,
     KeyAgreementKey,
+    MLDSASigningKey,
     P256KeyAgreementKey,
     P256SigningKey,
     P384SigningKey,
+    mldsa_available,
     signing_key_from_jwk,
     verify_signature,
 )
@@ -46,9 +48,11 @@ __all__ = [
     "BatchResult",
     "VerificationError",
     "Ed25519SigningKey",
+    "MLDSASigningKey",
     "P256SigningKey",
     "P384SigningKey",
     "SigningKey",
+    "mldsa_available",
     "KeyAgreementKey",
     "P256KeyAgreementKey",
     "signing_key_from_jwk",
