@@ -25,6 +25,17 @@ milestone — the 2026-07-10 internal-audit hardening wave.
   (`JcsError`), and a non-JSON-object EBSI registry `200` (`MalformedRegistryResponse`).
   ([#99](https://github.com/luisgf/openvc/issues/99))
 
+### Security
+
+- **`did:webvh` witness-policy refusal is no longer bypassable via a non-integer
+  threshold.** A log declaring a witness policy with a float or string `threshold`, or a
+  `witnesses` list with no `threshold` at all, slipped past the integer-only fail-closed
+  gate — so a single compromised `updateKey` could forge an entry and silently downgrade
+  a witness-protected DID to the un-witnessed trust model. openvc still cannot verify
+  witness co-signatures, so any *active* policy (a `threshold` of any type that is not an
+  explicit `0`/`false`, or a non-empty `witnesses` list) is now refused.
+  ([#100](https://github.com/luisgf/openvc/issues/100))
+
 ## [1.19.1] — 2026-07-10
 
 ### Added
