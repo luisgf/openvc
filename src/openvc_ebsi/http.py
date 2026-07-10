@@ -21,9 +21,12 @@ Pass ``client.get_json`` wherever a ``Fetch`` is expected (e.g. into the resolve
 
 from __future__ import annotations
 
+import json
 import random
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -33,6 +36,11 @@ from openvc import __version__
 from openvc.cache import TtlCache
 
 from .errors import EbsiError, MalformedRegistryResponse
+
+# EBSI registry reads (DID docs, TIR entries, schemas) are small; bound the memory an
+# attacker-influenced (or compromised) allow-listed host can force. The general fetch caps
+# did:web at 1 MiB; TIR walks can be a little larger, so allow more headroom here.
+MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
 # Hosts per EBSI environment (used to seed the SSRF allow-list).
 EBSI_HOSTS: dict[str, str] = {
@@ -90,6 +98,25 @@ class RetryPolicy:
 # Client
 # --------------------------------------------------------------------------- #
 
+def _parse_retry_after(value: str | None) -> float | None:
+    """`Retry-After` as seconds, supporting both the delta-seconds and the HTTP-date forms
+    (RFC 9110 §10.2.3). Returns None when absent or unparseable (caller keeps its backoff)."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
 class EbsiHttpClient:
     def __init__(
         self,
@@ -101,8 +128,11 @@ class EbsiHttpClient:
         retry: RetryPolicy | None = None,
         verify_tls: bool = True,
         user_agent: str = f"openvc-core/{__version__}",
+        max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> None:
         self._allowed = {h.lower() for h in allowed_hosts}
+        self._timeout_s = timeout_s
+        self._max_bytes = max_response_bytes
         # ADR-0001 D2: EBSI sends no Cache-Control/ETag, so freshness is OUR call.
         # With no revalidation path and DID docs that change on key rotation, keep
         # the TTL short (minutes) and configurable per deployment.
@@ -132,16 +162,25 @@ class EbsiHttpClient:
 
         last_exc: Exception | None = None
         for attempt in range(self._retry.attempts):
+            body: bytes | None = None
             try:
-                resp = self._client.get(url)
+                # Stream so the body is read against a size cap AND a total wall-clock
+                # deadline (not just the per-socket timeout) — a compromised/flaky allow-listed
+                # host cannot exhaust memory with a huge body nor pin the client with a slow drip.
+                with self._client.stream("GET", url) as resp:
+                    status = resp.status_code
+                    if status == 200:
+                        body = self._read_capped(resp, url)
+                    else:
+                        resp.read()                  # drain the small error body, reuse the conn
             except httpx.TransportError as exc:      # network error / timeout
                 last_exc = exc
                 self._sleep_before_retry(attempt)
                 continue
 
-            if resp.status_code == 200:
+            if status == 200:
                 try:
-                    data = resp.json()
+                    data = json.loads(body or b"")
                 except ValueError as exc:                # a 200 with a non-JSON body
                     raise MalformedRegistryResponse(
                         f"registry returned a 200 with a non-JSON body: {url}") from exc
@@ -150,18 +189,30 @@ class EbsiHttpClient:
                         f"registry returned a 200 that is not a JSON object: {url}")
                 self._cache.set(url, data)           # only cache successes
                 return data
-            if resp.status_code == 404:
+            if status == 404:
                 raise HttpNotFound("not found", status=404, url=url)
-            if resp.status_code in self._retry.retry_statuses:
+            if status in self._retry.retry_statuses:
                 self._sleep_before_retry(attempt, resp)
-                last_exc = HttpError("transient", status=resp.status_code, url=url)
+                last_exc = HttpError("transient", status=status, url=url)
                 continue
-            raise HttpError(f"unexpected status {resp.status_code}",
-                            status=resp.status_code, url=url)
+            raise HttpError(f"unexpected status {status}", status=status, url=url)
 
         raise HttpTransientExhausted(
             f"gave up after {self._retry.attempts} attempts: {last_exc}", url=url
         )
+
+    def _read_capped(self, resp: httpx.Response, url: str) -> bytes:
+        """Read the streamed body against the size cap and a total wall-clock deadline."""
+        deadline = time.monotonic() + self._timeout_s
+        body = bytearray()
+        for chunk in resp.iter_bytes():
+            if time.monotonic() > deadline:
+                raise HttpError(f"read exceeded {self._timeout_s:g}s deadline", url=url)
+            body += chunk
+            if len(body) > self._max_bytes:
+                raise HttpError(
+                    f"response exceeds {self._max_bytes} bytes", status=200, url=url)
+        return bytes(body)
 
     # -- internals --------------------------------------------------------- #
 
@@ -177,9 +228,9 @@ class EbsiHttpClient:
             return
         delay = self._retry.backoff(attempt)
         if resp is not None:
-            retry_after = resp.headers.get("Retry-After")
-            if retry_after and retry_after.isdigit():
-                delay = max(delay, float(retry_after))
+            secs = _parse_retry_after(resp.headers.get("Retry-After"))
+            if secs is not None:
+                delay = max(delay, secs)
         time.sleep(delay)
 
     # -- lifecycle --------------------------------------------------------- #

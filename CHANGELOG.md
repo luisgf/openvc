@@ -63,6 +63,15 @@ milestone — the 2026-07-10 internal-audit hardening wave.
   process; and the JCS canonicalizer serialises integers beyond ±2^53 **as IEEE-754
   doubles** (RFC 8785 §3.2.2.3) so a JCS credential with a large integer canonicalizes
   identically to other implementations. ([#102](https://github.com/luisgf/openvc/issues/102))
+- **Uniform resource limits on the network and codec surface.** The EBSI HTTP client now
+  streams responses under a **size cap** and a **total wall-clock deadline** (it previously
+  had only a per-socket timeout and no size bound, so a large or slow-drip body from an
+  allow-listed host could exhaust memory or pin the client); the general `did:web` fetch
+  gained the same wall-clock deadline (chunked `read1`); `jwe.decrypt_compact` bounds the
+  token size before decoding; `multibase` caps the base58 input length (its decode is
+  O(n²)) and the multicodec varint length; and the EBSI `Retry-After` header now honours
+  the HTTP-date form as well as delta-seconds.
+  ([#103](https://github.com/luisgf/openvc/issues/103))
 
 ## [1.19.1] — 2026-07-10
 

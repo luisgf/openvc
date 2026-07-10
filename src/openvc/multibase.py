@@ -12,6 +12,14 @@ from .errors import OpenvcError
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _B58_INDEX = {c: i for i, c in enumerate(_B58)}
 
+# base58 decode builds a big integer with O(n²) cost; multibase values openvc handles are
+# key material / signatures (well under 200 chars), so cap the input generously to bound the
+# work on an attacker-supplied publicKeyMultibase / proofValue (the fetch is capped at 1 MiB).
+_MAX_B58_LEN = 4096
+# A multicodec varint is a handful of bytes; bound it so a long run of 0x80 continuation
+# bytes cannot build an unbounded shift/integer.
+_MAX_VARINT_BYTES = 9
+
 
 class MultibaseError(OpenvcError):
     """Malformed multibase / base58 / varint input."""
@@ -19,6 +27,8 @@ class MultibaseError(OpenvcError):
 
 def b58btc_decode(s: str) -> bytes:
     """Decode a base58btc string to bytes (leading '1's map to leading NUL)."""
+    if len(s) > _MAX_B58_LEN:
+        raise MultibaseError(f"base58 input too long ({len(s)} > {_MAX_B58_LEN})")
     num = 0
     for ch in s:
         try:
@@ -60,6 +70,8 @@ def read_varint(data: bytes) -> tuple[int, int]:
     """
     result = shift = 0
     for i, byte in enumerate(data):
+        if i >= _MAX_VARINT_BYTES:
+            raise MultibaseError("multicodec varint too long")
         result |= (byte & 0x7F) << shift
         if not byte & 0x80:
             return result, i + 1
