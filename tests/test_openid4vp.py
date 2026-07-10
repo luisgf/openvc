@@ -412,3 +412,97 @@ def test_encrypted_response_still_enforces_binding(issuer, holder):
         verify_encrypted_vp_response(
             jwe, key=verifier_key, dcql_query=_dcql_sd_jwt(),
             nonce="a-different-nonce", client_id=CLIENT_ID)
+
+
+# --------------------------------------------------------------------------- #
+# Digital Credentials API — origin-bound audience (issue #66)
+#
+# Over the W3C DC API the audience of the presentation is ALWAYS `origin:<origin>`,
+# never the client_id (OpenID4VP 1.0 Appendix A). `verify_vp_token(expected_origins=…)`
+# accepts a presentation whose (signed) aud is `origin:<o>` for an o in that list.
+# --------------------------------------------------------------------------- #
+
+VERIFIER_ORIGIN = "https://verifier.example.com"
+ORIGIN_AUD = "origin:" + VERIFIER_ORIGIN
+
+
+def test_dc_api_sd_jwt_binds_to_calling_origin(issuer, holder):
+    pres = _sd_jwt_presentation(issuer, holder, audience=ORIGIN_AUD)
+    result = verify_vp_token({"my_credential": [pres]}, dcql_query=_dcql_sd_jwt(),
+                             nonce=NONCE, expected_origins=[VERIFIER_ORIGIN])
+    assert result.presentations[0].format == FORMAT_SD_JWT_VC
+
+
+def test_dc_api_accepts_one_of_several_expected_origins(issuer, holder):
+    pres = _sd_jwt_presentation(issuer, holder, audience=ORIGIN_AUD)
+    result = verify_vp_token(
+        {"my_credential": [pres]}, dcql_query=_dcql_sd_jwt(), nonce=NONCE,
+        expected_origins=["https://other.example", VERIFIER_ORIGIN])
+    assert result.presentations
+
+
+def test_dc_api_rejects_origin_not_in_expected(issuer, holder):
+    pres = _sd_jwt_presentation(issuer, holder, audience=ORIGIN_AUD)
+    with pytest.raises(ClaimsInvalid):
+        verify_vp_token({"my_credential": [pres]}, dcql_query=_dcql_sd_jwt(),
+                        nonce=NONCE, expected_origins=["https://attacker.example"])
+
+
+def test_dc_api_rejects_plain_client_id_audience(issuer, holder):
+    # A presentation bound to a plain client_id (not `origin:`) must not pass DC API mode.
+    pres = _sd_jwt_presentation(issuer, holder, audience=CLIENT_ID)
+    with pytest.raises(ClaimsInvalid):
+        verify_vp_token({"my_credential": [pres]}, dcql_query=_dcql_sd_jwt(),
+                        nonce=NONCE, expected_origins=[VERIFIER_ORIGIN])
+
+
+def test_dc_api_still_binds_the_nonce(issuer, holder):
+    pres = _sd_jwt_presentation(issuer, holder, audience=ORIGIN_AUD, nonce="attacker-nonce")
+    with pytest.raises(ClaimsInvalid):
+        verify_vp_token({"my_credential": [pres]}, dcql_query=_dcql_sd_jwt(),
+                        nonce=NONCE, expected_origins=[VERIFIER_ORIGIN])
+
+
+def test_dc_api_origin_bound_presentation_is_not_replayable_via_client_id(issuer, holder):
+    # A presentation minted for a DC-API origin cannot be replayed on the direct_post
+    # (client_id) path — its aud is `origin:…`, not the client_id.
+    pres = _sd_jwt_presentation(issuer, holder, audience=ORIGIN_AUD)
+    with pytest.raises(ClaimsInvalid):
+        verify_vp_token({"my_credential": [pres]}, dcql_query=_dcql_sd_jwt(),
+                        nonce=NONCE, client_id=CLIENT_ID)
+
+
+def test_requires_exactly_one_of_client_id_or_expected_origins(issuer, holder):
+    pres = _sd_jwt_presentation(issuer, holder, audience=ORIGIN_AUD)
+    vp = {"my_credential": [pres]}
+    with pytest.raises(ClaimsInvalid):        # neither
+        verify_vp_token(vp, dcql_query=_dcql_sd_jwt(), nonce=NONCE)
+    with pytest.raises(ClaimsInvalid):        # both
+        verify_vp_token(vp, dcql_query=_dcql_sd_jwt(), nonce=NONCE,
+                        client_id=CLIENT_ID, expected_origins=[VERIFIER_ORIGIN])
+    with pytest.raises(ClaimsInvalid):        # empty origins
+        verify_vp_token(vp, dcql_query=_dcql_sd_jwt(), nonce=NONCE, expected_origins=[])
+    with pytest.raises(ClaimsInvalid):        # a bare str would split into per-char origins
+        verify_vp_token(vp, dcql_query=_dcql_sd_jwt(), nonce=NONCE,
+                        expected_origins=VERIFIER_ORIGIN)
+    with pytest.raises(ClaimsInvalid):        # blank / whitespace origin
+        verify_vp_token(vp, dcql_query=_dcql_sd_jwt(), nonce=NONCE, expected_origins=["   "])
+
+
+def test_dc_api_peek_fails_closed_on_deeply_nested_json():
+    # A hostile deeply-nested JSON payload in the peeked KB-JWT/VP-JWT segment must fail
+    # closed (-> None -> ClaimsInvalid), not escape as a bare RecursionError — the peek
+    # runs before any signature check, so it is attacker-triggerable.
+    import base64
+    import sys
+    from openvc.openid4vp import _peek_audience
+
+    nested = '{"a":' * 5000 + '1' + '}' * 5000
+    seg = base64.urlsafe_b64encode(nested.encode()).rstrip(b"=").decode()
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(1000)
+    try:
+        assert _peek_audience(FORMAT_SD_JWT_VC, f"aaa.bbb.ccc~x.{seg}.s") is None
+        assert _peek_audience(FORMAT_JWT_VC, f"h.{seg}.s") is None
+    finally:
+        sys.setrecursionlimit(old)

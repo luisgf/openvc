@@ -12,9 +12,11 @@ Presentations 1.0 (Final, 2025-07-09). Given the ``vp_token`` a wallet returned,
   2. routes each Presentation to the matching proof suite by the query's ``format``
      — ``dc+sd-jwt`` (SD-JWT VC + KB-JWT) and ``jwt_vc_json`` (a W3C VP-JWT); and
   3. verifies each Presentation's proof **and its holder binding**: the transaction
-     ``nonce`` and the audience ``client_id`` (OpenID4VP 1.0 §14.2). Per the spec the
-     audience is the **full, prefixed** Client Identifier (e.g.
-     ``x509_san_dns:client.example.org``), so *client_id* is compared verbatim.
+     ``nonce`` and the audience (OpenID4VP 1.0 §14.2). The audience is either the
+     **full, prefixed** Client Identifier (e.g. ``x509_san_dns:client.example.org``,
+     the redirect / ``direct_post`` flow — pass *client_id*), or — over the **W3C
+     Digital Credentials API** — the calling web ``origin:<origin>`` (Appendix A; pass
+     *expected_origins*). Exactly one is given.
 
 This is deliberately **not** an OpenID4VP framework: it builds no Authorization
 Request, hosts no ``request_uri``, and keeps no session/state — the verifier owns the
@@ -40,10 +42,11 @@ policy separately with :func:`openvc.verify_credential` on the returned credenti
 """
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .errors import OpenvcError
 from .proof._verify_common import DEFAULT_LEEWAY_S
@@ -132,12 +135,39 @@ class VpTokenVerification:
 # Verification
 # --------------------------------------------------------------------------- #
 
+def _dc_api_accepted_auds(
+    client_id: str | None, expected_origins: Sequence[str] | None,
+) -> frozenset[str] | None:
+    """Validate the audience inputs and, for the DC API flow, return the accepted
+    ``origin:<origin>`` audience set. Exactly one of *client_id* (redirect / direct_post)
+    or *expected_origins* (Digital Credentials API) must be given."""
+    if (client_id is None) == (expected_origins is None):
+        raise ClaimsInvalid(
+            "pass exactly one of client_id (redirect / direct_post) or "
+            "expected_origins (the W3C Digital Credentials API)")
+    if expected_origins is not None:
+        # A bare str is a Sequence[str] that iterates into single characters — reject it
+        # (and any non-list/tuple, empty, or blank/whitespace origin) so a single origin
+        # passed as a string is a hard error, not silently split into per-character origins.
+        if (isinstance(expected_origins, (str, bytes))
+                or not isinstance(expected_origins, (list, tuple))
+                or not expected_origins
+                or not all(isinstance(o, str) and o and o == o.strip() for o in expected_origins)):
+            raise ClaimsInvalid(
+                "expected_origins must be a non-empty list/tuple of non-blank origin strings")
+        return frozenset("origin:" + o for o in expected_origins)
+    if not client_id:
+        raise ClaimsInvalid("verify_vp_token requires a non-empty client_id")
+    return None
+
+
 def verify_vp_token(
     vp_token: Mapping[str, Any] | str,
     *,
     dcql_query: Mapping[str, Any],
     nonce: str,
-    client_id: str,
+    client_id: str | None = None,
+    expected_origins: Sequence[str] | None = None,
     resolver: Any = None,
     now: datetime | None = None,
     leeway_s: int = DEFAULT_LEEWAY_S,
@@ -147,12 +177,24 @@ def verify_vp_token(
     """Verify an OpenID4VP 1.0 ``vp_token`` against the query and request binding.
 
     *vp_token* is the response object (or its JSON string). *dcql_query* is the
-    ``dcql_query`` sent in the Authorization Request. *nonce* and *client_id* are the
-    request's values the holder binding must match — *client_id* is the **full,
-    prefixed** Client Identifier (e.g. ``x509_san_dns:verifier.example``), compared
-    verbatim against the KB-JWT / VP-JWT ``aud``. *resolver* resolves issuer/holder
-    keys (a :class:`~openvc.did.base.DidResolverRegistry`); *now* pins the evaluation
-    instant for the validity window.
+    ``dcql_query`` sent in the Authorization Request. *nonce* is the request's
+    transaction nonce, bound on every Presentation.
+
+    Pass **exactly one** of *client_id* or *expected_origins* — the audience the holder
+    binding must match:
+
+    * *client_id* — the redirect / ``direct_post`` flow: the **full, prefixed** Client
+      Identifier (e.g. ``x509_san_dns:verifier.example``), compared verbatim against the
+      KB-JWT / VP-JWT ``aud``.
+    * *expected_origins* — the **W3C Digital Credentials API** flow (``dc_api`` response
+      mode): a DC-API-delivered response binds to the **calling web origin**, so per
+      OpenID4VP 1.0 Appendix A the audience is always ``origin:<origin>`` (never the
+      client_id). Pass the origins your verifier serves (e.g. ``["https://verifier.example"]``);
+      a Presentation is accepted only if its signed ``aud`` is ``origin:<o>`` for an *o*
+      in the list. CIR (EU) 2025/1569 pins remote presentation to OpenID4VP + the DC API.
+
+    *resolver* resolves issuer/holder keys (a :class:`~openvc.did.base.DidResolverRegistry`);
+    *now* pins the evaluation instant for the validity window.
 
     Returns a :class:`VpTokenVerification`. Raises :class:`VpTokenMalformed` on a
     shape violation, :class:`UnsupportedPresentationFormat` for ``mso_mdoc`` (and an
@@ -180,8 +222,7 @@ def verify_vp_token(
     """
     if not nonce:
         raise ClaimsInvalid("verify_vp_token requires a non-empty nonce")
-    if not client_id:
-        raise ClaimsInvalid("verify_vp_token requires a non-empty client_id")
+    accepted_auds = _dc_api_accepted_auds(client_id, expected_origins)
 
     token = _parse_vp_token(vp_token)
     if not token:
@@ -198,8 +239,8 @@ def verify_vp_token(
         for presentation in _presentation_list(query_id, query, presentations):
             verified.append(_verify_one(
                 query_id, query, presentation,
-                nonce=nonce, client_id=client_id, resolver=resolver,
-                now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
+                nonce=nonce, client_id=client_id, accepted_auds=accepted_auds,
+                resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
                 require_holder_binding=require_holder_binding))
     return VpTokenVerification(presentations=tuple(verified))
 
@@ -210,7 +251,8 @@ def verify_encrypted_vp_response(
     key: "KeyAgreementKey",
     dcql_query: Mapping[str, Any],
     nonce: str,
-    client_id: str,
+    client_id: str | None = None,
+    expected_origins: Sequence[str] | None = None,
     resolver: Any = None,
     now: datetime | None = None,
     leeway_s: int = DEFAULT_LEEWAY_S,
@@ -241,8 +283,8 @@ def verify_encrypted_vp_response(
         raise VpTokenMalformed("decrypted response has no vp_token member")
     return verify_vp_token(
         payload["vp_token"], dcql_query=dcql_query, nonce=nonce, client_id=client_id,
-        resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
-        require_holder_binding=require_holder_binding)
+        expected_origins=expected_origins, resolver=resolver, now=now, leeway_s=leeway_s,
+        extra_contexts=extra_contexts, require_holder_binding=require_holder_binding)
 
 
 def _parse_vp_token(vp_token: Mapping[str, Any] | str) -> Mapping[str, Any]:
@@ -307,24 +349,75 @@ def _presentation_list(query_id: str, query: Mapping[str, Any], value: Any) -> l
     return value
 
 
+def _b64url_json(segment: str) -> Mapping[str, Any]:
+    obj = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+    return obj if isinstance(obj, Mapping) else {}
+
+
+def _peek_audience(fmt: str, presentation: Any) -> Any:
+    """The UNVERIFIED audience the presentation claims — the KB-JWT / VP-JWT ``aud`` or the
+    LDP-VP proof ``domain``. Used only to pick which expected origin to enforce; the value
+    lives in the signed payload, so the subsequent signature check binds it (peeking it
+    first cannot change what was signed)."""
+    try:
+        if fmt == FORMAT_SD_JWT_VC and isinstance(presentation, str):
+            kb = presentation.rsplit("~", 1)[-1]           # the KB-JWT is the final segment
+            return _b64url_json(kb.split(".")[1]).get("aud") if kb else None
+        if fmt == FORMAT_JWT_VC and isinstance(presentation, str):
+            return _b64url_json(presentation.split(".")[1]).get("aud")
+        if fmt == FORMAT_LDP_VC and isinstance(presentation, Mapping):
+            proof = presentation.get("proof")
+            proof = proof[0] if isinstance(proof, list) and proof else proof
+            return proof.get("domain") if isinstance(proof, Mapping) else None
+    except (ValueError, KeyError, IndexError, TypeError, RecursionError, json.JSONDecodeError):
+        # RecursionError: a hostile deeply-nested JSON payload — the peek runs before any
+        # signature check, so this must fail closed (-> None -> ClaimsInvalid), never escape
+        # as a bare exception past the OpenvcError family (matches _parse_vp_token's guard).
+        return None
+    return None
+
+
+def _effective_audience(
+    fmt: str, presentation: Any, client_id: str | None, accepted_auds: frozenset[str] | None,
+) -> str:
+    """The audience to enforce for this presentation: *client_id* verbatim (redirect /
+    ``direct_post`` flow), or — over the W3C Digital Credentials API — the
+    ``origin:<origin>`` the presentation is bound to, required to be one of *accepted_auds*
+    (the ``origin:``-prefixed *expected_origins*). Per OpenID4VP 1.0 Appendix A the DC API
+    audience is ALWAYS the calling origin, never the client_id."""
+    if client_id is not None:
+        return client_id
+    assert accepted_auds is not None
+    aud = _peek_audience(fmt, presentation)
+    for candidate in (aud if isinstance(aud, list) else [aud]):
+        if isinstance(candidate, str) and candidate in accepted_auds:
+            return candidate
+    raise ClaimsInvalid(
+        f"DC API presentation audience {aud!r} is not one of the expected origins "
+        f"(need one of {sorted(accepted_auds)})")
+
+
 def _verify_one(
     query_id: str, query: Mapping[str, Any], presentation: Any, *,
-    nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
+    nonce: str, client_id: str | None, accepted_auds: frozenset[str] | None,
+    resolver: Any, now: datetime | None, leeway_s: int,
     extra_contexts: Mapping[str, dict] | None, require_holder_binding: bool,
 ) -> VerifiedPresentation:
     fmt = query["format"]
+    # The audience is the client_id (redirect flow) or the DC-API calling origin.
+    aud = _effective_audience(fmt, presentation, client_id, accepted_auds)
     if fmt == FORMAT_SD_JWT_VC:
         return _verify_sd_jwt_vc(
             query_id, query, presentation,
-            nonce=nonce, client_id=client_id, resolver=resolver, now=now, leeway_s=leeway_s)
+            nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s)
     if fmt == FORMAT_JWT_VC:
         return _verify_jwt_vp(
             query_id, presentation,
-            nonce=nonce, client_id=client_id, resolver=resolver, leeway_s=leeway_s,
+            nonce=nonce, client_id=aud, resolver=resolver, leeway_s=leeway_s,
             require_holder_binding=require_holder_binding)
     if fmt == FORMAT_LDP_VC:
         return _verify_ldp_vp(
-            query_id, presentation, nonce=nonce, client_id=client_id, resolver=resolver,
+            query_id, presentation, nonce=nonce, client_id=aud, resolver=resolver,
             now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
             require_holder_binding=require_holder_binding)
     if fmt == FORMAT_MSO_MDOC:
