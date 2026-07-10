@@ -217,6 +217,7 @@ class SdJwtVcProofSuite:
         vct: str | None = None,
         expires_in_s: int | None = None,
         decoys: int = 0,
+        x5c: Iterable[str] | None = None,
     ) -> str:
         """Issue an SD-JWT VC: ``<issuer-jwt>~<disclosure>~...~``.
 
@@ -225,6 +226,13 @@ class SdJwtVcProofSuite:
         ``holder_jwk`` binds the credential to a holder key (``cnf``) for later
         key binding. ``decoys`` adds that many decoy digests (privacy). The raw
         signature is produced by ``signing_key`` — HSM/Vault friendly.
+
+        ``x5c`` places an X.509 certificate chain (base64 DER, leaf first) in the
+        issuer JWT header, so a verifier that anchors trust in a trusted list can
+        validate it in one call: ``verify_credential(sd_jwt, x5c_trust_anchors=[…])``
+        chains the leaf to those anchors and binds it to ``iss`` (see :mod:`openvc.x5c`).
+        The leaf certificate's key MUST be the *signing_key*'s public key, and ``iss``
+        must appear in the leaf's Subject Alternative Name, or verification fails closed.
         """
         if signing_key.alg not in ALLOWED_ALGS:
             raise UnsupportedAlgorithm(f"key alg {signing_key.alg!r} not permitted")
@@ -259,7 +267,13 @@ class SdJwtVcProofSuite:
             payload["_sd"] = sorted(digests)           # sorted: order leaks nothing
             payload["_sd_alg"] = self._hash_name
 
-        header = {"typ": _ISSUER_TYP, "alg": signing_key.alg, "kid": signing_key.kid}
+        header: dict[str, Any] = {
+            "typ": _ISSUER_TYP, "alg": signing_key.alg, "kid": signing_key.kid}
+        if x5c is not None:
+            chain = list(x5c)
+            if not chain or not all(isinstance(c, str) and c for c in chain):
+                raise SdJwtError("x5c must be a non-empty list of base64 certificate strings")
+            header["x5c"] = chain
         issuer_jwt = self._sign_compact(header, payload, signing_key)
         return issuer_jwt + "~" + "".join(d + "~" for d in disclosures)
 

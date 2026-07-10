@@ -35,33 +35,29 @@ anchors = consume_trust_list(
 fnmt_anchors = anchors.certificates()      # FNMT-RCM roots on the ES list
 ```
 
-The university's document-signer chain is then validated to those anchors and bound to the
-issuer id (the diploma's `iss`, matched against the certificate SAN), which yields the
-issuer's public key:
+The university issues the diploma carrying its **document-signer `x5c` chain** in the SD-JWT
+VC header (`SdJwtVcProofSuite.issue(..., x5c=…)`), so a verifier chains that to the FNMT
+anchors and binds the leaf to the diploma's `iss` (matched against the certificate SAN) as
+part of one verification call — no separate anchoring step.
 
-<!-- docs: no-run -->
-```python
-from openvc.x5c import resolve_x5c_key
-
-issuer_jwk = resolve_x5c_key(x5c_chain, "https://sede.uc3m.es", trust_anchors=fnmt_anchors)
-```
-
-## 2 — The diploma as an SD-JWT VC
+## 2 — The diploma as an SD-JWT VC, verified in one call
 
 The diploma is a DC4EU **European Higher-Education Diploma** (`vct:
-https://dc4eu.eu/credentials/EUHED`), issued by the university's key and bound to the
-student's wallet key. It is verified with the **FNMT-anchored** `issuer_jwk` from step 1 —
-so a diploma only verifies if its signer is trusted on the Spanish list:
+https://dc4eu.eu/credentials/EUHED`), bound to the student's wallet key. `verify_credential`
+does **both halves in one call** — it chains the issuer's `x5c` to the FNMT `trust_anchors`,
+binds the leaf to `iss`, then verifies the SD-JWT VC and the holder binding — so a diploma
+verifies only if its signer is trusted on the Spanish list:
 
 <!-- docs: no-run -->
 ```python
-from openvc.proof.sd_jwt import SdJwtVcProofSuite
+from openvc import VerificationPolicy, verify_credential
 
-result = SdJwtVcProofSuite().verify(
-    presentation, public_key_jwk=issuer_jwk,
-    audience="https://empleador.example", nonce=nonce,
-    require_key_binding=True, expected_vct="https://dc4eu.eu/credentials/EUHED")
-# result.issuer, result.vct, result.key_bound, result.claims["title"], …
+result = verify_credential(
+    presentation, x5c_trust_anchors=fnmt_anchors,
+    policy=VerificationPolicy(
+        audience="https://empleador.example", nonce=nonce, require_key_binding=True,
+        expected_vct="https://dc4eu.eu/credentials/EUHED", require_status=False))
+# result.issuer (anchored to FNMT), result.claims["vct"], result.key_bound, result.claims["title"]
 ```
 
 Selectively-disclosable claims (e.g. `final_grade`, `given_name`) let the student reveal
@@ -92,7 +88,8 @@ route, and **EBSI TIR** is the DC4EU/ecosystem route. A verifier can require eit
 
 - The runnable example mints an FNMT-analog root offline (no network); swap it for real
   `openvc.trustlist` anchors in production.
-- SD-JWT VC issuance does not yet emit an `x5c` header, so the walkthrough validates the
-  signer chain (`resolve_x5c_key`) and verifies the SD-JWT VC with the resulting key as two
-  steps ([#94](https://github.com/luisgf/openvc/issues/94) tracks folding `x5c` into the
-  SD-JWT VC issuer JWT so `verify_credential(..., x5c_trust_anchors=…)` does both at once).
+- The issuer emits its `x5c` chain in the SD-JWT VC header (`SdJwtVcProofSuite.issue(...,
+  x5c=…)`, [#94](https://github.com/luisgf/openvc/issues/94)), so `verify_credential(...,
+  x5c_trust_anchors=…)` anchors the issuer and verifies the credential in a single call — as
+  the example does. The leaf certificate's key must be the issuer's signing key and `iss`
+  must be in its SAN, or verification fails closed.

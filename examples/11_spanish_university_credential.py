@@ -28,9 +28,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from openvc import VerificationPolicy, verify_credential
 from openvc.keys import Ed25519SigningKey, P256SigningKey
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
-from openvc.x5c import resolve_x5c_key
 
 ISS = "https://sede.uc3m.es"                 # the university's issuer id (in the cert SAN)
 VCT = "https://dc4eu.eu/credentials/EUHED"   # DC4EU European Higher-Education Diploma
@@ -72,15 +72,10 @@ uc3m_ds = _cert("UC3M Document Signer (demo)", "FNMT-RCM AC RAIZ (demo)",
                 fnmt_key, uc3m_priv.public_key(), ca=False,
                 san=[x509.UniformResourceIdentifier(ISS)])
 x5c = [base64.b64encode(uc3m_ds.public_bytes(serialization.Encoding.DER)).decode("ascii")]
-
-# openvc validates the chain to the FNMT anchor AND binds the issuer id to the cert SAN,
-# returning the issuer's public key — this is the "is the signer trusted?" decision.
-issuer_jwk = resolve_x5c_key(x5c, ISS, trust_anchors=[fnmt_root], now=NOW)
-print("1. Issuer trust (FNMT anchor on the Spanish trusted list)")
+print("1. Issuer trust set up (FNMT anchor on the Spanish trusted list)")
 print("   UC3M document-signer chains to:", fnmt_root.subject.rfc4514_string())
-print("   issuer bound to SAN:", ISS, "| key:", issuer_jwk["crv"])
 
-# --- 2. The diploma as an SD-JWT VC, signed by that FNMT-anchored key -------------------
+# --- 2. The diploma as an SD-JWT VC, signed by the UC3M key and carrying its x5c chain ---
 holder = Ed25519SigningKey.generate(kid="student-wallet")
 suite = SdJwtVcProofSuite()
 diploma = suite.issue(
@@ -91,7 +86,7 @@ diploma = suite.issue(
      "eqf_level": 6, "final_grade": "9.2/10", "date_of_award": "2026-06-30"},
     signing_key=uc3m_key,
     disclosable=["given_name", "final_grade"],        # selectively disclosable claims
-    holder_jwk=holder.public_jwk(), vct=VCT)
+    holder_jwk=holder.public_jwk(), vct=VCT, x5c=x5c)  # the x5c anchors the issuer
 print("\n2. Diploma issued as an SD-JWT VC (vct:", VCT + ")")
 print("   selectively disclosable:", "given_name, final_grade")
 
@@ -99,15 +94,17 @@ print("   selectively disclosable:", "given_name, final_grade")
 presentation = suite.create_presentation(
     diploma, holder_key=holder, audience="https://empleador.example", nonce="n-9f2c")
 
-# --- 4. The employer verifies the credential WITH the FNMT-anchored issuer key ----------
-result = suite.verify(
-    presentation, public_key_jwk=issuer_jwk,
-    audience="https://empleador.example", nonce="n-9f2c",
-    require_key_binding=True, expected_vct=VCT)
-print("\n3. Employer verification")
-print("   issuer      :", result.issuer)
-print("   vct         :", result.vct)
+# --- 4. One call verifies trust AND credential: the pipeline chains the issuer's x5c to
+#        the FNMT anchor + binds it to iss, then verifies the SD-JWT VC and holder binding.
+result = verify_credential(
+    presentation, x5c_trust_anchors=[fnmt_root],
+    policy=VerificationPolicy(
+        audience="https://empleador.example", nonce="n-9f2c",
+        require_key_binding=True, expected_vct=VCT, require_status=False, now=NOW))
+print("\n3. Employer verification (verify_credential, one call)")
+print("   issuer      :", result.issuer, "(anchored to FNMT via x5c)")
+print("   vct         :", result.claims.get("vct"))
 print("   key_bound   :", result.key_bound)
 print("   title       :", result.claims.get("title"))
 print("   disclosed   :", {k: result.claims.get(k) for k in ("given_name", "final_grade")})
-print("\nVerified end to end: FNMT-anchored issuer + SD-JWT VC + holder binding.")
+print("\nVerified end to end in one call: FNMT-anchored issuer + SD-JWT VC + holder binding.")
