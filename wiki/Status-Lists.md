@@ -84,6 +84,13 @@ an explicit policy decision, not a default.
 - **Decompression bomb cap**: lists decompress incrementally with a hard
   output bound, so a tiny malicious payload cannot OOM the verifier
   (fail-closed `StatusListError`).
+- **Issuer binding (opt-in)**: by default a status list is authenticated but its
+  issuer is unconstrained — delegation of status hosting is spec-legal. If your
+  issuers self-host their status lists, set
+  `VerificationPolicy(require_status_issuer_binding=True)` to require the resolved
+  list's issuer to be the credential's issuer (add trusted delegates via
+  `status_issuer_allowlist`); a mismatch raises `StatusListIssuerUntrusted`. See
+  [ADR-0006](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0006-status-list-issuer-binding.md).
 - **SD caveat**: keep the `credentialStatus` pointer **non**-selectively
   disclosable, or a holder can withhold it — see [SD-JWT VC](SD-JWT-VC) and
   the [Security model](Security-Model).
