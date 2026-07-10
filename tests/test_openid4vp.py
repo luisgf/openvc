@@ -230,8 +230,9 @@ def test_invalid_json_string_is_rejected():
                         nonce=NONCE, client_id=CLIENT_ID)
 
 
-# ldp_vc is now verified (issue #61, see test_openid4vp_ldp); mso_mdoc and any
-# unknown format identifier stay typed-unsupported.
+# ldp_vc is now verified (issue #61); mso_mdoc is verified over the DC API flow
+# (issue #86, see test_mdoc) but stays typed-unsupported under the client_id / redirect
+# flow; any unknown format identifier is typed-unsupported everywhere.
 @pytest.mark.parametrize("fmt", ["mso_mdoc", "jwt_vc_json_ld", "made_up"])
 def test_unsupported_format_is_typed(issuer, holder, fmt):
     with pytest.raises(UnsupportedPresentationFormat):

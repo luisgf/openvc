@@ -87,6 +87,54 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
+def _instant(now: datetime | None) -> datetime:
+    if now is None:
+        return datetime.now(timezone.utc)
+    if now.tzinfo is None:                          # a naive now is taken as UTC, not
+        return now.replace(tzinfo=timezone.utc)     # silently as the host's local time
+    return now.astimezone(timezone.utc)
+
+
+def validate_cert_chain(
+    leaf: Any,
+    intermediates: Sequence[Any],
+    *,
+    trust_anchors: Sequence[Any],
+    now: datetime | None = None,
+) -> None:
+    """Path-validate *leaf* + *intermediates* (``x509.Certificate`` objects, leaf first)
+    to one of *trust_anchors* at *now* — the shared X.509 core behind both the JOSE
+    ``x5c`` path and the mdoc IssuerAuth adapter (ADR-0005 D5). Checks chain signatures,
+    validity windows, name chaining and ``basicConstraints`` (``cryptography`` refuses to
+    skip the latter, so a non-CA cert cannot be smuggled in as an intermediate); only the
+    TLS-specific EKU is relaxed (a VC/mdoc signer cert is not a TLS server cert). Raises
+    :class:`X5cError` on any failure; returns ``None`` on success."""
+    from cryptography import x509
+    from cryptography.x509.verification import (
+        ExtensionPolicy,
+        PolicyBuilder,
+        Store,
+        VerificationError,
+    )
+
+    anchors = [a for a in trust_anchors if isinstance(a, x509.Certificate)]
+    if not anchors:
+        raise X5cError("no trust anchors given (a sequence of x509.Certificate roots)")
+
+    # webpki CA policy keeps basicConstraints/path checks strict; permit_all on the
+    # end-entity relaxes only the TLS EKU a VC / mdoc signer cert would not carry.
+    builder = (
+        PolicyBuilder().store(Store(anchors)).time(_instant(now))
+        .extension_policies(
+            ca_policy=ExtensionPolicy.webpki_defaults_ca(),
+            ee_policy=ExtensionPolicy.permit_all())
+    )
+    try:
+        builder.build_client_verifier().verify(leaf, list(intermediates))
+    except VerificationError as exc:
+        raise X5cError(f"certificate chain did not validate to a trust anchor: {exc}") from exc
+
+
 def resolve_x5c_key(
     x5c: Sequence[str],
     iss: str,
@@ -100,45 +148,71 @@ def resolve_x5c_key(
 
     Raises :class:`X5cError` on a malformed chain, a path-validation failure, an
     unbound issuer, or a non-P-256 leaf key."""
-    from cryptography import x509
-    from cryptography.x509.verification import (
-        ExtensionPolicy,
-        PolicyBuilder,
-        Store,
-        VerificationError,
-    )
-
-    anchors = [a for a in trust_anchors if isinstance(a, x509.Certificate)]
-    if not anchors:
-        raise X5cError("no trust anchors given (a sequence of x509.Certificate roots)")
-
     chain = _load_chain(x5c)
-    leaf, intermediates = chain[0], chain[1:]
-    if now is None:
-        instant = datetime.now(timezone.utc)
-    elif now.tzinfo is None:                        # a naive now is taken as UTC, not
-        instant = now.replace(tzinfo=timezone.utc)  # silently as the host's local time
-    else:
-        instant = now.astimezone(timezone.utc)
+    validate_cert_chain(chain[0], chain[1:], trust_anchors=trust_anchors, now=now)
+    _check_issuer_binding(chain[0], iss)
+    return _leaf_public_jwk(chain[0])
 
-    # webpki CA policy keeps basicConstraints/path checks strict; permit_all on the
-    # end-entity relaxes only the TLS EKU a VC issuer cert would not carry.
-    builder = (
-        PolicyBuilder().store(Store(anchors)).time(instant)
-        .extension_policies(
-            ca_policy=ExtensionPolicy.webpki_defaults_ca(),
-            ee_policy=ExtensionPolicy.permit_all())
-    )
-    try:
-        builder.build_client_verifier().verify(leaf, intermediates)
-    except VerificationError as exc:
-        raise X5cError(f"x5c chain did not validate to a trust anchor: {exc}") from exc
 
-    _check_issuer_binding(leaf, iss)
-    return _leaf_public_jwk(leaf)
+def _load_der_chain(x5chain: Sequence[Any]) -> list:
+    from cryptography import x509
+    if not isinstance(x5chain, (list, tuple)) or not x5chain:
+        raise X5cError("mdoc x5chain is missing or empty")
+    chain = []
+    for der in x5chain:
+        if not isinstance(der, (bytes, bytearray)):
+            raise X5cError("mdoc x5chain entries must be DER byte strings")
+        try:
+            chain.append(x509.load_der_x509_certificate(bytes(der)))
+        except Exception as exc:
+            raise X5cError(f"mdoc x5chain entry is not a valid certificate: {exc}") from exc
+    return chain
+
+
+def _leaf_ec_jwk(leaf: Any) -> dict[str, Any]:
+    from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+    pub = leaf.public_key()
+    if isinstance(pub, ec.EllipticCurvePublicKey):
+        if isinstance(pub.curve, ec.SECP256R1):
+            name, size = "P-256", 32
+        elif isinstance(pub.curve, ec.SECP384R1):
+            name, size = "P-384", 48
+        else:
+            raise X5cError(f"mdoc signer key curve {pub.curve.name!r} is not P-256 or P-384")
+        nums = pub.public_numbers()
+        return {"kty": "EC", "crv": name,
+                "x": _b64url(nums.x.to_bytes(size, "big")),
+                "y": _b64url(nums.y.to_bytes(size, "big"))}
+    if isinstance(pub, ed25519.Ed25519PublicKey):
+        from cryptography.hazmat.primitives import serialization
+        raw = pub.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        return {"kty": "OKP", "crv": "Ed25519", "x": _b64url(raw)}
+    raise X5cError("mdoc signer leaf key is not EC P-256/P-384 or Ed25519")
+
+
+def resolve_mdoc_signer_key(
+    x5chain: Sequence[Any],
+    *,
+    trust_anchors: Sequence[Any],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Validate an mdoc ``IssuerAuth`` ``x5chain`` (COSE label 33: DER certificates,
+    leaf first) to a caller-provided **IACA** anchor set and return the document-signer
+    leaf's public key as a JWK (P-256 / P-384 / Ed25519).
+
+    Unlike :func:`resolve_x5c_key` there is **no** ``iss``→SAN binding: mdoc trust is
+    "the DS cert chains to a trusted IACA root" (ISO 18013-5 §9.1.2). The ``docType`` and
+    ``validityInfo`` are bound against the MSO by the mdoc verifier, not the certificate.
+    Raises :class:`X5cError` on a malformed chain, a path-validation failure, or an
+    unusable leaf key."""
+    chain = _load_der_chain(x5chain)
+    validate_cert_chain(chain[0], chain[1:], trust_anchors=trust_anchors, now=now)
+    return _leaf_ec_jwk(chain[0])
 
 
 __all__ = [
     "X5cError",
     "resolve_x5c_key",
+    "validate_cert_chain",
+    "resolve_mdoc_signer_key",
 ]

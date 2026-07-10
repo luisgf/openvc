@@ -4,6 +4,46 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] — unreleased
+
+Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
+
+### Added
+
+- **`mso_mdoc` verification — verify a received ISO 18013-5 `DeviceResponse` (experimental).**
+  Completes the EUDI two-format mandate (SD-JWT VC + mdoc, CIR (EU) 2024/2977): `verify_vp_token`
+  now verifies an ISO 18013-5 `mso_mdoc` presentation over the **W3C Digital Credentials API**
+  flow instead of fencing it off. Both ISO 18013-5 §9.1 authentications are checked, fail-closed:
+  **issuer data authentication** — the `IssuerAuth` `COSE_Sign1` over the Mobile Security Object,
+  the document-signer `x5chain` (COSE label 33) path-validated to a caller-provided **IACA**
+  anchor, the MSO `docType` / `validityInfo`, and every disclosed `IssuerSignedItem` digest matched
+  against `valueDigests`; and **device authentication (holder binding)** — the `DeviceSignature` /
+  `DeviceMac` over the `DeviceAuthentication` built from the origin-bound `SessionTranscript`
+  (OpenID4VP 1.0 Appendix B / ISO 18013-7). New `trust_anchors` (IACA roots) and
+  `mdoc_jwk_thumbprint` parameters on `verify_vp_token` / `verify_encrypted_vp_response`, and a
+  `dcapi_session_transcript()` builder; each verified document returns an
+  `openvc.mdoc.VerifiedMdoc`. Direct entry points `openvc.mdoc.verify_device_response` (full) and
+  `verify_issuer_signed` (issuer seal only) are exposed. Conformance is pinned to the **real
+  ISO 18013-5 Annex D** `DeviceResponse` (byte-exact issuer-side vector) plus a real-crypto online
+  fixture for device authentication and the negative paths. **No new runtime dependency** — COSE and
+  the extended CBOR are hand-rolled. The redirect / `direct_post` mdoc handover is not yet wired; the
+  surface ships experimental until interop-tested against the EUDI reference wallet. Hardened by an
+  adversarial review — no forgery or replay was achievable (COSE alg allow-list before any crypto,
+  digests over bytes-as-received, origin-bound `SessionTranscript`, fail-closed CBOR parsing) — which
+  also tightened two contract gaps it found: DCQL `meta.doctype_value` is now enforced for `mso_mdoc`
+  (the mdoc analogue of `vct_values`), and the CBOR codec rejects float / non-canonical simple values
+  outright rather than aliasing them to `false`/`true`/`null`. ([#86](https://github.com/luisgf/openvc/issues/86))
+
+### Changed
+
+- **CBOR codec factored into a dependency-free `openvc.cbor` module** (ADR-0005 D4), extended to the
+  COSE/mdoc profile — negative integers, tags (with the exact received bytes preserved for digest /
+  signature recomputation), booleans/null, and deterministic (RFC 8949 §4.2.1) encoding. The
+  `ecdsa-sd-2023` suite now imports the shared codec; its proof-value shape is a strict subset, so
+  there is **no behaviour change** (the strict subset — no bool/negative/tag — is still enforced).
+  New `openvc.cose` (COSE_Sign1 / COSE_Mac0 verify) and an mdoc `x5chain`→IACA adapter
+  (`openvc.x5c.resolve_mdoc_signer_key`, sharing the path-validation core with the JOSE `x5c` path).
+
 ## [1.16.0] — 2026-07-10
 
 Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
