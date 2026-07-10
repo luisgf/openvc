@@ -12,6 +12,7 @@ supplied explicitly via ``extra_contexts``.
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -29,9 +30,19 @@ class DocumentLoaderError(OpenvcError):
     """A context was requested that is neither bundled nor injected."""
 
 
+@lru_cache(maxsize=None)
+def _parse_bundled(path_str: str) -> dict:
+    return json.loads(Path(path_str).read_text())
+
+
 def bundled_contexts() -> dict[str, dict]:
-    """Load the bundled contexts as ``url -> parsed JSON`` (fresh copy)."""
-    return {url: json.loads(path.read_text()) for url, path in _BUNDLED_FILES.items()}
+    """The bundled contexts as ``url -> parsed JSON``.
+
+    The per-file parse is cached (the files ship read-only), so RDF canonicalization does
+    not re-read and re-parse them on every proof. A **fresh top-level dict** is returned each
+    call (so a caller's ``.update(extra_contexts)`` cannot pollute the cache), while the
+    parsed context objects are shared — pyld treats a loaded context document as read-only."""
+    return {url: _parse_bundled(str(path)) for url, path in _BUNDLED_FILES.items()}
 
 
 def document_loader(

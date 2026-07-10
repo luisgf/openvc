@@ -27,7 +27,7 @@ from typing import Any
 
 from ..errors import OpenvcError
 from ..keys import verify_signature
-from ..multibase import decode_multibase, encode_multibase
+from ..multibase import encode_multibase
 from ._jcs import JcsError, canonicalize
 from ._verify_common import (
     ALG_PROFILE,
@@ -36,6 +36,7 @@ from ._verify_common import (
     check_proof_purpose,
     check_validity_window,
     match_alg,
+    prepare_di_proof,
     resolve_verification_key,
 )
 from .data_integrity import PROOF_TYPE, VerifiedDataIntegrity, _iso, _unsecured
@@ -172,25 +173,8 @@ class _JcsProofSuite:
         only the canonicalization (JCS, not RDF) and the accepted ``cryptosuite``
         differ.
         """
-        proof = secured.get("proof")
-        if not isinstance(proof, dict):
-            raise ProofMalformed("credential has no proof object")
-        if proof.get("type") != PROOF_TYPE:
-            raise ProofMalformed(f"unexpected proof type {proof.get('type')!r}")
-        if proof.get("cryptosuite") != self._cryptosuite:
-            raise UnsupportedCryptosuite(
-                f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
-        proof_value = proof.get("proofValue")
-        if not isinstance(proof_value, str):
-            raise ProofMalformed("proof has no proofValue")
-
-        try:
-            signature = decode_multibase(proof_value)
-        except Exception as exc:
-            raise ProofMalformed(f"invalid proofValue: {exc}") from exc
-
-        proof_config = {k: v for k, v in proof.items() if k != "proofValue"}
-        proof_config["@context"] = secured.get("@context")
+        proof, proof_config, signature = prepare_di_proof(
+            secured, proof_type=PROOF_TYPE, cryptosuite=self._cryptosuite)
 
         unsecured = _unsecured(secured)
         jwk = public_key_jwk or resolve_verification_key(

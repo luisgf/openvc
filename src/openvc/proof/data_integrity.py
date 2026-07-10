@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from ..multibase import decode_multibase, encode_multibase
+from ..multibase import encode_multibase
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -41,6 +41,7 @@ from ._verify_common import (
     check_presentation_binding,
     check_proof_purpose,
     check_validity_window,
+    prepare_di_proof,
     resolve_verification_key,
 )
 from .contexts import DocumentLoaderError, document_loader
@@ -205,25 +206,8 @@ class DataIntegrityProofSuite:
         the proof's ``expires`` must contain *now* (default: current time) within
         the suite's leeway.
         """
-        proof = secured.get("proof")
-        if not isinstance(proof, dict):
-            raise ProofMalformed("credential has no proof object")
-        if proof.get("type") != PROOF_TYPE:
-            raise ProofMalformed(f"unexpected proof type {proof.get('type')!r}")
-        if proof.get("cryptosuite") != CRYPTOSUITE:
-            raise UnsupportedCryptosuite(
-                f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
-        proof_value = proof.get("proofValue")
-        if not isinstance(proof_value, str):
-            raise ProofMalformed("proof has no proofValue")
-
-        try:
-            signature = decode_multibase(proof_value)
-        except Exception as exc:
-            raise ProofMalformed(f"invalid proofValue: {exc}") from exc
-
-        proof_config = {k: v for k, v in proof.items() if k != "proofValue"}
-        proof_config["@context"] = secured.get("@context")
+        proof, proof_config, signature = prepare_di_proof(
+            secured, proof_type=PROOF_TYPE, cryptosuite=CRYPTOSUITE)
 
         loader = document_loader(extra_contexts)
         unsecured = _unsecured(secured)

@@ -232,3 +232,47 @@ def test_non_didkey_without_resolver_is_unresolvable():
 def test_missing_verification_method_rejected():
     with pytest.raises(KeyResolutionError):
         resolve_verification_key(None, proof_purpose="assertionMethod")
+
+
+def test_prepare_di_proof_validates_and_decodes():
+    # #110: the shared whole-document DI preamble (single-sources the fail-closed guards).
+    from openvc.multibase import encode_multibase
+    from openvc.proof._verify_common import prepare_di_proof
+    from openvc.proof.errors import ProofMalformed, UnsupportedCryptosuite
+
+    good = {"@context": ["c"],
+            "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-rdfc-2022",
+                      "proofValue": encode_multibase(b"\x01\x02"), "verificationMethod": "did:x#k"}}
+    proof, proof_config, sig = prepare_di_proof(
+        good, proof_type="DataIntegrityProof", cryptosuite="eddsa-rdfc-2022")
+    assert sig == b"\x01\x02"
+    assert "proofValue" not in proof_config and proof_config["@context"] == ["c"]
+
+    def _bad(proof_obj):
+        return {"proof": proof_obj}
+
+    with pytest.raises(ProofMalformed):                          # no proof object
+        prepare_di_proof({}, proof_type="DataIntegrityProof", cryptosuite="eddsa-rdfc-2022")
+    with pytest.raises(ProofMalformed):                          # wrong type
+        prepare_di_proof(_bad({"type": "X", "cryptosuite": "eddsa-rdfc-2022", "proofValue": "z"}),
+                         proof_type="DataIntegrityProof", cryptosuite="eddsa-rdfc-2022")
+    with pytest.raises(UnsupportedCryptosuite):                  # wrong cryptosuite
+        prepare_di_proof(
+            _bad({"type": "DataIntegrityProof", "cryptosuite": "other", "proofValue": "z"}),
+            proof_type="DataIntegrityProof", cryptosuite="eddsa-rdfc-2022")
+    with pytest.raises(ProofMalformed):                          # non-string proofValue
+        prepare_di_proof(
+            _bad({"type": "DataIntegrityProof", "cryptosuite": "eddsa-rdfc-2022",
+                  "proofValue": 123}),
+            proof_type="DataIntegrityProof", cryptosuite="eddsa-rdfc-2022")
+
+
+def test_bundled_contexts_cached_and_isolated():
+    # #110: parsed once and shared read-only, but a fresh top-level dict per call so a
+    # caller's .update() cannot pollute the cache.
+    from openvc.proof.contexts import bundled_contexts
+    url = "https://www.w3.org/ns/credentials/v2"
+    a, b = bundled_contexts(), bundled_contexts()
+    assert a is not b and a[url] is b[url]
+    a["injected"] = {}
+    assert "injected" not in bundled_contexts()

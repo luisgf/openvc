@@ -21,6 +21,19 @@ milestone — the second wave from the 2026-07-10 internal audit.
   `StatusListIssuerUntrusted`. Enforced in both the sync and async pipelines.
   ([#106](https://github.com/luisgf/openvc/issues/106))
 
+### Changed
+
+- **Performance: the bundled JSON-LD context is parsed once, not per proof.** RDF Data
+  Integrity canonicalization re-read and re-parsed the bundled `credentials/v2` context from
+  disk on every sign/verify; it is now parsed once and shared read-only (still a fresh
+  top-level dict per call, so an injected `extra_contexts` can't pollute the cache). The
+  three whole-document DI suites (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, JCS) now share one
+  proof-preamble helper (`_verify_common.prepare_di_proof`), so the fail-closed proof
+  validation cannot drift between them — behaviour is byte-for-byte identical (pinned by the
+  golden fixtures). `openvc.resolvers` documents `openvc.cache.cached_resolve` /
+  `CachingDidResolver` for high-volume verifiers (`verify_many` already deduplicates status /
+  DID resolution within a call). ([#110](https://github.com/luisgf/openvc/issues/110))
+
 ### Fixed
 
 - **EBSI: the recursive trust-chain walk now accepts a wildcard accreditation, matching the

@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ..multibase import decode_multibase
 from ..observability import logger, span
 from .errors import (
     ClaimsInvalid,
@@ -34,6 +35,7 @@ from .errors import (
     PresentationBindingError,
     ProofMalformed,
     ProofPurposeMismatch,
+    UnsupportedCryptosuite,
 )
 
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
@@ -121,6 +123,37 @@ def check_validity_window(
     proof_expires = _bound(proof, "expires", "expirationDate")
     if proof_expires is not None and instant - leeway > proof_expires:
         raise CredentialExpired(f"proof expired at {proof_expires.isoformat()}")
+
+
+def prepare_di_proof(
+    secured: dict[str, Any], *, proof_type: str, cryptosuite: str,
+) -> tuple[dict[str, Any], dict[str, Any], bytes]:
+    """Shared preamble for the whole-document Data Integrity suites (``eddsa-rdfc-2022``,
+    ``ecdsa-rdfc-2019``, and the JCS suites): validate the proof object — a ``proof`` map of
+    the expected ``type`` and ``cryptosuite`` carrying a **string** ``proofValue`` — and decode
+    that multibase proofValue to a signature. Returns ``(proof, proof_config, signature)``,
+    where ``proof_config`` is the proof minus ``proofValue`` with the document ``@context``
+    grafted on (what the suites hash). The suites differ only in the canonicalization and the
+    key algebra, not this block; single-sourcing it keeps the fail-closed guards (notably the
+    string-``proofValue`` check) from drifting between them, byte-for-byte identical to before
+    (the golden fixtures pin it)."""
+    proof = secured.get("proof")
+    if not isinstance(proof, dict):
+        raise ProofMalformed("credential has no proof object")
+    if proof.get("type") != proof_type:
+        raise ProofMalformed(f"unexpected proof type {proof.get('type')!r}")
+    if proof.get("cryptosuite") != cryptosuite:
+        raise UnsupportedCryptosuite(f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
+    proof_value = proof.get("proofValue")
+    if not isinstance(proof_value, str):
+        raise ProofMalformed("proof has no proofValue")
+    try:
+        signature = decode_multibase(proof_value)
+    except Exception as exc:
+        raise ProofMalformed(f"invalid proofValue: {exc}") from exc
+    proof_config = {k: v for k, v in proof.items() if k != "proofValue"}
+    proof_config["@context"] = secured.get("@context")
+    return proof, proof_config, signature
 
 
 def check_jwt_temporal(
@@ -283,6 +316,7 @@ __all__ = [
     "check_presentation_binding",
     "check_proof_purpose",
     "check_validity_window",
+    "prepare_di_proof",
     "match_alg",
     "resolve_verification_key",
 ]
