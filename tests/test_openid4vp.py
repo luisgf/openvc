@@ -482,3 +482,27 @@ def test_requires_exactly_one_of_client_id_or_expected_origins(issuer, holder):
                         client_id=CLIENT_ID, expected_origins=[VERIFIER_ORIGIN])
     with pytest.raises(ClaimsInvalid):        # empty origins
         verify_vp_token(vp, dcql_query=_dcql_sd_jwt(), nonce=NONCE, expected_origins=[])
+    with pytest.raises(ClaimsInvalid):        # a bare str would split into per-char origins
+        verify_vp_token(vp, dcql_query=_dcql_sd_jwt(), nonce=NONCE,
+                        expected_origins=VERIFIER_ORIGIN)
+    with pytest.raises(ClaimsInvalid):        # blank / whitespace origin
+        verify_vp_token(vp, dcql_query=_dcql_sd_jwt(), nonce=NONCE, expected_origins=["   "])
+
+
+def test_dc_api_peek_fails_closed_on_deeply_nested_json():
+    # A hostile deeply-nested JSON payload in the peeked KB-JWT/VP-JWT segment must fail
+    # closed (-> None -> ClaimsInvalid), not escape as a bare RecursionError — the peek
+    # runs before any signature check, so it is attacker-triggerable.
+    import base64
+    import sys
+    from openvc.openid4vp import _peek_audience
+
+    nested = '{"a":' * 5000 + '1' + '}' * 5000
+    seg = base64.urlsafe_b64encode(nested.encode()).rstrip(b"=").decode()
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(1000)
+    try:
+        assert _peek_audience(FORMAT_SD_JWT_VC, f"aaa.bbb.ccc~x.{seg}.s") is None
+        assert _peek_audience(FORMAT_JWT_VC, f"h.{seg}.s") is None
+    finally:
+        sys.setrecursionlimit(old)

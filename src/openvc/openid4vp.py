@@ -146,8 +146,15 @@ def _dc_api_accepted_auds(
             "pass exactly one of client_id (redirect / direct_post) or "
             "expected_origins (the W3C Digital Credentials API)")
     if expected_origins is not None:
-        if not expected_origins or not all(isinstance(o, str) and o for o in expected_origins):
-            raise ClaimsInvalid("expected_origins must be a non-empty list of origin strings")
+        # A bare str is a Sequence[str] that iterates into single characters — reject it
+        # (and any non-list/tuple, empty, or blank/whitespace origin) so a single origin
+        # passed as a string is a hard error, not silently split into per-character origins.
+        if (isinstance(expected_origins, (str, bytes))
+                or not isinstance(expected_origins, (list, tuple))
+                or not expected_origins
+                or not all(isinstance(o, str) and o and o == o.strip() for o in expected_origins)):
+            raise ClaimsInvalid(
+                "expected_origins must be a non-empty list/tuple of non-blank origin strings")
         return frozenset("origin:" + o for o in expected_origins)
     if not client_id:
         raise ClaimsInvalid("verify_vp_token requires a non-empty client_id")
@@ -362,7 +369,10 @@ def _peek_audience(fmt: str, presentation: Any) -> Any:
             proof = presentation.get("proof")
             proof = proof[0] if isinstance(proof, list) and proof else proof
             return proof.get("domain") if isinstance(proof, Mapping) else None
-    except (ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError):
+    except (ValueError, KeyError, IndexError, TypeError, RecursionError, json.JSONDecodeError):
+        # RecursionError: a hostile deeply-nested JSON payload — the peek runs before any
+        # signature check, so this must fail closed (-> None -> ClaimsInvalid), never escape
+        # as a bare exception past the OpenvcError family (matches _parse_vp_token's guard).
         return None
     return None
 

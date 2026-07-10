@@ -20,7 +20,9 @@ Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc
   (encrypted JWE) → `verify_encrypted_vp_response`. `client_id` is now optional — pass **exactly
   one** of `client_id` (redirect / `direct_post`) or `expected_origins` (DC API); the `nonce`
   binding, formats and holder-binding are unchanged. Stateless consume-and-verify — building the
-  DC-API request is browser/wallet plumbing, out of scope. ([#66](https://github.com/luisgf/openvc/issues/66))
+  DC-API request is browser/wallet plumbing, out of scope. Hardened by an adversarial review (no
+  origin-binding or replay bypass was possible; fail-closed input validation on `expected_origins`
+  and on the pre-verification `aud` peek). ([#66](https://github.com/luisgf/openvc/issues/66))
 
 ## [1.15.0] — 2026-07-10
 
