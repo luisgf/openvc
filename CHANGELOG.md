@@ -23,17 +23,20 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
-- **SD-JWT VC: bound parser recursion — fail closed on hostile nesting.** The
-  selective-disclosure `_unpack` and the `json.loads` boundaries (`_decode_jws`,
-  `_index_disclosures`) had no nesting bound: a deeply-nested (but valid) JSON
-  header/payload/disclosure — or a **chain** of disclosures each disclosing an object
-  carrying the next `_sd` digest — raised `RecursionError` (a `RuntimeError`, not an
-  `OpenvcError`). On the untrusted peek path that escaped `verify_many`'s
+- **Fail closed on hostile deeply-nested JSON across the verify pipeline.** A
+  deeply-nested (but valid) JSON credential — an SD-JWT header/payload/disclosure, a
+  **chain** of SD-JWT disclosures each carrying the next `_sd` digest, a VC-JWT
+  header/payload, or an enveloped VC's `data:` payload — made `json.loads` (or the
+  SD-JWT `_unpack` recursion) raise `RecursionError` (a `RuntimeError`, not an
+  `OpenvcError`). On the untrusted peek/unwrap path that escaped `verify_many`'s
   per-credential isolation and **aborted the whole batch** (denial-of-service; not a
-  wrong-accept). `_unpack` now caps recursion at depth 100 (parity with `cbor`=64 /
-  `_jcs`=100) and the `json.loads` sites map `RecursionError` to a typed error, so
-  hostile input fails closed. Resolves the **R1** residual risk from the audit pack.
-  ([#117](https://github.com/luisgf/openvc/issues/117))
+  wrong-accept) — reachable unauthenticated and, on CPython 3.10–3.13, with ~1 KB of
+  input. SD-JWT `_unpack` now caps recursion at depth 100 (parity with `cbor`=64 /
+  `_jcs`=100), and **every attacker-facing `json.loads`** — SD-JWT, VC-JWT peek/verify,
+  `_jws`, the enveloped unwrap, `jwe`, and the `did:jwk` / `did:webvh` / fetch /
+  status-resolver paths — now maps `RecursionError` to a typed error, so hostile input
+  fails closed and `verify_many` isolates it across all formats. Resolves the **R1**
+  residual risk from the audit pack. ([#117](https://github.com/luisgf/openvc/issues/117))
 
 ## [1.20.0] — 2026-07-10
 

@@ -146,7 +146,7 @@ class VcJwtProofSuite:
         try:
             header = json.loads(_b64url_decode(header_b64))
             payload = json.loads(_b64url_decode(payload_b64))
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("header/payload is not valid base64url JSON") from exc
         if not isinstance(header, dict) or not isinstance(payload, dict):
             # Valid JSON but not an object (e.g. `[0]`) must fail closed as a typed
@@ -169,7 +169,7 @@ class VcJwtProofSuite:
         _, payload_b64, _ = _split(token)
         try:
             payload = json.loads(_b64url_decode(payload_b64))
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("payload is not valid base64url JSON") from exc
         if not isinstance(payload, dict):
             raise MalformedToken("JWS payload must be a JSON object")
@@ -189,7 +189,7 @@ class VcJwtProofSuite:
         header_b64, _, _ = _split(token)
         try:
             header = json.loads(_b64url_decode(header_b64))
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("invalid JWS header") from exc
         if not isinstance(header, dict):
             raise MalformedToken("JWS header must be a JSON object")
@@ -311,7 +311,7 @@ class VcJwtProofSuite:
             raise SignatureInvalid(f"{alg} signature does not verify")
         try:
             claims = json.loads(payload)
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("payload is not valid JSON") from exc
         if not isinstance(claims, dict):
             raise ClaimsInvalid("JWT payload must be a JSON object")

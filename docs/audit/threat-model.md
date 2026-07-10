@@ -165,7 +165,7 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I13 | Trust-list XML refuses DOCTYPE (XXE + expansion closed) | `trustlist/parse.py:108-120` | `test_trustlist.py:104,121` |
 | I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py` |
 | I15 | `verify_many` isolates per-credential — one bad item never aborts the batch | `verify.py:458-465` | `test_hostile_input.py:79-85` |
-| I16 | SD-JWT recursion bounded at depth 100; `RecursionError` mapped to a typed error | `proof/sd_jwt.py:66,129,397,439` | `test_hostile_input.py` |
+| I16 | Hostile deeply-nested JSON fails closed **pipeline-wide** — `RecursionError` mapped to a typed error at every attacker-facing `json.loads`; SD-JWT `_unpack` depth-bounded (100) | `proof/sd_jwt.py:66,129`; `verify.py`, `proof/vc_jwt.py`, `proof/_jws.py`, `jwe.py`, `did/*`, `fetch.py`, `resolvers.py` | `test_hostile_input.py` |
 
 ## 9. Residual risks & known limitations
 
@@ -186,6 +186,10 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   batch** (DoS; no wrong-accept). **Fixed:** `_unpack` now caps depth at 100
   (`sd_jwt.py:66,129`) and the `json.loads` sites map `RecursionError` to a typed error
   (`sd_jwt.py:397,439`) — invariant **I16**, pinned by `test_hostile_input.py`.
+  Adversarial review then found the identical batch-abort at the **sibling** `json.loads`
+  sites — VC-JWT peek/verify, the enveloped-VC unwrap (`verify.py`), `_jws`, `jwe`, and the
+  DID / fetch / resolver paths; all now map `RecursionError` to a typed error too, so
+  `verify_many` isolation and invariant I14 hold across **all** credential formats.
 - **R2 — Two typed errors escape the `OpenvcError` hierarchy.**
   `JcsError(Exception)` (`src/openvc/proof/_jcs.py:27`) and
   `DecompressionBomb(Exception)` (`src/openvc/status/_decompress.py:28`) do not

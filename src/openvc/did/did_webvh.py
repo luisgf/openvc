@@ -371,7 +371,7 @@ class _WebvhReplay:
                 raise DidWebvhError(f"did.jsonl exceeds {_MAX_LOG_ENTRIES} entries")
             try:
                 obj = json.loads(line)
-            except (ValueError, json.JSONDecodeError) as exc:
+            except (ValueError, json.JSONDecodeError, RecursionError) as exc:
                 raise DidWebvhError(f"did.jsonl line is not valid JSON: {exc}") from exc
             if not isinstance(obj, dict):
                 raise DidWebvhError("each did.jsonl line must be a JSON object")

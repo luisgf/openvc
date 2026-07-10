@@ -93,9 +93,10 @@ def test_verify_many_isolates_a_non_object_payload():
 # and (via the untrusted peek) abort a whole verify_many batch. And chained disclosures
 # make _unpack recurse without bound even when each disclosure survives json.loads.
 
-def _deep_json_b64(depth: int = 6000) -> str:
+def _deep_json_b64(depth: int = 600_000) -> str:
     """base64url of JSON nested `depth` levels — past every supported interpreter's
-    recursion limit, so ``json.loads`` raises ``RecursionError``."""
+    recursion limit (incl. CPython 3.14's iterative json scanner, which bottoms out
+    ~500k), so ``json.loads`` raises ``RecursionError``."""
     return _b64u(b"[" * depth + b"]" * depth)
 
 
@@ -151,6 +152,43 @@ def test_sd_jwt_unpack_only_ever_raises_typed(value):
         _unpack(value, {}, set(), set())
     except OpenvcError:
         pass
+
+
+# --- the same batch-abort DoS via the OTHER verify-pipeline json.loads sites ---- #
+# Adversarial review of #117: the SD-JWT fix's pipeline-wide "fails closed" claim also
+# requires the enveloped-unwrap (verify.py) and VC-JWT peek (vc_jwt.py / _jws.py) sites
+# to map RecursionError -> typed, or the identical unauthenticated batch abort remains.
+
+def _enveloped_deeply_nested() -> dict:
+    deep = "[" * 600_000 + "]" * 600_000
+    return {"type": ["EnvelopedVerifiableCredential"],
+            "id": "data:application/vc+ld+json," + deep}
+
+
+def _vc_jwt_deeply_nested() -> str:
+    header = _b64u(json.dumps({"alg": "ES256", "typ": "JWT"}).encode())
+    return f"{header}.{_deep_json_b64()}.{_b64u(b'x' * 64)}"
+
+
+def test_enveloped_deeply_nested_payload_is_typed():
+    with pytest.raises(OpenvcError):
+        verify_credential(_enveloped_deeply_nested())
+
+
+def test_vc_jwt_deeply_nested_payload_is_typed():
+    hostile = _vc_jwt_deeply_nested()
+    with pytest.raises(OpenvcError):          # untrusted peek (key selection)
+        VcJwtProofSuite().peek_issuer(hostile)
+    with pytest.raises(OpenvcError):          # full verify
+        verify_credential(hostile)
+
+
+@pytest.mark.parametrize("hostile", [_enveloped_deeply_nested(), _vc_jwt_deeply_nested()],
+                         ids=["enveloped", "vc-jwt"])
+def test_verify_many_isolates_deeply_nested_across_formats(hostile):
+    results = verify_many([hostile, "not.a.jwt", hostile])
+    assert len(results) == 3
+    assert all((not r.ok) and isinstance(r.error, OpenvcError) for r in results)
 
 
 def test_verify_vp_token_typed_on_non_object_payload():

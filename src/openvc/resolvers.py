@@ -130,7 +130,7 @@ def _as_credential(raw: str) -> Any:
     text = raw.strip()
     try:
         obj = json.loads(text)
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError, RecursionError):
         return text
     return obj if isinstance(obj, dict) else text
 
