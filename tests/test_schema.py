@@ -642,9 +642,11 @@ def test_pipeline_json_schema_credential_tampered_inner_fails_closed():
     outer_token, outer_entry = _vc_jwt(
         _cred(credential_schema=_entry(schema_type="JsonSchemaCredential")), _ISSUER_DID)
     reg = _multi_registry([inner_entry, outer_entry])
-    # flip the tail of the inner VC-JWT signature -> its proof no longer verifies
+    # tamper the FIRST signature char (top 6 bits of byte 0 — always fully significant)
+    # so the inner proof cannot verify. Flipping the LAST base64 char is flaky: it can
+    # land on the final byte's don't-care padding bits and leave the signature unchanged.
     head, payload, sig = inner_token.split(".")
-    tampered = ".".join([head, payload, sig[:-2] + ("aa" if sig[-2:] != "aa" else "bb")])
+    tampered = ".".join([head, payload, ("A" if sig[0] != "A" else "B") + sig[1:]])
     with pytest.raises(SchemaResolutionError):
         verify_credential(outer_token, resolver=reg,
                           resolve_credential_schema=lambda u: tampered.encode())

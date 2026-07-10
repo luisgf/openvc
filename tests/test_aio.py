@@ -116,8 +116,10 @@ def test_vc_jwt_async_bad_signature_fails():
     from openvc.proof.errors import ProofError
     token, entry, _ = _vc_jwt(_cred())
     reg = _sync_registry([entry])
+    # flip the FIRST signature char (fully-significant bits), not the last (which can
+    # land on the final byte's don't-care padding bits and stay valid — a flaky pass).
     head, payload, sig = token.split(".")
-    tampered = ".".join([head, payload, sig[:-2] + ("aa" if sig[-2:] != "aa" else "bb")])
+    tampered = ".".join([head, payload, ("A" if sig[0] != "A" else "B") + sig[1:]])
     with pytest.raises(ProofError):
         _run(verify_credential_async(tampered, resolver=as_async_resolver(reg)))
 
