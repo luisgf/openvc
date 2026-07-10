@@ -37,14 +37,16 @@ proof families (VC-JWT, SD-JWT VC, Data Integrity — RDF `eddsa-rdfc-2022` /
 `vp_token` verification (SD-JWT VC, VP-JWT, `ldp_vc` and — experimental — ISO 18013-5
 `mso_mdoc` over the Digital Credentials API) including HAIP encrypted responses, EU
 Trusted Lists (LOTL→TL, TLv6) as trust anchors, a core TTL cache, batch and async
-verification, and observability.
+verification, observability, and — experimental — post-quantum ML-DSA (RFC 9964)
+signing/verification behind an explicit opt-in.
 
 ## Direction
 
 Post-1.0, openvc grows only where the EU digital-identity stack requires it —
 consuming (never generating) OpenID4VP/HAIP presentations and their EU trust anchors,
-tracking the JOSE/COSE and Data Integrity spec churn, and preparing for post-quantum —
-always additively, always read/verify-only, never at the cost of the dependency-light
+tracking the JOSE/COSE and Data Integrity spec churn, and preparing for post-quantum
+(a first experimental ML-DSA rail has landed) — always additively, always
+read/verify-only, never at the cost of the dependency-light
 and fail-closed invariants that are its entire reason to exist. The milestones above
 sequence that; the out-of-scope list below is the standing boundary.
 
