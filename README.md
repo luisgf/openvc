@@ -125,9 +125,12 @@ lists, remote HSM signing, EU Trusted Lists, EBSI — has a guide in the
   hand-rolled on the stdlib, and `pyld` / `httpx` stay behind extras.
 - **Conformance pinned by real vectors.** `eddsa-rdfc-2022` reproduces the
   official W3C test vector byte-for-byte; `ecdsa-rdfc-2019` / `ecdsa-sd-2023`
-  verify the official vc-di-ecdsa vectors and match their intermediates; the
-  EBSI client is verified against recorded pilot responses. Golden fixtures are
-  the drift alarm.
+  verify the official vc-di-ecdsa vectors and match their intermediates; ISO
+  18013-5 `mso_mdoc` verifies the Annex D reference `DeviceResponse`; the EBSI
+  client is verified against recorded pilot responses. Golden fixtures are the
+  drift alarm. Beyond them, a test-only [VC-API shim](tests/tools/README.md)
+  runs openvc through the official W3C suites (vc-data-model-2.0, vc-di-eddsa,
+  vc-di-ecdsa, bitstring-status-list) for third-party conformance reports.
 
 ## Documentation
 

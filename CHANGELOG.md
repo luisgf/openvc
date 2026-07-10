@@ -34,6 +34,15 @@ Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc
   (the mdoc analogue of `vct_values`), and the CBOR codec rejects float / non-canonical simple values
   outright rather than aliasing them to `false`/`true`/`null`. ([#86](https://github.com/luisgf/openvc/issues/86))
 
+- **VC-API conformance shim (test-only).** A stdlib `tests/tools/vc_api_shim.py` exposes the VC-API
+  `/credentials/issue`, `/credentials/verify` and `/presentations/verify` endpoints backed by the Data
+  Integrity suites (`eddsa-rdfc-2022` / `eddsa-jcs-2022` / `ecdsa-rdfc-2019` / `ecdsa-jcs-2019`, P-256
+  and P-384), so openvc can be driven through the official **W3C test suites** (vc-data-model-2.0,
+  vc-di-eddsa, vc-di-ecdsa, bitstring-status-list) and registered in the **public implementation
+  reports** — third-party conformance evidence beyond the in-repo golden fixtures. Not a shipped API
+  surface and **no runtime dependency** (stdlib `http.server`); see `tests/tools/README.md`.
+  ([#69](https://github.com/luisgf/openvc/issues/69))
+
 ### Changed
 
 - **CBOR codec factored into a dependency-free `openvc.cbor` module** (ADR-0005 D4), extended to the
