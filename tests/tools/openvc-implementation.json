@@ -1,0 +1,30 @@
+{
+  "name": "openvc",
+  "implementation": "openvc",
+  "description": "openvc — a dependency-light Verifiable Credentials core for Python (test-only VC-API shim).",
+  "issuers": [
+    {
+      "id": "https://github.com/luisgf/openvc#issuer",
+      "endpoint": "http://localhost:8080/credentials/issue",
+      "method": "POST",
+      "tags": ["vc2.0", "eddsa-rdfc-2022", "eddsa-jcs-2022", "ecdsa-rdfc-2019", "ecdsa-jcs-2019", "BitstringStatusList"]
+    }
+  ],
+  "verifiers": [
+    {
+      "id": "https://github.com/luisgf/openvc#verifier",
+      "endpoint": "http://localhost:8080/credentials/verify",
+      "method": "POST",
+      "tags": ["vc2.0", "eddsa-rdfc-2022", "eddsa-jcs-2022", "ecdsa-rdfc-2019", "ecdsa-jcs-2019", "BitstringStatusList"]
+    }
+  ],
+  "vpVerifiers": [
+    {
+      "id": "https://github.com/luisgf/openvc#vp-verifier",
+      "endpoint": "http://localhost:8080/presentations/verify",
+      "method": "POST",
+      "tags": ["vc2.0", "eddsa-rdfc-2022", "eddsa-jcs-2022", "ecdsa-rdfc-2019", "ecdsa-jcs-2019"]
+    }
+  ],
+  "_note": "Template manifest for w3c/vc-test-suite-implementations — reconcile the tag names and endpoint with the target suite version at registration time (see tests/tools/README.md). Not consumed by openvc's own test suite."
+}
