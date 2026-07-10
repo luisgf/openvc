@@ -5,11 +5,17 @@ verification, and the selective-disclosure security properties. All offline.
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import json
 import time
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
+from openvc import VerificationPolicy, verify_credential
 from openvc.keys import Ed25519SigningKey, P256SigningKey
 from openvc.proof.sd_jwt import (
     SdJwtError,
@@ -23,6 +29,7 @@ from openvc.proof.vc_jwt import (
     SignatureInvalid,
     UnsupportedAlgorithm,
 )
+from openvc.verify import KeyResolutionFailed
 
 ISSUER = "did:web:issuer.example"
 VCT = "https://credentials.example/identity"
@@ -333,3 +340,90 @@ def test_non_numeric_exp_fails_closed():
         header, {"iss": ISSUER, "vct": VCT, "exp": "not-a-date"}, signing_key=sk)
     with pytest.raises(ClaimsInvalid, match="numeric"):
         SdJwtVcProofSuite().verify(issuer_jwt + "~", public_key_jwk=sk.public_jwk())
+
+
+# --------------------------------------------------------------------------- #
+# x5c issuer trust (issue #94): the SD-JWT VC carries an x5c chain, so the
+# pipeline anchors the issuer to a trusted list in ONE verify_credential call.
+# --------------------------------------------------------------------------- #
+
+_X5C_ISS = "https://sede.uc3m.es"
+_X5C_NOW = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+_X5C_CA_KU = x509.KeyUsage(
+    digital_signature=False, content_commitment=False, key_encipherment=False,
+    data_encipherment=False, key_agreement=False, key_cert_sign=True,
+    crl_sign=True, encipher_only=False, decipher_only=False)
+
+
+def _x5c_cert(subject, issuer_cn, issuer_key, subject_pub, *, ca, san=None):
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, subject)]))
+        .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, issuer_cn)]))
+        .public_key(subject_pub).serial_number(x509.random_serial_number())
+        .not_valid_before(_X5C_NOW - dt.timedelta(days=1))
+        .not_valid_after(_X5C_NOW + dt.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True))
+    if ca:
+        builder = builder.add_extension(_X5C_CA_KU, critical=True)
+    if san is not None:
+        builder = builder.add_extension(x509.SubjectAlternativeName(san), critical=False)
+    return builder.sign(issuer_key, hashes.SHA256())
+
+
+def _issued_with_x5c(*, san_iss=_X5C_ISS):
+    """(sd_jwt issued with an x5c chain, the FNMT-analog root anchor). The document
+    signer wraps the SIGNING key and is chained to the root; SAN carries san_iss."""
+    root_key = ec.generate_private_key(ec.SECP256R1())
+    root = _x5c_cert("FNMT root", "FNMT root", root_key, root_key.public_key(), ca=True)
+    signer_priv = ec.generate_private_key(ec.SECP256R1())
+    signer = P256SigningKey(signer_priv, kid="uc3m-signer")
+    ds = _x5c_cert("UC3M DS", "FNMT root", root_key, signer_priv.public_key(), ca=False,
+                   san=[x509.UniformResourceIdentifier(san_iss)])
+    x5c = [base64.b64encode(ds.public_bytes(serialization.Encoding.DER)).decode("ascii")]
+    sd_jwt = SdJwtVcProofSuite().issue(
+        {"iss": _X5C_ISS, "title": "Grado en Ingeniería Informática"},
+        signing_key=signer, vct=VCT, x5c=x5c)
+    return sd_jwt, root
+
+
+def _policy():
+    return VerificationPolicy(require_status=False, now=_X5C_NOW)
+
+
+def test_sd_jwt_vc_with_x5c_verifies_through_pipeline():
+    sd_jwt, root = _issued_with_x5c()
+    result = verify_credential(sd_jwt, x5c_trust_anchors=[root], policy=_policy())
+    assert result.format == "sd-jwt-vc"
+    assert result.issuer == _X5C_ISS              # bound via the FNMT-anchored cert SAN
+    assert result.claims["title"] == "Grado en Ingeniería Informática"
+
+
+def test_sd_jwt_vc_x5c_header_present():
+    sd_jwt, _ = _issued_with_x5c()
+    header = json.loads(base64.urlsafe_b64decode(
+        sd_jwt.split("~", 1)[0].split(".")[0] + "=="))
+    assert isinstance(header["x5c"], list) and header["x5c"]
+
+
+def test_sd_jwt_vc_x5c_untrusted_anchor_rejected():
+    sd_jwt, _ = _issued_with_x5c()
+    stranger_key = ec.generate_private_key(ec.SECP256R1())
+    stranger = _x5c_cert("other", "other", stranger_key, stranger_key.public_key(), ca=True)
+    with pytest.raises(KeyResolutionFailed):
+        verify_credential(sd_jwt, x5c_trust_anchors=[stranger], policy=_policy())
+
+
+def test_sd_jwt_vc_x5c_iss_not_in_san_rejected():
+    # the cert SAN names a different host than iss -> the issuer binding fails closed
+    sd_jwt, root = _issued_with_x5c(san_iss="https://attacker.example")
+    with pytest.raises(KeyResolutionFailed):
+        verify_credential(sd_jwt, x5c_trust_anchors=[root], policy=_policy())
+
+
+@pytest.mark.parametrize("bad", [[], [""], [123]], ids=["empty", "blank", "non-str"])
+def test_issue_rejects_malformed_x5c(bad):
+    with pytest.raises(SdJwtError, match="x5c"):
+        SdJwtVcProofSuite().issue(
+            {"iss": _X5C_ISS}, signing_key=P256SigningKey.generate(kid="k"),
+            vct=VCT, x5c=bad)

@@ -40,6 +40,22 @@ The pipeline also accepts SD-JWT presentations directly —
 issuer key from `iss` (see
 [Resolving issuer keys](Resolving-Issuer-Keys)).
 
+### X.509 (`x5c`) issuer trust
+
+An issuer anchored on a trusted list (eIDAS / EUDI) can carry its certificate chain in the
+SD-JWT VC header — `suite.issue(..., x5c=[<base64 DER>, …])`, leaf first — so a verifier
+chains it to its anchors and binds the leaf to `iss` in one call:
+
+<!-- docs: no-run -->
+```python
+sd_jwt = suite.issue(
+    {"iss": "https://issuer.example", ...}, signing_key=issuer, vct=VCT, x5c=x5c_chain)
+result = verify_credential(sd_jwt, x5c_trust_anchors=[root])   # chains x5c -> root, binds iss
+```
+
+The leaf certificate's key must be the issuer's signing key and `iss` must appear in the
+leaf's Subject Alternative Name, or verification fails closed (see [Trust anchors](Trust)).
+
 ## Type Metadata (`vct` + `vct#integrity`)
 
 An issuer can pin the credential type's published

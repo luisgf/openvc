@@ -4,6 +4,20 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] — unreleased
+
+### Added
+
+- **SD-JWT VC issuance can emit an `x5c` header.** `SdJwtVcProofSuite.issue(..., x5c=[…])` places
+  an X.509 certificate chain (base64 DER, leaf first) in the issuer JWT header, closing the loop
+  with the existing verify-side support: an issuer anchored on a trusted list (eIDAS / EUDI) can
+  now be verified in **one call** — `verify_credential(sd_jwt, x5c_trust_anchors=[…])` chains the
+  leaf to those anchors and binds it to `iss` (previously the anchoring needed a separate
+  `resolve_x5c_key` step). The leaf's key must be the signing key and `iss` must be in its SAN, or
+  verification fails closed. The `examples/11_spanish_university_credential.py` walkthrough now
+  verifies the FNMT-anchored diploma in a single call.
+  ([#94](https://github.com/luisgf/openvc/issues/94))
+
 ## [1.17.0] — 2026-07-10
 
 Part of the [Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7) milestone.
@@ -982,6 +996,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.18.0]: https://github.com/luisgf/openvc/releases/tag/v1.18.0
 [1.17.0]: https://github.com/luisgf/openvc/releases/tag/v1.17.0
 [1.16.0]: https://github.com/luisgf/openvc/releases/tag/v1.16.0
 [1.15.0]: https://github.com/luisgf/openvc/releases/tag/v1.15.0
