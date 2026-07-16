@@ -54,7 +54,9 @@ Properties worth knowing:
 - **TLv6** — since **29 Apr 2026** the LOTL and every national TL are ETSI TS 119 612
   **v2.4.1** (TLv6) only. The parser reads `TSLVersionIdentifier` (`TrustList.version`
   — `6` for TLv6) and tolerates the new optional elements (e.g. `ServiceSupplyPoints`);
-  the `[trustlist]` XAdES verifier accepts the mandated **XAdES-BASELINE-B** signatures.
+  the `[trustlist]` XAdES verifier accepts the mandated **XAdES-BASELINE-B** signatures
+  (document + `SignedProperties` references) and is pinned by golden fixtures recorded
+  from the real Commission-signed EU LOTL and the Spanish national TL.
 - **Hardened XML** — stdlib parsing with DTD/DOCTYPE rejected (no XXE, no
   entity-expansion bombs), size-bounded input; XAdES verification lives behind
   the `[trustlist]` extra (`signxml`) and pins the signer to the certs the
