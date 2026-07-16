@@ -28,6 +28,14 @@ def test_encode_decode_roundtrip():
     assert decode_bitstring(encode_bitstring(bits)) == bits
 
 
+def test_encode_emits_multibase_prefix():
+    # The W3C v1.0 REC mandates a multibase encodedList (leading 'u'); openvc's own
+    # issued lists must conform, and decode tolerates both the 'u' form and legacy bare.
+    encoded = encode_bitstring(bytes([0x00, 0xFF]))
+    assert encoded.startswith("u")
+    assert decode_bitstring(encoded) == decode_bitstring(encoded[1:]) == bytes([0x00, 0xFF])
+
+
 def test_msb_first_bit_order():
     # index 0 is the top bit of byte 0.
     bits = bytes([0b1000_0000])
