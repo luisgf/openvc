@@ -2,11 +2,13 @@
 tests/test_trustlist_xades.py — the reference XAdES verifier behind the
 ``[trustlist]`` extra (``openvc.trustlist.verify_xades_enveloped``).
 
-The whole file ``importorskip``s ``signxml`` (the extra). We can't fetch a live EU
-LOTL offline, so authenticity is proven by a **round-trip**: build an ETSI-shaped
-TL, sign its enveloped XAdES/XML-DSig with ``signxml`` under a self-signed EC cert,
-and verify it back — plus the fail-closed negatives (wrong cert, tampered body,
-unsigned, DTD, oversize) and a full ``walk_lotl`` over signed LOTL + national TL.
+The whole file ``importorskip``s ``signxml`` (the extra). Authenticity is proven by
+**round-trips**: build an ETSI-shaped TL, sign it with ``signxml`` under a
+self-signed EC cert (plain enveloped XML-DSig *and* real XAdES with its
+``SignedProperties``), and verify it back — plus the fail-closed negatives (wrong
+cert, tampered body, unsigned, DTD, oversize, unexpected signed references) and a
+full ``walk_lotl`` over signed LOTL + national TL. The **real Commission-signed
+goldens** (EU LOTL + ES TL) live in ``test_trustlist_xades_real.py``.
 Self-contained (tests/ is not a package — no cross-import).
 """
 from __future__ import annotations
@@ -185,6 +187,164 @@ def test_verify_backend_unavailable(monkeypatch):
     monkeypatch.setitem(sys.modules, "signxml", None)
     with pytest.raises(TrustListSignatureBackendUnavailable):
         verify_xades_enveloped(b"<x/>", [cert])
+
+
+def test_verify_xades_roundtrip_with_signed_properties():
+    # A REAL XAdES signature (what actual EU trusted lists carry) references the
+    # document root, its own SignedProperties and — with signxml's XAdES signer — a
+    # co-signed KeyInfo. All accepted; the v1.20.0 1-reference pin rejected this.
+    from signxml.xades import XAdESSigner
+    _, ca = _cert("CA QC")
+    key_n, cert_n = _cert("TL Signer")
+    pem = cert_n.public_bytes(Encoding.PEM).decode()
+    signed = etree.tostring(
+        XAdESSigner(signature_algorithm="ecdsa-sha256", digest_algorithm="sha256").sign(
+            _national_tl(ca.public_bytes(Encoding.DER)), key=key_n, cert=[pem]))
+    assert signed.count(b"SignedProperties>") > 0
+    assert verify_xades_enveloped(signed, [cert_n]) is None
+
+
+def test_verify_xades_roundtrip_tampered_rejected():
+    from signxml.xades import XAdESSigner
+    _, ca = _cert("CA QC")
+    key_n, cert_n = _cert("TL Signer")
+    pem = cert_n.public_bytes(Encoding.PEM).decode()
+    signed = etree.tostring(
+        XAdESSigner(signature_algorithm="ecdsa-sha256", digest_algorithm="sha256").sign(
+            _national_tl(ca.public_bytes(Encoding.DER)), key=key_n, cert=[pem]))
+    tampered = signed.replace(b"Example TSP DE", b"Evil TSP DE")
+    assert tampered != signed
+    with pytest.raises(TrustListSignatureError):
+        verify_xades_enveloped(tampered, [cert_n])
+
+
+# --------------------------------------------------------------------------- #
+# XML-Signature-Wrapping — the by-Id relocation attack the URI="" anchor defeats
+# --------------------------------------------------------------------------- #
+
+def _sign_by_id(root, key, cert, ref_id):
+    """Sign with an enveloped BY-ID reference (URI="#id") — a spec-valid XML-DSig
+    shape (not what real EU TLs use) that a tag-only coverage check would accept
+    under wrapping."""
+    from signxml import XMLSigner, methods
+    root.set("Id", ref_id)
+    pem = cert.public_bytes(Encoding.PEM).decode()
+    signed = XMLSigner(method=methods.enveloped, signature_algorithm="ecdsa-sha256",
+                       digest_algorithm="sha256").sign(
+        root, key=key, cert=[pem], reference_uri="#" + ref_id)
+    return etree.tostring(signed)
+
+
+def test_verify_rejects_by_id_signature_wrapping():
+    # A no-key attacker relocates a legitimately-signed same-tag element under a new
+    # attacker root: signxml re-resolves URI="#id" to the moved subtree (digest still
+    # matches, tag still == root), but the enveloped URI="" anchor is absent -> rejected.
+    _, ca = _cert("CA QC")
+    key_n, cert_n = _cert("TL Signer")
+    legit = _sign_by_id(_national_tl(ca.public_bytes(Encoding.DER), ), key_n, cert_n, "tsl-root")
+
+    outer = _national_tl(ca.public_bytes(Encoding.DER))
+    outer.find(f"{{{TSL}}}TrustServiceProviderList/{{{TSL}}}TrustServiceProvider"
+               f"/{{{TSL}}}TSPInformation/{{{TSL}}}TSPName/{{{TSL}}}Name").text = "ROGUE TSP"
+    dp = _el(outer, "DistributionPoints")
+    dp.append(etree.fromstring(legit))
+    forged = etree.tostring(outer)
+
+    with pytest.raises(TrustListSignatureError):
+        verify_xades_enveloped(forged, [cert_n])
+    # and the same attack is fail-closed through the one-call consume path
+    with pytest.raises(TrustListSignatureError):
+        consume_trust_list(forged, verify_signature=verify_xades_enveloped,
+                           expected_signer_certs=[cert_n])
+
+
+def test_verify_accepts_legit_by_id_when_not_wrapped():
+    # A by-Id signature that is NOT wrapped still fails closed here: coverage is anchored
+    # on the enveloped URI="" reference, which a pure by-Id signature lacks. Real EU TLs
+    # (and signxml's default signer) use URI="", so this rejects only the non-standard shape.
+    _, ca = _cert("CA QC")
+    key_n, cert_n = _cert("TL Signer")
+    by_id = _sign_by_id(_national_tl(ca.public_bytes(Encoding.DER)), key_n, cert_n, "tsl-root")
+    with pytest.raises(TrustListSignatureError):
+        verify_xades_enveloped(by_id, [cert_n])
+
+
+# --------------------------------------------------------------------------- #
+# _check_signed_references — the structural XSW guard, unit-tested directly
+# (a validly-signed document with an arbitrary extra Reference cannot be built
+# without the signer's key, so the guard's negatives are exercised here)
+# --------------------------------------------------------------------------- #
+
+def _refs(*pairs):
+    """Each pair is (uri, tag) -> a fake VerifyResult + its SignedInfo URI."""
+    from types import SimpleNamespace
+    results, uris = [], []
+    for uri, tag in pairs:
+        el = None if tag is None else etree.Element(tag)
+        results.append(SimpleNamespace(signed_xml=el))
+        uris.append(uri)
+    return results, uris
+
+
+ROOT = f"{{{TSL}}}TrustServiceStatusList"
+SIGNED_PROPS = "{http://uri.etsi.org/01903/v1.3.2#}SignedProperties"
+KEY_INFO = "{http://www.w3.org/2000/09/xmldsig#}KeyInfo"
+
+
+def _check(*pairs):
+    from openvc.trustlist.xades import _check_signed_references
+    results, uris = _refs(*pairs)
+    return _check_signed_references(results, uris, ROOT)
+
+
+def test_check_refs_accepts_the_legitimate_shapes():
+    # enveloped doc reference (URI="") + optional SignedProperties / KeyInfo fragments
+    assert _check(("", ROOT)) is None
+    assert _check(("", ROOT), ("#sp", SIGNED_PROPS)) is None
+    assert _check(("", ROOT), ("#sp", SIGNED_PROPS), ("#ki", KEY_INFO)) is None
+
+
+def test_check_refs_by_id_root_reference_rejected():
+    # the wrapping core: a root-tag element reached by URI="#x", not the enveloped URI=""
+    with pytest.raises(TrustListSignatureError):
+        _check(("#tsl-root", ROOT))
+
+
+def test_check_refs_missing_enveloped_reference_rejected():
+    with pytest.raises(TrustListSignatureError):        # only a fragment ref
+        _check(("#sp", SIGNED_PROPS))
+    with pytest.raises(TrustListSignatureError):        # nothing verified at all
+        from openvc.trustlist.xades import _check_signed_references
+        _check_signed_references([], [], ROOT)
+
+
+def test_check_refs_duplicate_enveloped_reference_rejected():
+    with pytest.raises(TrustListSignatureError):
+        _check(("", ROOT), ("", ROOT))
+
+
+def test_check_refs_enveloped_reference_not_root_rejected():
+    # URI="" but resolving to a non-root element (a wrapping variant) is rejected
+    with pytest.raises(TrustListSignatureError):
+        _check(("", SIGNED_PROPS))
+
+
+def test_check_refs_smuggled_extra_reference_rejected():
+    smuggled = f"{{{TSL}}}TrustServiceProvider"
+    with pytest.raises(TrustListSignatureError):
+        _check(("", ROOT), ("#x", smuggled))
+
+
+def test_check_refs_uri_result_length_mismatch_rejected():
+    from openvc.trustlist.xades import _check_signed_references
+    results, _ = _refs(("", ROOT), ("#sp", SIGNED_PROPS))
+    with pytest.raises(TrustListSignatureError):        # fewer URIs than results
+        _check_signed_references(results, [""], ROOT)
+
+
+def test_check_refs_unresolved_reference_rejected():
+    with pytest.raises(TrustListSignatureError):        # signed_xml=None (raw/binary ref)
+        _check(("", ROOT), ("#x", None))
 
 
 # --------------------------------------------------------------------------- #

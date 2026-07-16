@@ -8,6 +8,24 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Fixed
 
+- **The XAdES trust-list verifier now accepts real EU trusted lists.** The
+  1-reference pin shipped in v1.20.0 rejected every genuine XAdES-BASELINE
+  signature — the EU LOTL and the national TLs carry **two** signed references
+  (the enveloped document plus the signature's own qualifying
+  `SignedProperties`), so `verify_xades_enveloped` failed closed against its
+  primary real-world target (safe direction, but the `[trustlist]` feature was
+  unusable in production; the round-trip test signed plain 1-reference XML-DSig
+  and masked it). Reference coverage is now enforced **structurally** instead of
+  by raw count: coverage is anchored on the **enveloped `URI=""` reference** — exactly
+  one verified reference must be the whole-document (`URI=""`) reference resolving to
+  the trust-list root, and the only extras accepted are the XAdES `SignedProperties`
+  and a co-signed `ds:KeyInfo`. Anchoring on `URI=""` (not on the resolved element's
+  tag) is what defeats XML-Signature-Wrapping: `URI=""` re-resolves to the current
+  whole document, so a legitimately-signed subtree relocated under an attacker root of
+  the same tag — a by-`Id` (`URI="#x"`) reference that a tag-equality check would have
+  accepted — no longer matches. (An adversarial review of the initial fix caught that
+  tag-equality gap; the regression is pinned by a by-`Id` wrapping test.)
+  ([#114](https://github.com/luisgf/openvc/issues/114))
 - **Bitstring Status List `encodedList` is now multibase-conformant (both sides).**
   The W3C VC Bitstring Status List v1.0 REC mandates the `encodedList` be a
   **multibase**-encoded base64url value (a leading `u`), but openvc's codec used bare
@@ -23,6 +41,13 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Added
 
+- **Real Commission-signed golden fixtures** (`tests/fixtures/trustlist/real/`):
+  the EU LOTL (sequence 388) and the Spanish national TL (sequence 187), recorded
+  2026-07-16 with their pinned signer certificates and verified end to end
+  through `verify_xades_enveloped` / `consume_trust_list` — the XAdES conformance
+  claim no longer rests on a self-referential round-trip. Tamper and
+  wrong-signer negatives included; provenance (URLs, sequence numbers, hashes)
+  in the fixture README. ([#114](https://github.com/luisgf/openvc/issues/114))
 - **Third-party interop vectors** (`tests/fixtures/interop/`) — conformance pinned
   against artifacts produced by *others* instead of self-recorded round-trips: an
   SD-JWT VC from **RFC 9901** Appendix A.3 (verified against the published A.5 issuer
