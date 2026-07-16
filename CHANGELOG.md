@@ -4,6 +4,35 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.2] — unreleased
+
+### Fixed
+
+- **Bitstring Status List `encodedList` is now multibase-conformant (both sides).**
+  The W3C VC Bitstring Status List v1.0 REC mandates the `encodedList` be a
+  **multibase**-encoded base64url value (a leading `u`), but openvc's codec used bare
+  base64url: `decode_bitstring` **could not consume** a spec-conformant list (or any
+  real third-party one — e.g. Digital Bazaar's) because the `u` prefix broke base64url
+  decoding, and `encode_bitstring` **issued non-conformant** lists that only
+  interoperated with openvc itself (the verify round-trip passed precisely because both
+  sides dropped the prefix — the same self-referential blind spot the third-party
+  vectors below exist to catch). `decode_bitstring` now strips an optional leading `u`
+  (a raw gzip stream base64url-encodes to `H4sI…`, never `u`, so legacy prefix-less
+  lists still decode unambiguously) and `encode_bitstring` emits the conformant `u`.
+  ([#115](https://github.com/luisgf/openvc/issues/115))
+
+### Added
+
+- **Third-party interop vectors** (`tests/fixtures/interop/`) — conformance pinned
+  against artifacts produced by *others* instead of self-recorded round-trips: an
+  SD-JWT VC from **RFC 9901** Appendix A.3 (verified against the published A.5 issuer
+  key) and a real **EUDI reference-implementation PID** (ES256, issuer cert in `x5c`),
+  both verified end to end through `SdJwtVcProofSuite`; and W3C **Bitstring Status
+  List** `encodedList` decode vectors — the v1.0 REC's own Example 3 and a Digital
+  Bazaar 100k list (which doubles as an MSB-first bit-order regression). Provenance
+  (sources, retrieval date) in the fixture README.
+  ([#115](https://github.com/luisgf/openvc/issues/115))
+
 ## [1.20.1] — 2026-07-13
 
 ### Added

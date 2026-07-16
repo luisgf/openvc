@@ -4,11 +4,17 @@ A status list is a bitstring an issuer publishes; each credential points at
 one bit of it (`credentialStatus`), and flipping the bit revokes (or suspends)
 the credential without reissuing anything. openvc implements **both** wire
 encodings behind **one interface** — the W3C
-[Bitstring Status List](https://www.w3.org/TR/vc-bitstring-status-list/) and
+[Bitstring Status List](https://www.w3.org/TR/vc-bitstring-status-list/)
+(a W3C Recommendation since 2025-05) and
 the IETF [Token Status List](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/)
 (draft-21, IESG-approved and in the RFC Editor queue as of 2026-07) — and can
 **check and issue** either. The Token Status List codec is pinned byte-for-byte to
-the draft's §4.1 worked examples.
+the draft's §4.1 worked examples, and the Bitstring codec to the W3C REC's own
+`encodedList` example (plus a third-party Digital Bazaar vector).
+
+The Bitstring `encodedList` is **multibase**-encoded (a leading `u`, base64url) as the
+REC mandates: `decode_bitstring` consumes real W3C lists that carry the `u` prefix and
+still reads legacy prefix-less lists, and `encode_bitstring` emits the conformant `u`.
 
 ## Issue a list, stamp a credential, revoke it
 

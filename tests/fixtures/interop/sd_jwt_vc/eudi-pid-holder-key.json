@@ -1,0 +1,10 @@
+{
+  "kty": "EC",
+  "d": "9_BWf90eOX6RFlphsYDbbcRN7TLx7YFfeVIn8rLIWcI",
+  "use": "sig",
+  "crv": "P-256",
+  "kid": "e7fc3cf6-6b0d-42dd-b389-ea839731e0e1",
+  "x": "-v1xzqO231sT0VpPaov7Oh4x5PMLmqJNo65RhURPquk",
+  "y": "NMC1ie1JsScfGnV7Ksty2-I2y_6CmnrN1U5GaxgmM4s",
+  "iat": 1782986026
+}
