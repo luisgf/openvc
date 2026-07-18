@@ -8,6 +8,10 @@ problem (a moved/served-differently context silently changes the canonical form
 and thus the signature check). So the loader serves a small bundled allow-list
 and, by default, **refuses to hit the network** — unknown contexts must be
 supplied explicitly via ``extra_contexts``.
+
+pyld ≥3 ships its own ``FrozenDocumentLoader`` / ``BUNDLED_CONTEXTS``; openvc
+deliberately keeps this loader instead (#124), so the exact context bytes that
+feed canonicalization stay vendored here, independent of the installed pyld.
 """
 from __future__ import annotations
 

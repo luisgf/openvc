@@ -19,13 +19,20 @@ concurrency:
 
 jobs:
   test:
-    name: test (py${{ matrix.python-version }})
+    name: test (py${{ matrix.python-version }}${{ matrix.pyld != 'latest' && format(', pyld {0}', matrix.pyld) || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        pyld: ['latest']
+        include:
+          # The [data-integrity] floor edge (#124): oldest supported pyld on the
+          # oldest Python; every other job resolves the newest pyld (3.x). The
+          # golden fixtures are the canonicalization-drift alarm on both edges.
+          - python-version: '3.10'
+            pyld: '2.0.4'
 
     steps:
       - uses: actions/checkout@v7
@@ -40,6 +47,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[all]"
+          if [ "${{ matrix.pyld }}" != "latest" ]; then pip install "pyld==${{ matrix.pyld }}"; fi
 
       - name: Lint (flake8)
         run: flake8 src tests
