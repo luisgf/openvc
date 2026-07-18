@@ -16,7 +16,12 @@ All notable changes to **openvc** are documented here. The format follows
   behaviour (CVE-2026-32597). All lanes — VC-JWT (the ML-DSA one included),
   SD-JWT, KB-JWT, status-list token — now reject through one shared check
   (`reject_unknown_crit`), matching the stance the COSE and JWE paths already
-  took; regression tests per lane in `tests/test_jws_crit.py`.
+  took; regression tests per lane in `tests/test_jws_crit.py` — the ML-DSA lane,
+  the public `verify_status_list_token` entry point and the error-precedence
+  ordering included. An adversarial review (parser tricks incl. duplicate /
+  unicode-escaped `crit` keys, lane completeness across every public entry
+  point, precedence, hostile shapes, `verify_many` isolation, global state)
+  found no bypass; its coverage recommendations are these tests.
   ([#125](https://github.com/luisgf/openvc/issues/125))
 - **PyJWT floor raised to `>=2.13`** — 2.13.0 (2026-05-21) is a security release.
   The advisory-by-advisory reachability audit through openvc's usage is recorded
