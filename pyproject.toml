@@ -44,8 +44,11 @@ dependencies = [
 [project.optional-dependencies]
 # The EBSI plugin's HTTP client (registry reads) uses httpx.
 ebsi = ["httpx>=0.27"]
-# The Data Integrity proof suite (eddsa-rdfc-2022) needs a JSON-LD processor for
-# RDF canonicalization; VC-JWT and everything else work without it.
+# The RDF-canonicalized Data Integrity suites need a JSON-LD processor; VC-JWT,
+# the JCS suites and everything else work without it. The permissive floor is
+# deliberate (#124): 2.0.4 and the revived 3.x line both reproduce the golden
+# fixtures byte-for-byte, and CI tests both edges; the context loader stays
+# openvc's own either way (openvc/proof/contexts).
 data-integrity = ["pyld>=2.0.4"]
 # credentialSchema (W3C VC JSON Schema) validation needs a JSON Schema processor;
 # everything else works without it. 4.18+ for the `referencing`-based resolver.

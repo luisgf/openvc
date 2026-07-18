@@ -15,7 +15,11 @@ implements five cryptosuites behind one pattern — `add_proof` / pipeline
 | `ecdsa-sd-2023` | `ecdsa_sd.EcdsaSdProofSuite` | P-256 | RDF + selective disclosure | `[data-integrity]` (`pyld`) |
 
 The bundled JSON-LD contexts are served by an **offline document loader** — RDF
-canonicalization never fetches a context from the network.
+canonicalization never fetches a context from the network, and the loader stays
+openvc's own (not pyld ≥3's `FrozenDocumentLoader`) so the exact context bytes
+that feed canonicalization ship vendored in this package. Both `pyld` majors are
+supported: the `>=2.0.4` floor and the revived 3.x line are verified against the
+byte-for-byte golden fixtures, with CI exercising both edges.
 
 ## RDF-canonicalized (`eddsa-rdfc-2022`)
 

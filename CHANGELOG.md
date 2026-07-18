@@ -17,6 +17,21 @@ All notable changes to **openvc** are documented here. The format follows
   lists shipped work (ML-DSA, DID 1.1 tolerance) as future. No code change.
   Follows the 2026-07-17 standards review that opened the Q3–Q4 milestone.
   ([#128](https://github.com/luisgf/openvc/issues/128))
+- **pyld 3.x verified; the `[data-integrity]` floor stays `pyld>=2.0.4`, now tested
+  at both edges.** PyLD came back to life (3.0.0 / 3.1.0, 2026-06-19, after two
+  dormant years on 2.0.4) with JSON-LD 1.1 conformance fixes — exactly the class of
+  change that could silently shift RDF canonicalization and break Data Integrity
+  signatures, and fresh installs already resolve 3.x under the permissive floor. The
+  full suite — the byte-for-byte `vc-di-eddsa` golden and the `ecdsa-sd`
+  intermediates included — passes identically on 2.0.4 and 3.1.0 (1208 passed on
+  each), so the floor is deliberately kept at `>=2.0.4` and CI now runs a
+  `pyld==2.0.4` floor leg alongside the latest-resolving matrix. The bundled-context
+  loader stays openvc's own rather than pyld 3's `FrozenDocumentLoader` /
+  `BUNDLED_CONTEXTS`, so the exact context bytes feeding canonicalization ship
+  vendored in this package (`openvc.proof.contexts`).
+  ([#124](https://github.com/luisgf/openvc/issues/124))
+
+## [1.20.2] — 2026-07-16
 
 ### Fixed
 
