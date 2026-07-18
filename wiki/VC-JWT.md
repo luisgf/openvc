@@ -42,6 +42,10 @@ already hold the key. Normally you let the pipeline resolve it from the
   fully-specified name for EdDSA — see
   [Versioning & deprecation](Versioning-and-Deprecation)); `alg: none`, RS\*,
   and HS\* are rejected up front, which closes the classic alg-confusion attacks.
+- **Unknown `crit` header extensions are rejected** (RFC 7515 §4.1.11). openvc
+  processes no JWS extension parameters, so a token that marks any as critical
+  fails closed — on the VC-JWT, SD-JWT, KB-JWT and status-list-token lanes
+  alike (the COSE and JWE paths already take the same stance).
 - **Envelope ↔ credential reconciliation.** The JWT claims (`iss`, `sub`,
   `exp`, `nbf`) must agree with the embedded credential (`issuer`,
   `credentialSubject.id`, validity window) — a token cannot smuggle a

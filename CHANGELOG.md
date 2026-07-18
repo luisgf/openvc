@@ -4,6 +4,36 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.4] — unreleased
+
+### Security
+
+- **Unknown JWS `crit` extensions are now rejected on every JOSE verify lane**
+  (RFC 7515 §4.1.11). openvc processes no JWS extension header parameters, so a
+  token marking any as critical must fail closed — but the hand-rolled JWS lanes
+  (the SD-JWT issuer JWT and KB-JWT, and the IETF status-list token) accepted
+  them regardless of PyJWT version, and the VC-JWT lane inherited pre-2.13 PyJWT
+  behaviour (CVE-2026-32597). All lanes — VC-JWT (the ML-DSA one included),
+  SD-JWT, KB-JWT, status-list token — now reject through one shared check
+  (`reject_unknown_crit`), matching the stance the COSE and JWE paths already
+  took; regression tests per lane in `tests/test_jws_crit.py` — the ML-DSA lane,
+  the public `verify_status_list_token` entry point and the error-precedence
+  ordering included. An adversarial review (parser tricks incl. duplicate /
+  unicode-escaped `crit` keys, lane completeness across every public entry
+  point, precedence, hostile shapes, `verify_many` isolation, global state)
+  found no bypass; its coverage recommendations are these tests.
+  ([#125](https://github.com/luisgf/openvc/issues/125))
+- **PyJWT floor raised to `>=2.13`** — 2.13.0 (2026-05-21) is a security release.
+  The advisory-by-advisory reachability audit through openvc's usage is recorded
+  in [`docs/audit/assurance.md` §5](https://github.com/luisgf/openvc/blob/main/docs/audit/assurance.md):
+  the `PyJWK` / `PyJWKClient` / HMAC-confusion classes are structurally
+  unreachable (allow-list before crypto, no `PyJWK(Client)`, SSRF-guarded JWKS
+  fetch); the `crit` (CVE-2026-32597) and `b64=false` (CVE-2026-48525) classes
+  were reachable pre-2.13 on the VC-JWT lane and are closed by the floor plus
+  the openvc-side `crit` rejection above. `cryptography` 49.0.0 compatibility
+  confirmed (full suite green; CI resolves the newest on every run).
+  ([#125](https://github.com/luisgf/openvc/issues/125))
+
 ## [1.20.3] — 2026-07-18
 
 ### Changed

@@ -158,3 +158,26 @@ recent first (`git log`, short hashes).
 - `9554ae7` — threat model for audit readiness (#35) — later mirrored into the
   wiki as [Security-Model](https://github.com/luisgf/openvc/wiki/Security-Model)
   by the wiki-as-code move (`9b7c459`, #56); this pack is its code-cited successor.
+
+## 5. Dependency advisory reachability — PyJWT 2.13.0 batch (audited 2026-07-18)
+
+PyJWT 2.13.0 (2026-05-21) is a security release. openvc's entire PyJWT surface is
+one module — `openvc.proof.vc_jwt`: `_JWT.decode` with `algorithms=[alg]` pinned to
+the single, already allow-listed header alg; keys converted to `cryptography`
+objects by `openvc.keys` (never `PyJWK`); no `PyJWKClient` — JWKS fetches go through
+the SSRF-guarded `openvc.fetch`. The SD-JWT issuer-JWT, KB-JWT and status-list-token
+lanes verify through openvc's own JWS code, not PyJWT. Advisory by advisory:
+
+| Advisory | Class | Reachable through openvc? |
+|---|---|---|
+| GHSA-xgmm-8j9v-c9wx / CVE-2026-48526 | public JWK accepted as HMAC secret | **No** — HS\* is never in the allow-list and `algorithms=` is pinned to one non-HS alg |
+| GHSA-jq35-7prp-9v3f / CVE-2026-48523 | allow-list bypass with `PyJWK`/`PyJWKClient` keys | **No** — `PyJWK` objects are never constructed |
+| GHSA-993g-76c3-p5m4 / CVE-2026-48522 | `PyJWKClient` SSRF (`file://`, `ftp://`, `data:`) | **No** — `PyJWKClient` unused; JWKS via `openvc.fetch` (https-only, private ranges blocked) |
+| GHSA-fhv5-28vv-h8m8 / CVE-2026-48524 | `PyJWKClient` kid-driven request flood | **No** — `PyJWKClient` unused |
+| GHSA-752w-5fwx-jx9f / CVE-2026-32597 | unknown `crit` extensions accepted | **Was reachable** — on the VC-JWT lane with PyJWT < 2.13, and **independently on openvc's own JWS lanes** (SD-JWT issuer JWT, KB-JWT, status-list token), which never consulted `crit`. Closed both ways: the `>=2.13` floor **and** the lane-uniform openvc-side rejection (`reject_unknown_crit`), regression-tested per lane in `tests/test_jws_crit.py` |
+| GHSA-w7vc-732c-9m39 / CVE-2026-48525 | DoS via unbounded b64 decode of the unused segment of a `b64=false` detached JWS | **Marginally, pre-2.13** — a hostile token reaches `jwt.decode` on the VC-JWT lane (cost ∝ input size; no wrong-accept). Closed by the floor. On the hand-rolled lanes `b64` is an inert unknown parameter — verification always runs over `b64url(header).b64url(payload)`, so detached-payload confusion is impossible; and a *conformant* `b64=false` token must list `b64` in `crit` (RFC 7797 §6), which every lane now rejects |
+
+Outcome: floor raised to `pyjwt>=2.13` (defense in depth even where structurally
+unreachable) plus the lane-uniform `crit` rejection. `cryptography` 49.0.0
+(2026-06-12, stricter X.509 parsing) confirmed compatible: full suite green, and CI
+resolves the newest `cryptography` on every run.
