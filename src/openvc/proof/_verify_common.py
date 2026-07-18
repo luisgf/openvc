@@ -1,6 +1,7 @@
 """
 openvc.proof._verify_common — cross-suite verification policy checks shared by the
-Data Integrity suites (``eddsa-rdfc-2022`` and ``ecdsa-sd-2023``).
+proof suites: the Data Integrity family (``eddsa-rdfc-2022`` and ``ecdsa-sd-2023``)
+and, for JOSE header policy (``crit``), the JWS lanes.
 
 Where each cryptosuite owns its signature maths, these checks are suite-agnostic —
 a credential's validity window, the meaning of ``proofPurpose``, and the DID
@@ -32,11 +33,23 @@ from .errors import (
     CredentialNotYetValid,
     KeyResolutionError,
     MalformedTimestamp,
+    MalformedToken,
     PresentationBindingError,
     ProofMalformed,
     ProofPurposeMismatch,
     UnsupportedCryptosuite,
 )
+
+
+def reject_unknown_crit(header: dict[str, Any]) -> None:
+    """RFC 7515 §4.1.11: a verifier MUST reject a JWS whose ``crit`` names an
+    extension parameter it does not process. The JOSE lanes here process none,
+    so a ``crit`` member — whatever its shape — fails closed with a typed
+    :class:`~openvc.proof.errors.MalformedToken`, matching the stance the COSE
+    (``openvc.cose``) and JWE (``openvc.jwe``) paths already take."""
+    if "crit" in header:
+        raise MalformedToken("JWS 'crit' extensions are not supported")
+
 
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
 
@@ -318,5 +331,6 @@ __all__ = [
     "check_validity_window",
     "prepare_di_proof",
     "match_alg",
+    "reject_unknown_crit",
     "resolve_verification_key",
 ]

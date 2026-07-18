@@ -41,7 +41,7 @@ Untrusted input crosses into openvc at:
 
 | Attacker capability | Threat | Control |
 |---|---|---|
-| Present a forged / tampered credential | Wrong accept | Signature verification through the matching suite; the `{ES256, ES384, EdDSA, Ed25519}` **allow-list runs *before* any crypto** (rejects `alg:none`, RS\*, HS\* — alg-confusion defence); JWS is R‖S, never DER |
+| Present a forged / tampered credential | Wrong accept | Signature verification through the matching suite; the `{ES256, ES384, EdDSA, Ed25519}` **allow-list runs *before* any crypto** (rejects `alg:none`, RS\*, HS\* — alg-confusion defence); unknown JWS `crit` extensions are rejected on every JOSE lane (RFC 7515 §4.1.11, parity with the COSE and JWE paths); JWS is R‖S, never DER |
 | Name an arbitrary issuer but sign with own key | Impersonation | **Issuer binding** — a Data Integrity proof's `verificationMethod` must be controlled by the credential's `issuer` DID; VC-JWT reconciles the JWT envelope with the embedded credential; x5c binds the leaf SAN to `iss` |
 | Serve a malicious document at a fetched URL | **SSRF** (reach internal hosts / cloud metadata) | `openvc.fetch`: https-only, blocks private/loopback/link-local/reserved/multicast IPs, refuses redirects, **pins the connection to the validated IP** (closes DNS-rebinding). Status/schema fetches use the same guard via the blessed `openvc.resolvers` defaults |
 | Ship a tiny highly-compressible status list | **Decompression bomb** (OOM DoS) | Status decode caps the *decompressed* output at 16 MiB and fails closed (`StatusListError`), reading incrementally so a bomb is never materialised |

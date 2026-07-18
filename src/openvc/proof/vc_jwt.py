@@ -46,7 +46,7 @@ from .errors import (  # noqa: F401
     SignatureInvalid,
     UnsupportedAlgorithm,
 )
-from ._verify_common import check_jwt_temporal, check_validity_window
+from ._verify_common import check_jwt_temporal, check_validity_window, reject_unknown_crit
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -197,6 +197,7 @@ class VcJwtProofSuite:
         alg = header.get("alg")
         if alg not in self._algs:                          # allow-list BEFORE crypto
             raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
+        reject_unknown_crit(header)
 
         if alg in ALLOWED_ALGS_PQ:
             # ML-DSA is not a PyJWT algorithm — verify the signature through the

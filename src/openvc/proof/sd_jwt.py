@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from ..keys import KeyBackendError, verify_signature
-from ._verify_common import check_jwt_temporal
+from ._verify_common import check_jwt_temporal, reject_unknown_crit
 from .errors import (
     ClaimsInvalid,
     MalformedToken,
@@ -343,6 +343,7 @@ class SdJwtVcProofSuite:
             raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
         if header.get("typ") not in _ACCEPTED_ISSUER_TYP:
             raise SdJwtError(f"unexpected issuer JWT typ {header.get('typ')!r}")
+        reject_unknown_crit(header)
         self._verify_signature(alg, public_key_jwk, signing_input, signature,
                                what="issuer JWT")
         self._check_temporal(claims)
@@ -477,6 +478,7 @@ class SdJwtVcProofSuite:
         alg = header.get("alg")
         if alg not in self._algs:
             raise UnsupportedAlgorithm(f"KB-JWT algorithm {alg!r} is not permitted")
+        reject_unknown_crit(header)
         if not isinstance(cnf, dict) or not isinstance(cnf.get("jwk"), dict):
             raise ClaimsInvalid("no cnf.jwk in the issuer JWT for key binding")
         self._verify_signature(alg, cnf["jwk"], signing_input, signature, what="KB-JWT")
