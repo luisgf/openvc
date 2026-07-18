@@ -4,7 +4,19 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.20.2] — 2026-07-16
+## [1.20.3] — unreleased
+
+### Changed
+
+- **Documentation truth pass (2026-07 roadmap refresh).** `docs/ROADMAP.md` now
+  points at the live milestones —
+  [Q3–Q4 2026 — eIDAS deadline & ecosystem refresh](https://github.com/luisgf/openvc/milestone/12),
+  [Conformance & production readiness](https://github.com/luisgf/openvc/milestone/11)
+  and [Long term — PQ, BBS & 2.0](https://github.com/luisgf/openvc/milestone/8) —
+  instead of the closed short/medium pair, and the long-term summary no longer
+  lists shipped work (ML-DSA, DID 1.1 tolerance) as future. No code change.
+  Follows the 2026-07-17 standards review that opened the Q3–Q4 milestone.
+  ([#128](https://github.com/luisgf/openvc/issues/128))
 
 ### Fixed
 

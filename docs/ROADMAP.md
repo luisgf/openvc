@@ -3,19 +3,20 @@
 The **forward roadmap is managed as GitHub issues** — one issue per item, each
 landed through its own pull request. Browse it by milestone:
 
-- **[Short term — TLv6 & spec-churn](https://github.com/luisgf/openvc/milestone/6)** —
-  dated correctness/conformance work: the binding TLv6 trusted-list cutover, the
-  RFC 9864 / RFC 9901 / Token Status List churn, the `ldp_vc` presentation lane, the
-  crypto-floor tests, and this post-1.0 documentation truth pass.
-- **[Medium term — EUDI completeness](https://github.com/luisgf/openvc/milestone/7)** —
-  completing the EUDI relying-party story: the `mso_mdoc` scope decision, the W3C
-  Digital Credentials API, EBSI's production launch, relying-party certificates
-  (WRPAC/WRPRC), `did:webvh`, W3C test-suite registration, a Spanish education
-  walkthrough, and the ML-DSA design spike.
+- **[Q3–Q4 2026 — eIDAS deadline & ecosystem refresh](https://github.com/luisgf/openvc/milestone/12)** —
+  the 2026-07 standards-review wave, anchored on CIR (EU) 2025/848 applying
+  2026-12-24: the WRPRC parser against the now-final ETSI TS 119 475, the
+  third-party `vp_token` capture, the pyld 3.x / PyJWT 2.13 dependency refresh,
+  Python 3.15 in CI, the draft→RFC cite swaps (Token Status List, SD-JWT VC),
+  and this documentation truth pass.
+- **[Conformance & production readiness](https://github.com/luisgf/openvc/milestone/11)** —
+  deferred follow-ups that each need a real signed artifact or a launched
+  external service before they can land — today: the EBSI production launch
+  (Q4 2026 under EUROPEUM-EDIC).
 - **[Long term — PQ, BBS & 2.0](https://github.com/luisgf/openvc/milestone/8)** —
-  post-quantum credentials (RFC 9964), the BBS gate re-evaluation, the W3C
-  1.1/2.1 maintenance wave + DID 1.1, an external security review, and the 2.0
-  breaking-cleanup window.
+  the 2027 horizon: the BBS gate re-evaluation, the external security review,
+  and the 2.0 breaking-cleanup window keyed to the W3C 2.1/1.1 maintenance
+  wave (April 2027) + DID 1.1.
 
 All items: <https://github.com/luisgf/openvc/issues>. Shipped history:
 [CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) and the
