@@ -38,7 +38,11 @@ class X5cError(OpenvcError):
     or has an unusable key."""
 
 
-def _load_chain(x5c: Sequence[str]) -> list:
+def load_x5c_chain(x5c: Sequence[str]) -> list:
+    """Load a JOSE ``x5c`` header value — base64 (not base64url) DER certificates, leaf
+    first — into ``x509.Certificate`` objects. Raises :class:`X5cError` on a missing,
+    empty, or malformed chain. Shared with the EUDI registration-certificate lane
+    (:mod:`openvc.rp_registration`), which carries its signer chain the same way."""
     from cryptography import x509
     if not isinstance(x5c, (list, tuple)) or not x5c:
         raise X5cError("x5c header is missing or empty")
@@ -70,7 +74,7 @@ def _check_issuer_binding(leaf: Any, iss: str) -> None:
     raise X5cError(f"issuer {iss!r} is not in the x5c leaf certificate's SAN (not bound)")
 
 
-def _leaf_public_jwk(leaf: Any) -> dict[str, Any]:
+def _leaf_p256_jwk(leaf: Any) -> dict[str, Any]:
     from cryptography.hazmat.primitives.asymmetric import ec
     pub = leaf.public_key()
     if not isinstance(pub, ec.EllipticCurvePublicKey) or not isinstance(pub.curve, ec.SECP256R1):
@@ -148,13 +152,17 @@ def resolve_x5c_key(
 
     Raises :class:`X5cError` on a malformed chain, a path-validation failure, an
     unbound issuer, or a non-P-256 leaf key."""
-    chain = _load_chain(x5c)
+    chain = load_x5c_chain(x5c)
     validate_cert_chain(chain[0], chain[1:], trust_anchors=trust_anchors, now=now)
     _check_issuer_binding(chain[0], iss)
-    return _leaf_public_jwk(chain[0])
+    return _leaf_p256_jwk(chain[0])
 
 
-def _load_der_chain(x5chain: Sequence[Any]) -> list:
+def load_der_chain(x5chain: Sequence[Any]) -> list:
+    """Load a COSE ``x5chain`` (RFC 9360 label 33) — raw DER certificates, leaf first —
+    into ``x509.Certificate`` objects. Raises :class:`X5cError` on a missing, empty, or
+    malformed chain. Shared by the mdoc ``IssuerAuth`` and EUDI registration-certificate
+    (CWT) lanes."""
     from cryptography import x509
     if not isinstance(x5chain, (list, tuple)) or not x5chain:
         raise X5cError("mdoc x5chain is missing or empty")
@@ -169,7 +177,11 @@ def _load_der_chain(x5chain: Sequence[Any]) -> list:
     return chain
 
 
-def _leaf_ec_jwk(leaf: Any) -> dict[str, Any]:
+def leaf_public_jwk(leaf: Any) -> dict[str, Any]:
+    """A certificate's public key as a JWK, restricted to the curves
+    :func:`openvc.keys.verify_signature` accepts (EC P-256 / P-384, Ed25519). Any other
+    key type — notably RSA — raises :class:`X5cError` rather than producing a JWK no
+    allow-listed algorithm could consume."""
     from cryptography.hazmat.primitives.asymmetric import ec, ed25519
     pub = leaf.public_key()
     if isinstance(pub, ec.EllipticCurvePublicKey):
@@ -213,7 +225,7 @@ def check_mdoc_signed_within_ds_validity(x5chain: Sequence[Any], signed: datetim
     certificate's own validity window. (The chain *path* is validated at verification time
     — the conservative policy — so a currently-expired DS is still rejected; this additionally
     catches a ``signed`` inconsistent with the cert that produced it.) Raises :class:`X5cError`."""
-    leaf = _load_der_chain(x5chain)[0]
+    leaf = load_der_chain(x5chain)[0]
     nb, na = leaf.not_valid_before_utc, leaf.not_valid_after_utc
     if not (nb <= signed <= na):
         raise X5cError(f"MSO signed {signed.isoformat()} is outside the document-signer "
@@ -235,16 +247,19 @@ def resolve_mdoc_signer_key(
     ``validityInfo`` are bound against the MSO by the mdoc verifier, not the certificate.
     Raises :class:`X5cError` on a malformed chain, a path-validation failure, or an
     unusable leaf key."""
-    chain = _load_der_chain(x5chain)
+    chain = load_der_chain(x5chain)
     validate_cert_chain(chain[0], chain[1:], trust_anchors=trust_anchors, now=now)
     _require_mdoc_ds_eku(chain[0])
-    return _leaf_ec_jwk(chain[0])
+    return leaf_public_jwk(chain[0])
 
 
 __all__ = [
     "X5cError",
     "resolve_x5c_key",
     "validate_cert_chain",
+    "load_x5c_chain",
+    "load_der_chain",
+    "leaf_public_jwk",
     "resolve_mdoc_signer_key",
     "check_mdoc_signed_within_ds_validity",
 ]

@@ -4,6 +4,88 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.0] — unreleased
+
+### Added
+
+- **EUDI relying-party *registration* certificates (WRPRC, ETSI TS 119 475 V1.2.1
+  clause 5.2)** — the other half of [#67](https://github.com/luisgf/openvc/issues/67)'s
+  WRPAC. Where the access certificate authenticates *who is asking*, the registration
+  certificate answers **"were they registered to ask for this?"**: it carries the
+  relying party's entitlements and the credentials/attributes it may request. New
+  module `openvc.rp_registration`, with the library's usual trusted/untrusted split —
+  `parse_rp_registration_certificate` (UNTRUSTED, header-profile only) and
+  `verify_rp_registration_certificate`, which anchors the signer's chain in
+  caller-provided registrar roots. Both profiled forms are read: the **JWT**
+  (`rc-wrp+jwt`) over the JOSE lane, the **CWT** (`rc-wrp+cwt`) over the
+  dependency-free CBOR/COSE codec, sharing the `{ES256, ES384, EdDSA, Ed25519}`
+  allow-list applied *before* any crypto and the `x5c` primitives now exported from
+  `openvc.x5c` (`load_x5c_chain`, `load_der_chain`, `leaf_public_jwk`).
+
+  Verification alone only proves a registrar signed *something*, so two cross-checks
+  carry the authorization decision, both fail-closed:
+  `check_matches_access_certificate` binds the WRPRC's `sub` to the WRPAC's
+  `entity_identifier` (GEN-5.1.1-04 — without it an attacker pairs their own valid
+  WRPAC with someone else's valid WRPRC and inherits that scope; an identifier absent
+  on either side is a failure, never a match), and `check_request_within_registration`
+  requires every DCQL credential query to match a registered `format` whose `meta`
+  covers the requested one, with every requested claim `path` inside the registered
+  paths. A registered container covers its members; a request naming no claims asks for
+  everything and is refused against an enumerated registration.
+
+  Only a *verify subset* of the JAdES baseline B-B profile GEN-5.2.1-04 mandates is
+  implemented — the signed-header profile (`typ`, allow-listed `alg`, the `x5c` chain,
+  a `crit` that fails closed on any parameter this verifier does not process) plus the
+  chain validation. No signature-policy processing, timestamps, or augmentation.
+
+  Three properties of the profile are easy to get wrong and are handled explicitly:
+  one WRPRC carries **exactly one** intended use (clause 5.2.4 flattens TS5's nested
+  `intendedUse[]`); **`exp` is optional** (Table 10), so the 12-month ceiling
+  (GEN-5.2.4-08) binds only when it is present and `require_expiry=True` is opt-in; and
+  the **CWT form has no claim-key mapping** in TS 119 475 — the envelope is fully
+  specified (RFC 9052/9360) and implemented, while the claims map is read accepting both
+  the RFC 8392 integer keys and text keys, which is the only reading available to an
+  issuer today. That lane is provisional until a real artifact exists to pin. Two
+  published spec defects are absorbed rather than inherited: `intermediary.sname`
+  (Table 10) vs `intermediary.name` (Annex C), and `intermediary.sub` vs `act.sub`
+  (GEN-5.2.4-09) — both spellings are read. The German BMI *Architekturkonzept*
+  certificate (`rc-rp+jwt`) is a different profile and is refused by name rather than
+  half-parsed under the wrong claim semantics.
+
+  No official signed vectors exist (the deliverable ships one informative, unsigned
+  Annex C example; the 2026 EAA Plugtests covered TS 119 472-1), so
+  `tests/test_rp_registration.py` pins the **Annex C payload verbatim** and otherwise
+  builds both forms over the library's own machinery — 106 tests, negative paths first.
+  Recording a real third-party artifact stays a gated follow-up.
+
+  An adversarial review of the verify and authorization paths found six issues, all
+  fixed here with a regression test named for the attack. The one that mattered:
+  the claim-path reader took `claim` before `claims` on **both** sides, which is
+  correct for a registration (the spec's spelling) but on a *request* let a relying
+  party hide a narrow decoy in `claim` and the real, broader ask in `claims` — openvc
+  authorized the decoy while the wallet, following DCQL, answers `claims`, and unknown
+  query members are ignored downstream so the escalating query stayed valid end to end.
+  The request side now takes the **union** of both spellings; the registration side
+  keeps precedence, since only there does a second spelling risk *widening* a grant.
+  Also closed: a bare `OverflowError` escaping the `OpenvcError` family on a bignum
+  `iat`/`exp`/`nbf` (`math.isfinite` casts to float, and `json.loads` yields such ints
+  from the wire); an empty registered `{"path": []}` acting as a blanket grant over the
+  whole credential (an empty tuple is a prefix of everything); a non-object `meta` being
+  coerced to `{}`, which turned a malformed *constraint* into *no* constraint and
+  widened the entry to every credential of that format; `meta` matching conflating
+  `True` with `1`; and an entitlement floor that accepted any non-empty string while
+  `ENTITLEMENT_URI_PREFIX` sat exported-but-unused — it now checks the clause-A.2
+  namespace GEN-5.2.4-03 actually requires. The binding check, the algorithm allow-list,
+  the chain handling and the CWT parser were probed and held.
+  ([#89](https://github.com/luisgf/openvc/issues/89))
+
+### Fixed
+
+- **Documentation drift**: the WRPAC was attributed to ETSI TS 119 475 (it is
+  **TS 119 411-8**; 475 is the WRPRC) in the wiki module map and the API reference,
+  where it was also described as carrying "registered entitlements" — the WRPRC's job,
+  not the WRPAC's.
+
 ## [1.20.4] — 2026-07-18
 
 ### Security

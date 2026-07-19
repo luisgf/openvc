@@ -60,7 +60,8 @@ src/openvc/                 core — knows nothing about EBSI or badges
     cache.py                opt-in TTL caching for DID resolution
     jwt_vc_issuer.py        issuer keys via /.well-known/jwt-vc-issuer
     x5c.py                  X.509 x5c chain trust + SAN issuer binding
-    rp_cert.py              EUDI relying-party access certificates (WRPAC, ETSI TS 119 475)
+    rp_cert.py              EUDI relying-party access certificates (WRPAC, ETSI TS 119 411-8)
+    rp_registration.py      EUDI relying-party registration certificates (WRPRC, ETSI TS 119 475)
     trustlist/              EU Trusted Lists (LOTL → TL) → X.509 anchors
     status/                 W3C Bitstring + IETF Token Status List (check + issue)
     schema.py               credentialSchema validation (opt-in)
