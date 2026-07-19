@@ -858,3 +858,110 @@ def test_a_request_spelling_claims_either_way_is_read(registrar):
 def test_malformed_dcql_queries_are_typed_errors(query):
     with pytest.raises(RpRegistrationError):
         check_request_within_registration(_reg(), query)
+
+
+# --------------------------------------------------------------------------- #
+# adversarial-review regressions (issue #89)
+# --------------------------------------------------------------------------- #
+
+def test_a_decoy_claim_key_cannot_narrow_a_request():
+    # CRITICAL. `_claim_paths` read `claim` first and fell back to `claims`. That is
+    # right for the registration side (the spec's spelling), but applied to a *request*
+    # it let a relying party put a narrow decoy in `claim` and the real, broader ask in
+    # `claims`: openvc authorized the decoy while the wallet — which follows DCQL —
+    # answers `claims`. Unknown query members are ignored downstream, so the escalating
+    # query stayed valid end to end. The request side now takes the union of both.
+    with pytest.raises(RpRegistrationError, match="birth_date"):
+        check_request_within_registration(_reg(), _dcql({
+            **_PID,
+            "claim": [{"path": ["age_equal_or_over", "18"]}],        # the decoy
+            "claims": [{"path": ["birth_date"]}, {"path": ["family_name"]}]}))
+
+
+def test_a_request_using_only_the_spec_spelling_is_still_read():
+    # The union must not lose the singular spelling either.
+    check_request_within_registration(
+        _reg(), _dcql({**_PID, "claim": [{"path": ["address"]}]}))
+    with pytest.raises(RpRegistrationError, match="claim path"):
+        check_request_within_registration(
+            _reg(), _dcql({**_PID, "claim": [{"path": ["nationality"]}]}))
+
+
+def test_a_registration_grant_is_not_widened_by_a_second_spelling():
+    # Precedence on the registration side is the fail-closed direction: one list, never
+    # the union, so a second spelling cannot add to a grant.
+    reg = _reg(credentials=[{
+        "format": "dc+sd-jwt", "meta": {},
+        "claim": [{"path": ["name"]}],
+        "claims": [{"path": ["ssn"]}]}])
+    with pytest.raises(RpRegistrationError, match="claim path"):
+        check_request_within_registration(reg, _dcql({
+            "id": "d", "format": "dc+sd-jwt", "claims": [{"path": ["ssn"]}]}))
+
+
+@pytest.mark.parametrize("field", ["iat", "exp", "nbf"])
+def test_a_bignum_numericdate_is_a_typed_error_not_an_overflow(registrar, field):
+    # HIGH. `math.isfinite` casts to float, so a `10**400` literal — which json.loads
+    # happily yields — raised a bare OverflowError straight past the OpenvcError family.
+    root, chain, key = registrar
+    token = jwt_wrprc(claims(**{field: 10 ** 400}), chain, key)
+    with pytest.raises(RpRegistrationError, match=field):
+        verify_rp_registration_certificate(token, trust_anchors=[root], now=_AT)
+
+
+def test_an_empty_registered_path_grants_nothing():
+    # MEDIUM. An empty tuple is a prefix of every path, so `{"path": []}` silently
+    # became a blanket grant over the whole credential.
+    reg = _reg(credentials=[{"format": "dc+sd-jwt", "meta": {"vct_values": ["v"]},
+                             "claim": [{"path": []}]}])
+    for wanted in (["ssn"], ["biometric_template"], ["address", "locality"]):
+        with pytest.raises(RpRegistrationError, match="claim path"):
+            check_request_within_registration(reg, _dcql({
+                "id": "d", "format": "dc+sd-jwt", "meta": {"vct_values": ["v"]},
+                "claims": [{"path": wanted}]}))
+
+
+@pytest.mark.parametrize("bad_meta", ["urn:eudi:pid:1", 42, ["urn:eudi:pid:1"], True])
+def test_a_malformed_meta_matches_nothing_rather_than_everything(bad_meta):
+    # MEDIUM. Coercing a non-object `meta` to `{}` turned a malformed *constraint* into
+    # *no* constraint — the entry then matched the broadest possible request (no `meta`
+    # at all = any credential of that format) while denying the one it plainly meant.
+    reg = _reg(credentials=[{"format": "dc+sd-jwt", "meta": bad_meta,
+                             "claim": [{"path": ["address"]}]}])
+    assert reg.credentials[0].meta is None
+    for query in ({"id": "p", "format": "dc+sd-jwt", "claims": [{"path": ["address"]}]},
+                  {"id": "p", "format": "dc+sd-jwt", "meta": {"vct_values": ["x"]},
+                   "claims": [{"path": ["address"]}]}):
+        with pytest.raises(RpRegistrationError, match="does not register"):
+            check_request_within_registration(reg, _dcql(query))
+
+
+def test_an_absent_meta_still_means_unconstrained():
+    # ...and the distinction is preserved: absent `meta` is not malformed `meta`.
+    reg = _reg(credentials=[{"format": "dc+sd-jwt", "claim": [{"path": ["address"]}]}])
+    assert reg.credentials[0].meta == {}
+    check_request_within_registration(reg, _dcql({
+        "id": "p", "format": "dc+sd-jwt", "claims": [{"path": ["address"]}]}))
+
+
+def test_meta_does_not_conflate_booleans_with_integers():
+    # LOW. `True == 1` in Python; `_meta_covered` lacked the guard `_path_covered` has.
+    reg = _reg(credentials=[{"format": "dc+sd-jwt", "meta": {"k": [1]},
+                             "claim": [{"path": ["a"]}]}])
+    with pytest.raises(RpRegistrationError, match="does not register"):
+        check_request_within_registration(reg, _dcql({
+            "id": "d", "format": "dc+sd-jwt", "meta": {"k": [True]},
+            "claims": [{"path": ["a"]}]}))
+
+
+def test_the_entitlement_floor_checks_the_etsi_namespace(registrar):
+    # LOW. The floor was "≥1 non-empty string", so any junk URI satisfied it while
+    # ENTITLEMENT_URI_PREFIX sat exported-but-unused, reading like a check that existed.
+    # GEN-5.2.4-03 requires one from clause A.2.
+    root, chain, key = registrar
+    token = jwt_wrprc(claims(entitlements=["urn:attacker:whatever"]), chain, key)
+    with pytest.raises(RpRegistrationError, match="ENTITLEMENT|uri.etsi.org"):
+        verify_rp_registration_certificate(token, trust_anchors=[root], now=_AT)
+    assert verify_rp_registration_certificate(
+        token, trust_anchors=[root], now=_AT, require_entitlement=False,
+    ).entitlements == ("urn:attacker:whatever",)

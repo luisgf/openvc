@@ -140,9 +140,17 @@ class RequestableCredential:
 
     ``claim_paths`` holds each registered path as a tuple; ``None`` inside a path is the
     DCQL array wildcard. An entry that registers **no** paths grants no attributes —
-    see :func:`check_request_within_registration` for that fail-closed reading."""
+    see :func:`check_request_within_registration` for that fail-closed reading.
+
+    ``meta`` is ``{}`` when the entry carries no constraint (which matches an equally
+    unconstrained request) and ``None`` when it carried one that is **not** an object.
+    The two are deliberately distinct: coercing a malformed constraint to ``{}`` would
+    turn it into *no* constraint, i.e. widen the entry to every credential of that
+    format. A ``None`` here matches nothing. (The distinction is not hypothetical — the
+    specification's own data model, clause B.2.9, types ``meta`` as a string while
+    clause 5.2.4 and the Annex C example use an object.)"""
     format: str | None
-    meta: Mapping[str, Any]
+    meta: Mapping[str, Any] | None
     claim_paths: tuple[tuple[Any, ...], ...]
     raw: Mapping[str, Any]
 
@@ -274,7 +282,14 @@ def _numeric_date(value: Any, *, field: str) -> datetime | None:
 
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RpRegistrationError(
+            f"WRPRC {field} must be a finite NumericDate, got {value!r}")
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:                    # a bignum int: `json.loads` yields one for
+        finite = False                       # `1e400`-style literals, and isfinite casts
+    if not finite:                           # to float — so this must not escape untyped
         raise RpRegistrationError(
             f"WRPRC {field} must be a finite NumericDate, got {value!r}")
     try:
@@ -283,19 +298,10 @@ def _numeric_date(value: Any, *, field: str) -> datetime | None:
         raise RpRegistrationError(f"WRPRC {field} {value!r} is out of range") from exc
 
 
-def _claim_paths(entry: Mapping[str, Any]) -> tuple[tuple[Any, ...], ...]:
-    """The claim paths of one ``credentials`` entry.
-
-    TS 119 475 names the member ``claim`` (singular, as in Annex C); the DCQL shape it
-    mirrors (OpenID4VP 1.0) names it ``claims``. Both spellings are read — on the
-    registration side so a producer following either does not silently register
-    *nothing*, and on the request side so a query is never under-read into looking
-    narrower than it is."""
-    raw = entry.get("claim")
-    if raw is None:
-        raw = entry.get("claims")
+def _paths_under(entry: Mapping[str, Any], key: str) -> list[tuple[Any, ...]]:
+    raw = entry.get(key)
     if not isinstance(raw, (list, tuple)):
-        return ()
+        return []
     paths: list[tuple[Any, ...]] = []
     for item in raw:
         if not isinstance(item, Mapping):
@@ -305,7 +311,32 @@ def _claim_paths(entry: Mapping[str, Any]) -> tuple[tuple[Any, ...], ...]:
             paths.append(tuple(path))
         elif isinstance(path, str):          # B.2.10 types `path` as a string
             paths.append((path,))
-    return tuple(paths)
+    return paths
+
+
+def _registered_paths(entry: Mapping[str, Any]) -> tuple[tuple[Any, ...], ...]:
+    """The claim paths one ``credentials`` entry **grants**.
+
+    TS 119 475 names the member ``claim`` (singular, as in Annex C); the DCQL shape it
+    mirrors (OpenID4VP 1.0) names it ``claims``. On this side the spec's spelling wins
+    and the other is only a fallback: taking one list rather than the union of both
+    means a second spelling can never *widen* a grant."""
+    return tuple(_paths_under(entry, "claim") or _paths_under(entry, "claims"))
+
+
+def _requested_paths(query: Mapping[str, Any]) -> tuple[tuple[Any, ...], ...]:
+    """The claim paths one DCQL credential query **asks for** — the **union** of both
+    spellings.
+
+    Precedence would be a scope-escalation wedge here, and in the opposite direction to
+    the registration side. A relying party that puts a narrow decoy in ``claim`` and the
+    real request in ``claims`` gets authorized against the decoy while the wallet, which
+    follows DCQL, answers ``claims`` (unknown query members are ignored downstream, so
+    the escalating query stays valid end to end). Requiring *every* path under *either*
+    spelling to be registered is the only reading that cannot be gamed."""
+    seen = _paths_under(query, "claims")
+    seen.extend(p for p in _paths_under(query, "claim") if p not in seen)
+    return tuple(seen)
 
 
 def _requestable(value: Any) -> tuple[RequestableCredential, ...]:
@@ -315,10 +346,11 @@ def _requestable(value: Any) -> tuple[RequestableCredential, ...]:
     for entry in value:
         if not isinstance(entry, Mapping):
             continue
+        raw_meta = entry.get("meta")
         out.append(RequestableCredential(
             format=_str_or_none(entry.get("format")),
-            meta=_mapping_or_none(entry.get("meta")) or {},
-            claim_paths=_claim_paths(entry),
+            meta={} if raw_meta is None else _mapping_or_none(raw_meta),
+            claim_paths=_registered_paths(entry),
             raw=entry,
         ))
     return tuple(out)
@@ -608,13 +640,17 @@ def verify_rp_registration_certificate(
     Policy knobs, all defaulting to the specification's own reading:
 
     * *required_eku* — additionally require this EKU OID on the signing leaf.
-    * *max_validity* — the GEN-5.2.4-08 twelve-month ceiling, applied only when ``exp``
-      is present. ``None`` disables it.
+    * *max_validity* — the GEN-5.2.4-08 twelve-month ceiling. It is measured from the
+      payload ``iat``, so it applies only when ``exp`` **and** ``iat`` are both present;
+      a token carrying neither has an unbounded lifetime that only ``status`` retires.
+      ``None`` disables the ceiling.
     * *require_expiry* — ``exp`` is **optional** in TS 119 475 (Table 10), so this
       defaults to ``False``. Set it if your policy refuses a certificate that can only
       be retired through revocation.
-    * *require_entitlement* — GEN-5.2.4-03 requires at least one registered entitlement;
-      a WRPRC without one authorizes nothing anyway.
+    * *require_entitlement* — GEN-5.2.4-03 requires at least one entitlement from clause
+      A.2, checked as a URI under :data:`ENTITLEMENT_URI_PREFIX`; a WRPRC without one
+      authorizes nothing anyway. Turn it off for a registrar issuing outside that
+      namespace.
 
     **This proves the token was signed by a certificate that chains to your anchors — it
     does NOT, by itself, prove the signer was entitled to register *this* relying
@@ -680,10 +716,12 @@ def verify_rp_registration_certificate(
     reg = _build(header, claims, form=form)
     _check_temporal(reg, now=now, leeway_s=leeway_s, max_validity=max_validity,
                     require_expiry=require_expiry)
-    if require_entitlement and not reg.entitlements:
+    if require_entitlement and not any(
+            e.startswith(ENTITLEMENT_URI_PREFIX) for e in reg.entitlements):
         raise RpRegistrationError(
-            "WRPRC registers no entitlements (TS 119 475 GEN-5.2.4-03 requires at least "
-            "one) — it authorizes nothing")
+            f"WRPRC registers no entitlement under {ENTITLEMENT_URI_PREFIX} "
+            f"(TS 119 475 GEN-5.2.4-03 requires at least one from clause A.2; got "
+            f"{list(reg.entitlements)}) — it authorizes nothing")
     return reg
 
 
@@ -804,8 +842,14 @@ def _path_covered(registered: tuple[Any, ...], requested: Sequence[Any]) -> bool
     the whole object — so this is not a widening. ``None`` (the DCQL array wildcard) in
     the *registered* path matches any element; a ``None`` in the *requested* path is
     only covered by a registered ``None``, so registering index ``2`` never grants
-    "every element"."""
-    if len(registered) > len(requested):
+    "every element".
+
+    An **empty** registered path grants nothing. It is a prefix of every path, so
+    without this guard a single malformed ``{"path": []}`` entry would silently become a
+    blanket grant over the whole credential — the exact opposite of the fail-closed
+    reading the rest of this module states. Neither DCQL nor TS 119 475 gives an empty
+    path that meaning."""
+    if not registered or len(registered) > len(requested):
         return False
     for reg_el, req_el in zip(registered, requested):
         if reg_el is None:
@@ -817,7 +861,7 @@ def _path_covered(registered: tuple[Any, ...], requested: Sequence[Any]) -> bool
     return True
 
 
-def _meta_covered(registered: Mapping[str, Any], requested: Mapping[str, Any]) -> bool:
+def _meta_covered(registered: Mapping[str, Any] | None, requested: Mapping[str, Any]) -> bool:
     """Whether a registered ``meta`` covers a requested one.
 
     Every constraint the request carries must be present in the registration and no
@@ -831,7 +875,12 @@ def _meta_covered(registered: Mapping[str, Any], requested: Mapping[str, Any]) -
     Subset testing is deliberately done with ``in`` (equality) rather than by building
     ``set``s: a ``meta`` value is attacker-influenced JSON and may hold unhashable
     members (an object, an array), which would make the set construction raise a bare
-    ``TypeError`` straight past this library's error family."""
+    ``TypeError`` straight past this library's error family.
+
+    A ``registered`` of ``None`` — the entry carried a ``meta`` that is not an object —
+    covers nothing (see :class:`RequestableCredential`)."""
+    if registered is None:
+        return False
     if not requested:
         return not registered
     for key, want in requested.items():
@@ -839,14 +888,22 @@ def _meta_covered(registered: Mapping[str, Any], requested: Mapping[str, Any]) -
             return False
         have = registered[key]
         if isinstance(want, (list, tuple)):
-            if not isinstance(have, (list, tuple)) or not all(w in have for w in want):
+            if not isinstance(have, (list, tuple)) or not all(
+                    any(_same(w, h) for h in have) for w in want):
                 return False
         elif isinstance(have, (list, tuple)):
-            if want not in have:
+            if not any(_same(want, h) for h in have):
                 return False
-        elif want != have:
+        elif not _same(want, have):
             return False
     return True
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Equality that does not conflate ``True`` with ``1`` — Python's ``==`` does, so
+    without this a registered ``1`` would satisfy a requested ``True``. Mirrors the
+    guard :func:`_path_covered` applies to path elements, so the two agree."""
+    return a == b and isinstance(a, bool) is isinstance(b, bool)
 
 
 def check_request_within_registration(
@@ -906,7 +963,7 @@ def check_request_within_registration(
                 f"credential query {label!r} asks for format {fmt!r} with meta "
                 f"{dict(want_meta)!r}, which this WRPRC does not register")
 
-        wanted = _claim_paths(query)
+        wanted = _requested_paths(query)
         if not wanted:
             if any(not c.claim_paths for c in candidates):
                 continue                     # unrestricted request, unrestricted grant

@@ -53,10 +53,30 @@ All notable changes to **openvc** are documented here. The format follows
   half-parsed under the wrong claim semantics.
 
   No official signed vectors exist (the deliverable ships one informative, unsigned
-  Annex C example; the 2026 EAA Plugtests covered TS 119 472-1), so `tests/test_rp_
-  registration.py` pins the **Annex C payload verbatim** and otherwise builds both forms
-  over the library's own machinery — 89 tests, negative paths first. Recording a real
-  third-party artifact stays a gated follow-up.
+  Annex C example; the 2026 EAA Plugtests covered TS 119 472-1), so
+  `tests/test_rp_registration.py` pins the **Annex C payload verbatim** and otherwise
+  builds both forms over the library's own machinery — 106 tests, negative paths first.
+  Recording a real third-party artifact stays a gated follow-up.
+
+  An adversarial review of the verify and authorization paths found six issues, all
+  fixed here with a regression test named for the attack. The one that mattered:
+  the claim-path reader took `claim` before `claims` on **both** sides, which is
+  correct for a registration (the spec's spelling) but on a *request* let a relying
+  party hide a narrow decoy in `claim` and the real, broader ask in `claims` — openvc
+  authorized the decoy while the wallet, following DCQL, answers `claims`, and unknown
+  query members are ignored downstream so the escalating query stayed valid end to end.
+  The request side now takes the **union** of both spellings; the registration side
+  keeps precedence, since only there does a second spelling risk *widening* a grant.
+  Also closed: a bare `OverflowError` escaping the `OpenvcError` family on a bignum
+  `iat`/`exp`/`nbf` (`math.isfinite` casts to float, and `json.loads` yields such ints
+  from the wire); an empty registered `{"path": []}` acting as a blanket grant over the
+  whole credential (an empty tuple is a prefix of everything); a non-object `meta` being
+  coerced to `{}`, which turned a malformed *constraint* into *no* constraint and
+  widened the entry to every credential of that format; `meta` matching conflating
+  `True` with `1`; and an entitlement floor that accepted any non-empty string while
+  `ENTITLEMENT_URI_PREFIX` sat exported-but-unused — it now checks the clause-A.2
+  namespace GEN-5.2.4-03 actually requires. The binding check, the algorithm allow-list,
+  the chain handling and the CWT parser were probed and held.
   ([#89](https://github.com/luisgf/openvc/issues/89))
 
 ### Fixed
