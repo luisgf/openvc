@@ -5,10 +5,10 @@ landed through its own pull request. Browse it by milestone:
 
 - **[Q3–Q4 2026 — eIDAS deadline & ecosystem refresh](https://github.com/luisgf/openvc/milestone/12)** —
   the 2026-07 standards-review wave, anchored on CIR (EU) 2025/848 applying
-  2026-12-24: the WRPRC parser against the now-final ETSI TS 119 475, the
-  third-party `vp_token` capture, the pyld 3.x / PyJWT 2.13 dependency refresh,
-  Python 3.15 in CI, the draft→RFC cite swaps (Token Status List, SD-JWT VC),
-  and this documentation truth pass.
+  2026-12-24: the third-party `vp_token` capture and the draft→RFC cite swaps
+  (Token Status List, SD-JWT VC) remain; the WRPRC parser against the final ETSI
+  TS 119 475, the pyld 3.x / PyJWT 2.13 dependency refresh, Python 3.15 in CI and
+  the documentation truth pass have shipped.
 - **[Conformance & production readiness](https://github.com/luisgf/openvc/milestone/11)** —
   deferred follow-ups that each need a real signed artifact or a launched
   external service before they can land — today: the EBSI production launch
@@ -37,7 +37,9 @@ proof families (VC-JWT, SD-JWT VC, Data Integrity — RDF `eddsa-rdfc-2022` /
 (W3C Bitstring + IETF Token Status List) with issuance, stateless OpenID4VP 1.0
 `vp_token` verification (SD-JWT VC, VP-JWT, `ldp_vc` and — experimental — ISO 18013-5
 `mso_mdoc` over the Digital Credentials API) including HAIP encrypted responses, EU
-Trusted Lists (LOTL→TL, TLv6) as trust anchors, a core TTL cache, batch and async
+Trusted Lists (LOTL→TL, TLv6) as trust anchors, both halves of the EUDI relying-party
+certificate pair (the X.509 **WRPAC** and the JWT/CWT **WRPRC** with its entitlement
+cross-checks), a core TTL cache, batch and async
 verification, observability, and — experimental — post-quantum ML-DSA (RFC 9964)
 signing/verification behind an explicit opt-in.
 

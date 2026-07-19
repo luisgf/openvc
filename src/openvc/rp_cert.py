@@ -17,11 +17,11 @@ Two entry points, mirroring the library's trusted/untrusted split:
 * :func:`verify_rp_access_certificate` — validate the chain to caller-provided ACA
   anchors first, then parse; the result is safe to act on.
 
-The **registration** certificate (WRPRC — the entitlements / intended-use artifact) is
-a signed JWT or CWT (ETSI TS 119 475), *not* an X.509 certificate, and its claim
-mapping is not finalised at the time of writing. It is a separate, deferred concern —
-this module is WRPAC-only. Scope: parse + validate. NOT registrar workflows or
-certificate issuance.
+The **registration** certificate (WRPRC — the entitlements artifact) is a signed JWT or
+CWT (ETSI TS 119 475), *not* an X.509 certificate, so it lives in its own module:
+:mod:`openvc.rp_registration`, which also carries the cross-check binding a WRPRC back
+to the WRPAC parsed here. This module is WRPAC-only. Scope: parse + validate. NOT
+registrar workflows or certificate issuance.
 """
 from __future__ import annotations
 
