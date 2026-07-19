@@ -19,25 +19,38 @@ concurrency:
 
 jobs:
   test:
-    name: test (py${{ matrix.python-version }}${{ matrix.pyld != 'latest' && format(', pyld {0}', matrix.pyld) || '' }})
+    name: test (py${{ matrix.python-version }}${{ matrix.pyld != 'latest' && format(', pyld {0}', matrix.pyld) || '' }}${{ matrix.extras != 'all' && ', pre-release' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # 3.15 is still a pre-release (final 2026-10-01), so its leg is advisory: it
     # reports but never blocks a merge. Drop this line when 3.15.0 ships and the
-    # trove classifier goes in (#126) — the version pin below needs no edit, since
+    # trove classifier goes in (#126) — the version pin needs no edit, since
     # allow-prereleases only falls back to a pre-release while no GA build exists.
     continue-on-error: ${{ matrix.python-version == '3.15' }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
         pyld: ['latest']
+        extras: ['all']
         include:
           # The [data-integrity] floor edge (#124): oldest supported pyld on the
           # oldest Python; every other job resolves the newest pyld (3.x). The
           # golden fixtures are the canonicalization-drift alarm on both edges.
           - python-version: '3.10'
             pyld: '2.0.4'
+            extras: 'all'
+          # Pre-release watch (#126). Installs core + ebsi + dev, NOT [all]:
+          # lxml — pulled in by signxml and by pyld 3.x — publishes no cp315
+          # wheel yet, and building it from source would test lxml's build, not
+          # openvc. The DI / trustlist / schema suites therefore importorskip
+          # here (~1028 of 1107 tests still run, hence the lower coverage floor
+          # below). What this leg does watch is the hand-rolled, attacker-facing
+          # core — JOSE, CBOR/COSE, the codecs, status lists, DID resolution —
+          # on the new interpreter. Widen to 'all' once lxml ships cp315 wheels.
+          - python-version: '3.15'
+            pyld: 'latest'
+            extras: 'ebsi,dev'
 
     steps:
       - uses: actions/checkout@v7
@@ -50,10 +63,10 @@ jobs:
           allow-prereleases: true
           cache: pip
 
-      - name: Install (core + ebsi + dev)
+      - name: Install (core + [${{ matrix.extras }}])
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[all]"
+          pip install -e ".[${{ matrix.extras }}]"
           if [ "${{ matrix.pyld }}" != "latest" ]; then pip install "pyld==${{ matrix.pyld }}"; fi
 
       - name: Lint (flake8)
@@ -65,9 +78,12 @@ jobs:
       # Offline tier only: the live EBSI smoke test stays opt-in
       # (OPENVC_EBSI_LIVE=1) so CI never depends on an external service.
       - name: Test (pytest + coverage)
+        # The pre-release leg skips the pyld/signxml/jsonschema-gated suites, so it
+        # is held to the local gate's floor (80) instead of the full-matrix 85.
         run: >-
           pytest -q --cov=openvc --cov=openvc_ebsi
-          --cov-report=term-missing --cov-fail-under=85
+          --cov-report=term-missing
+          --cov-fail-under=${{ matrix.extras == 'all' && '85' || '80' }}
 
   publish:
     name: Publish to PyPI
