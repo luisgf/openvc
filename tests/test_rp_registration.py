@@ -792,6 +792,22 @@ def test_meta_must_be_covered_not_merely_present():
             "claims": [{"path": ["address"]}]}))
 
 
+@pytest.mark.parametrize("value", [[{"a": 1}], [["x"]], [{"a": 1}, "b"]])
+def test_unhashable_meta_values_fail_closed_not_with_a_bare_typeerror(value):
+    # `meta` is attacker-influenced JSON. Subset-testing it by building sets raised a
+    # bare TypeError ("unhashable type: 'dict'") straight past the OpenvcError family —
+    # found by adversarial review. Equality containment has no such edge.
+    reg = _reg(credentials=[{"format": "dc+sd-jwt", "meta": {"vct_values": value},
+                             "claim": [{"path": ["a"]}]}])
+    check_request_within_registration(reg, _dcql({
+        "id": "d", "format": "dc+sd-jwt", "meta": {"vct_values": value},
+        "claims": [{"path": ["a"]}]}))
+    with pytest.raises(RpRegistrationError):
+        check_request_within_registration(reg, _dcql({
+            "id": "d", "format": "dc+sd-jwt", "meta": {"vct_values": [{"other": 2}]},
+            "claims": [{"path": ["a"]}]}))
+
+
 def test_an_unconstrained_request_does_not_inherit_a_constrained_registration():
     # No `meta` means "any credential of this format"; the registration is narrower.
     with pytest.raises(RpRegistrationError, match="does not register"):

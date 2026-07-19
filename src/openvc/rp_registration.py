@@ -826,7 +826,12 @@ def _meta_covered(registered: Mapping[str, Any], requested: Mapping[str, Any]) -
     mention is **not** covered — otherwise a party registered for ``vct:Diploma`` could
     request ``vct:BankAccount`` under the same entry. A request carrying *no*
     constraints is unrestricted, so it is covered only by an equally unrestricted
-    registration."""
+    registration.
+
+    Subset testing is deliberately done with ``in`` (equality) rather than by building
+    ``set``s: a ``meta`` value is attacker-influenced JSON and may hold unhashable
+    members (an object, an array), which would make the set construction raise a bare
+    ``TypeError`` straight past this library's error family."""
     if not requested:
         return not registered
     for key, want in requested.items():
@@ -834,7 +839,7 @@ def _meta_covered(registered: Mapping[str, Any], requested: Mapping[str, Any]) -
             return False
         have = registered[key]
         if isinstance(want, (list, tuple)):
-            if not isinstance(have, (list, tuple)) or not set(want) <= set(have):
+            if not isinstance(have, (list, tuple)) or not all(w in have for w in want):
                 return False
         elif isinstance(have, (list, tuple)):
             if want not in have:
