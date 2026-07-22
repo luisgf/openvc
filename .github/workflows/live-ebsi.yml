@@ -9,6 +9,13 @@ on:
     - cron: "17 6 * * 1"          # Mondays 06:17 UTC
   workflow_dispatch:
 
+# Least privilege: this job only checks out and runs pytest against the live
+# registries — it never touches the GitHub API. Explicit here (not inherited)
+# so the one unattended, scheduled workflow stays read-only regardless of the
+# repository-wide default.
+permissions:
+  contents: read
+
 jobs:
   live:
     name: Resolve a real DID against pilot
