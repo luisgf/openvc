@@ -41,6 +41,18 @@ All notable changes to **openvc** are documented here. The format follows
   and the ≤ 6-month update window. Self-made signed vectors pin the behaviour;
   the Commission's real EU lists become golden fixtures when published.
 
+  The adversarial review hardened the lane before merge: a profiled
+  `walk_lote` now defaults its selection to the profile's **issuance** service
+  type (a provider's *revocation*-service certificates no longer anchor
+  credential verification unless explicitly selected — the review proved a
+  WRPRC signed under a revocation-service CA validated through the documented
+  flow), only follows pointers whose `LoTEType` matches the profile (and
+  consumes the pointed list under the same profile), fails closed instead of
+  raising an uncaught `ValueError` on a far-future `ListIssueDateTime`,
+  rejects a present-but-empty `ServiceStatus` under the profiles
+  (presence is the violation), and pins date-times to the exact
+  `YYYY-MM-DDThh:mm:ssZ` form clause 6.1.3 mandates.
+
 ## [1.21.0] — 2026-07-19
 
 ### Added

@@ -114,14 +114,20 @@ Properties worth knowing:
   Note: the WRPRC StatusDetn URI is spelled `…/WRPRCrovidersList/StatusDetn/EU`
   (sic) in the spec and the EUDI reference implementation; the profile accepts
   both that literal and the corrected spelling.
-- **Same walk discipline** — pointed lists verify against the certificates
-  their pointer vouched for (one hop, like LOTL→TL); a list that cannot be
-  fetched, verified, or is expired — or is **closed** (`NextUpdate` null) —
-  contributes zero anchors and lands in `problems`. `select` defaults to
-  **`None`** here (the EU profiles forbid `ServiceStatus`, so the 119 612
-  lane's granted-status default would drop everything); filter by
-  `Select(service_types={LoteServiceType.WRPRC_ISSUANCE})` when you need a
-  subset.
+- **Same walk discipline, least privilege by default** — pointed lists verify
+  against the certificates their pointer vouched for (one hop, like LOTL→TL);
+  in a *profiled* walk a pointer is only followed when its qualifier `LoTEType`
+  matches the profile, and the pointed list must conform to the **same**
+  profile — a foreign list type can never leak anchors in. A list that cannot
+  be fetched, verified, or is expired — or is **closed** (`NextUpdate` null) —
+  contributes zero anchors and lands in `problems`. Under a profile, `select`
+  defaults to the profile's **issuance** service type only: a provider's
+  *revocation* service is a legitimate list entry, but its certificates must
+  not anchor credential verification (pass an explicit `Select`, or
+  `select=None` for every admitted anchor, to widen deliberately). With no
+  profile the default keeps everything — the EU profiles forbid
+  `ServiceStatus`, so the 119 612 lane's granted-status default would drop
+  every anchor.
 
 The Commission had not yet published the EU LoTE instances when this lane
 shipped; conformance is pinned by self-made vectors against TS 119 602 V1.1.1,

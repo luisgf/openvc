@@ -593,6 +593,134 @@ def test_walk_applies_a_service_type_select(operator, registrar_anchor):
 
 
 # --------------------------------------------------------------------------- #
+# adversarial-review regressions (M1, L1, L2, I2)
+# --------------------------------------------------------------------------- #
+
+def _two_service_doc(issuance_b64, revocation_b64):
+    doc = _doc(issuance_b64)
+    doc["LoTE"]["TrustedEntitiesList"][0]["TrustedEntityServices"].append({
+        "ServiceInformation": {
+            "ServiceName": [{"lang": "en", "value": "WRPRC status"}],
+            "ServiceTypeIdentifier": LoteServiceType.WRPRC_REVOCATION,
+            "ServiceDigitalIdentity": {"X509Certificates": [{"val": revocation_b64}]}}})
+    return doc
+
+
+def test_default_profiled_walk_keeps_issuance_anchors_only(operator):
+    """M1: a provider's *revocation* service is a legitimate list entry, but its
+    certificates must not anchor credential verification by default."""
+    op_cert, op_key = operator
+    iss_ca, _, _ = _ca("Issuance CA")
+    rev_ca, _, _ = _ca("Revocation CA")
+    token = _sign(_two_service_doc(_b64(iss_ca), _b64(rev_ca)), op_key, op_cert)
+
+    result = walk_lote("https://ec.example/wrprc.jwt", lote_signer_certs=[op_cert],
+                       profile=EU_WRPRC_PROVIDERS_PROFILE, now=_NOW,
+                       fetch=lambda u: token.encode())
+    assert [a.service_type for a in result.anchors] == [LoteServiceType.WRPRC_ISSUANCE]
+
+    everything = walk_lote("https://ec.example/wrprc.jwt", lote_signer_certs=[op_cert],
+                           profile=EU_WRPRC_PROVIDERS_PROFILE, now=_NOW, select=None,
+                           fetch=lambda u: token.encode())
+    assert len(everything.certificates) == 2        # the explicit escape hatch
+
+
+def test_a_wrprc_signed_under_the_revocation_ca_is_rejected_by_the_default_flow(operator):
+    """M1 end to end: the documented walk → .certificates → verify flow must not
+    let a revocation-service key validate a WRPRC chain."""
+    from openvc.rp_registration import (
+        RpRegistrationError, verify_rp_registration_certificate)
+
+    op_cert, op_key = operator
+    iss_ca, _, _ = _ca("Issuance CA")
+    rev_ca, rev_key, rev_name = _ca("Revocation CA")
+    leaf_key = ec.generate_private_key(ec.SECP256R1())
+    leaf = _cert(
+        x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Revocation-side leaf")]),
+        rev_name, leaf_key, rev_key,
+        [(x509.BasicConstraints(False, None), True)])
+    token = _sign(_two_service_doc(_b64(iss_ca), _b64(rev_ca)), op_key, op_cert)
+    anchors = walk_lote("https://ec.example/wrprc.jwt", lote_signer_certs=[op_cert],
+                        profile=EU_WRPRC_PROVIDERS_PROFILE, now=_NOW,
+                        fetch=lambda u: token.encode())
+
+    claims = {"sub": "VATES-B1", "iat": int(_NOW.timestamp()) - 60,
+              "entitlements": ["https://uri.etsi.org/19475/Entitlement/Service_Provider"]}
+    head = {"typ": "rc-wrp+jwt", "alg": "ES256", "x5c": [_b64(leaf)]}
+    signing_input = (
+        f"{_b64url(json.dumps(head, separators=(',', ':')).encode())}."
+        f"{_b64url(json.dumps(claims, separators=(',', ':')).encode())}")
+    sig = P256SigningKey(leaf_key, "k").sign(signing_input.encode())
+    wrprc = f"{signing_input}.{_b64url(sig)}"
+
+    with pytest.raises(RpRegistrationError, match="did not validate"):
+        verify_rp_registration_certificate(
+            wrprc, trust_anchors=anchors.certificates, now=_NOW)
+
+
+def test_a_profiled_walk_does_not_follow_foreign_type_pointers(operator, registrar_anchor):
+    """M1, pointer facet: a WRPAC-typed pointer cannot drag its list into a
+    WRPRC-profiled walk — not followed, staged as a problem, never fetched."""
+    op_cert, op_key = operator
+    voucher_cert, _ = _operator(org="Second Operator")
+    root_doc = _doc(_b64(registrar_anchor[0]), pointers=[
+        _pointer("https://wpac.example/lote.jwt", voucher_cert,
+                 lote_type=LoteType.EU_WRPAC_PROVIDERS)])
+    root_tok = _sign(root_doc, op_key, op_cert)
+    fetched: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        fetched.append(url)
+        return root_tok.encode()
+
+    result = walk_lote("https://root.example/lote.jwt", lote_signer_certs=[op_cert],
+                       profile=EU_WRPRC_PROVIDERS_PROFILE, fetch=fetch, now=_NOW)
+    assert len(result.anchors) == 1
+    assert [p.stage for p in result.problems] == ["profile"]
+    assert fetched == ["https://root.example/lote.jwt"]   # the foreign hop never fetched
+
+
+def test_a_far_future_issue_date_fails_closed_not_valueerror(operator, registrar_anchor):
+    """L1: a year-9999 issue date must land in the typed error family (and the
+    walk's problems), not crash with an uncaught ValueError."""
+    op_cert, op_key = operator
+    doc = _doc(_b64(registrar_anchor[0]))
+    doc["LoTE"]["ListAndSchemeInformation"]["ListIssueDateTime"] = "9999-12-01T00:00:00Z"
+    doc["LoTE"]["ListAndSchemeInformation"]["NextUpdate"] = "9999-12-30T00:00:00Z"
+    token = _sign(doc, op_key, op_cert)
+    with pytest.raises(TrustListProfileError, match="update window"):
+        consume_lote(token, expected_signer_certs=[op_cert],
+                     profile=EU_WRPRC_PROVIDERS_PROFILE, now=_NOW)
+    result = walk_lote("https://root.example/lote.jwt", lote_signer_certs=[op_cert],
+                       profile=EU_WRPRC_PROVIDERS_PROFILE, now=_NOW,
+                       fetch=lambda u: token.encode())
+    assert result.anchors == ()
+    assert [p.stage for p in result.problems] == ["profile"]
+
+
+def test_profile_rejects_an_empty_string_service_status(operator, registrar_anchor):
+    """L2: ``"ServiceStatus": ""`` is *present* — presence is the violation."""
+    with pytest.raises(TrustListProfileError, match="ServiceStatus"):
+        _consume_mutated(
+            operator, registrar_anchor,
+            lambda d: d["LoTE"]["TrustedEntitiesList"][0]["TrustedEntityServices"][0]
+            ["ServiceInformation"].update({"ServiceStatus": ""}))
+
+
+@pytest.mark.parametrize("form", [
+    "2026-07-01 00:00:00Z",                 # space separator
+    "2026-07-01T00:00:00.123Z",             # decimal fraction
+    "2026-W27-1T00:00:00Z",                 # ISO week-date
+])
+def test_datetime_fields_require_the_exact_clause_6_1_3_form(signed, form):
+    """I2: clause 6.1.3 mandates YYYY-MM-DDThh:mm:ssZ exactly."""
+    doc = _mutated(signed, lambda d: d["LoTE"]["ListAndSchemeInformation"]
+                   .update({"NextUpdate": form}))
+    with pytest.raises(TrustListParseError, match="clause 6.1.3"):
+        parse_lote(doc)
+
+
+# --------------------------------------------------------------------------- #
 # integration — LoTE anchors feed the WRPRC verify path
 # --------------------------------------------------------------------------- #
 

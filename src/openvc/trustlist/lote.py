@@ -53,9 +53,10 @@ from __future__ import annotations
 import base64
 import calendar
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, NoReturn, Sequence
 
 from .consume import Select
 from .errors import (
@@ -111,13 +112,22 @@ class LoteProfile:
     """A LoTE profile (TS 119 602 clause 4.7): scheme-defined constraints a
     specific list must satisfy on top of the general data model. Checking a list
     against a profile is a conformance gate — every mismatch fails closed as
-    :class:`~openvc.trustlist.errors.TrustListProfileError`."""
+    :class:`~openvc.trustlist.errors.TrustListProfileError`.
+
+    ``service_types`` is the profile's *exclusive* set (every service in the
+    list must use one of them); ``anchor_service_types`` is the least-privilege
+    subset a profiled :func:`walk_lote` keeps by default — the **issuance**
+    services. Under Annex F/G both an issuance and a revocation service become
+    list entries, but only the issuance certificates should anchor credential
+    verification (the adversarial review's M1: without the split, a registrar's
+    *revocation*-service key would validate WRPRC chains)."""
     name: str
     lote_type: str                          # required LoTEType (Table x.1)
     status_determination: tuple[str, ...]   # accepted StatusDeterminationApproach spellings
     scheme_rules: str                       # required SchemeTypeCommunityRules URI
     territory: str                          # required SchemeTerritory
     service_types: frozenset[str]           # the exclusive ServiceTypeIdentifier set
+    anchor_service_types: frozenset[str]    # the default anchors a profiled walk keeps
     max_update_months: int = 6              # NextUpdate - ListIssueDateTime ceiling
 
 
@@ -129,6 +139,7 @@ EU_WRPAC_PROVIDERS_PROFILE = LoteProfile(
     territory="EU",
     service_types=frozenset(
         {LoteServiceType.WRPAC_ISSUANCE, LoteServiceType.WRPAC_REVOCATION}),
+    anchor_service_types=frozenset({LoteServiceType.WRPAC_ISSUANCE}),
 )
 
 EU_WRPRC_PROVIDERS_PROFILE = LoteProfile(
@@ -145,6 +156,7 @@ EU_WRPRC_PROVIDERS_PROFILE = LoteProfile(
     territory="EU",
     service_types=frozenset(
         {LoteServiceType.WRPRC_ISSUANCE, LoteServiceType.WRPRC_REVOCATION}),
+    anchor_service_types=frozenset({LoteServiceType.WRPRC_ISSUANCE}),
 )
 
 
@@ -231,12 +243,17 @@ def _ml_uris(value: Any, ctx: str) -> list[str]:
     return uris
 
 
+_DATETIME_Z = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
 def _datetime_z(value: Any, ctx: str) -> datetime:
-    """Clause 6.1.3: ISO 8601, UTC, second precision, the literal ``Z``
-    designator."""
+    """Clause 6.1.3: ISO 8601, UTC, second precision — exactly
+    ``YYYY-MM-DDThh:mm:ssZ``, no decimal fraction, no alternate separators."""
     text = _require_str(value, ctx)
-    if not text.endswith("Z"):
-        raise TrustListParseError(f"{ctx} must be a UTC date-time ending in 'Z' (clause 6.1.3)")
+    if not _DATETIME_Z.fullmatch(text):
+        raise TrustListParseError(
+            f"{ctx} must be a UTC date-time of the exact YYYY-MM-DDThh:mm:ssZ "
+            f"form (clause 6.1.3), got {text!r}")
     try:
         parsed = datetime.fromisoformat(text[:-1] + "+00:00")
     except ValueError as exc:
@@ -525,7 +542,13 @@ def consume_lote(
 
     There is no implicit trust root: *expected_signer_certs* are
     ``cryptography`` ``x509.Certificate`` objects the caller pins (or, on a
-    pointer walk, the certificates the pointing list vouched for)."""
+    pointer walk, the certificates the pointing list vouched for).
+
+    ``consume_lote`` establishes authenticity and conformance — **not
+    freshness**: staging an expired or **closed** list (``NextUpdate`` in the
+    past, or null per clause 6.3.15) is :func:`walk_lote`'s job, mirroring the
+    119 612 lane's ``consume_trust_list``/``walk_lotl`` split. A caller using
+    ``consume_lote`` directly must check ``next_update`` itself."""
     if isinstance(token, (bytes, bytearray)):
         try:
             token = bytes(token).decode("ascii")
@@ -681,7 +704,7 @@ def _check_profile(
 ) -> None:
     scheme = lote_obj["ListAndSchemeInformation"]
 
-    def fail(detail: str) -> None:
+    def fail(detail: str) -> NoReturn:
         raise TrustListProfileError(f"{profile.name}: {detail}")
 
     if trust_list.version != 1:
@@ -700,30 +723,43 @@ def _check_profile(
         fail(f"SchemeTerritory must be {profile.territory!r}, got {trust_list.territory!r}")
     if "HistoricalInformationPeriod" in scheme:
         fail("HistoricalInformationPeriod shall not be present")
-    issue = datetime.fromisoformat(trust_list.issue_datetime or "")
-    if trust_list.next_update is not None and (
-            trust_list.next_update > _plus_months(issue, profile.max_update_months)):
-        fail(f"NextUpdate {trust_list.next_update.isoformat()} is more than "
-             f"{profile.max_update_months} months after ListIssueDateTime "
-             f"{issue.isoformat()}")
+    try:
+        issue = datetime.fromisoformat(trust_list.issue_datetime or "")
+    except ValueError:                      # unreachable from parse_lote, which always sets it
+        fail("ListIssueDateTime is missing or unparseable")
+    if trust_list.next_update is not None:
+        try:
+            ceiling = _plus_months(issue, profile.max_update_months)
+        except ValueError:                  # year overflow — cannot evaluate ⇒ fail closed
+            fail(f"ListIssueDateTime {issue.isoformat()} is too far in the future "
+                 f"to evaluate the {profile.max_update_months}-month update window")
+        if trust_list.next_update > ceiling:
+            fail(f"NextUpdate {trust_list.next_update.isoformat()} is more than "
+                 f"{profile.max_update_months} months after ListIssueDateTime "
+                 f"{issue.isoformat()}")
     for provider in trust_list.providers:
         for svc in provider.services:
-            if svc.service_status:
-                fail(f"ServiceStatus shall not be used (service {svc.service_name!r} "
-                     f"of {provider.name!r} carries {svc.service_status!r})")
             if svc.service_type not in profile.service_types:
                 fail(f"ServiceTypeIdentifier {svc.service_type!r} (service "
                      f"{svc.service_name!r} of {provider.name!r}) is outside the "
                      f"profile's exclusive set {sorted(profile.service_types)!r}")
-    # StatusStartingTime is date-validated in the parse but dropped by the typed
-    # model; its *presence* violates the profile, which the wire object knows:
+    # ServiceStatus / StatusStartingTime "shall not be used" (Tables F.3/G.3):
+    # *presence* is the violation, so both checks read the wire object — the
+    # typed model normalises absence and an empty string alike (the adversarial
+    # review's L2). ServiceHistory instances are exempt: Table G.3's "History
+    # information" row imposes no additional requirements, and clause 6.7 makes
+    # StatusStartingTime structurally required inside a history instance.
     entities = lote_obj.get("TrustedEntitiesList") or []
     for entity in entities:
         if not isinstance(entity, Mapping):
             continue
         for svc in entity.get("TrustedEntityServices") or []:
             info = svc.get("ServiceInformation") if isinstance(svc, Mapping) else None
-            if isinstance(info, Mapping) and "StatusStartingTime" in info:
+            if not isinstance(info, Mapping):
+                continue
+            if "ServiceStatus" in info:
+                fail("ServiceStatus shall not be used")
+            if "StatusStartingTime" in info:
                 fail("StatusStartingTime shall not be used")
 
 
@@ -731,12 +767,17 @@ def _check_profile(
 # walk
 # --------------------------------------------------------------------------- #
 
+# Sentinel: "derive the selection from the profile". Distinct from an explicit
+# ``select=None``, which keeps every admitted anchor.
+_DERIVED_SELECT = Select()
+
+
 def walk_lote(
     lote_url: str, *,
     lote_signer_certs: Sequence[Any],
     profile: LoteProfile | None = None,
     fetch: FetchLote = default_lote_fetch,
-    select: Select | None = None,
+    select: Select | None = _DERIVED_SELECT,
     now: datetime | None = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
     max_lists: int = 8,
@@ -746,19 +787,28 @@ def walk_lote(
 
     Trust is rooted in *lote_signer_certs* (caller-pinned — for the EU lists,
     the Commission's published list-signing certificates). The root list is
-    verified with :func:`consume_lote` under *profile*; each **pointed** list is
-    verified against the certificates its pointer vouched for (clause 6.3.13 —
-    the same one-hop vouching model as :func:`~openvc.trustlist.walk_lotl`) and
-    consumed without a profile. A list that cannot be fetched, verified, parsed,
-    is expired, or is **closed** (``NextUpdate`` null, clause 6.3.15)
-    contributes zero anchors and is recorded in ``problems`` — never silently
-    trusted, never aborting the walk.
+    verified with :func:`consume_lote` under *profile*. Pointed lists follow
+    the clause 6.3.13 vouching model (one hop, like
+    :func:`~openvc.trustlist.walk_lotl`): each is verified against the
+    certificates its pointer vouched for — and, in a **profiled** walk, a
+    pointer is only followed when its qualifier ``LoTEType`` matches the
+    profile, and the pointed list must conform to the **same** profile, so a
+    foreign list type can never leak anchors into a profiled walk. A list that
+    cannot be fetched, verified, parsed, is expired, or is **closed**
+    (``NextUpdate`` null, clause 6.3.15) contributes zero anchors and is
+    recorded in ``problems`` — never silently trusted, never aborting the walk.
 
-    *select* defaults to ``None`` (keep everything the profile admitted): the EU
-    WRPAC/WRPRC profiles forbid ``ServiceStatus``, so the 119 612 lane's
-    granted-status default would drop every anchor. Filter by
-    ``service_types`` (e.g. only ``…/SvcType/WRPRC/Issuance``) when you need a
-    subset. ``max_lists`` caps the total lists consumed (root + pointed)."""
+    *select* defaults to the **profile's anchor service types** — the issuance
+    services only (least privilege: under Annex F/G a provider's *revocation*
+    service is also listed, but its certificates must not anchor credential
+    verification). With no profile, the default keeps everything (the EU
+    profiles forbid ``ServiceStatus``, so the 119 612 lane's granted-status
+    default would drop every anchor). Pass an explicit :class:`Select` to
+    filter differently, or ``select=None`` for every admitted anchor.
+    ``max_lists`` caps the total lists consumed (root + pointed)."""
+    if select is _DERIVED_SELECT:
+        select = (Select(service_types=profile.anchor_service_types)
+                  if profile is not None else None)
     instant = now if now is not None else datetime.now(timezone.utc)
     if instant.tzinfo is None:
         instant = instant.replace(tzinfo=timezone.utc)
@@ -793,6 +843,12 @@ def walk_lote(
     for pointer in root.pointers:
         if pointer.location in visited:
             continue                        # the EU profiles' self-pointer, or a repeat
+        if profile is not None and pointer.tsl_type != profile.lote_type:
+            problems.append(TrustListProblem(
+                pointer.location, "profile",
+                f"not followed: pointer LoTEType {pointer.tsl_type!r} is outside "
+                f"this profiled walk ({profile.lote_type!r})"))
+            continue
         if (select is not None and select.territories is not None
                 and (pointer.territory or "") not in select.territories):
             continue
@@ -811,7 +867,7 @@ def walk_lote(
         try:
             pointed = consume_lote(
                 pointed_bytes if isinstance(pointed_bytes, str) else bytes(pointed_bytes),
-                expected_signer_certs=pointer.signer_certs, profile=None,
+                expected_signer_certs=pointer.signer_certs, profile=profile,
                 now=instant, max_bytes=max_bytes)
         except TrustListError as exc:
             problems.append(TrustListProblem(pointer.location, _stage(exc), str(exc)))
