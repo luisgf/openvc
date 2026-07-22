@@ -20,7 +20,7 @@ default**, with private keys that never have to enter the process.
 | | EUDI relying-party **registration** certificate (WRPRC) — the signed JWT/CWT carrying the *requester's* registered entitlements, cross-checked against its WRPAC and against what the request actually asks for | [ETSI TS 119 475](https://www.etsi.org/standards) |
 | **Resolve issuer keys** | `did:key`, `did:jwk`, `did:web`, `did:webvh` (verifiable-history log) (+ `did:ebsi` via plugin), `/.well-known/jwt-vc-issuer`, X.509 `x5c` chains with SAN issuer binding | [DID](https://www.w3.org/TR/did-core/) |
 | **Revocation** | Bitstring Status List and Token Status List — check **and** issue | [W3C](https://www.w3.org/TR/vc-bitstring-status-list/) / [IETF](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/) |
-| **Trust anchors** | Caller-pinned X.509 anchors, [EU Trusted Lists](https://github.com/luisgf/openvc/wiki/Trust) (LOTL → national TL), EBSI Trusted Issuers Registry (read-only plugin) | ETSI TS 119 612 / [EBSI](https://hub.ebsi.eu/) |
+| **Trust anchors** | Caller-pinned X.509 anchors, [EU Trusted Lists](https://github.com/luisgf/openvc/wiki/Trust) (XML LOTL → national TL, **and** the JSON Lists of Trusted Entities with the EU WRPAC/WRPRC provider profiles), EBSI Trusted Issuers Registry (read-only plugin) | ETSI TS 119 612 / TS 119 602 / [EBSI](https://hub.ebsi.eu/) |
 | **Keys** | The `SigningKey` protocol — an HSM / KMS / Vault backend is a drop-in; ES256 signatures are raw JOSE `R‖S`, never DER | — |
 
 ## Install
