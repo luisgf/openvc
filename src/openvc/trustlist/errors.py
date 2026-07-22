@@ -21,8 +21,17 @@ class TrustListSignatureUnavailable(TrustListError):
 
 
 class TrustListSignatureError(TrustListError):
-    """The Trusted List's XML signature did not verify against the expected signer
-    certificate(s) — the list is not authentic."""
+    """The Trusted List's signature (XML XAdES, or a LoTE's compact JAdES) did
+    not verify against the expected signer certificate(s) — the list is not
+    authentic."""
+
+
+class TrustListProfileError(TrustListError):
+    """A verified, well-formed LoTE does not conform to the requested profile
+    (ETSI TS 119 602 clause 4.7 — e.g. the Annex F/G EU WRPAC/WRPRC providers
+    lists): wrong ``LoTEType``, a forbidden component present, a service type
+    outside the profile's exclusive set, or an update window over the ceiling.
+    Fail-closed: a non-conformant list contributes no anchors."""
 
 
 class TrustListSignatureBackendUnavailable(TrustListSignatureUnavailable):
@@ -36,6 +45,7 @@ class TrustListSignatureBackendUnavailable(TrustListSignatureUnavailable):
 __all__ = [
     "TrustListError",
     "TrustListParseError",
+    "TrustListProfileError",
     "TrustListSignatureBackendUnavailable",
     "TrustListSignatureError",
     "TrustListSignatureUnavailable",

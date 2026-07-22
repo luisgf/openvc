@@ -4,6 +4,55 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.0] — unreleased
+
+### Added
+
+- **ETSI TS 119 602 Lists of Trusted Entities (LoTE) — the JSON trusted-list
+  lane** ([#135](https://github.com/luisgf/openvc/issues/135)). TS 119 602 is
+  the successor data model to the TS 119 612 XML Trusted Lists, and its EU
+  profiles are the EUDI wallet anchor lists: **Annex F** (WRPAC providers —
+  who may issue relying-party *access* certificates) and **Annex G** (WRPRC
+  providers — the registrar anchors `verify_rp_registration_certificate`
+  consumes). One interface, two encodings: `openvc.trustlist` grows
+  `parse_lote` / `consume_lote` / `walk_lote` plus the
+  `EU_WRPAC_PROVIDERS_PROFILE` / `EU_WRPRC_PROVIDERS_PROFILE` conformance
+  gates (`LoteProfile`, `LoteType`, `LoteServiceType`,
+  `TrustListProfileError`), all distilling into the same `TrustAnchorSet`
+  as `walk_lotl` — `.certificates` feeds the existing X.509 path unchanged.
+
+  A JSON LoTE travels as a **compact JAdES baseline-B** JWS (clause 6.8 /
+  Annex G.4), so verification runs on the library's own JOSE primitives — the
+  `{ES256, ES384, EdDSA, Ed25519}` allow-list before any crypto, the WRPRC
+  lane's allow-listed `crit`, the signer from `x5c` authenticated against
+  **caller-pinned** certificates (byte-for-byte or by path validation), plus
+  clause 6.8's DN binding (signing-certificate `organizationName` ↔
+  `SchemeOperatorName`, `countryName` ↔ `SchemeTerritory`). Parsing is strict
+  and fail-closed on every field that feeds a trust decision: unknown
+  structural members reject (the official schema is
+  `additionalProperties: false` throughout), date-times must be the UTC `Z`
+  form, an unrecognised critical extension rejects the list, a malformed
+  certificate blob is skipped rather than trusted, and a **closed** list
+  (`NextUpdate` null) contributes zero anchors. The EU profiles enforce
+  Tables F.1–G.3 — registered URIs (including the spec's literal
+  `WRPRCrovidersList` StatusDetn typo, accepted alongside the corrected
+  spelling), territory `EU`, the exclusive service-type pairs,
+  `ServiceStatus`/`StatusStartingTime`/`HistoricalInformationPeriod` absent,
+  and the ≤ 6-month update window. Self-made signed vectors pin the behaviour;
+  the Commission's real EU lists become golden fixtures when published.
+
+  The adversarial review hardened the lane before merge: a profiled
+  `walk_lote` now defaults its selection to the profile's **issuance** service
+  type (a provider's *revocation*-service certificates no longer anchor
+  credential verification unless explicitly selected — the review proved a
+  WRPRC signed under a revocation-service CA validated through the documented
+  flow), only follows pointers whose `LoTEType` matches the profile (and
+  consumes the pointed list under the same profile), fails closed instead of
+  raising an uncaught `ValueError` on a far-future `ListIssueDateTime`,
+  rejects a present-but-empty `ServiceStatus` under the profiles
+  (presence is the violation), and pins date-times to the exact
+  `YYYY-MM-DDThh:mm:ssZ` form clause 6.1.3 mandates.
+
 ## [1.21.0] — 2026-07-19
 
 ### Added

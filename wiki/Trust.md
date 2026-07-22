@@ -64,6 +64,75 @@ Properties worth knowing:
 
 Design rationale: [ADR-0003](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0003-eu-trusted-lists.md).
 
+## EU Lists of Trusted Entities (LoTE, TS 119 602)
+
+**ETSI TS 119 602** is the successor trusted-list data model: the same
+information as a TS 119 612 list, serialized as **JSON** and signed as a
+**compact JAdES baseline-B** JWS whose payload is the list. Its EU profiles are
+the EUDI wallet anchor lists — **Annex F**: providers of relying-party *access*
+certificates (WRPAC), **Annex G**: providers of relying-party *registration*
+certificates (WRPRC, the registrar anchors
+[`verify_rp_registration_certificate`](Relying-Party-Certificates) consumes).
+One interface, two encodings — `walk_lote` distils into the same
+`TrustAnchorSet` as `walk_lotl`:
+
+<!-- docs: no-run -->
+```python
+from openvc.rp_registration import verify_rp_registration_certificate
+from openvc.trustlist import EU_WRPRC_PROVIDERS_PROFILE, walk_lote
+
+anchors = walk_lote(
+    WRPRC_PROVIDERS_LOTE_URL,                  # the Commission's Annex G list
+    lote_signer_certs=commission_certs,        # caller-pinned: no implicit root
+    profile=EU_WRPRC_PROVIDERS_PROFILE,        # Annex G conformance gate, fail-closed
+)
+reg = verify_rp_registration_certificate(wrprc, trust_anchors=anchors.certificates)
+```
+
+Properties worth knowing:
+
+- **JOSE, no extra needed** — a LoTE verifies on the library's own JWS
+  primitives: the `{ES256, ES384, EdDSA, Ed25519}` allow-list runs **before**
+  any crypto, `crit` is allow-listed (`{alg, typ, x5c, iat}`, the WRPRC lane's
+  JAdES stance), and the signer comes from `x5c`, authenticated against the
+  pinned certificates byte-for-byte or by path validation to them.
+- **Clause 6.8 DN binding** — the signing certificate's `organizationName`
+  must match a `SchemeOperatorName` value and its `countryName` the
+  `SchemeTerritory`, so a certificate pinned for one scheme cannot vouch for a
+  list claiming another operator.
+- **Strict, fail-closed parsing** — unknown structural members reject (the
+  official JSON schema is `additionalProperties: false` throughout), date-times
+  must be the UTC `Z` form, an unrecognised **critical** scheme/service
+  extension rejects the list (clause 6.3.17), and a certificate blob that does
+  not load is skipped, never silently trusted.
+- **Profiles are conformance gates** — `EU_WRPAC_PROVIDERS_PROFILE` /
+  `EU_WRPRC_PROVIDERS_PROFILE` enforce Tables F.1–G.3: the registered
+  `LoTEType` / StatusDetn / schemerules URIs, territory `EU`, the exclusive
+  service-type pair, `ServiceStatus` / `StatusStartingTime` /
+  `HistoricalInformationPeriod` **absent** (under these profiles, *listing* is
+  the status — removal is revocation), and the ≤ 6-month update window.
+  Note: the WRPRC StatusDetn URI is spelled `…/WRPRCrovidersList/StatusDetn/EU`
+  (sic) in the spec and the EUDI reference implementation; the profile accepts
+  both that literal and the corrected spelling.
+- **Same walk discipline, least privilege by default** — pointed lists verify
+  against the certificates their pointer vouched for (one hop, like LOTL→TL);
+  in a *profiled* walk a pointer is only followed when its qualifier `LoTEType`
+  matches the profile, and the pointed list must conform to the **same**
+  profile — a foreign list type can never leak anchors in. A list that cannot
+  be fetched, verified, or is expired — or is **closed** (`NextUpdate` null) —
+  contributes zero anchors and lands in `problems`. Under a profile, `select`
+  defaults to the profile's **issuance** service type only: a provider's
+  *revocation* service is a legitimate list entry, but its certificates must
+  not anchor credential verification (pass an explicit `Select`, or
+  `select=None` for every admitted anchor, to widen deliberately). With no
+  profile the default keeps everything — the EU profiles forbid
+  `ServiceStatus`, so the 119 612 lane's granted-status default would drop
+  every anchor.
+
+The Commission had not yet published the EU LoTE instances when this lane
+shipped; conformance is pinned by self-made vectors against TS 119 602 V1.1.1,
+and the real lists become golden fixtures when they go live.
+
 ## EBSI (read-only plugin)
 
 `openvc_ebsi` resolves `did:ebsi` and reads the **Trusted Issuers Registry**,
