@@ -1,0 +1,180 @@
+# Issuing with OpenID4VCI
+
+openvc verifies the **key proof** a wallet sends to your Credential Endpoint, and hands
+you back the public key it demonstrated possession of. That key is what you bind the
+credential to.
+
+It does **not** run the endpoint. Per
+[ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md),
+the split is:
+
+> **openvc:** attacker-controlled bytes that must be verified or parsed fail-closed.
+> **You:** anything with a lifetime, a socket, or a deployment policy.
+
+So the OAuth Authorization Server, the HTTP routing, the `c_nonce` store, the Credential
+Response body, deferred and notification bookkeeping, and DPoP are yours (or your
+framework's). What this supports claiming is *OpenID4VCI 1.0 key-proof verification* —
+not "issuance", and not HAIP.
+
+## The whole flow
+
+```python
+import time
+
+from openvc.keys import Ed25519SigningKey, P256SigningKey
+from openvc.openid4vci import verify_credential_request_proofs
+from openvc.proof._jws import sign_compact
+from openvc.proof.sd_jwt import SdJwtVcProofSuite
+
+CREDENTIAL_ISSUER = "https://issuer.example"
+issuer = Ed25519SigningKey.generate(kid=f"{CREDENTIAL_ISSUER}#key-1")
+
+# Your nonce store. See below — this MUST be atomic.
+issued = {"c-nonce-abc"}
+def consume_nonce(nonce):
+    try:
+        issued.remove(nonce)
+        return True
+    except KeyError:
+        return False
+
+# --- the wallet mints a key proof (OID4VCI 1.0 App. F.1) ---
+wallet = P256SigningKey.generate(kid="wallet-key-1")
+key_proof = sign_compact(
+    {"typ": "openid4vci-proof+jwt", "alg": wallet.alg, "jwk": wallet.public_jwk()},
+    {"aud": CREDENTIAL_ISSUER, "iat": int(time.time()), "nonce": "c-nonce-abc"},
+    signing_key=wallet)
+
+# --- your Credential Endpoint verifies it, then issues ---
+proof, = verify_credential_request_proofs(
+    {"credential_configuration_id": "UniversityDegree",
+     "proofs": {"jwt": [key_proof]}},
+    credential_issuer=CREDENTIAL_ISSUER,
+    check_nonce=consume_nonce)
+
+sd_jwt = SdJwtVcProofSuite().issue(
+    {"iss": CREDENTIAL_ISSUER, "degree": "BSc"}, signing_key=issuer,
+    vct="https://credentials.example/degree",
+    holder_jwk=proof.public_jwk)          # <- the key the proof earned
+
+assert proof.key_source == "jwk"
+```
+
+Wire it into your framework however you like — openvc never sees the request object,
+the access token, or the socket:
+
+<!-- docs: no-run -->
+```python
+@app.post("/credential")
+def credential_endpoint(request):
+    grant = my_as.introspect(request.headers["authorization"])   # yours: OAuth AS
+    proofs = verify_credential_request_proofs(
+        request.json(), credential_issuer=CREDENTIAL_ISSUER,
+        check_nonce=my_nonce_store.consume)
+    sd_jwt = SdJwtVcProofSuite().issue(
+        grant.claims, signing_key=ISSUER_KEY, vct=VCT, holder_jwk=proofs[0].public_jwk)
+    return {"credentials": [{"credential": sd_jwt}]}             # yours: the body
+```
+
+## The nonce store is yours, and it must be atomic
+
+`check_nonce` is a **required** parameter. Replay is the property a key proof exists to
+defend, and a plain `expected_nonce` string could not express "consume once,
+atomically" — a caller comparing after the fact would have verified a signature and
+*not* the replay property.
+
+Your callable must mark the nonce used and report validity in **one** step: a Redis
+`SET key val NX`, a SQL `DELETE … RETURNING`. The bug to avoid:
+
+<!-- docs: no-run -->
+```python
+# WRONG — two concurrent requests both observe the nonce as unused.
+if nonce in store:
+    store.discard(nonce)
+    return True
+```
+
+`openvc.cache.TtlCache` is **not** suitable: it documents its own lack of single-flight,
+which is benign for a read cache and fatal for a single-use token.
+
+openvc calls it **exactly once per request**, and only **after** every signature has
+verified — so an unauthenticated attacker cannot burn your nonces by spraying garbage.
+
+Pre-authorized codes, `transaction_id` and `notification_id` are entirely yours: they
+are opaque identifiers with no bytes for openvc to get right, so it does not generate
+them.
+
+## What is checked, in order
+
+Structure and allow-lists run before any cryptography. **Any failure rejects the whole
+request** — there is no partial issuance.
+
+| | Check |
+|---|---|
+| 1 | `typ` is `openid4vci-proof+jwt` — so a KB-JWT, VP-JWT or status-list token cannot be replayed as a key proof |
+| 2 | `alg` is allow-listed (`ES256`/`ES384`/`EdDSA`/`Ed25519`), **before** any crypto |
+| 3 | unknown `crit` rejected |
+| 4 | **exactly one** of `jwk` / `kid` / `x5c` / `trust_chain` |
+| 5 | the key binds to the header `alg` — no `ES256` over an Ed25519 key; no private members in a `jwk` |
+| 6 | the signature |
+| 7 | `aud` equals your Credential Issuer Identifier; a multi-valued `aud` is rejected |
+| 8 | `iat` freshness — **both** stale and future-dated |
+| 9 | `exp` / `nbf` if present; `iss` if you pinned `expected_client_id` |
+| 10 | across the batch: one shared nonce, consumed once, no two proofs on the same key |
+
+Two of these carry the weight. **`iat` in both directions**: without the future-dated
+check a wallet signs once with `iat = now + 10y` and holds a proof that never expires.
+**Exactly one key parameter**: two present lets an attacker pair a `kid` naming an
+honest key with a `jwk` they control, and any implementation that silently prefers one
+accepts it.
+
+## Key parameters
+
+`jwk` works out of the box. The other two are opt-in, and fail closed without their
+enabling argument:
+
+| Header | Enable with | Absent ⇒ |
+|---|---|---|
+| `jwk` | — | always available |
+| `x5c` | `trust_anchors=[...]` | rejected — an unanchored chain is decoration, not trust |
+| `kid` | `resolve_proof_key=<callable>` | rejected |
+| `trust_chain` | — | typed `UnsupportedProofType` (OpenID Federation is out of scope) |
+
+## Batches
+
+`batch_size` defaults to **1**, so an issuer that never advertised
+`batch_credential_issuance` rejects a batch rather than minting one credential per proof
+off a single grant. Raise it deliberately:
+
+<!-- docs: no-run -->
+```python
+proofs = verify_credential_request_proofs(
+    body, credential_issuer=CREDENTIAL_ISSUER,
+    check_nonce=store.consume, batch_size=5)
+```
+
+All proofs in a batch must carry the same nonce, and no two may be bound to the same
+key — N credentials must mean N keys.
+
+## Errors
+
+| Raised | Meaning | Map to |
+|---|---|---|
+| `CredentialRequestMalformed` | the §8.2 wire contract is violated | `invalid_credential_request` |
+| `ProofReplayed` | your store rejected the nonce | `invalid_nonce` — hand out a fresh one and let the wallet retry |
+| `UnsupportedProofType` | `di_vp`, `trust_chain`, … | `invalid_proof` |
+| `ClaimsInvalid` / `SignatureInvalid` / `MalformedToken` / `UnsupportedAlgorithm` | the shared proof leaves | `invalid_proof` |
+
+`ProofReplayed` is deliberately **not** a `ClaimsInvalid`: "here is a fresh nonce, try
+again" is a different answer from "your proof is wrong".
+
+## Not covered
+
+Key attestations are captured verbatim in `VerifiedProof.key_attestation` and are
+**unverified** — their trust model needs a wallet-provider anchor class of its own.
+`di_vp` proofs, credential-response encryption, mdoc issuance and DPoP are out of scope
+(ADR-0007 D9). HAIP additionally requires DPoP, key attestations and client
+authentication, all of which live in your endpoint.
+
+See also: [SD-JWT VC](SD-JWT-VC) for the issuance side, [Keys & HSM
+backends](Keys-and-HSM) for `SigningKey`, and [Security model](Security-Model).

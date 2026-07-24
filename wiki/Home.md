@@ -34,6 +34,7 @@ so the snippets you read here are guaranteed to run against the current release.
 | [Data Integrity](Data-Integrity) | the five cryptosuites, JCS without `pyld`, `ecdsa-sd-2023` |
 | [Presentations & OpenID4VP](Presentations) | VP-JWT, `vp_token` + DCQL, HAIP encrypted responses |
 | [Resolving issuer keys](Resolving-Issuer-Keys) | `did:key` / `did:jwk` / `did:web`, well-known, caching |
+| [Issuing with OpenID4VCI](Issuing-with-OpenID4VCI) | verify a wallet's key proof, then issue bound to the key it proved |
 | [Status lists](Status-Lists) | revocation — check *and* issue, both encodings |
 | [Trust anchors](Trust) | X.509 `x5c`, EU Trusted Lists, the EBSI plugin |
 | [Async verification](Async-Verification) | `verify_credential_async` for asyncio servers |
@@ -48,6 +49,7 @@ src/openvc/                 core — knows nothing about EBSI or badges
     verify.py               verify_credential / verify_many: the one-call pipeline
     aio.py                  verify_credential_async / verify_many_async
     openid4vp.py            verify_vp_token: stateless OpenID4VP 1.0 verifier
+    openid4vci.py           OpenID4VCI 1.0 issuer side: wallet key-proof verification
     jwe.py                  decrypt_compact: JWE ECDH-ES decrypt (HAIP responses)
     mdoc.py                 ISO 18013-5 mso_mdoc verification (experimental)
     cose.py / cbor.py       hand-rolled COSE_Sign1/Mac0 + bounded CBOR (mdoc, no deps)

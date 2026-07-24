@@ -22,6 +22,7 @@ python examples/01_verify_pipeline.py
 | `09_haip_encrypted_response.py` | HAIP `direct_post.jwt`: the wallet returns the `vp_token` inside a JWE (`ECDH-ES`/AES-GCM); the verifier decrypts with its `KeyAgreementKey` and verifies in one call (`verify_encrypted_vp_response`) |
 | `10_sd_jwt_type_metadata.py` | SD-JWT VC Type Metadata: an issuer pins the type with `vct#integrity`; the verifier resolves the metadata, checks integrity + `vct`, and validates the claims against the type's `claims` metadata |
 | `11_spanish_university_credential.py` | a Spanish university diploma end to end: the issuer's document-signer chains to an **FNMT** anchor (the Spanish trusted list / `x5c`), and the diploma is an **SD-JWT VC** verified with that FNMT-anchored key + holder binding — trust + credential, offline ([walkthrough](https://github.com/luisgf/openvc/wiki/Spanish-University-Credential)) |
+| `12_oid4vci_key_proof.py` | OpenID4VCI: a wallet mints an `openid4vci-proof+jwt`, the issuer verifies it (`typ` pin, `aud`, `iat` freshness both ways, single-use nonce) and issues an SD-JWT VC bound via `cnf` to the key the proof demonstrated — then the same proof is replayed and rejected ([guide](https://github.com/luisgf/openvc/wiki/Issuing-with-OpenID4VCI)) |
 
 `_common.py` holds the shared `did_key_ed25519()` / `did_key_p256()` helpers that
 mint a signing key already keyed to its `did:key` verification method.
