@@ -21,6 +21,15 @@ is the [external-audit pack](https://github.com/luisgf/openvc/tree/main/docs/aud
   EBSI RootTAO, the DID documents a resolver returns. Compromise of an anchor is
   out of scope (it is the operator's root of trust) but openvc must not *widen* it.
 
+> **Coming: one more row.** [ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md)
+> adds an OpenID4VCI **key-proof verifier** — an attacker who presents a forged or
+> replayed proof to make an issuer mint a credential bound to a key they do not control.
+> The asset is unchanged (it is still a verification decision over attacker-controlled
+> bytes), so the table below gains a row when that code lands rather than being rewritten.
+> The issuance *decision* itself is not openvc's: the protocol layer, and single-use
+> enforcement of `c_nonce`, live in the consuming application, injected as a required
+> callable.
+
 ## Trust boundaries
 
 Untrusted input crosses into openvc at:

@@ -29,7 +29,7 @@ All items: <https://github.com/luisgf/openvc/issues>. Shipped history:
 frozen, documented public surface — including the return-object contract downstream
 libraries destructure — and a real deprecation policy, so consumers build on it
 without fear of silent breakage. The 1.x line then grew breadth exactly where the
-2026 EUDI stack demands it, always additively and always read/verify-only: the three
+2026 EUDI stack demands it, always additively and always without state or transport: the three
 proof families (VC-JWT, SD-JWT VC, Data Integrity — RDF `eddsa-rdfc-2022` /
 `ecdsa-rdfc-2019`, JCS `eddsa-jcs-2022` / `ecdsa-jcs-2019`, and selective-disclosure
 `ecdsa-sd-2023`), `did:key` / `did:jwk` / `did:web` (+ `did:ebsi` in the plugin),
@@ -49,11 +49,19 @@ signing/verification behind an explicit opt-in.
 
 Post-1.0, openvc grows only where the EU digital-identity stack requires it —
 consuming (never generating) OpenID4VP/HAIP presentations and their EU trust anchors,
-tracking the JOSE/COSE and Data Integrity spec churn, and preparing for post-quantum
-(a first experimental ML-DSA rail has landed) — always additively, always
-read/verify-only, never at the cost of the dependency-light
-and fail-closed invariants that are its entire reason to exist. The milestones above
-sequence that; the out-of-scope list below is the standing boundary.
+securing and issuing the credential formats themselves, tracking the JOSE/COSE and
+Data Integrity spec churn, and preparing for post-quantum (a first experimental ML-DSA
+rail has landed) — always additively, and never at the cost of the three invariants
+that are its entire reason to exist: **no state, no transport, dependency-light**,
+all three fail-closed. The milestones above sequence that; the out-of-scope list below
+is the standing boundary.
+
+Note what that boundary is *not*: openvc has signed since 1.0 (`VcJwtProofSuite.sign`,
+`SdJwtVcProofSuite.issue`, the status-list builders), so "read/verify-only" was never an
+accurate description and is retired as a framing. The line that has actually held, and
+still holds unchanged, is **credential-format production in; protocols, sessions and
+servers out** — see [ADR-0007](adr/ADR-0007-oid4vci-issuer-side.md), which applies it to
+OpenID4VCI without moving it.
 
 ## Deliberately out of scope
 
@@ -61,9 +69,25 @@ sequence that; the out-of-scope list below is the standing boundary.
   verifier/issuer library, not a node operator.
 - **Open Badges** models and **image baking**: the downstream badge library that
   consumes `openvc`.
-- **OpenID4VP request generation, session/state**: wallet / RP-server concerns. The
-  OpenID4VP + HAIP items are strictly stateless *consume-and-verify* (verify a
-  received `vp_token`, decrypt a received JWE).
+- **OpenID4VP request generation**: a wallet / RP-server concern. The OpenID4VP + HAIP
+  items are strictly stateless *consume-and-verify* (verify a received `vp_token`,
+  decrypt a received JWE).
+- **OAuth Authorization Servers, HTTP endpoints, and state storage**: the standing
+  boundary, now stated in its general form. openvc runs no server, holds no session,
+  and stores no `c_nonce`, code, `transaction_id` or `notification_id`. Where a
+  protocol needs such state, the store is **injected as a required callable** and the
+  library keeps nothing.
+- **OpenID4VCI — the protocol layer**: out; the **key-proof verifier is in**.
+  [ADR-0007](adr/ADR-0007-oid4vci-issuer-side.md) splits it on the standing rule —
+  *attacker-controlled bytes that must be verified or parsed fail-closed* are openvc's;
+  *anything with a lifetime, a socket or a deployment policy* is the consumer's. So in:
+  wallet key-proof verification (OID4VCI 1.0 App. F.1) and fail-closed parsing of
+  untrusted Credential Offers and Issuer Metadata — the same posture as the OpenID4VP
+  verifier, one protocol over. Out: the nonce/code stores, every endpoint, the AS, and
+  the response/offer/metadata **builders**, which belong to the issuing application
+  (`openbadgeslib` first). Also out: JWE *encrypt*, key-attestation verification,
+  `di_vp` proofs and DPoP. The claim this supports is **OpenID4VCI 1.0 key-proof
+  verification** — not "issuance", not *HAIP issuance*.
 - **ISO mdoc — engagement / proximity / issuance / COSE signing**: device engagement,
   NFC/BLE/QR proximity flows, issuance, and a COSE *signing* surface stay out. Server-side
   *verification* of an OpenID4VP-delivered `mso_mdoc` is the exception, now **shipped**

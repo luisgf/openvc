@@ -22,6 +22,16 @@ serves is:
 > **No wrong-accept** — a forged, tampered, expired, revoked, mis-issued, or
 > replayed credential must never be returned as accepted.
 
+> **Scope note (2026-07-24).** [ADR-0007](../adr/ADR-0007-oid4vci-issuer-side.md)
+> rules an OpenID4VCI **key-proof verifier** into scope while keeping the protocol
+> layer — nonce stores, endpoints, the AS — out, in the consumer. Because openvc's
+> output stays a verification decision over attacker-controlled bytes, the property
+> above **widens by one object rather than gaining a second**: when that code lands,
+> "credential" reads "credential **or key proof**". The wrong-*issue* property (never
+> mint a credential bound to a key the requester does not control) belongs to whoever
+> mints it — downstream — and is documented there. Nothing below is pre-declared on
+> its behalf; §8 grows when the code exists.
+
 Every design choice below is a fail-closed default in service of that property:
 ambiguity, an unresolvable key, a malformed timestamp, an unrecognised status
 shape, or a missing opted-in resolver **rejects** rather than accepts. The
@@ -239,6 +249,15 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
 - Anything an **injected** resolver does after openvc hands it a URL, if the
   caller supplies a custom one instead of the guarded default.
 - Side-channels in the underlying `cryptography` / `pyjwt` primitives.
-- EBSI **write/onboarding**; OpenID4VP **request generation / session state**;
-  ISO mdoc **issuance / proximity / COSE signing** — all out of scope by design
-  (see [ROADMAP](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md)).
+- EBSI **write/onboarding**; OpenID4VP **request generation**; ISO mdoc **issuance /
+  proximity / COSE signing** — all out of scope by design (see
+  [ROADMAP](https://github.com/luisgf/openvc/blob/main/docs/ROADMAP.md)).
+- **OAuth Authorization Servers, HTTP endpoints, and every state store** — openvc runs
+  no server and persists nothing. For OpenID4VCI
+  ([ADR-0007](../adr/ADR-0007-oid4vci-issuer-side.md)) the whole protocol layer is out;
+  openvc verifies the wallet's key proof and parses untrusted offers/metadata, nothing
+  more. Single-use enforcement of `c_nonce` (and of codes, `transaction_id`,
+  `notification_id`) is the **caller's**, supplied as a required injected callable —
+  and it must be atomic. A non-atomic store re-opens a replay window openvc cannot
+  close on the caller's behalf; that is a documented boundary, not a defended one.
+  Note `openvc.cache.TtlCache` is **not** suitable for it (no single-flight, `cache.py:24-27`).

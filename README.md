@@ -157,6 +157,13 @@ wallet, or a node operator. EBSI support is **read-only** (resolve `did:ebsi`,
 read the trust registries); onboarding/writing is out of scope. The
 `openvc_ebsi` plugin depends on `openvc`, never the reverse.
 
+Three invariants bound everything above: **no state, no transport, dependency-light.**
+openvc signs and verifies credentials and validates what a wallet sends, but it runs
+no HTTP endpoint, holds no session, and persists nothing — where a protocol needs
+state, the store is injected and openvc keeps none of it. That, not "verify-only", is
+the boundary; see
+[ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md).
+
 ## Project
 
 - [Changelog](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) —
