@@ -49,6 +49,22 @@ def test_except_signature_invalid_catches_every_suite():
     assert di is sd is jose is proof_errors.SignatureInvalid
 
 
+def test_openid4vci_reuses_the_shared_proof_leaves():
+    """The OID4VCI verifier defines one area root and three leaves that earn their
+    own class; everything else — bad aud, stale iat, wrong alg, broken JWS — surfaces
+    as the SHARED proof leaves, so `except ClaimsInvalid` works across the library."""
+    from openvc import openid4vci
+
+    assert issubclass(openid4vci.OpenID4VCIError, OpenvcError)
+    for leaf in (openid4vci.CredentialRequestMalformed,
+                 openid4vci.UnsupportedProofType,
+                 openid4vci.ProofReplayed):
+        assert issubclass(leaf, openid4vci.OpenID4VCIError)
+    # ProofReplayed must NOT be a ClaimsInvalid: a Credential Endpoint distinguishes
+    # "here is a fresh nonce, retry" from "your proof is wrong".
+    assert not issubclass(openid4vci.ProofReplayed, proof_errors.ClaimsInvalid)
+
+
 def test_deprecated_codec_aliases_warn_and_resolve():
     import pytest
     from openvc.proof import ecdsa_sd as m

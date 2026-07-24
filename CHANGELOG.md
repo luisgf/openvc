@@ -8,6 +8,40 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Added
 
+- **OpenID4VCI 1.0 wallet key-proof verification**
+  ([#141](https://github.com/luisgf/openvc/issues/141)). A new
+  `openvc.openid4vci` verifies the `openid4vci-proof+jwt` a wallet sends to a
+  Credential Endpoint (OID4VCI 1.0 App. F.1) and returns the public key it
+  demonstrated possession of — the value
+  `SdJwtVcProofSuite.issue(holder_jwk=…)` binds the credential to.
+  `parse_credential_request` pins the §8.2 wire contract;
+  `verify_credential_request_proofs` runs the checks in a fixed order, structure and
+  allow-lists **before** any crypto: the `typ` pin (so a KB-JWT, VP-JWT or
+  status-list token cannot be replayed as a key proof), the algorithm allow-list,
+  unknown `crit`, **exactly one** of the `jwk`/`kid`/`x5c`/`trust_chain` header key
+  parameters, the key↔`alg` (kty, crv) binding, the signature, `aud` pinned to the
+  Credential Issuer Identifier with a multi-valued `aud` rejected, and **`iat`
+  freshness in both directions** — stale *and* future-dated, which is new logic
+  because `check_jwt_temporal` reads `exp`/`nbf` and never `iat`. Across a batch:
+  one shared nonce, no two proofs on the same key.
+
+  **Nonce state is the caller's, injected as a required callable** (`ConsumeNonce`)
+  rather than documented in prose — a plain `expected_nonce` string cannot express
+  "consume once, atomically", and would make the fail-open path the ergonomic one.
+  It is invoked exactly once per request and only *after* every signature has
+  verified, so an unauthenticated attacker cannot burn nonces. Replay surfaces as a
+  distinct `ProofReplayed` so an endpoint can answer `invalid_nonce` (fresh nonce,
+  retry) rather than rejecting the wallet.
+
+  Stateless and transport-free by design
+  ([ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md)):
+  no endpoint, no Authorization Server, no state store, and no response/offer/metadata
+  builders — those belong to the issuing application. Key attestations are captured
+  **unverified**; `di_vp` and OpenID Federation `trust_chain` proof keys raise a typed
+  `UnsupportedProofType`. What this supports claiming is *OpenID4VCI 1.0 key-proof
+  verification* — not "issuance", and not HAIP, which additionally requires DPoP, key
+  attestations and client authentication. No new runtime dependency.
+
 - **RFC 7638 JWK Thumbprint** ([#140](https://github.com/luisgf/openvc/issues/140)).
   `openvc.keys` grows `jwk_thumbprint` (base64url) and `jwk_thumbprint_bytes` (the
   raw digest), covering `EC`, `OKP`, `RSA` and `oct` keys. The canonical form is

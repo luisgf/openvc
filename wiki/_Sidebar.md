@@ -20,6 +20,10 @@
 - [Trust anchors: EU TL & EBSI](Trust)
 - [Async verification](Async-Verification)
 
+**Issuing**
+
+- [Issuing with OpenID4VCI](Issuing-with-OpenID4VCI)
+
 **Walkthroughs**
 
 - [Spanish university credential](Spanish-University-Credential)

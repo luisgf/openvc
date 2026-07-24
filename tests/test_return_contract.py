@@ -14,6 +14,7 @@ import dataclasses as dc
 
 import pytest
 
+from openvc.openid4vci import CredentialRequest, VerifiedProof
 from openvc.proof.data_integrity import VerifiedDataIntegrity
 from openvc.proof.ecdsa_sd import VerifiedSdCredential
 from openvc.proof.sd_jwt import VerifiedSdJwt
@@ -35,7 +36,22 @@ CONTRACT = {
     VerifiedSdCredential: ["credential", "issuer", "subject", "proof"],
     VerifiedSdJwt: ["claims", "issuer", "vct", "key_bound", "confirmation"],
     VerifiedPresentation: ["holder", "credentials", "claims", "vp"],
+    VerifiedProof: ["public_jwk", "thumbprint", "alg", "key_source", "issued_at",
+                    "nonce", "client_id", "key_attestation", "header", "claims"],
+    CredentialRequest: ["credential_configuration_id", "credential_identifier",
+                        "proof_type", "proofs", "response_encryption", "raw"],
 }
+
+# Dataclasses whose EVERY field must default — the add-only rule. A consumer that
+# constructs one positionally keeps working when a field is appended.
+ADD_ONLY = [VerifiedProof, CredentialRequest]
+
+
+@pytest.mark.parametrize("cls", ADD_ONLY, ids=[c.__name__ for c in ADD_ONLY])
+def test_every_field_defaults_so_the_shape_stays_add_only(cls):
+    missing = [f.name for f in dc.fields(cls)
+               if f.default is dc.MISSING and f.default_factory is dc.MISSING]
+    assert not missing, f"{cls.__name__} fields without a default break add-only: {missing}"
 
 
 @pytest.mark.parametrize("cls,expected", list(CONTRACT.items()),
