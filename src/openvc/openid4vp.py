@@ -472,7 +472,9 @@ def dcapi_session_transcript(
     *origin* is the calling web origin (e.g. ``https://verifier.example``), *nonce* the
     Authorization Request nonce, and *jwk_thumbprint* the SHA-256 JWK thumbprint of the
     verifier's response-encryption key (``None`` → CBOR ``null``, for an unencrypted
-    response). **Experimental**: track ISO 18013-7 / OpenID4VP as the handover finalises."""
+    response) — compute it with :func:`openvc.keys.jwk_thumbprint_bytes`, which returns
+    the raw digest this expects.
+    **Experimental**: track ISO 18013-7 / OpenID4VP as the handover finalises."""
     from . import cbor
 
     handover_info = cbor.encode([origin, nonce, jwk_thumbprint])

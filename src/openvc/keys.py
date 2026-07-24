@@ -25,6 +25,9 @@ process. These software classes are for dev, tests, and low-assurance issuance.
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -473,6 +476,85 @@ class MLDSASigningKey:
 
 
 # --------------------------------------------------------------------------- #
+# RFC 7638 JWK Thumbprint
+# --------------------------------------------------------------------------- #
+
+_THUMBPRINT_HASHES = {
+    "sha-256": hashlib.sha256, "sha-384": hashlib.sha384, "sha-512": hashlib.sha512,
+}
+_DEFAULT_THUMBPRINT_HASH = "sha-256"
+
+# RFC 7638 §3.2 (+ RFC 8037 §2 for OKP): the members that are *required* for each key
+# type, and only these, form the canonical JSON. Everything else — `kid`, `use`, `alg`,
+# `x5c`, and in particular every private member (`d`, `p`, `q`, `dp`, `dq`, `qi`) — is
+# excluded by construction, which is what makes a private key and its public half hash
+# identically. Listing the sets explicitly (rather than filtering a deny-list) means a
+# member we have never heard of can never leak into a digest.
+_THUMBPRINT_MEMBERS = {
+    "EC": ("crv", "kty", "x", "y"),
+    "OKP": ("crv", "kty", "x"),
+    "RSA": ("e", "kty", "n"),
+    "oct": ("k", "kty"),
+}
+
+
+def jwk_thumbprint_bytes(
+    jwk: Mapping[str, Any], *, hash_name: str = _DEFAULT_THUMBPRINT_HASH
+) -> bytes:
+    """The raw RFC 7638 JWK Thumbprint digest of *jwk*.
+
+    The digest covers **only** the members RFC 7638 declares required for the key
+    type, serialized with no whitespace and ordered lexicographically by code point.
+    A private key and its public half therefore produce the *same* thumbprint.
+
+    Fails closed: an unknown ``kty``, a missing required member, or a non-string
+    member value raises :class:`InvalidKey` rather than hashing a partial key.
+    """
+    try:
+        hasher = _THUMBPRINT_HASHES[hash_name]
+    except KeyError as exc:
+        raise InvalidKey(f"unsupported thumbprint hash {hash_name!r}") from exc
+
+    kty = jwk.get("kty")
+    if not isinstance(kty, str):
+        raise InvalidKey("JWK has no string 'kty'; cannot compute a thumbprint")
+    try:
+        members = _THUMBPRINT_MEMBERS[kty]
+    except KeyError as exc:
+        raise InvalidKey(f"unsupported JWK kty {kty!r} for a thumbprint") from exc
+
+    canonical: dict[str, str] = {}
+    for name in members:
+        value = jwk.get(name)
+        if not isinstance(value, str):
+            # The canonical form is defined over string members. A missing or
+            # non-string one means we would be digesting something other than the
+            # key the caller believes they hold — reject instead of guessing.
+            raise InvalidKey(
+                f"JWK of kty {kty!r} needs a string {name!r} member for a thumbprint")
+        canonical[name] = value
+
+    # sort_keys gives RFC 7638 §3's lexicographic-by-code-point order; the separators
+    # drop the whitespace it forbids; ensure_ascii=False keeps the UTF-8 serialization
+    # the RFC specifies rather than \u-escaping it into a different digest.
+    serialized = json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hasher(serialized.encode("utf-8")).digest()
+
+
+def jwk_thumbprint(
+    jwk: Mapping[str, Any], *, hash_name: str = _DEFAULT_THUMBPRINT_HASH
+) -> str:
+    """The RFC 7638 JWK Thumbprint of *jwk*, base64url-encoded without padding.
+
+    This is the form used as a `kid`, in a `cnf` claim, and as the DPoP `jkt`. For
+    the raw digest — e.g. the ``mdoc_jwk_thumbprint`` an ISO 18013-7 SessionTranscript
+    needs — use :func:`jwk_thumbprint_bytes`.
+    """
+    return _b64url_encode(jwk_thumbprint_bytes(jwk, hash_name=hash_name))
+
+
+# --------------------------------------------------------------------------- #
 # Dependency-light verification (for did:key self-contained verify + tests)
 # --------------------------------------------------------------------------- #
 
@@ -558,6 +640,8 @@ __all__ = [
     "P256KeyAgreementKey",
     "P256SigningKey",
     "P384SigningKey",
+    "jwk_thumbprint",
+    "jwk_thumbprint_bytes",
     "mldsa_available",
     "signing_key_from_jwk",
     "verify_signature",
