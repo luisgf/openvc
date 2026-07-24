@@ -83,7 +83,10 @@ OpenID4VCI without moving it.
   *anything with a lifetime, a socket or a deployment policy* is the consumer's. So in:
   wallet key-proof verification (OID4VCI 1.0 App. F.1) and fail-closed parsing of
   untrusted Credential Offers and Issuer Metadata — the same posture as the OpenID4VP
-  verifier, one protocol over. Out: the nonce/code stores, every endpoint, the AS, and
+  verifier, one protocol over. The key-proof verifier is now **shipped**
+  ([#141](https://github.com/luisgf/openvc/issues/141), `openvc.openid4vci`); the
+  offer/metadata parsers are [#142](https://github.com/luisgf/openvc/issues/142).
+  Out: the nonce/code stores, every endpoint, the AS, and
   the response/offer/metadata **builders**, which belong to the issuing application
   (`openbadgeslib` first). Also out: JWE *encrypt*, key-attestation verification,
   `di_vp` proofs and DPoP. The claim this supports is **OpenID4VCI 1.0 key-proof

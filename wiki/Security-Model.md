@@ -21,14 +21,14 @@ is the [external-audit pack](https://github.com/luisgf/openvc/tree/main/docs/aud
   EBSI RootTAO, the DID documents a resolver returns. Compromise of an anchor is
   out of scope (it is the operator's root of trust) but openvc must not *widen* it.
 
-> **Coming: one more row.** [ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md)
-> adds an OpenID4VCI **key-proof verifier** — an attacker who presents a forged or
-> replayed proof to make an issuer mint a credential bound to a key they do not control.
-> The asset is unchanged (it is still a verification decision over attacker-controlled
-> bytes), so the table below gains a row when that code lands rather than being rewritten.
-> The issuance *decision* itself is not openvc's: the protocol layer, and single-use
-> enforcement of `c_nonce`, live in the consuming application, injected as a required
-> callable.
+> **On the issuer side.** The OpenID4VCI **key-proof verifier**
+> ([ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md))
+> adds the mirror attacker — one who *requests* a credential rather than presenting
+> one — as a row in the table below. The asset is unchanged: it is still a verification
+> decision over attacker-controlled bytes. The issuance *decision* is **not** openvc's;
+> the protocol layer and single-use enforcement of `c_nonce` live in the consuming
+> application, injected as a required callable, so a caller whose store is not atomic
+> re-opens a replay window openvc cannot close for them.
 
 ## Trust boundaries
 
@@ -59,6 +59,7 @@ Untrusted input crosses into openvc at:
 | Backdate / post-date validity | Expired/not-yet-valid accept | Temporal checks on `validFrom`/`validUntil` (+ VCDM 1.1 aliases) and proof `expires`; a **present-but-unparseable** timestamp fails **closed**, never silently skipped |
 | Withhold a selectively-disclosed status/schema | Skip a fail-closed gate | Documented caveat: an issuer that needs status/schema enforced must make the pointer **non-selectively-disclosable** (mandatory for ecdsa-sd, outside `disclosable` for SD-JWT) |
 | MITM a fetch | Tamper in transit | TLS with certificate validation and SNI on the pinned connection |
+| Present a forged or replayed **key proof** to an issuer, to obtain a credential bound to a key they do not control | Wrong *issue* | `openvc.openid4vci`: the `openid4vci-proof+jwt` `typ` pin (no replaying a KB-JWT / VP-JWT / status-list token as a key proof), the allow-list before any crypto, **exactly one** of the `jwk`/`kid`/`x5c` header key parameters (two lets an attacker pair an honest `kid` with their own `jwk`), the key↔`alg` (kty, crv) binding, `aud` pinned to this Credential Issuer with a multi-valued `aud` rejected, and **`iat` freshness both ways** (a future-dated proof would otherwise never expire). Nonce single-use is the caller's, injected as a **required** callable and consumed once, after every signature verifies |
 
 ## Design posture
 

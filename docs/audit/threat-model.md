@@ -20,17 +20,18 @@ openvc is a **verifier core**. The single security property everything else
 serves is:
 
 > **No wrong-accept** — a forged, tampered, expired, revoked, mis-issued, or
-> replayed credential must never be returned as accepted.
+> replayed credential **or key proof** must never be returned as accepted.
 
-> **Scope note (2026-07-24).** [ADR-0007](../adr/ADR-0007-oid4vci-issuer-side.md)
-> rules an OpenID4VCI **key-proof verifier** into scope while keeping the protocol
-> layer — nonce stores, endpoints, the AS — out, in the consumer. Because openvc's
-> output stays a verification decision over attacker-controlled bytes, the property
-> above **widens by one object rather than gaining a second**: when that code lands,
-> "credential" reads "credential **or key proof**". The wrong-*issue* property (never
-> mint a credential bound to a key the requester does not control) belongs to whoever
-> mints it — downstream — and is documented there. Nothing below is pre-declared on
-> its behalf; §8 grows when the code exists.
+> **Scope note (2026-07-24).** The object widened rather than the property doubling.
+> [ADR-0007](../adr/ADR-0007-oid4vci-issuer-side.md) rules an OpenID4VCI **key-proof
+> verifier** into scope (`openvc.openid4vci`, shipped in 1.23.0) while keeping the
+> protocol layer — nonce stores, endpoints, the AS — out, in the consumer. openvc's
+> output is still a verification decision over attacker-controlled bytes, so the same
+> fail-closed discipline covers both; the attacker simply arrives from the other side,
+> *requesting* a credential rather than presenting one (§8, I17–I18). The
+> wrong-*issue* property — never mint a credential bound to a key the requester does
+> not control — belongs to whoever mints it, downstream, and with it the atomicity of
+> the injected nonce store (§10).
 
 Every design choice below is a fail-closed default in service of that property:
 ambiguity, an unresolvable key, a malformed timestamp, an unrecognised status
@@ -176,6 +177,8 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py` |
 | I15 | `verify_many` isolates per-credential — one bad item never aborts the batch | `verify.py:458-465` | `test_hostile_input.py:79-85` |
 | I16 | Hostile deeply-nested input fails closed **pipeline-wide** — every attacker-facing recursive parse is depth-bounded or maps `RecursionError` to a typed error (the `json.loads` sites, SD-JWT `_unpack`=100, did:webvh SCID walk=100) | `proof/sd_jwt.py:66,129`; `verify.py`, `proof/vc_jwt.py`, `proof/_jws.py`, `jwe.py`, `did/did_jwk.py`, `did/did_webvh.py`, `fetch.py`, `resolvers.py` | `test_hostile_input.py`, `test_did_webvh.py` |
+| I17 | An OID4VCI key proof is pinned to `typ: openid4vci-proof+jwt` and must carry **exactly one** of `jwk`/`kid`/`x5c`/`trust_chain`, with the key bound to the header `alg`'s (kty, crv) | `openid4vci.py:434,495,550` | `test_openid4vci.py` |
+| I18 | Key-proof `iat` freshness is enforced in **both** directions (stale *and* future-dated, non-finite rejected), and the nonce is consumed **exactly once per request, after every signature verifies** | `openid4vci.py:610,612,414` | `test_openid4vci.py` |
 
 ## 9. Residual risks & known limitations
 
