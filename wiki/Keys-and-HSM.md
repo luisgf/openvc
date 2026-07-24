@@ -110,6 +110,32 @@ Decrypting HAIP `direct_post.jwt` responses uses a separate protocol —
 [Presentations & OpenID4VP](Presentations). The same rule applies: openvc
 needs the *operation*, not the key material.
 
+## Key thumbprints (RFC 7638)
+
+`jwk_thumbprint` gives a key's stable identifier — the value used as a `kid`, inside
+a `cnf` claim, or as a DPoP `jkt`. It digests **only** the members
+[RFC 7638](https://www.rfc-editor.org/rfc/rfc7638) requires for the key type, so
+`kid`/`use`/`alg` are ignored and a private key hashes identically to its public half.
+
+```python
+from openvc.keys import P256SigningKey, jwk_thumbprint
+
+# The RFC 8037 §2 example key, with the thumbprint the RFC publishes for it.
+rfc8037 = {"kty": "OKP", "crv": "Ed25519",
+           "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}
+assert jwk_thumbprint(rfc8037) == "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k"
+
+# Decoration does not move the digest: the same key, however it is labelled.
+key = P256SigningKey.generate(kid="key-1")
+assert (jwk_thumbprint(dict(key.public_jwk(), kid="other", use="sig"))
+        == jwk_thumbprint(key.public_jwk()))
+```
+
+It fails closed: an unknown `kty`, a missing required member, or a non-string member
+value raises `InvalidKey` rather than digesting a partial key. `jwk_thumbprint_bytes`
+returns the raw digest instead of the base64url form — that is what
+`dcapi_session_transcript` wants for an ISO 18013-7 handover.
+
 ## The allow-list
 
 Whatever the backend, the verifier accepts only `{ES256, ES384, EdDSA, Ed25519}` —

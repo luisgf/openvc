@@ -4,6 +4,26 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **RFC 7638 JWK Thumbprint** ([#140](https://github.com/luisgf/openvc/issues/140)).
+  `openvc.keys` grows `jwk_thumbprint` (base64url) and `jwk_thumbprint_bytes` (the
+  raw digest), covering `EC`, `OKP`, `RSA` and `oct` keys. The canonical form is
+  built from an explicit allow-list of the members RFC 7638 §3.2 (and RFC 8037 §2
+  for `OKP`) declares required, so `kid`/`use`/`alg` — and every private member —
+  are excluded *by construction* rather than filtered out: a private key and its
+  public half produce the same thumbprint, and a member we have never heard of can
+  never leak into a digest. Fails closed on an unknown `kty`, a missing required
+  member, or a non-string member value. Pinned by the two published golden vectors
+  (RFC 7638 §3.1 RSA, RFC 8037 §2 Ed25519), whose examples carry `alg`/`kid` and so
+  double as the exclusion test. This is the identifier used as a `kid`, in `cnf`,
+  and as a DPoP `jkt`; `jwk_thumbprint_bytes` is also what
+  `openid4vp.dcapi_session_transcript` wants for an ISO 18013-7 handover, which
+  callers previously had to compute themselves. Prerequisite for the OpenID4VCI
+  key-proof verifier ([ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md)).
+
 ## [1.22.0] — 2026-07-22
 
 ### Added
