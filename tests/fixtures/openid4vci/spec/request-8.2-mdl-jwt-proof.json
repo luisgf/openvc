@@ -1,0 +1,17 @@
+{
+  "_provenance": {
+    "source": "OpenID for Verifiable Credential Issuance 1.0, Final (2025-09-16) \u2014 https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html",
+    "section": "Section 8.2, first Credential Request example",
+    "retrieved": "2026-07-27",
+    "software_version": "n/a \u2014 published specification text, not an implementation",
+    "note": "Transcribed verbatim; the spec wraps long base64url strings across lines for typesetting and the wrapping is undone here (the same treatment as tests/fixtures/interop/rfc9901-a3-sd-jwt-vc.txt). The proof value is a header-only fragment: the spec truncates it, so it is not a parsable compact JWS. Pins the request *shape*, not a signature."
+  },
+  "request": {
+    "credential_configuration_id": "org.iso.18013.5.1.mDL",
+    "proofs": {
+      "jwt": [
+        "eyJraWQiOiJkaWQ6ZXhhbXBsZTplYmZlYjFmNzEyZWJjNmYxYzI3NmUxMmVjMjEva2V5cy8xIiwiYWxnIjoiRVMyNTYiLCJ0eXAiOiJKV1QifQ"
+      ]
+    }
+  }
+}

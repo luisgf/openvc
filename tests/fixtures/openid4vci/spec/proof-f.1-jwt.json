@@ -1,0 +1,14 @@
+{
+  "_provenance": {
+    "source": "OpenID for Verifiable Credential Issuance 1.0, Final (2025-09-16) \u2014 https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html",
+    "section": "Appendix F.1, `jwt` Proof Type example",
+    "retrieved": "2026-07-27",
+    "software_version": "n/a \u2014 published specification text, not an implementation",
+    "note": "Transcribed verbatim; the spec wraps long base64url strings across lines for typesetting and the wrapping is undone here (the same treatment as tests/fixtures/interop/rfc9901-a3-sd-jwt-vc.txt). Unlike the Section 8.2 fragments this one is a complete, genuinely signed ES256 compact JWS over the embedded `jwk`; F.1's second block is the same token's decoded header and payload."
+  },
+  "proofs": {
+    "jwt": [
+      "eyJ0eXAiOiJvcGVuaWQ0dmNpLXByb29mK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiblVXQW9BdjNYWml0aDhFN2kxOU9kYXhPTFlGT3dNLVoyRXVNMDJUaXJUNCIsInkiOiJIc2tIVThCalVpMVU5WHFpN1N3bWo4Z3dBS18weGtjRGpFV183MVNvc0VZIn19.eyJhdWQiOiJodHRwczovL2NyZWRlbnRpYWwtaXNzdWVyLmV4YW1wbGUuY29tIiwiaWF0IjoxNzAxOTYwNDQ0LCJub25jZSI6IkxhclJHU2JtVVBZdFJZTzZCUTR5bjgifQ.-a3EDsxClUB4O3LeDD5DVGEnNMT01FCQW4P6-2-BNBqc_Zxf0Qw4CWayLEpqkAomlkLb9zioZoipdP-jvh1WlA"
+    ]
+  }
+}
