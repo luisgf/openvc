@@ -42,6 +42,23 @@ All notable changes to **openvc** are documented here. The format follows
   verification* — not "issuance", and not HAIP, which additionally requires DPoP, key
   attestations and client authentication. No new runtime dependency.
 
+  The public surface is `verify_credential_request_proofs`,
+  `parse_credential_request`, `CredentialRequest`, `VerifiedProof`, `ConsumeNonce`,
+  `ResolveProofKey`, `OpenID4VCIError`, `CredentialRequestMalformed`,
+  `UnsupportedProofType`, `ProofReplayed`, `PROOF_TYPE_JWT`, `PROOF_TYP`,
+  `DEFAULT_PROOF_MAX_AGE_S` and `MAX_PROOF_BYTES`.
+
+  Two obligations come with it, both load-bearing and both the integrator's
+  ([ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md)).
+  **`check_nonce` must be atomic** — a Redis `SET … NX` or a SQL
+  `DELETE … RETURNING`, never a read-then-write, under which two concurrent requests
+  both observe the nonce as unused and the replay window core cannot close on your
+  behalf re-opens. `openvc.cache.TtlCache` is explicitly **not** suitable: it
+  documents its own lack of single-flight, benign for a read cache and fatal for a
+  single-use token. And **codes and identifiers are yours to mint** — core generates
+  no pre-authorized code, `transaction_id` or `notification_id`; they are opaque
+  values with no bytes for openvc to get right.
+
 - **RFC 7638 JWK Thumbprint** ([#140](https://github.com/luisgf/openvc/issues/140)).
   `openvc.keys` grows `jwk_thumbprint` (base64url) and `jwk_thumbprint_bytes` (the
   raw digest), covering `EC`, `OKP`, `RSA` and `oct` keys. The canonical form is
