@@ -90,6 +90,14 @@ Example-based, but broad. Representative anchors:
   bombs at the cap boundary (`test_status*`, `test_status_decompress.py`).
 - **Trust / XML** — wrong cert, tampered body, DTD/DOCTYPE entity bomb, external-
   entity XXE, oversize, forged national TL (`test_trustlist*`).
+- **OpenID4VCI key proofs** — a KB-JWT / VP-JWT / status-list token replayed as a
+  key proof, non-allow-listed alg before crypto, unknown `crit`, two or zero header
+  key parameters, key↔`alg` mismatch, wrong/multi-valued `aud`, `iat` stale *and*
+  future-dated, nonce replay and a repeated key across a batch (`test_openid4vci.py`).
+  Pinned additionally against material openvc did not mint: the spec's own signed
+  App. F.1 proof under a frozen clock, its §8.2 request shapes, and Issuer Metadata
+  and Credential Offers recorded from the EU reference issuer
+  (`test_openid4vci_vectors.py`, `tests/fixtures/openid4vci/README.md`).
 
 ## 4. Adversarial-review history
 
