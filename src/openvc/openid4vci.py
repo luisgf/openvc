@@ -265,11 +265,16 @@ def parse_credential_request(
 
 
 def _parse_proofs(proofs: Any, limit: int) -> tuple[str, tuple[str, ...]]:
-    """The ``proofs`` object: exactly one member, a non-empty array of strings.
+    """The ``proofs`` object: exactly one member, a non-empty array of proof values.
 
     OID4VCI 1.0 §8.2 removed the singular ``proof`` parameter; ``proofs`` is an object
     keyed by proof type. Allowing more than one member would let a wallet offer a type
     we verify alongside one we do not, and leave the choice to us.
+
+    §8.2 lets each proof type define its own element type — ``jwt`` is a string, ``di_vp``
+    is a JSON object — so a non-string element under a *different* type is an unsupported
+    type, not a malformed request. Both fail closed; only the signal differs, and it is
+    the one a Credential Endpoint maps to ``invalid_proof``.
     """
     if not isinstance(proofs, Mapping):
         raise CredentialRequestMalformed("Credential Request needs a proofs object")
@@ -288,6 +293,9 @@ def _parse_proofs(proofs: Any, limit: int) -> tuple[str, tuple[str, ...]]:
             f"proofs[{proof_type!r}] has {len(values)} entries, batch limit is {limit}")
     for value in values:
         if not isinstance(value, str) or not value:
+            if proof_type != PROOF_TYPE_JWT:
+                raise UnsupportedProofType(
+                    f"proof type {proof_type!r} is not supported (only 'jwt')")
             raise CredentialRequestMalformed(
                 f"proofs[{proof_type!r}] entries must be non-empty strings")
         if len(value.encode("utf-8")) > MAX_PROOF_BYTES:

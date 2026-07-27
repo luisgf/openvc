@@ -4,6 +4,40 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.1] — unreleased
+
+### Fixed
+
+- **A `di_vp` Credential Request is refused as `UnsupportedProofType`, not
+  `CredentialRequestMalformed`** ([#147](https://github.com/luisgf/openvc/issues/147)).
+  OID4VCI 1.0 §8.2 lets each proof type define its own element type — `jwt` is a
+  string, `di_vp` is a JSON object (App. F.2) — so the "entries must be non-empty
+  strings" shape check fired before the proof type was ever consulted, and a
+  perfectly valid `di_vp` request came back labelled malformed. That contradicted
+  the module's own documented contract, and told a Credential Endpoint the wallet
+  had sent garbage when it had sent a proof of a type openvc declines. Both paths
+  fail closed and no request that used to be rejected is now accepted; what changes
+  is the signal an endpoint maps to `invalid_proof`. Found by the spec's own §8.2
+  example the moment it was added as a fixture — which is the argument for the
+  fixtures.
+
+### Added
+
+- **OpenID4VCI vectors from outside this repo**
+  ([#147](https://github.com/luisgf/openvc/issues/147),
+  [ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md)
+  D10). `tests/fixtures/openid4vci/` holds the spec's own App. F.1 key proof — a
+  genuinely signed ES256 token that now verifies end-to-end under a clock frozen to
+  its own `iat`, so the `typ` pin, the key↔`alg` binding, the signing-input assembly
+  and the `aud`/`iat`/nonce checks are all pinned by a third party rather than by
+  openvc's own minting — plus the three §8.2 Credential Request examples, and
+  Issuer Metadata and two Credential Offers recorded live from the EU reference
+  issuer (`eudi-srv-web-issuing-eudiw-py`), the offers in the deep-link form a
+  wallet receives. Provenance is enforced: a test re-checks every recorded artifact
+  against the `sha256` its README documents. Still self-made, and stated as such in
+  that README: no key proof here came from a shipping wallet — that capture needs a
+  live Credential Endpoint openvc does not ship.
+
 ## [1.23.0] — 2026-07-24
 
 ### Added

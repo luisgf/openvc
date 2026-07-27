@@ -1,0 +1,38 @@
+{
+  "_provenance": {
+    "source": "OpenID for Verifiable Credential Issuance 1.0, Final (2025-09-16) \u2014 https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html",
+    "section": "Section 8.2, third Credential Request example",
+    "retrieved": "2026-07-27",
+    "software_version": "n/a \u2014 published specification text, not an implementation",
+    "note": "Transcribed verbatim; the spec wraps long base64url strings across lines for typesetting and the wrapping is undone here (the same treatment as tests/fixtures/interop/rfc9901-a3-sd-jwt-vc.txt). A `di_vp` proof \u2014 a type openvc deliberately does not verify (ADR-0007); the pin is that it is rejected as UnsupportedProofType, never ignored."
+  },
+  "request": {
+    "credential_identifier": "CivilEngineeringDegree-2023",
+    "proofs": {
+      "di_vp": [
+        {
+          "@context": [
+            "https://www.w3.org/ns/credentials/v2",
+            "https://www.w3.org/ns/credentials/examples/v2"
+          ],
+          "type": [
+            "VerifiablePresentation"
+          ],
+          "holder": "did:key:z6MkvrFpBNCoYewiaeBLgjUDvLxUtnK5R6mqh5XPvLsrPsro",
+          "proof": [
+            {
+              "type": "DataIntegrityProof",
+              "cryptosuite": "eddsa-2022",
+              "proofPurpose": "authentication",
+              "verificationMethod": "did:key:z6MkvrFpBNCoYewiaeBLgjUDvLxUtnK5R6mqh5XPvLsrPsro#z6MkvrFpBNCoYewiaeBLgjUDvLxUtnK5R6mqh5XPvLsrPsro",
+              "created": "2023-03-01T14:56:29.280619Z",
+              "challenge": "82d4cb36-11f6-4273-b9c6-df1ac0ff17e9",
+              "domain": "did:web:audience.company.com",
+              "proofValue": "z5hrbHzZiqXHNpLq6i7zePEUcUzEbZKmWfNQzXcUXUrqF7bykQ7ACiWFyZdT2HcptF1zd1t7NhfQSdqrbPEjZceg7"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

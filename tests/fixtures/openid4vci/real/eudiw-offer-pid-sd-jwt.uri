@@ -1,0 +1,1 @@
+haip-vci://credential_offer?credential_offer=%7B%22credential_issuer%22:%20%22https://issuer.eudiw.dev%22%2C%20%22credential_configuration_ids%22:%20%5B%22eu.europa.ec.eudi.pid_vc_sd_jwt%22%5D%2C%20%22grants%22:%20%7B%22authorization_code%22:%20%7B%22issuer_state%22:%20%229f24378d-ec07-4f89-aaf7-721df0523d19%22%7D%7D%7D
