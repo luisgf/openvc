@@ -88,7 +88,9 @@ OpenID4VCI without moving it.
   offer/metadata parsers are [#142](https://github.com/luisgf/openvc/issues/142).
   Out: the nonce/code stores, every endpoint, the AS, and
   the response/offer/metadata **builders**, which belong to the issuing application
-  (`openbadgeslib` first). Also out: JWE *encrypt*, key-attestation verification,
+  (`openbadgeslib` first). Also out: JWE *encrypt*, key-attestation **trust** (the
+  signature and the wallet-provider anchor — they are parsed, and the proof key is
+  bound to them, since [#150](https://github.com/luisgf/openvc/issues/150)),
   `di_vp` proofs and DPoP. The claim this supports is **OpenID4VCI 1.0 key-proof
   verification** — not "issuance", not *HAIP issuance*.
 - **ISO mdoc — engagement / proximity / issuance / COSE signing**: device engagement,

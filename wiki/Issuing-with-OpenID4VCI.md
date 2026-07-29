@@ -114,13 +114,15 @@ request** — there is no partial issuance.
 | 1 | `typ` is `openid4vci-proof+jwt` — so a KB-JWT, VP-JWT or status-list token cannot be replayed as a key proof |
 | 2 | `alg` is allow-listed (`ES256`/`ES384`/`EdDSA`/`Ed25519`), **before** any crypto |
 | 3 | unknown `crit` rejected |
-| 4 | **exactly one** of `jwk` / `kid` / `x5c` / `trust_chain` |
-| 5 | the key binds to the header `alg` — no `ES256` over an Ed25519 key; no private members in a `jwk` |
-| 6 | the signature |
-| 7 | `aud` equals your Credential Issuer Identifier; a multi-valued `aud` is rejected |
-| 8 | `iat` freshness — **both** stale and future-dated |
-| 9 | `exp` / `nbf` if present; `iss` if you pinned `expected_client_id` |
-| 10 | across the batch: one shared nonce, consumed once, no two proofs on the same key |
+| 4 | `key_attestation`, if present, is a string and parses as a key attestation |
+| 5 | **exactly one** of `jwk` / `kid` / `x5c` / `trust_chain` |
+| 6 | the key binds to the header `alg` — no `ES256` over an Ed25519 key; no private members in a `jwk` |
+| 7 | with a `key_attestation`: the key is one of its `attested_keys` (App. D) |
+| 8 | the signature |
+| 9 | `aud` equals your Credential Issuer Identifier; a multi-valued `aud` is rejected |
+| 10 | `iat` freshness — **both** stale and future-dated |
+| 11 | `exp` / `nbf` if present; `iss` if you pinned `expected_client_id` |
+| 12 | across the batch: one shared nonce, consumed once, no two proofs on the same key |
 
 Two of these carry the weight. **`iat` in both directions**: without the future-dated
 check a wallet signs once with `iat = now + 10y` and holds a proof that never expires.
@@ -137,8 +139,51 @@ enabling argument:
 |---|---|---|
 | `jwk` | — | always available |
 | `x5c` | `trust_anchors=[...]` | rejected — an unanchored chain is decoration, not trust |
-| `kid` | `resolve_proof_key=<callable>` | rejected |
+| `kid` | `resolve_proof_key=` or `resolve_proof_key_in_context=` | rejected |
 | `trust_chain` | — | typed `UnsupportedProofType` (OpenID Federation is out of scope) |
+| `key_attestation` | — | **not a key parameter** — see below; a header carrying only this one is rejected |
+
+## Key attestations
+
+The form EU wallet stacks emit: the header carries a `kid` **and** a `key_attestation`
+(App. D), and the key that signed the proof is one of the attestation's `attested_keys`.
+There is nothing for a registry to look up, so `resolve_proof_key` — which sees only the
+`kid` — cannot answer. `resolve_proof_key_in_context` gets everything openvc knows at
+that moment, attestation already parsed
+(`examples/13_oid4vci_key_attestation.py` is this, end to end and runnable):
+
+<!-- docs: no-run -->
+```python
+from openvc.openid4vci import peek_key_attestation, verify_credential_request_proofs
+
+proofs = verify_credential_request_proofs(
+    body, credential_issuer=CREDENTIAL_ISSUER, check_nonce=store.consume,
+    # this ecosystem reads `kid` as a position in attested_keys; yours may differ
+    resolve_proof_key_in_context=lambda ctx: ctx.key_attestation.attested_keys[int(ctx.kid)])
+
+attested = peek_key_attestation(proofs[0].key_attestation)   # UNVERIFIED
+if "iso_18045_high" not in attested.key_storage:             # your policy, your call
+    raise PermissionError("this credential needs high-assurance key storage")
+```
+
+Pass one resolver or the other, never both — a precedence between two key resolvers is
+the same silent-preference defect the one-key-parameter rule exists to prevent.
+
+**Which key a `kid` names is not specified.** The spec's own example uses it as an index;
+other wallets use each JWK's `kid` member, or an RFC 7638 thumbprint. openvc will not
+guess between them — that is your ecosystem's rule, and it is three lines above.
+
+**What openvc does enforce** is App. D's MUST: with a `key_attestation` present, the key
+that signed the proof must be one of its `attested_keys`. Be clear about what that buys.
+It **stops no attacker** — nothing here verifies the attestation's signature, so whoever
+forges a proof also forges an attestation listing their own key. It catches an honest
+wallet, or *your own resolver*, handing over a key the wallet never claimed, which would
+otherwise mint a credential bound to the wrong key and verify cleanly.
+
+Deciding an attestation is genuine — its signature, its wallet-provider anchor, its
+`key_storage` level, its `exp`, its `status` — is yours. `peek_key_attestation` reads one
+without verifying anything, `KEY_ATTESTATION_TYP` is exported for the `typ` pin, and
+`ADR-0007` D9 records why the trust model itself is not in openvc.
 
 ## Batches
 
@@ -170,11 +215,14 @@ again" is a different answer from "your proof is wrong".
 
 ## Not covered
 
-Key attestations are captured verbatim in `VerifiedProof.key_attestation` and are
-**unverified** — their trust model needs a wallet-provider anchor class of its own.
-`di_vp` proofs, credential-response encryption, mdoc issuance and DPoP are out of scope
-(ADR-0007 D9). HAIP additionally requires DPoP, key attestations and client
-authentication, all of which live in your endpoint.
+Key-attestation **trust**: the signature, the wallet-provider anchor, and whether
+`key_storage` / `user_authentication` / `status` meet your bar. openvc parses one and
+binds the proof key to it (above); believing it needs an anchor class of its own
+(ADR-0007 D9). The `attestation` proof type — a key attestation with no proof of
+possession at all — is likewise out, and refused as `UnsupportedProofType`. `di_vp`
+proofs, credential-response encryption, mdoc issuance and DPoP are out of scope too.
+HAIP additionally requires DPoP, key-attestation trust and client authentication, all of
+which live in your endpoint.
 
 See also: [SD-JWT VC](SD-JWT-VC) for the issuance side, [Keys & HSM
 backends](Keys-and-HSM) for `SigningKey`, and [Security model](Security-Model).

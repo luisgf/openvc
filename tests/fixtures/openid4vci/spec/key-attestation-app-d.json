@@ -1,0 +1,45 @@
+{
+  "_provenance": {
+    "source": "OpenID for Verifiable Credential Issuance 1.0, Final (2025-09-16) — https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html",
+    "section": "Appendix D, Key Attestation in JWT format example; and the `jwt` Proof Type section's second example (a proof carrying key attestation data)",
+    "retrieved": "2026-07-29",
+    "software_version": "n/a — published specification text, not an implementation",
+    "note": "Both spec examples are printed DECODED — a JOSE header and a body, never a compact token — and the proof example writes its attestation as the placeholder `<key attestation in JWT format>`. So unlike `proof-f.1-jwt.json` there is nothing signed to transcribe: what is third-party here is the SHAPE (member names, types, the `kid: \"0\"` that indexes `attested_keys`), and the test re-encodes these objects into compact JWS form itself. Signatures over them are therefore meaningless by construction, which is the property the App. D reader is supposed to have: it parses without verifying. The attestation's `x5c` is the spec's own truncated placeholder."
+  },
+  "attestation": {
+    "header": {
+      "typ": "key-attestation+jwt",
+      "alg": "ES256",
+      "x5c": ["MIIDQjCCA..."]
+    },
+    "claims": {
+      "iss": "<identifier of the issuer of this key attestation>",
+      "iat": 1516247022,
+      "exp": 1541493724,
+      "key_storage": ["iso_18045_moderate"],
+      "user_authentication": ["iso_18045_moderate"],
+      "attested_keys": [
+        {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "TCAER19Zvu3OHF4j4W4vfSVoHIP1ILilDls7vCeGemc",
+          "y": "ZxjiWWbZMQGHVWKVQ4hbSIirsVfuecCE6t4jT9F2HZQ"
+        }
+      ]
+    }
+  },
+  "proof": {
+    "header": {
+      "typ": "openid4vci-proof+jwt",
+      "alg": "ES256",
+      "kid": "0",
+      "key_attestation": "<key attestation in JWT format>"
+    },
+    "claims": {
+      "iss": "s6BhdRkqt3",
+      "aud": "https://server.example.com",
+      "iat": 1659145924,
+      "nonce": "tZignsnFbp"
+    }
+  }
+}

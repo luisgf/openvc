@@ -27,6 +27,7 @@ undone, the same treatment as `interop/rfc9901-a3-sd-jwt-vc.txt`.
 | `proof-f.1-jwt.json` | App. F.1, `jwt` Proof Type | The **only signed** vector here, and a third-party one: a complete ES256 compact JWS over its own embedded `jwk`, `aud` `https://credential-issuer.example.com`, `iat` 1701960444 (2023-12-07), nonce `LarRGSbmUPYtRYO6BQ4yn8`. It verifies end-to-end, so a change to the `typ` pin, the key↔`alg` binding, the signing-input assembly or the `aud`/`iat`/nonce checks breaks it. F.1's second block is this same token decoded, which is what makes the header/payload assertions checkable. |
 | `request-8.2-mdl-jwt-proof.json` | §8.2, first example | `credential_configuration_id` + a single-element `jwt` array — the minimal §8.2 shape. The proof value is **truncated in the spec** to a bare header, so it pins the request shape and then a clean `MalformedToken`, not a signature. |
 | `request-8.2-degree-two-jwt-proofs.json` | §8.2, second example | `credential_identifier` (the other, mutually exclusive selector) and a **two**-element batch. Default `batch_size` is 1, so this is rejected until the caller opts in — the fail-closed default an issuer that publishes no `batch_credential_issuance` needs. |
+| `key-attestation-app-d.json` | App. D + the `jwt` Proof Type's attested example | The App. D key attestation and the proof whose `kid: "0"` indexes its `attested_keys`. Both are printed **decoded** in the spec and the proof's attestation is a placeholder, so what is third-party is the *shape* — member names, types, and that a `kid` here is a position, under no normative rule — and the test re-encodes them. It pins that `peek_key_attestation` reads every App. D member without judging `typ`, `exp` or the truncated `x5c`, and that the attested-key binding accepts the spec's own pairing and refuses a stranger's key. |
 | `request-8.2-degree-di-vp-proof.json` | §8.2, third example | A `di_vp` proof, whose elements are JSON **objects** rather than strings. ADR-0007 keeps `di_vp` out; the pin is that it is refused as `UnsupportedProofType` — never ignored, and never mislabelled as a malformed request. This vector is what found that mislabelling. |
 
 ## `real/` — recorded from the EU reference issuer
@@ -69,6 +70,14 @@ this library — by ADR-0007 D1 — does not have. Issue #147 records the source
 downstream Django issuer built on the ADR-0007 consumer contract will run the EUDI
 reference wallet against its own endpoint, and the request bodies from that run come
 back here with provenance. Until then this gap is stated, not papered over.
+
+**A key attestation from a real wallet provider**, for the same reason and with sharper
+consequences: `key-attestation-app-d.json` is the spec's shape re-encoded here, and the
+App. D binding check (issue #150) is on by default, so the ecosystem form it governs is
+pinned only by material this repo shaped. The recorded EUDI metadata advertises
+`key_attestations_required` on all 27 configurations, which is exactly how likely it is
+that a real one looks different from the example in some way that matters. Same source
+as above closes it.
 
 Also absent: a pre-authorized-code offer. The reference issuer only mints one after a
 form of synthetic personal data is submitted to it, which is not a trade this repo needs

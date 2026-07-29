@@ -136,6 +136,7 @@ the **type signature**, where openvc already puts `SigningKey` and `resolver`:
 ```python
 ConsumeNonce = Callable[[str], bool]   # atomic mark-used; True only if THIS call consumed it
 ResolveProofKey = Callable[[str], dict]  # kid -> wallet public JWK; absent => kid proofs rejected
+ResolveProofKeyInContext = Callable[[ProofKeyContext], dict]   # see the 1.24.0 addendum
 ```
 
 `check_nonce` is required: `require_nonce=True` (the default) with `check_nonce=None`
@@ -223,7 +224,7 @@ documented there.
 | **JWE encrypt** (credential-response encryption) | `jwe.py` is decrypt-only by decision; encrypting introduces this library's first catastrophic-on-error primitive (AES-GCM IV reuse) and needs an ephemeral private key in-process. Required only when an issuer sets `encryption_required: true`, which HAIP does not require for issuance. Own ADR if ever. |
 | mdoc issuance / COSE signing | Still excluded (ROADMAP); `cose.py` has no signing function. |
 | `di_vp` proof type | Would drag `pyld` from `[data-integrity]` onto the issuance path. |
-| Key-attestation **verification** | Captured verbatim and **unverified** (`peek_*` doctrine); its trust model needs a wallet-provider anchor class of its own. |
+| Key-attestation **trust** | Parsed and bound, never believed — see the 1.24.0 addendum. The signature, the wallet-provider anchor and the assurance levels need a trust model of their own. |
 | Attestation-based client authentication; DPoP | Orchestration, and the former is an IETF draft. Downstream, with HAIP. |
 | `trust_chain` (OpenID Federation) proof keys | Typed `UnsupportedProofType`; another whole spec, no EU deployment blocks on it today. |
 
@@ -289,6 +290,63 @@ Two obligations core places on the consumer, both load-bearing:
 - **Dependency-light preserved** — no new runtime dependency.
 - **Downstream gains a well-defined job** rather than an implicit one, and can ship the
   stateful parts openvc refuses to.
+
+## Addendum (1.24.0) — key attestations: parse and bind, do not trust
+
+**Status:** Accepted. **Date:** 2026-07-29. **Issue:** #150. Amends D4 and one row of D9;
+nothing else in this ADR is retracted.
+
+D4 shipped `ResolveProofKey = Callable[[str], dict]`, and that turned out to be blind
+exactly where the EU ecosystem lives. In the attested-key form the wallet sends
+`{typ, alg, kid, key_attestation}` and **the key that signed the proof is inside the
+header** — one of the attestation's `attested_keys`. A callback holding only the `kid`
+cannot reach it, so the reporting consumer decoded the proof header a second time,
+itself, to find the attestation before calling us: two implementations of "what is a
+header", one of which can drift.
+
+Two spec facts decide the shape of the fix:
+
+1. App. D: *"If used with the `jwt` proof type, the Credential Issuer MUST validate that
+   the JWT used as a proof is signed by a key contained in the attestation in the JOSE
+   Header."* A MUST that applies to us and that we could not express.
+2. The `jwt` proof type fixes **no rule** for how a `kid` names a key inside
+   `attested_keys`. The spec's own example uses `"kid": "0"` — an index; wallets also use
+   each JWK's `kid` member, or an RFC 7638 thumbprint.
+
+So the split is three ways, and the middle one is the interesting one:
+
+| | |
+|---|---|
+| **Parse — in** | `peek_key_attestation` / `peek_proof_header`. Consuming third-party bytes that must fail closed is D2's home turf, and a caller who needs the header before verification should use *our* parser, not write a second. Structure is validated, trust is not. |
+| **Bind — in** | Fact 1 is enforced by default. |
+| **Trust — out** | The attestation's signature, the wallet-provider anchor, `key_storage` / `user_authentication` / `status` / `exp`. Unchanged from D9: that needs an anchor class openvc has no model for. |
+
+**The binding check stops no attacker, and must never be sold as if it did.** Whoever
+forges a proof also chooses its `key_attestation`, whose signature nothing here verifies;
+they simply attest their own key. What it catches is an honest wallet, or *the caller's
+own resolver*, producing a key the wallet never claimed — a credential bound to the wrong
+key that would otherwise verify cleanly. It is a conformance check, and the reason an
+unverified blob may drive it at all is directional: it can only reject, never accept.
+`threat-model.md` I19 and `Security-Model.md` are worded to that limit deliberately.
+
+**Fact 2 stays the caller's.** openvc will not guess between index / `kid` member /
+thumbprint — that is the same "silently prefers one" defect the exactly-one-key-parameter
+rule exists to prevent, and a wrong guess picks the wrong key from a list the attacker
+supplied. `resolve_proof_key_in_context` hands over the material; the ecosystem's rule is
+one line in the caller. For the same reason a header carrying **only** `key_attestation`
+and no key parameter stays rejected — spec-legal, and still not something we will resolve
+from an unverified blob. That is now a tested decision rather than a side effect of the
+counting rule.
+
+**Compatibility.** `ResolveProofKey` is untouched and un-deprecated; the context resolver
+is a *separate* keyword, and passing both is a caller error rather than a precedence.
+Three alternatives were rejected: widening the alias to `(kid, header)` breaks every
+existing callable (MAJOR — and `openbadgeslib` pins `openvc-core>=1.21,<2`, so 2.0.0 would
+lock the reporting consumer out of its own fix); `inspect`-based arity dispatch silently
+downgrades a resolver wrapped in `openvc.cache.cached_resolve`, which returns a one-arg
+closure, losing the header with no error; and a callable alias is contravariant, so any
+widening now guarantees another break the next time a resolver needs more. A context
+object grows without breaking anyone.
 
 ## Follow-ups
 
