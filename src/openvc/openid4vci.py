@@ -35,12 +35,24 @@ comparing after the fact would have verified a signature and *not* the replay pr
 The callable is invoked once per request, **after** every signature has verified, so an
 unauthenticated attacker cannot burn nonces by spraying garbage.
 
-Scope: the ``jwt`` proof type only. ``attestation`` key attestations are captured
-verbatim and **unverified** (their trust model needs a wallet-provider anchor class of
-its own); ``di_vp`` and OpenID Federation ``trust_chain`` proof keys raise a typed
+Key attestations (App. D) are **parsed, bound, and not trusted**. Parsed:
+:func:`peek_key_attestation` reads one without verifying it, and a proof's attestation
+reaches :data:`ResolveProofKeyInContext` already parsed, because the key that signed an
+attested proof lives *inside the header* and a caller must not need a second decoder to
+find it. Bound: App. D's MUST — the proof is signed by a key the attestation contains —
+is enforced. Not trusted: the attestation's signature is never checked and no
+wallet-provider anchor is consulted, so **the binding check stops no attacker** (whoever
+forges a proof also chooses its attestation, and simply lists their own key); it catches
+an honest wallet, or the caller's own resolver, producing a key the wallet never
+claimed. Which key in ``attested_keys`` a ``kid`` names is **not** specified by the
+spec — the example uses an index, wallets also use the JWK's own ``kid`` or a
+thumbprint — so that mapping is the caller's, never a guess made here.
+
+Scope: the ``jwt`` proof type only. The ``attestation`` proof type, ``di_vp`` and
+OpenID Federation ``trust_chain`` proof keys raise a typed
 :class:`UnsupportedProofType`. What this supports claiming is *OpenID4VCI 1.0 key-proof
 verification* — not "issuance", and not HAIP, which additionally requires DPoP, key
-attestations and client authentication, all of them downstream.
+attestation *trust* and client authentication, all of them downstream.
 """
 from __future__ import annotations
 
@@ -49,30 +61,38 @@ import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from .errors import OpenvcError
-from .keys import MLDSA_ALGS, jwk_thumbprint
+from .keys import MLDSA_ALGS, InvalidKey, jwk_thumbprint
 from .proof._jws import parse_compact, verify_compact
 from .proof._verify_common import DEFAULT_LEEWAY_S, check_jwt_temporal, reject_unknown_crit
-from .proof.errors import ClaimsInvalid, UnsupportedAlgorithm
+from .proof.errors import ClaimsInvalid, MalformedToken, UnsupportedAlgorithm
 from .proof.vc_jwt import ALLOWED_ALGS
 
 __all__ = [
     "verify_credential_request_proofs",
     "parse_credential_request",
+    "peek_proof_header",
+    "peek_key_attestation",
     "CredentialRequest",
     "VerifiedProof",
+    "UnverifiedKeyAttestation",
+    "ProofKeyContext",
     "ConsumeNonce",
     "ResolveProofKey",
+    "ResolveProofKeyInContext",
     "OpenID4VCIError",
     "CredentialRequestMalformed",
     "UnsupportedProofType",
     "ProofReplayed",
     "PROOF_TYPE_JWT",
     "PROOF_TYP",
+    "KEY_ATTESTATION_TYP",
     "DEFAULT_PROOF_MAX_AGE_S",
     "MAX_PROOF_BYTES",
+    "MAX_KEY_ATTESTATION_BYTES",
 ]
 
 # OID4VCI 1.0 App. F: the only proof type this module verifies.
@@ -83,6 +103,11 @@ PROOF_TYPE_JWT = "jwt"
 # spellings are accepted — the same rule as the SD-JWT issuer `typ`.
 PROOF_TYP = frozenset({"openid4vci-proof+jwt", "application/openid4vci-proof+jwt"})
 
+# App. D pins a key attestation's `typ` the same way. Exposed rather than enforced by
+# `peek_key_attestation`: pinning `typ` is a verifier's job, and that verifier — the one
+# that would also check the signature against a wallet-provider anchor — is downstream.
+KEY_ATTESTATION_TYP = frozenset({"key-attestation+jwt", "application/key-attestation+jwt"})
+
 # How old a proof's `iat` may be. A key proof is a freshness artifact: the wallet mints
 # one per request, so minutes are generous.
 DEFAULT_PROOF_MAX_AGE_S = 300
@@ -92,9 +117,22 @@ DEFAULT_PROOF_MAX_AGE_S = 300
 # pattern.
 MAX_PROOF_BYTES = 16 * 1024
 
+# `peek_key_attestation` is a public entry point taking a caller-supplied string, so it
+# needs its own cap; an attestation reached through a proof is already inside the
+# `MAX_PROOF_BYTES` one.
+MAX_KEY_ATTESTATION_BYTES = 16 * 1024
+
 # The header key parameters App. F.1 defines. Exactly one must be present: two lets an
 # attacker pair a `kid` naming an honest key with a `jwk` they control, and any
 # implementation that "prefers" one silently accepts.
+#
+# `key_attestation` is deliberately NOT one of them. It carries `attested_keys`, but
+# selecting one of those keys means trusting an unverified blob to say which key signed
+# the proof, and App. F.1 fixes no rule for how a `kid` names an entry (its own example
+# uses an index; wallets also use the JWK's `kid` member or an RFC 7638 thumbprint).
+# So a header carrying only `key_attestation` and no key parameter is rejected below,
+# and a caller that knows its ecosystem's rule supplies the key via
+# `resolve_proof_key_in_context`.
 _KEY_PARAMS = ("jwk", "kid", "x5c", "trust_chain")
 
 # JOSE alg -> the (kty, crv) a key must have to be used with it. Binding these before
@@ -163,6 +201,30 @@ ResolveProofKey = Callable[[str], dict]
 
 Injected because resolving a ``kid`` is deployment policy (a wallet-provider registry, a
 prior enrolment record). Absent, a ``kid``-keyed proof is rejected — fail closed.
+
+Sees the ``kid`` and nothing else. When the key is carried *in the header* — the
+attested-key form, ``{typ, alg, kid, key_attestation}`` — use
+:data:`ResolveProofKeyInContext` instead.
+"""
+
+ResolveProofKeyInContext = Callable[["ProofKeyContext"], dict]
+"""Map a proof to the wallet's public JWK, with everything openvc knows at that point.
+
+The same job as :data:`ResolveProofKey` — and mutually exclusive with it; passing both
+is a caller error — but taking a :class:`ProofKeyContext` rather than a bare ``kid``.
+Needed for the attested-key form, where the key that signed the proof is in the header's
+``key_attestation`` and a bare ``kid`` names it under a rule only the caller's ecosystem
+knows::
+
+    def resolve(ctx):
+        keys = ctx.key_attestation.attested_keys if ctx.key_attestation else ()
+        return keys[int(ctx.kid)]        # or match ctx.kid against each key's own "kid"
+
+Takes a context *object*, not more parameters, so growing what a resolver can see never
+breaks the ones already written.
+
+Everything in the context is **unverified** — no signature has been checked when it is
+called. Use it to *select* a key, never to decide the key is trustworthy.
 """
 
 
@@ -178,7 +240,10 @@ class VerifiedProof:
     to :meth:`~openvc.proof.sd_jwt.SdJwtVcProofSuite.issue` as ``holder_jwk``.
 
     ``key_attestation`` is the header's attestation JWT captured **verbatim and
-    unverified** (the ``peek_*`` doctrine): it must never drive a trust decision.
+    unverified** (the ``peek_*`` doctrine): it must never drive a trust decision. Its
+    contents are :func:`peek_key_attestation`'s to read; that the proof key is one of
+    its ``attested_keys`` has been checked, that the attestation itself is genuine has
+    **not**.
     """
     public_jwk: dict[str, Any] = field(default_factory=dict)
     thumbprint: str = ""                       # RFC 7638, base64url SHA-256
@@ -190,6 +255,50 @@ class VerifiedProof:
     key_attestation: str | None = None         # UNVERIFIED
     header: Mapping[str, Any] = field(default_factory=dict)
     claims: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class UnverifiedKeyAttestation:
+    """A key attestation JWT (App. D) parsed **without** verifying it. UNTRUSTED.
+
+    Named for what it is not. Its signature has not been checked, no wallet-provider
+    anchor has been consulted, and ``key_storage`` / ``user_authentication`` /
+    ``status`` are the wallet's own claims about itself. **Structure is validated,
+    trust is not**: the shape App. D fixes is enforced so this object is predictable,
+    and everything a verifier would decide is left on ``header`` and ``claims``.
+
+    The one thing openvc does with it is *negative*: reject a proof whose key is not in
+    ``attested_keys`` (App. D's MUST). See :func:`peek_key_attestation`.
+    """
+    attested_keys: tuple[Mapping[str, Any], ...] = ()
+    key_storage: tuple[str, ...] = ()
+    user_authentication: tuple[str, ...] = ()
+    certification: str | None = None           # a URL, unfetched
+    nonce: str | None = None
+    status: Mapping[str, Any] | None = None
+    issued_at: int | None = None               # the attestation's `iat`
+    expires_at: int | None = None              # the attestation's `exp`
+    header: Mapping[str, Any] = field(default_factory=dict)
+    claims: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProofKeyContext:
+    """What openvc knows about one key proof at key-resolution time. All UNVERIFIED.
+
+    Handed to :data:`ResolveProofKeyInContext`. No signature has been checked yet — by
+    construction, since the point is to find the key that will check it — so this is
+    material for *selecting* a key and never grounds for trusting one.
+
+    ``header`` is a read-only copy: a resolver cannot reach back and change what the
+    rest of the verification then sees.
+    """
+    kid: str | None = None
+    alg: str = ""
+    header: Mapping[str, Any] = field(default_factory=dict)
+    key_attestation: UnverifiedKeyAttestation | None = None
+    credential_issuer: str = ""                # what this proof's `aud` must equal
+    index: int = 0                             # position in the request's `proofs` array
 
 
 @dataclass(frozen=True)
@@ -320,6 +429,111 @@ def _as_mapping(value: Mapping[str, Any] | str, subject: str) -> Mapping[str, An
 
 
 # --------------------------------------------------------------------------- #
+# Reading before trusting (the `peek_*` doctrine)
+# --------------------------------------------------------------------------- #
+
+def peek_proof_header(proof: str) -> Mapping[str, Any]:
+    """A key proof's protected header, read **without** verifying anything. UNTRUSTED.
+
+    Exposed so that a caller who must look at a proof before verification — to pick a
+    registry, to find the ``key_attestation`` — uses *this* parse rather than writing a
+    second one. Two notions of what a header is can disagree; one cannot.
+
+    Read-only, and never a trust decision: the bytes are the wallet's, unauthenticated.
+    """
+    if not isinstance(proof, str):
+        raise MalformedToken("key proof must be a compact JWS string")
+    if len(proof.encode("utf-8")) > MAX_PROOF_BYTES:
+        raise MalformedToken(f"key proof exceeds {MAX_PROOF_BYTES} bytes")
+    header, _, _, _ = parse_compact(proof)
+    return MappingProxyType(dict(header))
+
+
+def peek_key_attestation(attestation: str) -> UnverifiedKeyAttestation:
+    """Parse a key attestation JWT (OID4VCI 1.0 App. D) **without** verifying it.
+
+    Returns an :class:`UnverifiedKeyAttestation` — read its docstring before using
+    anything it holds. **Structure is validated, trust is not**: ``attested_keys`` must
+    be a non-empty array of JWK objects and the other App. D members must have their
+    documented types, because a caller reading a predictable object is the whole point;
+    but ``typ``, ``exp`` and the signature are *not* checked, because those are a
+    verifier's decisions and that verifier needs a wallet-provider trust anchor openvc
+    has no model for (ADR-0007 D9).
+
+    Raises :class:`~openvc.proof.errors.MalformedToken` if it is not a compact JWS, and
+    :class:`~openvc.proof.errors.ClaimsInvalid` if it is one but not shaped like a key
+    attestation.
+    """
+    if not isinstance(attestation, str):
+        raise MalformedToken("key attestation must be a compact JWS string")
+    if len(attestation.encode("utf-8")) > MAX_KEY_ATTESTATION_BYTES:
+        raise MalformedToken(
+            f"key attestation exceeds {MAX_KEY_ATTESTATION_BYTES} bytes")
+    header, claims, _, _ = parse_compact(attestation)
+
+    keys = claims.get("attested_keys")
+    if not isinstance(keys, (list, tuple)) or not keys:
+        raise ClaimsInvalid("key attestation attested_keys must be a non-empty array")
+    for key in keys:
+        if not isinstance(key, Mapping):
+            raise ClaimsInvalid("key attestation attested_keys entries must be JWK objects")
+
+    return UnverifiedKeyAttestation(
+        attested_keys=tuple(MappingProxyType(dict(key)) for key in keys),
+        key_storage=_attestation_strings(claims.get("key_storage"), "key_storage"),
+        user_authentication=_attestation_strings(
+            claims.get("user_authentication"), "user_authentication"),
+        certification=_attestation_string(claims.get("certification"), "certification"),
+        nonce=_attestation_string(claims.get("nonce"), "nonce"),
+        status=_attestation_object(claims.get("status")),
+        issued_at=_attestation_timestamp(claims.get("iat"), "iat"),
+        expires_at=_attestation_timestamp(claims.get("exp"), "exp"),
+        header=MappingProxyType(dict(header)),
+        claims=MappingProxyType(dict(claims)),
+    )
+
+
+def _attestation_strings(value: Any, name: str) -> tuple[str, ...]:
+    """An App. D array-of-strings member: absent, or a non-empty array of strings."""
+    if value is None:
+        return ()
+    if (not isinstance(value, (list, tuple)) or not value
+            or not all(isinstance(item, str) for item in value)):
+        raise ClaimsInvalid(
+            f"key attestation {name} must be a non-empty array of strings when present")
+    return tuple(value)
+
+
+def _attestation_string(value: Any, name: str) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    raise ClaimsInvalid(f"key attestation {name} must be a string when present")
+
+
+def _attestation_object(value: Any) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ClaimsInvalid("key attestation status must be an object when present")
+    return MappingProxyType(dict(value))
+
+
+def _attestation_timestamp(value: Any, name: str) -> int | None:
+    """`iat`/`exp` are read but **not** enforced — only their type is pinned.
+
+    Whether an attestation has expired is a verifier's call, and the verifier that
+    would make it also checks the signature. Rejecting a non-numeric one here only
+    stops a caller from comparing a string against a clock.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ClaimsInvalid(
+            f"key attestation {name} must be a finite numeric timestamp when present")
+    return int(value)
+
+
+# --------------------------------------------------------------------------- #
 # Key-proof verification (OID4VCI 1.0 App. F.1)
 # --------------------------------------------------------------------------- #
 
@@ -331,6 +545,7 @@ def verify_credential_request_proofs(
     require_nonce: bool = True,
     expected_client_id: str | None = None,
     resolve_proof_key: ResolveProofKey | None = None,
+    resolve_proof_key_in_context: ResolveProofKeyInContext | None = None,
     trust_anchors: Sequence[Any] | None = None,
     max_age_s: int = DEFAULT_PROOF_MAX_AGE_S,
     leeway_s: int = DEFAULT_LEEWAY_S,
@@ -342,10 +557,20 @@ def verify_credential_request_proofs(
 
     *credential_issuer* is the Credential Issuer Identifier each proof's ``aud`` must
     equal. *check_nonce* consumes the ``c_nonce`` (see :data:`ConsumeNonce`) and is
-    required unless *require_nonce* is explicitly ``False``. *resolve_proof_key* and
+    required unless *require_nonce* is explicitly ``False``. *resolve_proof_key* — or
+    *resolve_proof_key_in_context*, which additionally sees the header and its parsed
+    key attestation, and which is the one the attested-key form needs — and
     *trust_anchors* enable the ``kid`` and ``x5c`` key parameters respectively; without
-    them, proofs using those parameters are rejected. *expected_client_id*, when given,
-    pins the proof's ``iss``. *now* pins the instant for deterministic tests.
+    them, proofs using those parameters are rejected. Passing both resolvers is a caller
+    error. *expected_client_id*, when given, pins the proof's ``iss``. *now* pins the
+    instant for deterministic tests.
+
+    When a proof carries ``key_attestation``, App. D's MUST is enforced: the key that
+    signed it must be one of the attestation's ``attested_keys``. That check **stops no
+    attacker** — the attestation is unsigned as far as openvc is concerned, so a forger
+    lists their own key — and exists to catch an honest wallet, or *this call's own
+    resolver*, producing a key the wallet never claimed. Trusting the attestation is
+    downstream work and needs a wallet-provider anchor.
 
     **Any failure rejects the whole request** — there is no partial issuance. Raises
     :class:`CredentialRequestMalformed`, :class:`UnsupportedProofType`,
@@ -364,6 +589,11 @@ def verify_credential_request_proofs(
             "check_nonce, or set require_nonce=False to opt out explicitly")
     if max_age_s < 0 or leeway_s < 0:
         raise CredentialRequestMalformed("max_age_s and leeway_s must not be negative")
+    if resolve_proof_key is not None and resolve_proof_key_in_context is not None:
+        # Two resolvers means a precedence between them, and a silent precedence among
+        # key sources is the defect this verifier is built to refuse (see _KEY_PARAMS).
+        raise CredentialRequestMalformed(
+            "pass resolve_proof_key or resolve_proof_key_in_context, not both")
 
     if not isinstance(request, CredentialRequest):
         request = parse_credential_request(request, batch_size=batch_size)
@@ -378,14 +608,16 @@ def verify_credential_request_proofs(
             credential_issuer=credential_issuer,
             expected_client_id=expected_client_id,
             resolve_proof_key=resolve_proof_key,
+            resolve_proof_key_in_context=resolve_proof_key_in_context,
             trust_anchors=trust_anchors,
             max_age_s=max_age_s,
             leeway_s=leeway_s,
             current=current,
             now=now,
             allowed_algs=allowed_algs,
+            index=index,
         )
-        for value in request.proofs
+        for index, value in enumerate(request.proofs)
     )
 
     _check_batch_invariants(verified, check_nonce=check_nonce, require_nonce=require_nonce)
@@ -428,12 +660,14 @@ def _verify_one_proof(
     credential_issuer: str,
     expected_client_id: str | None,
     resolve_proof_key: ResolveProofKey | None,
+    resolve_proof_key_in_context: ResolveProofKeyInContext | None,
     trust_anchors: Sequence[Any] | None,
     max_age_s: int,
     leeway_s: int,
     current: int,
     now: datetime | None,
     allowed_algs: frozenset[str],
+    index: int,
 ) -> VerifiedProof:
     """One ``openid4vci-proof+jwt``, structure and allow-lists before any crypto."""
     header, _, _, _ = parse_compact(proof)
@@ -449,9 +683,24 @@ def _verify_one_proof(
         raise UnsupportedAlgorithm(f"key proof alg {alg!r} is not allow-listed")
     reject_unknown_crit(header)
 
+    # Parsed here, not read at the end: the key resolver needs it (in the attested-key
+    # form the signing key is *inside* it), and a malformed attestation must reject the
+    # proof before any crypto, like every other structure rule (ADR-0007 D5).
+    attestation_jwt = header.get("key_attestation")
+    if attestation_jwt is not None and not isinstance(attestation_jwt, str):
+        raise ClaimsInvalid("key_attestation header must be a string when present")
+    attestation = (
+        peek_key_attestation(attestation_jwt) if attestation_jwt is not None else None)
+
     public_jwk, key_source = _proof_key(
         header, alg=alg, resolve_proof_key=resolve_proof_key,
+        resolve_proof_key_in_context=resolve_proof_key_in_context,
+        attestation=attestation, credential_issuer=credential_issuer, index=index,
         trust_anchors=trust_anchors, now=now)
+
+    thumbprint = _thumbprint(public_jwk, "the key proof's key")
+    if attestation is not None:
+        _check_attested_key(thumbprint, attestation)
 
     # Re-parses and re-checks alg/crit; that redundancy is deliberate — one audited
     # entry point for every signature in the library.
@@ -473,19 +722,15 @@ def _verify_one_proof(
     if nonce is not None and (not isinstance(nonce, str) or not nonce):
         raise ClaimsInvalid("key proof nonce must be a non-empty string when present")
 
-    attestation = header.get("key_attestation")
-    if attestation is not None and not isinstance(attestation, str):
-        raise ClaimsInvalid("key_attestation header must be a string when present")
-
     return VerifiedProof(
         public_jwk=public_jwk,
-        thumbprint=jwk_thumbprint(public_jwk),
+        thumbprint=thumbprint,
         alg=alg,
         key_source=key_source,
         issued_at=issued_at,
         nonce=nonce,
         client_id=client_id,
-        key_attestation=attestation,       # UNVERIFIED — peek doctrine
+        key_attestation=attestation_jwt,   # UNVERIFIED — peek doctrine
         header=header,
         claims=claims,
     )
@@ -495,6 +740,10 @@ def _proof_key(
     header: Mapping[str, Any], *,
     alg: str,
     resolve_proof_key: ResolveProofKey | None,
+    resolve_proof_key_in_context: ResolveProofKeyInContext | None,
+    attestation: UnverifiedKeyAttestation | None,
+    credential_issuer: str,
+    index: int,
     trust_anchors: Sequence[Any] | None,
     now: datetime | None,
 ) -> tuple[dict[str, Any], str]:
@@ -541,18 +790,66 @@ def _proof_key(
         kid = header["kid"]
         if not isinstance(kid, str) or not kid:
             raise ClaimsInvalid("key proof kid header must be a non-empty string")
-        if resolve_proof_key is None:
+        if resolve_proof_key_in_context is not None:
+            # The header is copied read-only: a resolver cannot reach back and change
+            # what the attestation binding and `VerifiedProof.header` then report.
+            jwk = resolve_proof_key_in_context(ProofKeyContext(
+                kid=kid, alg=alg, header=MappingProxyType(dict(header)),
+                key_attestation=attestation, credential_issuer=credential_issuer,
+                index=index))
+            resolver = "resolve_proof_key_in_context"
+        elif resolve_proof_key is not None:
+            jwk = resolve_proof_key(kid)
+            resolver = f"resolve_proof_key({kid!r})"
+        else:
             raise ClaimsInvalid(
-                "key proof uses kid but no resolve_proof_key was given to resolve it")
-        jwk = resolve_proof_key(kid)
+                "key proof uses kid but no resolve_proof_key was given to resolve it "
+                "(or resolve_proof_key_in_context, if the key is in the header's "
+                "key_attestation)")
         if not isinstance(jwk, Mapping):
-            raise ClaimsInvalid(f"resolve_proof_key({kid!r}) did not return a JWK")
+            raise ClaimsInvalid(f"{resolver} did not return a JWK")
         jwk = dict(jwk)
         _check_key_binds_to_alg(jwk, alg)
         return jwk, source
 
     raise UnsupportedProofType(
         "OpenID Federation trust_chain proof keys are not supported")
+
+
+def _thumbprint(jwk: Mapping[str, Any], subject: str) -> str:
+    """RFC 7638, with :class:`~openvc.keys.InvalidKey` mapped into this module's errors.
+
+    ``InvalidKey`` is a key-backend error, not a :class:`~openvc.proof.errors.ProofError`,
+    so letting it out would hand a Credential Endpoint an exception type this module
+    does not document — over bytes a wallet chose. `_check_key_binds_to_alg` does not
+    prevent it: it reads ``kty``/``crv`` and never the coordinates.
+    """
+    try:
+        return jwk_thumbprint(jwk)
+    except InvalidKey as exc:
+        raise ClaimsInvalid(f"{subject} cannot be thumbprinted: {exc}") from exc
+
+
+def _check_attested_key(thumbprint: str, attestation: UnverifiedKeyAttestation) -> None:
+    """App. D: the proof MUST be signed by a key the attestation contains.
+
+    A **conformance** check, not a defence, and the difference matters. Whoever forges
+    a proof also chooses its ``key_attestation``, whose signature nothing here verifies,
+    so a forger simply attests their own key: this stops no attacker. What it catches is
+    an honest wallet, or the caller's own resolver, producing a key the wallet never
+    claimed — a wrong-key issuance that would otherwise verify cleanly.
+
+    That an unverified blob may drive it at all rests on the direction: it can only
+    *reject* a proof, never accept one.
+    """
+    if any(_thumbprint(key, "an attested key") == thumbprint
+           for key in attestation.attested_keys):
+        return
+    raise ClaimsInvalid(
+        "the key that signed this proof is not among the key attestation's "
+        "attested_keys (compared by RFC 7638 thumbprint — note that a JWK whose "
+        "coordinates are not fixed-width per RFC 7518 §6.2.1.2 thumbprints differently "
+        "from the same key encoded correctly)")
 
 
 def _check_key_binds_to_alg(jwk: Mapping[str, Any], alg: str) -> None:

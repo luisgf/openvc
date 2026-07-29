@@ -13,7 +13,10 @@ Pins the App. F.1 contract and, above all, the adversarial corpus ADR-0007 D5 na
   * `iat` freshness in BOTH directions, including the NaN fail-open trap;
   * the batch invariants that only exist in the plural — one shared nonce, consumed
     exactly once, no two proofs on the same key;
-  * nonce replay surfacing as a distinct ProofReplayed.
+  * nonce replay surfacing as a distinct ProofReplayed;
+  * the App. D key-attestation binding (issue #150) — the proof key must be one of the
+    attestation's `attested_keys`, no error may escape the module's own taxonomy, and
+    the attestation's signature is never checked, which is the point rather than a gap.
 
 Proofs are minted locally with offline keys; wire shapes follow OID4VCI 1.0 §8.2.
 """
@@ -31,9 +34,13 @@ from openvc.keys import Ed25519SigningKey, P256SigningKey, P384SigningKey, jwk_t
 from openvc.openid4vci import (
     CredentialRequest,
     CredentialRequestMalformed,
+    ProofKeyContext,
     ProofReplayed,
     UnsupportedProofType,
+    UnverifiedKeyAttestation,
     parse_credential_request,
+    peek_key_attestation,
+    peek_proof_header,
     verify_credential_request_proofs,
 )
 from openvc.proof._jws import sign_compact
@@ -69,6 +76,26 @@ def _proof(
         claims["nonce"] = nonce
     claims.update(claims_extra or {})
     return sign_compact(header, claims, signing_key=key)
+
+
+def _attestation(*jwks, typ="key-attestation+jwt", iat=NOW_TS, exp=NOW_TS + 3600,
+                 attested_keys=_UNSET, claims_extra=None):
+    """A key attestation JWT (App. D), signed by a key nothing will ever look at.
+
+    The signer is a throwaway on purpose: openvc never checks this signature, and a
+    test that used the wallet's own key could hide that.
+    """
+    claims = {"iss": "https://wallet-provider.example"}
+    if iat is not None:
+        claims["iat"] = iat
+    if exp is not None:
+        claims["exp"] = exp
+    claims["attested_keys"] = (
+        [key.public_jwk() if hasattr(key, "public_jwk") else key for key in jwks]
+        if attested_keys is _UNSET else attested_keys)
+    claims.update(claims_extra or {})
+    provider = P256SigningKey.generate(kid="wallet-provider")
+    return sign_compact({"typ": typ, "alg": provider.alg}, claims, signing_key=provider)
 
 
 def _request(*proofs, config_id="UniversityDegree", proof_type="jwt"):
@@ -655,11 +682,251 @@ def test_a_zero_batch_size_is_rejected():
         _verify(_request(_proof(key)), batch_size=0)
 
 
+# ------------------------------------------------------- key attestations (#150) #
+
 def test_key_attestation_is_captured_but_not_verified():
+    """The attestation is signed by a key nobody knows, and that is not an error."""
+    key = P256SigningKey.generate(kid="w")
+    attestation = _attestation(key)
+    verified, = _verify(_request(_proof(key, header_extra={"key_attestation": attestation})))
+    assert verified.key_attestation == attestation           # verbatim, unverified
+    assert peek_key_attestation(verified.key_attestation).attested_keys == (key.public_jwk(),)
+
+
+def test_a_proof_signed_by_an_attested_key_is_accepted():
+    """The form the wallets emit: the signing key is in the header, under a `kid`."""
+    key = P256SigningKey.generate(kid="w")
+    other = P256SigningKey.generate(kid="other")
+    attestation = _attestation(other, key)                   # `kid` is an index here
+    proof = _proof(key, key_param=None,
+                   header_extra={"kid": "1", "key_attestation": attestation})
+
+    verified, = _verify(
+        _request(proof),
+        resolve_proof_key_in_context=lambda ctx: ctx.key_attestation.attested_keys[int(ctx.kid)])
+    assert verified.key_source == "kid"
+    assert verified.public_jwk == key.public_jwk()
+
+
+@pytest.mark.parametrize("key_param", ["jwk", "kid", "x5c"])
+def test_a_proof_signed_by_a_key_absent_from_the_attestation_is_rejected(key_param):
+    """App. D's MUST, on every key source — not just the one that reads the header."""
+    stranger = P256SigningKey.generate(kid="stranger")
+    kw = {}
+    if key_param == "x5c":
+        x5c, root, key = _wallet_chain()
+        proof_kw, kw = {"key_param": "x5c", "jwk": x5c}, {"trust_anchors": [root]}
+    else:
+        key = P256SigningKey.generate(kid="w")
+        proof_kw = {"key_param": key_param}
+        if key_param == "kid":
+            kw = {"resolve_proof_key": lambda kid: key.public_jwk()}
+
+    attestation = _attestation(stranger)
+    proof = _proof(key, header_extra={"key_attestation": attestation}, **proof_kw)
+    with pytest.raises(ClaimsInvalid, match="not among the key attestation"):
+        _verify(_request(proof), **kw)
+
+
+def test_a_non_fixed_width_attested_key_is_rejected_and_the_message_says_why():
+    """RFC 7638 digests the coordinates as given: same key, other encoding, other hash.
+
+    Non-conformant per RFC 7518 §6.2.1.2, rare enough to pass every test and surface in
+    production — so the rejection names the cause instead of just saying "not found".
+    """
+    key = P256SigningKey.generate(kid="w")
+    sloppy = dict(key.public_jwk())
+    sloppy["x"] = base64.urlsafe_b64encode(
+        b"\x00" + base64.urlsafe_b64decode(sloppy["x"] + "==")).decode().rstrip("=")
+
+    proof = _proof(key, header_extra={"key_attestation": _attestation(sloppy)})
+    with pytest.raises(ClaimsInvalid, match="RFC 7518"):
+        _verify(_request(proof))
+
+
+def test_a_non_string_key_attestation_is_rejected_before_the_signature():
+    """Structure before crypto: the bad header wins over the bad signature."""
+    key, other = P256SigningKey.generate(kid="w"), P256SigningKey.generate(kid="o")
+    proof = _proof(key, key_param="jwk", jwk=other.public_jwk(),
+                   header_extra={"key_attestation": {"not": "a string"}})
+    with pytest.raises(ClaimsInvalid, match="key_attestation header must be a string"):
+        _verify(_request(proof))
+
+
+@pytest.mark.parametrize("attested_keys", [
+    None, [], "x", 42, [42], [{}], [{"kty": "EC"}], [{"kty": "XX", "x": "a"}],
+])
+def test_a_malformed_attestation_never_escapes_the_documented_taxonomy(attested_keys):
+    """`InvalidKey` is a key-backend error, not a ProofError — it must not reach out."""
+    key = P256SigningKey.generate(kid="w")
+    attestation = _attestation(attested_keys=attested_keys)
+    proof = _proof(key, header_extra={"key_attestation": attestation})
+    with pytest.raises(ClaimsInvalid):
+        _verify(_request(proof))
+
+
+def test_a_key_that_cannot_be_thumbprinted_is_typed_not_leaked():
+    """The other half: a resolver's own key can trip RFC 7638 too."""
+    key = P256SigningKey.generate(kid="w")
+    with pytest.raises(ClaimsInvalid, match="cannot be thumbprinted"):
+        _verify(_request(_proof(key, key_param="kid")),
+                resolve_proof_key=lambda kid: {"kty": "EC", "crv": "P-256", "x": 123, "y": "a"})
+
+
+def test_an_attestation_that_is_not_a_jws_is_a_malformed_token():
     key = P256SigningKey.generate(kid="w")
     proof = _proof(key, header_extra={"key_attestation": "ey.unverified.token"})
+    with pytest.raises(MalformedToken):
+        _verify(_request(proof))
+
+
+def test_a_key_attestation_is_not_a_key_parameter():
+    """`{typ, alg, key_attestation}` is spec-legal and still rejected, deliberately.
+
+    Picking a key out of `attested_keys` means letting an unverified blob say which key
+    signed the proof, and App. F.1 fixes no rule for how a `kid` names one.
+    """
+    key = P256SigningKey.generate(kid="w")
+    proof = _proof(key, key_param=None,
+                   header_extra={"key_attestation": _attestation(key)})
+    with pytest.raises(ClaimsInvalid, match="exactly one of"):
+        _verify(_request(proof))
+
+
+# ---------------------------------------------------------- resolver context #
+
+def test_the_context_resolver_sees_the_kid_alg_header_and_parsed_attestation():
+    key = P256SigningKey.generate(kid="w")
+    attestation = _attestation(key)
+    proof = _proof(key, key_param="kid", header_extra={"key_attestation": attestation})
+    seen = []
+
+    verified, = _verify(
+        _request(proof),
+        resolve_proof_key_in_context=lambda ctx: (seen.append(ctx), key.public_jwk())[1])
+
+    ctx, = seen
+    assert isinstance(ctx, ProofKeyContext)
+    assert (ctx.kid, ctx.alg, ctx.credential_issuer, ctx.index) == (
+        "wallet-key-1", "ES256", ISSUER, 0)
+    assert ctx.header["key_attestation"] == attestation
+    assert isinstance(ctx.key_attestation, UnverifiedKeyAttestation)
+    assert ctx.key_attestation.attested_keys == (key.public_jwk(),)
+    assert ctx.key_attestation.expires_at == NOW_TS + 3600
+    assert verified.public_jwk == key.public_jwk()
+
+
+def test_the_context_header_cannot_be_edited_by_the_resolver():
+    """Otherwise a resolver could delete the attestation it is about to be bound to."""
+    key = P256SigningKey.generate(kid="w")
+    proof = _proof(key, key_param="kid",
+                   header_extra={"key_attestation": _attestation(key)})
+
+    def resolve(ctx):
+        with pytest.raises(TypeError):
+            ctx.header["key_attestation"] = None
+        return key.public_jwk()
+
+    assert _verify(_request(proof), resolve_proof_key_in_context=resolve)
+
+
+def test_the_context_resolver_gets_the_index_of_each_proof_in_the_batch():
+    keys = [P256SigningKey.generate(kid=f"w{n}") for n in range(2)]
+    request = _request(*(_proof(k, key_param="kid") for k in keys))
+    seen = {}
+
+    _verify(request, batch_size=2, resolve_proof_key_in_context=lambda ctx: (
+        seen.setdefault(ctx.index, keys[ctx.index].public_jwk())))
+    assert sorted(seen) == [0, 1]
+
+
+def test_a_context_resolver_returning_a_non_jwk_is_rejected():
+    key = P256SigningKey.generate(kid="w")
+    with pytest.raises(ClaimsInvalid, match="resolve_proof_key_in_context did not return"):
+        _verify(_request(_proof(key, key_param="kid")),
+                resolve_proof_key_in_context=lambda ctx: "nope")
+
+
+def test_passing_both_resolvers_is_a_caller_error():
+    key = P256SigningKey.generate(kid="w")
+    with pytest.raises(CredentialRequestMalformed, match="not both"):
+        _verify(_request(_proof(key, key_param="kid")),
+                resolve_proof_key=lambda kid: key.public_jwk(),
+                resolve_proof_key_in_context=lambda ctx: key.public_jwk())
+
+
+def test_the_kid_resolvers_are_named_in_the_fail_closed_message():
+    key = P256SigningKey.generate(kid="w")
+    with pytest.raises(ClaimsInvalid, match="resolve_proof_key_in_context"):
+        _verify(_request(_proof(key, key_param="kid")))
+
+
+# ------------------------------------------------------------ peek_* doctrine #
+
+def test_peek_proof_header_agrees_with_the_verified_header():
+    """One notion of what a header is. A caller's own decoder is a second one."""
+    key = P256SigningKey.generate(kid="w")
+    proof = _proof(key, header_extra={"key_attestation": _attestation(key)})
     verified, = _verify(_request(proof))
-    assert verified.key_attestation == "ey.unverified.token"
+    assert dict(peek_proof_header(proof)) == dict(verified.header)
+
+
+def test_peek_key_attestation_reads_a_token_whose_signature_is_worthless():
+    key = P256SigningKey.generate(kid="w")
+    attestation = _attestation(key, claims_extra={
+        "key_storage": ["iso_18045_high"], "user_authentication": ["iso_18045_moderate"],
+        "certification": "https://wallet-provider.example/cert", "nonce": NONCE,
+        "status": {"status_list": {"idx": 3}}})
+
+    peeked = peek_key_attestation(attestation.replace(attestation[-6:], "AAAAAA"))
+    assert peeked.attested_keys == (key.public_jwk(),)
+    assert peeked.key_storage == ("iso_18045_high",)
+    assert peeked.user_authentication == ("iso_18045_moderate",)
+    assert peeked.certification == "https://wallet-provider.example/cert"
+    assert (peeked.nonce, peeked.issued_at, peeked.expires_at) == (NONCE, NOW_TS, NOW_TS + 3600)
+    assert peeked.status == {"status_list": {"idx": 3}}
+    assert peeked.header["typ"] == "key-attestation+jwt"
+
+
+def test_peeked_objects_are_read_only():
+    key = P256SigningKey.generate(kid="w")
+    peeked = peek_key_attestation(_attestation(key))
+    for mapping in (peeked.header, peeked.claims, peeked.attested_keys[0]):
+        with pytest.raises(TypeError):
+            mapping["injected"] = True
+
+
+@pytest.mark.parametrize("bad", [
+    "not-a-jws", "", 42, None, "a.b.c",
+])
+def test_peek_key_attestation_fails_closed_on_junk(bad):
+    with pytest.raises((MalformedToken, ClaimsInvalid)):
+        peek_key_attestation(bad)
+
+
+@pytest.mark.parametrize("peek", [peek_proof_header, peek_key_attestation])
+def test_the_peek_entry_points_are_capped(peek):
+    with pytest.raises(MalformedToken, match="exceeds"):
+        peek("x" * (16 * 1024 + 1))
+
+
+@pytest.mark.parametrize("claims_extra", [
+    {"key_storage": "iso_18045_high"}, {"key_storage": []}, {"user_authentication": [1]},
+    {"certification": 42}, {"nonce": 42}, {"status": "revoked"}, {"iat": "yesterday"},
+    {"exp": float("nan")},
+])
+def test_peek_key_attestation_pins_the_shape_of_every_app_d_member(claims_extra):
+    key = P256SigningKey.generate(kid="w")
+    with pytest.raises(ClaimsInvalid):
+        peek_key_attestation(_attestation(key, claims_extra=claims_extra))
+
+
+def test_peek_key_attestation_does_not_enforce_a_verifiers_rules():
+    """`typ` and `exp` are left on the object, not judged: that is downstream's call."""
+    key = P256SigningKey.generate(kid="w")
+    peeked = peek_key_attestation(_attestation(key, typ="nonsense+jwt", exp=None))
+    assert peeked.header["typ"] == "nonsense+jwt"
+    assert peeked.expires_at is None
 
 
 def test_verified_proof_is_frozen():

@@ -4,6 +4,60 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Key resolution sees the whole proof, and key attestations are parsed**
+  ([#150](https://github.com/luisgf/openvc/issues/150),
+  [ADR-0007](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0007-oid4vci-issuer-side.md)
+  1.24.0 addendum). In the attested-key form EU wallet stacks emit —
+  `{typ, alg, kid, key_attestation}` — the key that signed the proof is *inside the
+  header*, one of the attestation's `attested_keys`. `ResolveProofKey` sees only the
+  `kid`, so a consumer had to base64url-decode the proof header itself before calling
+  in: openvc decoding a header once and the caller decoding it again, with two notions
+  of what a header is and one of them free to drift.
+  `verify_credential_request_proofs` gains **`resolve_proof_key_in_context=`**, taking
+  the new frozen `ProofKeyContext` (`kid`, `alg`, a read-only `header`, the parsed
+  `key_attestation`, `credential_issuer`, `index`), so the resolver is one line of the
+  caller's own mapping rule. Pass it *or* `resolve_proof_key`, never both — a
+  precedence between two key resolvers is the same silent-preference defect the
+  one-key-parameter rule exists to prevent.
+  **`ResolveProofKey` is unchanged and not deprecated**: existing resolvers keep
+  working untouched, and a context object grows without ever breaking them again.
+  Also public: **`peek_key_attestation`** → the frozen `UnverifiedKeyAttestation`
+  (`attested_keys`, `key_storage`, `user_authentication`, `certification`, `nonce`,
+  `status`, `issued_at`, `expires_at`, `header`, `claims`), **`peek_proof_header`**,
+  `KEY_ATTESTATION_TYP` and `MAX_KEY_ATTESTATION_BYTES`. Structure is validated, trust
+  is not — the signature, the wallet-provider anchor and the assurance levels stay
+  downstream (ADR-0007 D9), and *which* key in `attested_keys` a `kid` names stays the
+  caller's, because the spec fixes no rule for it (its own example uses an index,
+  wallets also use the JWK's `kid` member or a thumbprint). New runnable example
+  `examples/13_oid4vci_key_attestation.py`, and the App. D vector in
+  `tests/fixtures/openid4vci/spec/`.
+
+### Changed
+
+- **A key proof carrying a `key_attestation` must be signed by one of its
+  `attested_keys`** (OID4VCI 1.0 App. D's MUST: *"the Credential Issuer MUST validate
+  that the JWT used as a proof is signed by a key contained in the attestation in the
+  JOSE Header"*), compared by RFC 7638 thumbprint, on every key source. Previously the
+  header was captured verbatim and never looked at. Also, a malformed attestation now
+  rejects the proof *before* any crypto, with the rest of the structure rules, rather
+  than being read at the end.
+  **This buys nothing against an attacker** and must not be read as if it did: nothing
+  here verifies the attestation's signature, so whoever forges a proof simply attests
+  their own key. It catches an honest wallet — or *your own* `resolve_proof_key` —
+  handing over a key the wallet never claimed, which would otherwise mint a credential
+  bound to the wrong key and verify cleanly. It can only reject, never accept.
+  Who this breaks, all of them previously accepted: a proof whose `key_attestation` is
+  not a parseable JWS, or whose `attested_keys` is missing/empty/not an array of JWK
+  objects (now `MalformedToken` / `ClaimsInvalid`); an `x5c` or `kid` deployment whose
+  attestation does not list the key the chain or the registry produced — including the
+  RFC 7638 hazard where a JWK with **non-fixed-width coordinates** (non-conformant per
+  RFC 7518 §6.2.1.2) thumbprints differently from the same key encoded correctly, which
+  the rejection message names. No key proof that used to be rejected is now accepted.
+
 ## [1.23.1] — 2026-07-27
 
 ### Fixed

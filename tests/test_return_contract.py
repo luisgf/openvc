@@ -14,7 +14,12 @@ import dataclasses as dc
 
 import pytest
 
-from openvc.openid4vci import CredentialRequest, VerifiedProof
+from openvc.openid4vci import (
+    CredentialRequest,
+    ProofKeyContext,
+    UnverifiedKeyAttestation,
+    VerifiedProof,
+)
 from openvc.proof.data_integrity import VerifiedDataIntegrity
 from openvc.proof.ecdsa_sd import VerifiedSdCredential
 from openvc.proof.sd_jwt import VerifiedSdJwt
@@ -40,11 +45,16 @@ CONTRACT = {
                     "nonce", "client_id", "key_attestation", "header", "claims"],
     CredentialRequest: ["credential_configuration_id", "credential_identifier",
                         "proof_type", "proofs", "response_encryption", "raw"],
+    UnverifiedKeyAttestation: ["attested_keys", "key_storage", "user_authentication",
+                               "certification", "nonce", "status", "issued_at",
+                               "expires_at", "header", "claims"],
+    ProofKeyContext: ["kid", "alg", "header", "key_attestation", "credential_issuer",
+                      "index"],
 }
 
 # Dataclasses whose EVERY field must default — the add-only rule. A consumer that
 # constructs one positionally keeps working when a field is appended.
-ADD_ONLY = [VerifiedProof, CredentialRequest]
+ADD_ONLY = [VerifiedProof, CredentialRequest, UnverifiedKeyAttestation, ProofKeyContext]
 
 
 @pytest.mark.parametrize("cls", ADD_ONLY, ids=[c.__name__ for c in ADD_ONLY])

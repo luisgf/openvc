@@ -7,9 +7,10 @@ agrees with itself — the failure mode `tests/fixtures/trustlist/real/README.md
 from the trusted-list work. These hold the same code to:
 
   * the **spec's own** OpenID4VCI 1.0 examples — App. F.1's `jwt` proof, which is a real
-    ES256 signature and verifies end to end under a frozen clock, and the three §8.2
+    ES256 signature and verifies end to end under a frozen clock, the three §8.2
     Credential Request bodies (a truncated single proof, a two-proof batch, and a `di_vp`
-    proof whose elements are objects rather than strings);
+    proof whose elements are objects rather than strings), and App. D's key attestation
+    with the attested-key proof that indexes it;
   * **recorded artifacts** from the EU reference issuer (`eudi-srv-web-issuing-eudiw-py`
     at `https://issuer.eudiw.dev`): its Issuer Metadata and two Credential Offers, in the
     deep-link form a wallet receives them.
@@ -23,6 +24,7 @@ fixed bytes stay verifiable forever. Self-contained (tests/ is not a package).
 """
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import hashlib
 import json
@@ -38,9 +40,10 @@ from openvc.openid4vci import (
     CredentialRequestMalformed,
     UnsupportedProofType,
     parse_credential_request,
+    peek_key_attestation,
     verify_credential_request_proofs,
 )
-from openvc.proof.errors import ClaimsInvalid, MalformedToken
+from openvc.proof.errors import ClaimsInvalid, MalformedToken, SignatureInvalid
 
 FIX = Path(__file__).parent / "fixtures" / "openid4vci"
 SPEC = FIX / "spec"
@@ -142,6 +145,97 @@ def test_spec_f1_proof_rejects_a_different_credential_issuer():
             now=_utc(F1_IAT),
         )
     assert store.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# App. D — key attestations, and the proof that indexes one
+# --------------------------------------------------------------------------- #
+
+# The proof example's own `iat`: 2022-07-30T02:12:04Z.
+APP_D_IAT = 1659145924
+APP_D_ISSUER = "https://server.example.com"
+
+
+def _compact(header: dict, claims: dict) -> str:
+    """Re-encode a decoded spec example as a compact JWS with a meaningless signature.
+
+    The spec prints these examples decoded, so there is nothing signed to transcribe.
+    That the signature is nonsense is exactly what App. D reading must tolerate.
+    """
+    def seg(obj: dict) -> str:
+        raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    return f"{seg(header)}.{seg(claims)}.{base64.urlsafe_b64encode(b'0' * 64).decode()}"
+
+
+def test_spec_app_d_key_attestation_is_read_without_being_verified():
+    """Every member App. D defines, off the spec's own example, signature ignored."""
+    example = _spec("key-attestation-app-d")["attestation"]
+    peeked = peek_key_attestation(_compact(example["header"], example["claims"]))
+
+    assert peeked.attested_keys == tuple(example["claims"]["attested_keys"])
+    assert peeked.key_storage == ("iso_18045_moderate",)
+    assert peeked.user_authentication == ("iso_18045_moderate",)
+    assert (peeked.issued_at, peeked.expires_at) == (1516247022, 1541493724)
+    assert peeked.certification is None and peeked.nonce is None and peeked.status is None
+    # `typ` and the truncated placeholder `x5c` are exposed, not judged: pinning them is
+    # a verifier's job, and that verifier needs a wallet-provider anchor openvc has none.
+    assert peeked.header["typ"] == "key-attestation+jwt"
+    assert peeked.header["x5c"] == ["MIIDQjCCA..."]
+
+
+def test_spec_app_d_attested_proof_resolves_its_kid_as_an_index():
+    """The spec's `kid: "0"` names a position in `attested_keys` — the caller's rule.
+
+    Which is why openvc does not resolve it: nothing normative says an index is what a
+    `kid` means here. What is pinned is that a caller who knows its ecosystem gets the
+    material to apply that rule, and that the App. D binding then accepts the pairing —
+    only the (meaningless) signature fails.
+    """
+    example = _spec("key-attestation-app-d")
+    attestation = _compact(example["attestation"]["header"], example["attestation"]["claims"])
+    header = dict(example["proof"]["header"], key_attestation=attestation)
+    proof = _compact(header, example["proof"]["claims"])
+
+    seen: list = []
+
+    def resolve(ctx):
+        seen.append(ctx)
+        return ctx.key_attestation.attested_keys[int(ctx.kid)]
+
+    with pytest.raises(SignatureInvalid):
+        verify_credential_request_proofs(
+            {"credential_configuration_id": "UniversityDegree", "proofs": {"jwt": [proof]}},
+            credential_issuer=APP_D_ISSUER,
+            check_nonce=lambda nonce: True,
+            resolve_proof_key_in_context=resolve,
+            now=_utc(APP_D_IAT),
+        )
+
+    (ctx,) = seen
+    assert ctx.kid == "0" and ctx.alg == "ES256" and ctx.index == 0
+    assert ctx.key_attestation.attested_keys[0] == \
+        example["attestation"]["claims"]["attested_keys"][0]
+
+
+def test_spec_app_d_binding_rejects_a_proof_key_the_attestation_does_not_carry():
+    """App. D's MUST, against the spec's own attestation: a stranger's key is refused."""
+    example = _spec("key-attestation-app-d")
+    attestation = _compact(example["attestation"]["header"], example["attestation"]["claims"])
+    header = dict(example["proof"]["header"], key_attestation=attestation)
+    proof = _compact(header, example["proof"]["claims"])
+    f1_header = _spec("proof-f.1-jwt")["proofs"]["jwt"][0].split(".")[0]
+    stranger_jwk = json.loads(base64.urlsafe_b64decode(f1_header + "=="))["jwk"]
+
+    with pytest.raises(ClaimsInvalid, match="not among the key attestation"):
+        verify_credential_request_proofs(
+            {"credential_configuration_id": "UniversityDegree", "proofs": {"jwt": [proof]}},
+            credential_issuer=APP_D_ISSUER,
+            check_nonce=lambda nonce: True,
+            resolve_proof_key_in_context=lambda ctx: stranger_jwk,
+            now=_utc(APP_D_IAT),
+        )
 
 
 # --------------------------------------------------------------------------- #

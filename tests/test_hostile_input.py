@@ -22,6 +22,7 @@ from hypothesis import strategies as st
 
 from openvc import verify_credential, verify_many
 from openvc.errors import OpenvcError
+from openvc.openid4vci import peek_key_attestation, peek_proof_header
 from openvc.proof._jcs import JcsError, canonicalize
 from openvc.proof.sd_jwt import SdJwtError, SdJwtVcProofSuite, _unpack
 from openvc.proof.vc_jwt import VcJwtProofSuite
@@ -67,6 +68,28 @@ def test_sd_jwt_peek_typed_on_non_object_payload(payload):
 def test_typed_on_non_object_header(header):
     with pytest.raises(OpenvcError):
         VcJwtProofSuite().peek_issuer(_jose(header, {"iss": "did:example:x"}))
+
+
+@pytest.mark.parametrize("payload", NON_OBJECT_JSON, ids=NON_OBJECT_IDS)
+def test_oid4vci_peek_typed_on_non_object_payload(payload):
+    with pytest.raises(OpenvcError):
+        peek_proof_header(_jose({"alg": "ES256"}, payload))
+    with pytest.raises(OpenvcError):
+        peek_key_attestation(_jose({"alg": "ES256"}, payload))
+
+
+@pytest.mark.parametrize("header", NON_OBJECT_JSON, ids=NON_OBJECT_IDS)
+def test_oid4vci_peek_typed_on_non_object_header(header):
+    with pytest.raises(OpenvcError):
+        peek_proof_header(_jose(header, {"typ": "openid4vci-proof+jwt"}))
+    with pytest.raises(OpenvcError):
+        peek_key_attestation(_jose(header, {"attested_keys": [{"kty": "EC"}]}))
+
+
+def test_oid4vci_peek_key_attestation_deeply_nested_is_typed():
+    nested = json.loads("[" * 200 + "]" * 200)
+    with pytest.raises(OpenvcError):
+        peek_key_attestation(_jose({"alg": "ES256"}, {"attested_keys": nested}))
 
 
 def test_vc_jwt_peek_typed_on_non_string_iss_and_non_object_vc():
