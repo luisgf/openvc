@@ -22,6 +22,13 @@ All notable changes to **openvc** are documented here. The format follows
   `claim: []` / `[{}]` extracted as empty and the second spelling widened
   the grant — the #89 hole on the empty-first half. Presence of the spec
   key wins, even when the list is empty.
+- **`openvc.fetch` blocks RFC 6598 CGNAT (`100.64.0.0/10`)**
+  ([#156](https://github.com/luisgf/openvc/issues/156)). The SSRF guard
+  enumerated `is_private` / loopback / link-local / reserved / multicast /
+  unspecified; Python does not set `is_private` on shared address space, so
+  a `did:web` / status / schema host resolving to `100.64.0.1` (or
+  `::ffff:100.64.0.1`) was fetched. The guard now also rejects
+  `not ip.is_global`.
 
 ## [1.24.0] — 2026-07-29
 
