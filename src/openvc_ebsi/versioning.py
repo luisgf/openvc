@@ -234,10 +234,24 @@ class TirV5(TirAdapter):
         if has_attrs:
             # ADR-0001 D6: the v5 issuer response carries the attributes URL in its
             # body (HATEOAS); follow it rather than reconstructing the path.
-            attributes_url = raw.get("attributes") or (self.issuer_url(base, did) + "/attributes")
+            # The HTTP client allow-list is hostname-only; `links.next` is already
+            # pinned to scheme://host:port. The same pin must apply to `attributes`
+            # and each `href` or a compromised body can pivot to another port on
+            # an allow-listed EBSI host (#172).
+            listing_origin = _origin(self.issuer_url(base, did))
+            raw_attrs = raw.get("attributes")
+            if not raw_attrs:
+                attributes_url = self.issuer_url(base, did) + "/attributes"
+            elif isinstance(raw_attrs, str) and _origin(raw_attrs) == listing_origin:
+                attributes_url = raw_attrs
+            else:
+                raise MalformedRegistryResponse(
+                    "TIR attributes URL is off the listing origin")
             for item in self._iter_attribute_items(attributes_url, fetch):
                 href = item.get("href")
-                if not href:
+                if not isinstance(href, str) or not href:
+                    continue
+                if _origin(href) != listing_origin:
                     continue
                 revision = _require_object(fetch(href), "TIR attribute revision")  # v5 hop
                 # v5 nests the accreditation under `attribute`: the signed VC-JWT
