@@ -872,6 +872,21 @@ def test_malformed_dcql_queries_are_typed_errors(query):
         check_request_within_registration(_reg(), query)
 
 
+@pytest.mark.parametrize("raw_fmt", [None, "", "   ", True, 0, 1, [], {}])
+def test_a_missing_format_on_either_side_never_matches(raw_fmt):
+    # MEDIUM (#161). `_str_or_none` turned missing/blank/non-string formats
+    # into None, and `c.format == fmt` then matched `None == None` — a second
+    # grant bucket next to well-formed entries. An absent format is a failure.
+    reg = _reg(credentials=[{
+        "format": raw_fmt, "meta": {}, "claim": [{"path": ["given_name"]}]}])
+    with pytest.raises(RpRegistrationError, match="string format"):
+        check_request_within_registration(reg, _dcql({
+            "id": "d", "claims": [{"path": ["given_name"]}]}))
+    with pytest.raises(RpRegistrationError, match="does not register"):
+        check_request_within_registration(reg, _dcql({
+            "id": "d", "format": "dc+sd-jwt", "claims": [{"path": ["given_name"]}]}))
+
+
 # --------------------------------------------------------------------------- #
 # adversarial-review regressions (issue #89)
 # --------------------------------------------------------------------------- #
