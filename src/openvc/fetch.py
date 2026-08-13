@@ -4,9 +4,10 @@ openvc.fetch — an SSRF-guarded, stdlib-only https JSON fetch for did:web.
 did:web is intentionally cross-host (it resolves a controller's own domain), so
 it cannot use a host allow-list like the EBSI client. This fetch instead blocks
 the *dangerous* targets: it requires https, resolves the host and refuses any
-private / loopback / link-local / reserved / multicast address (the cloud
-metadata endpoint 169.254.169.254 is link-local, so it is covered), and refuses
-HTTP redirects — a common SSRF pivot.
+address that is not globally routable (private / loopback / link-local /
+reserved / multicast / unspecified, and RFC 6598 CGNAT ``100.64.0.0/10`` — the
+cloud metadata endpoint 169.254.169.254 is link-local, so it is covered), and
+refuses HTTP redirects — a common SSRF pivot.
 
 DNS-rebinding is closed, not just documented: the connection is **pinned to the
 validated IP** (we resolve, validate every resolved address, then open the TCP
@@ -47,11 +48,20 @@ class UnsafeUrlError(DidResolutionError):
 
 
 def _ip_is_forbidden(ip_str: str) -> bool:
-    """True for any non-globally-routable / SSRF-sensitive address."""
+    """True for any non-globally-routable / SSRF-sensitive address.
+
+    The flag union covers private / loopback / link-local / reserved /
+    multicast / unspecified. ``not is_global`` additionally closes RFC 6598
+    shared space (``100.64.0.0/10``, CGNAT), which ``is_private`` does not
+    set — multicast stays in the union because some multicast addresses
+    report ``is_global=True``. IPv4-mapped forms inherit the same
+    classification (``::ffff:100.64.0.1``).
+    """
     ip = ipaddress.ip_address(ip_str)
     return (
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        or not ip.is_global
     )
 
 
