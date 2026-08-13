@@ -289,6 +289,46 @@ def test_tir_v5_pagination_does_not_follow_next_off_origin() -> None:
     assert evil not in fetch.calls                         # never fetched the foreign host
 
 
+def test_tir_v5_attributes_url_off_origin_is_typed_error() -> None:
+    # #172. `links.next` is origin-pinned (host AND port); `attributes` was not.
+    # The HTTP client allow-list is hostname-only, so :9200 on an allow-listed
+    # EBSI host would otherwise be fetched.
+    issuer = _load("tir_v5_issuer.json")
+    did = issuer["did"]
+    evil = "https://api-pilot.ebsi.eu:9200/trusted-issuers-registry/v5/issuers/x/attributes"
+    issuer = {**issuer, "attributes": evil}
+    issuer_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}"
+    fetch = StubFetch({issuer_url: issuer, evil: {"items": []}})
+    resolver = DidEbsiResolver(
+        fetch, decode_jwt=VcJwtProofSuite().peek_claims, tir=TirV5(), base=PILOT_BASE)
+    with pytest.raises(MalformedRegistryResponse, match="listing origin"):
+        resolver.issuer_record(did)
+    assert evil not in fetch.calls
+
+
+def test_tir_v5_href_off_origin_is_not_fetched() -> None:
+    # #172. Same pin on each revision `href`.
+    issuer = _load("tir_v5_issuer.json")
+    attributes = _load("tir_v5_attributes.json")
+    revisions = _load("tir_v5_revisions.json")
+    did = issuer["did"]
+    evil = "https://api-pilot.ebsi.eu:2375/v1/steal"
+    items = list(attributes["items"])
+    items[0] = {**items[0], "href": evil}
+    listing = {"items": items, "total": 3}
+    issuer_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}"
+    routes: dict[str, dict] = {issuer_url: issuer, issuer["attributes"]: listing}
+    for item in attributes["items"][1:]:
+        routes[item["href"]] = revisions[item["id"]]
+    routes[evil] = {"attribute": {"body": "x"}}
+    fetch = StubFetch(routes)
+    resolver = DidEbsiResolver(
+        fetch, decode_jwt=VcJwtProofSuite().peek_claims, tir=TirV5(), base=PILOT_BASE)
+    rec = resolver.issuer_record(did)
+    assert evil not in fetch.calls
+    assert len(rec.accreditations) == 2
+
+
 def test_tir_v5_malformed_registry_response_is_typed_error() -> None:
     # A non-object body (JSON `null` -> None, or an array/string/number — a flaky or
     # compromised registry) must fail closed as the typed EbsiError family, never leak a

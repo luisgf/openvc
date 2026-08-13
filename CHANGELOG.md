@@ -63,6 +63,11 @@ All notable changes to **openvc** are documented here. The format follows
   An array or map as a `crit` entry is legal CBOR and unhashable; the
   `in frozenset` test raised a bare `TypeError` before any crypto, which
   `mdoc` does not re-wrap.
+- **TIR `attributes` and `href` hops are pinned to the listing origin**
+  ([#172](https://github.com/luisgf/openvc/issues/172)). `links.next` already
+  refused a port change on an allow-listed EBSI host; the HATEOAS
+  `attributes` URL and each revision `href` did not. The HTTP client
+  allow-list is hostname-only.
 
 ## [1.24.0] — 2026-07-29
 
