@@ -45,6 +45,10 @@ All notable changes to **openvc** are documented here. The format follows
   ([#153](https://github.com/luisgf/openvc/issues/153)). Status/schema
   fetches are guarded only through the blessed `openvc.resolvers` defaults;
   a custom resolver opts out.
+- **`docs.yml` no longer grants `id-token: write` to PR builds**
+  ([#157](https://github.com/luisgf/openvc/issues/157)). Pages OIDC and
+  `pages: write` are scoped to the deploy job, which never runs on a
+  pull request.
 
 ## [1.24.0] — 2026-07-29
 

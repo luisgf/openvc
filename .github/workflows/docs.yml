@@ -23,12 +23,10 @@ on:
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
-# Least privilege for the Actions Pages deployment: read the repo, write the
-# Pages deployment, and mint the OIDC token deploy-pages needs.
+# Least privilege: the build (including PRs) only reads the repo. Pages
+# OIDC is scoped to the deploy job, which never runs on a pull_request.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One live deployment at a time; let an in-flight publish finish.
 concurrency:
@@ -54,8 +52,6 @@ jobs:
       - name: Build (strict)
         run: mkdocs build --strict --site-dir ./site
 
-      - uses: actions/configure-pages@v6
-        if: github.event_name != 'pull_request'
       - uses: actions/upload-pages-artifact@v5
         if: github.event_name != 'pull_request'
         with:
@@ -65,9 +61,13 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/configure-pages@v6
       - id: deployment
         uses: actions/deploy-pages@v5
