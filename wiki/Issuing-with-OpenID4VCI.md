@@ -16,6 +16,61 @@ Response body, deferred and notification bookkeeping, and DPoP are yours (or you
 framework's). What this supports claiming is *OpenID4VCI 1.0 key-proof verification* —
 not "issuance", and not HAIP.
 
+## Discovery: the offer and the metadata, parsed fail-closed
+
+The same posture covers the two untrusted JSON documents that come *before* the key
+proof: the **Credential Offer** (§4.1.1) a wallet scans, and the **Credential Issuer
+Metadata** (§11.2.3) it fetches under `credential_issuer`. Both are attacker-controlled
+bytes; both parsers raise on a malformed constraint rather than silently narrowing it:
+
+```python
+from openvc.openid4vci import (
+    GRANT_PRE_AUTHORIZED_CODE,
+    parse_credential_issuer_metadata,
+    parse_credential_offer,
+)
+
+wallet_scanned_json = """
+{"credential_issuer": "https://issuer.example",
+ "credential_configuration_ids": ["UniversityDegree"],
+ "grants": {"urn:ietf:params:oauth:grant-type:pre-authorized_code":
+            {"pre-authorized_code": "SplxlOBeZQ..."}}}
+"""
+offer = parse_credential_offer(wallet_scanned_json)     # object or JSON string
+assert offer.credential_issuer.startswith("https://")   # enforced, not hoped for
+
+fetched_metadata_json = """
+{"credential_issuer": "https://issuer.example",
+ "credential_endpoint": "https://issuer.example/credential",
+ "batch_credential_issuance": {"batch_size": 5}}
+"""
+metadata = parse_credential_issuer_metadata(fetched_metadata_json)
+batch = metadata.batch_size or 1                        # 1 is the fail-closed default
+
+assert GRANT_PRE_AUTHORIZED_CODE in offer.grants
+code = offer.grants[GRANT_PRE_AUTHORIZED_CODE]["pre-authorized_code"]
+assert metadata.batch_size == 5
+```
+
+What is pinned:
+
+| Member | Rule |
+|---|---|
+| `credential_issuer` | present, an absolute **https** URL — it feeds the key proof's `aud` check |
+| `credential_configuration_ids` | non-empty array of distinct non-empty strings |
+| `credential_endpoint`, `nonce_endpoint`, … | absolute https when present |
+| `authorization_servers` | when present, a non-empty array of https URLs |
+| `batch_credential_issuance.batch_size` | an integer ≥ 2 |
+
+What is **not** narrowed: `grants` members openvc does not know, per-configuration
+shapes, `display`, encryption parameters — all reach you verbatim (in the typed fields
+and in `raw`), because an ecosystem's extension points are none of a parser's business.
+
+**Nothing is fetched.** A by-reference `credential_offer_uri` is *your* injected `Fetch`
+to resolve, and `signed_metadata` (a JWT) reaches you as a string to verify — or not —
+under your own trust rules.
+
+
 ## The whole flow
 
 ```python
