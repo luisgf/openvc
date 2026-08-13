@@ -17,18 +17,20 @@ disclosure timeline.
 
 ## Supported versions
 
-`openvc` is pre-1.0; only the latest released `0.x` version receives security
-fixes. Pin a version and watch releases.
+The latest released **1.x** version receives security fixes. Pin a version
+and watch [releases](https://github.com/luisgf/openvc/releases). SemVer has
+been in effect since 1.0.0 — see
+[Versioning & deprecation](https://github.com/luisgf/openvc/wiki/Versioning-and-Deprecation).
 
 ## Scope & hardening notes
 
 Areas most relevant to security, and how the library is designed to fail closed:
 
 - **Signature verification.** The VC-JWT suite pins an algorithm allow-list
-  (`ES256`, `EdDSA`) *before* any crypto runs — `alg: none`, RS\*, HS\* are
-  rejected (alg-confusion defence) — and reconciles the JWT envelope with the
-  embedded credential. The Data Integrity suite verifies over the RDF canonical
-  form.
+  (`{ES256, ES384, EdDSA, Ed25519}`) *before* any crypto runs — `alg: none`,
+  RS\*, HS\* are rejected (alg-confusion defence) — and reconciles the JWT
+  envelope with the embedded credential. The Data Integrity suite verifies
+  over the RDF (or JCS) canonical form.
 - **SSRF.** The EBSI client enforces an https-only host allow-list. The separate
   `did:web` fetch (`openvc.fetch`) is https-only, refuses redirects, blocks
   private/loopback/link-local/reserved/multicast addresses, and pins the
