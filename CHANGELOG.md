@@ -53,6 +53,11 @@ All notable changes to **openvc** are documented here. The format follows
   ([#154](https://github.com/luisgf/openvc/issues/154)). README and
   Getting-Started omitted the extra; `[all]` now matches `pyproject.toml`;
   wiki Home lists the three pages that were already in the sidebar.
+- **Threat-model I2/I15 citations re-anchored**
+  ([#155](https://github.com/luisgf/openvc/issues/155)). Raw R‖S lives at
+  `keys.py:575-589` (not `:493`); `verify_many` isolation tests are
+  `test_hostile_input.py:104/155/211`. The pack README catalog span is
+  I1–I19.
 
 ## [1.24.0] — 2026-07-29
 

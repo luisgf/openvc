@@ -6,7 +6,7 @@
 > citations, the per-suite and per-parser attack-surface tables, the fail-closed
 > **invariants catalog**, and an honest **residual-risk register** — the
 > material an external reviewer starts from. Line numbers are anchors **as of
-> v1.20.1**; treat them as entry points, not guarantees, and re-anchor against
+> v1.24.1**; treat them as entry points, not guarantees, and re-anchor against
 > the reviewed commit.
 
 Part of the external-audit pack ([README](README.md)) for
@@ -72,7 +72,7 @@ boundary is attacker-controlled until a signature verifies.
 
 | Capability | Threat | Control (with citation) |
 |---|---|---|
-| Present a forged / tampered credential | Wrong-accept | Signature verified through the matching suite; the `{ES256, ES384, EdDSA, Ed25519}` allow-list runs **before any crypto** — `src/openvc/proof/vc_jwt.py:55,198`, `src/openvc/proof/_jws.py:84` (rejects `alg:none`, RS\*, HS\* by exclusion → alg-confusion defence). ES256 must be raw R‖S 64 bytes, never DER — `src/openvc/keys.py:493` |
+| Present a forged / tampered credential | Wrong-accept | Signature verified through the matching suite; the `{ES256, ES384, EdDSA, Ed25519}` allow-list runs **before any crypto** — `src/openvc/proof/vc_jwt.py:55,198`, `src/openvc/proof/_jws.py:84` (rejects `alg:none`, RS\*, HS\* by exclusion → alg-confusion defence). ES256 must be raw R‖S 64 bytes, never DER — `src/openvc/keys.py:575-589` |
 | Name issuer A but sign with key B | Impersonation | **Issuer binding**: a DI proof's `verificationMethod` must be controlled by the credential `issuer` DID — `src/openvc/verify.py:628-641`; VC-JWT reconciles the JWT envelope (`iss`/`sub`/`jti`) with the embedded `vc` — `src/openvc/proof/vc_jwt.py:360-381`; x5c binds the leaf SAN to `iss` — `src/openvc/x5c.py:56-70` |
 | Serve a malicious document at a fetched URL | **SSRF** (internal hosts / cloud metadata) | `src/openvc/fetch.py`: https-only (`:126`), blocks private/loopback/link-local/reserved/multicast/unspecified (`:49-55`), rejects the host if **any** resolved address is forbidden (`:58-72`), refuses redirects (`:143-144`), and **pins the socket to the validated IP** (`:75-92`) closing DNS-rebinding |
 | Ship a tiny highly-compressible status list | **Decompression bomb** (OOM DoS) | Status decode caps the *decompressed* output at 16 MiB and reads incrementally so a bomb is never materialised — `src/openvc/status/_decompress.py:23,38-40,54-66` |
@@ -162,7 +162,7 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | # | Invariant | Enforced at | Pinned by |
 |---|---|---|---|
 | I1 | Alg allow-list `{ES256, ES384, EdDSA, Ed25519}` runs **before any crypto**; `alg:none`/RS\*/HS\* rejected | `proof/vc_jwt.py:55,198`; `proof/_jws.py:84` | `test_hostile_input.py`, `test_cose.py:94` |
-| I2 | ES256/384 JOSE signature is raw R‖S (64/96 bytes), never DER | `keys.py:493,506-507` | `test_vc_jwt.py` |
+| I2 | ES256/384 JOSE signature is raw R‖S (64/96 bytes), never DER | `keys.py:575-589` | `test_vc_jwt.py` |
 | I3 | PQ (ML-DSA) never in the default allow-list — opt-in only | `proof/vc_jwt.py:135` | `test_mldsa.py` |
 | I4 | DI `verificationMethod` bound to the credential `issuer` DID | `verify.py:628-641` | `test_di_*` |
 | I5 | VC-JWT envelope reconciled with the embedded `vc` (`iss`/`sub`/`jti`) | `proof/vc_jwt.py:360-381` | `test_vc_jwt.py` |
@@ -175,7 +175,7 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I12 | CBOR depth ≤ 64; JCS depth ≤ 100; duplicate map key rejected | `cbor.py:69,229-232`; `proof/_jcs.py:18` | `test_cbor.py:104,152`; `test_di_jcs.py:388` |
 | I13 | Trust-list XML refuses DOCTYPE (XXE + expansion closed) | `trustlist/parse.py:108-120` | `test_trustlist.py:104,121` |
 | I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py` |
-| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch | `verify.py:458-465` | `test_hostile_input.py:79-85` |
+| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch | `verify.py:458-465` | `test_hostile_input.py:104,155,211` |
 | I16 | Hostile deeply-nested input fails closed **pipeline-wide** — every attacker-facing recursive parse is depth-bounded or maps `RecursionError` to a typed error (the `json.loads` sites, SD-JWT `_unpack`=100, did:webvh SCID walk=100) | `proof/sd_jwt.py:66,129`; `verify.py`, `proof/vc_jwt.py`, `proof/_jws.py`, `jwe.py`, `did/did_jwk.py`, `did/did_webvh.py`, `fetch.py`, `resolvers.py` | `test_hostile_input.py`, `test_did_webvh.py` |
 | I17 | An OID4VCI key proof is pinned to `typ: openid4vci-proof+jwt` and must carry **exactly one** of `jwk`/`kid`/`x5c`/`trust_chain`, with the key bound to the header `alg`'s (kty, crv) | `openid4vci.py:676,752,855` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
 | I18 | Key-proof `iat` freshness is enforced in **both** directions (stale *and* future-dated, non-finite rejected), and the nonce is consumed **exactly once per request, after every signature verifies** | `openid4vci.py:915,917,655` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
