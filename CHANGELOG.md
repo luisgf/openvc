@@ -58,6 +58,11 @@ All notable changes to **openvc** are documented here. The format follows
   `keys.py:575-589` (not `:493`); `verify_many` isolation tests are
   `test_hostile_input.py:104/155/211`. The pack README catalog span is
   I1–I19.
+- **A COSE `crit` label that is not an integer is `CoseMalformed`, not
+  `TypeError`** ([#170](https://github.com/luisgf/openvc/issues/170)).
+  An array or map as a `crit` entry is legal CBOR and unhashable; the
+  `in frozenset` test raised a bare `TypeError` before any crypto, which
+  `mdoc` does not re-wrap.
 
 ## [1.24.0] — 2026-07-29
 

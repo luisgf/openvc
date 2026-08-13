@@ -216,3 +216,12 @@ def test_rejects_unhandled_crit_labels():
         cose.parse_sign1([cbor.encode({1: -8, 2: [99]}), {}, b"p", b"\x00" * 64])
     ok = cose.parse_sign1([cbor.encode({1: -8, 2: [1]}), {}, b"p", b"\x00" * 64])
     assert ok.alg == -8
+
+
+@pytest.mark.parametrize("crit", [[[99]], [{}], [True], ["x5chain"]])
+def test_a_non_integer_crit_label_is_cose_malformed_not_typeerror(crit):
+    # MEDIUM (#170). `lbl not in frozenset` TypeError'd on an unhashable
+    # array/map label — not an OpenvcError, so mdoc's `except CoseError`
+    # and a caller's `except OpenvcError` would not isolate it.
+    with pytest.raises(cose.CoseMalformed, match="integers"):
+        cose.parse_sign1([cbor.encode({1: -8, 2: crit}), {}, b"p", b"\x00" * 64])
