@@ -18,7 +18,8 @@ behind extras:
 | `openvc-core[ebsi]` | the EBSI registry client | `httpx` |
 | `openvc-core[schema]` | `credentialSchema` (W3C VC JSON Schema) validation | `jsonschema` |
 | `openvc-core[trustlist]` | XAdES signature verification for EU Trusted Lists | `signxml` |
-| `openvc-core[all]` | everything above + the dev tools | |
+| `openvc-core[pq]` | experimental ML-DSA (RFC 9964) signing + verification | `cryptography>=48` |
+| `openvc-core[all]` | ebsi + data-integrity + schema + trustlist + pq + the dev tools | |
 
 The JCS Data Integrity suites (`eddsa-jcs-2022` / `ecdsa-jcs-2019`), VC-JWT,
 SD-JWT VC, DIDs, and status lists all work with the bare core.
