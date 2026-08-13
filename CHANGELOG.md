@@ -4,6 +4,19 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.1] — unreleased
+
+### Fixed
+
+- **A WRPRC that lists no claim paths no longer authorizes a DCQL query that
+  names no claims** ([#152](https://github.com/luisgf/openvc/issues/152)).
+  `check_request_within_registration` treated that pairing as an "equally
+  unrestricted" grant and returned success, so an incomplete registration
+  (omitted `claim`/`claims`) became a blanket entitlement for the matching
+  `format`+`meta`. An empty grant already refused a *specific* path; it now
+  refuses the unrestricted ask too. There is no encoding for "this RP may
+  request every attribute" — list the paths.
+
 ## [1.24.0] — 2026-07-29
 
 ### Added

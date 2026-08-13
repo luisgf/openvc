@@ -93,7 +93,9 @@ decision needs both cross-checks, and both fail closed:
   registered `format` whose `meta` covers the requested one, and every requested claim
   `path` to fall inside the registered paths. A registered container (`["address"]`)
   covers its members (`["address","locality"]`); a request naming *no* claims asks for
-  everything and is refused against an enumerated registration.
+  everything and is refused. An entry that lists no claim paths grants nothing,
+  including that unrestricted ask — an omitted `claim`/`claims` is not a blanket
+  entitlement.
 
 ### Where the specification is thinner than it looks
 

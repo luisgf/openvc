@@ -829,6 +829,18 @@ def test_an_entry_registering_no_claim_paths_grants_nothing():
             "claims": [{"path": ["anything"]}]}))
 
 
+def test_an_empty_grant_does_not_authorize_an_unrestricted_request():
+    # HIGH (#152). A DCQL query with no `claims` asks for every attribute. The
+    # checker treated an empty registered path list as an "equally unrestricted"
+    # grant and authorized it — so a WRPRC that omitted `claim`/`claims` (the
+    # incomplete-registration shape) became a blanket entitlement for that
+    # format+meta. Empty grant grants nothing, including "everything".
+    reg = _reg(credentials=[{"format": "dc+sd-jwt", "meta": {"vct_values": ["v"]}}])
+    with pytest.raises(RpRegistrationError, match="every attribute"):
+        check_request_within_registration(reg, _dcql({
+            "id": "d", "format": "dc+sd-jwt", "meta": {"vct_values": ["v"]}}))
+
+
 def test_scope_is_not_unioned_across_differently_scoped_entries():
     # Registered: vct A grants `name`, vct B grants `age`. Asking for A.age must fail —
     # unioning claim paths across entries of the same format would escalate scope.

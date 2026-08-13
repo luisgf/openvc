@@ -928,10 +928,9 @@ def check_request_within_registration(
     optional in the profile — a WRPRC that omits it cannot satisfy this assertion.
 
     **Fail-closed by construction.** A request that names no claims is asking for
-    *everything* in that credential and is refused unless the registration is equally
-    unrestricted; a registered entry that lists no claim paths grants no attributes.
-    Both readings deny rather than widen — the opposite default would turn an incomplete
-    registration into a blanket entitlement.
+    *everything* in that credential and is refused. A registered entry that lists no
+    claim paths grants no attributes — including that unrestricted request. The
+    opposite default would turn an incomplete registration into a blanket entitlement.
 
     This is an *authorization* check on top of verification: call it only on a WRPRC
     that :func:`verify_rp_registration_certificate` accepted and
@@ -965,11 +964,13 @@ def check_request_within_registration(
 
         wanted = _requested_paths(query)
         if not wanted:
-            if any(not c.claim_paths for c in candidates):
-                continue                     # unrestricted request, unrestricted grant
+            # No registered encoding means "the whole credential". An empty
+            # claim_paths is "grants nothing" (see RequestableCredential), so it
+            # cannot satisfy an unrestricted ask — that pairing used to `continue`
+            # and turned an incomplete WRPRC into a blanket entitlement (#152).
             raise RpRegistrationError(
                 f"credential query {label!r} names no claims (asks for every attribute), "
-                f"but this WRPRC registers an explicit attribute list")
+                f"which this WRPRC does not register")
         granted = tuple(p for c in candidates for p in c.claim_paths)
         for path in wanted:
             if not any(_path_covered(reg, path) for reg in granted):
