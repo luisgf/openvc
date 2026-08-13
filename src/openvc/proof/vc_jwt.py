@@ -161,7 +161,10 @@ class VcJwtProofSuite:
             iss = iss.get("id")
         if not iss or not isinstance(iss, str):
             raise MalformedToken("no issuer (iss / vc.issuer) present")
-        return iss, header.get("kid")
+        kid = header.get("kid")
+        if kid is not None and not isinstance(kid, str):
+            raise MalformedToken("kid must be a string")
+        return iss, kid
 
     def peek_claims(self, token: str) -> dict[str, Any]:
         """Decode the full claim set WITHOUT verifying the signature. UNTRUSTED.

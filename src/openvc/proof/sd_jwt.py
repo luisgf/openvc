@@ -219,7 +219,10 @@ class SdJwtVcProofSuite:
         iss = payload.get("iss")
         if not iss or not isinstance(iss, str):
             raise MalformedToken("no iss in the issuer-signed JWT")
-        return iss, header.get("kid")
+        kid = header.get("kid")
+        if kid is not None and not isinstance(kid, str):
+            raise MalformedToken("kid must be a string")
+        return iss, kid
 
     # -- issuance --------------------------------------------------------- #
 
