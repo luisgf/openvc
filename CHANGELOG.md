@@ -16,6 +16,12 @@ All notable changes to **openvc** are documented here. The format follows
   `format`+`meta`. An empty grant already refused a *specific* path; it now
   refuses the unrestricted ask too. There is no encoding for "this RP may
   request every attribute" — list the paths.
+- **A present-but-empty WRPRC `claim` no longer falls through to `claims`**
+  ([#160](https://github.com/luisgf/openvc/issues/160)). Grant-side
+  precedence used `_paths_under(claim) or _paths_under(claims)`, so
+  `claim: []` / `[{}]` extracted as empty and the second spelling widened
+  the grant — the #89 hole on the empty-first half. Presence of the spec
+  key wins, even when the list is empty.
 
 ## [1.24.0] — 2026-07-29
 
