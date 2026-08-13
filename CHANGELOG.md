@@ -68,6 +68,10 @@ All notable changes to **openvc** are documented here. The format follows
   refused a port change on an allow-listed EBSI host; the HATEOAS
   `attributes` URL and each revision `href` did not. The HTTP client
   allow-list is hostname-only.
+- **SD-JWT verification applies `exp`/`nbf` to the processed payload**
+  (RFC 9901 §7.1 step 6). A selectively disclosed validity claim is now
+  enforced when the holder presents it, not only when it stays in the
+  issuer-JWT body.
 
 ## [1.24.0] — 2026-07-29
 

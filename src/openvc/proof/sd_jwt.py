@@ -364,6 +364,11 @@ class SdJwtVcProofSuite:
                 f"{len(unreferenced)} disclosure(s) not referenced by any digest")
         unpacked.pop("_sd_alg", None)
 
+        # RFC 9901 §7.1 step 6: nbf/exp (and aud) are checked on the *processed*
+        # payload if present. The issuer-JWT body was already checked above; if
+        # `exp`/`nbf` were selectively disclosed they only appear after `_unpack`.
+        self._check_temporal(unpacked)
+
         vct = unpacked.get("vct")
         if expected_vct is not None and vct != expected_vct:
             raise ClaimsInvalid(f"vct {vct!r} != expected {expected_vct!r}")
