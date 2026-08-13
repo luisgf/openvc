@@ -15,6 +15,8 @@ import dataclasses as dc
 import pytest
 
 from openvc.openid4vci import (
+    CredentialIssuerMetadata,
+    CredentialOffer,
     CredentialRequest,
     ProofKeyContext,
     UnverifiedKeyAttestation,
@@ -45,6 +47,14 @@ CONTRACT = {
                     "nonce", "client_id", "key_attestation", "header", "claims"],
     CredentialRequest: ["credential_configuration_id", "credential_identifier",
                         "proof_type", "proofs", "response_encryption", "raw"],
+    CredentialOffer: ["credential_issuer", "credential_configuration_ids", "grants",
+                      "raw"],
+    CredentialIssuerMetadata: ["credential_issuer", "credential_endpoint",
+                               "authorization_servers", "nonce_endpoint",
+                               "deferred_credential_endpoint",
+                               "notification_endpoint",
+                               "credential_configurations_supported", "batch_size",
+                               "raw"],
     UnverifiedKeyAttestation: ["attested_keys", "key_storage", "user_authentication",
                                "certification", "nonce", "status", "issued_at",
                                "expires_at", "header", "claims"],
@@ -54,7 +64,8 @@ CONTRACT = {
 
 # Dataclasses whose EVERY field must default — the add-only rule. A consumer that
 # constructs one positionally keeps working when a field is appended.
-ADD_ONLY = [VerifiedProof, CredentialRequest, UnverifiedKeyAttestation, ProofKeyContext]
+ADD_ONLY = [VerifiedProof, CredentialRequest, UnverifiedKeyAttestation, ProofKeyContext,
+            CredentialOffer, CredentialIssuerMetadata]
 
 
 @pytest.mark.parametrize("cls", ADD_ONLY, ids=[c.__name__ for c in ADD_ONLY])

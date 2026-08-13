@@ -1,0 +1,25 @@
+{
+  "_provenance": {
+    "source": "OpenID for Verifiable Credential Issuance 1.0 (Final, 2025-09-16), §4.1.1 Credential Offer Parameters — the pre-authorized-code example",
+    "url": "https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html",
+    "retrieved": "2026-08-13",
+    "note": "Transcribed verbatim (whitespace normalized). The payload sits under `offer` so the parse target stays clean of this provenance member."
+  },
+  "offer": {
+    "credential_issuer": "https://credential-issuer.example.com",
+    "credential_configuration_ids": [
+      "UniversityDegreeCredential",
+      "org.iso.18013.5.1.mDL"
+    ],
+    "grants": {
+      "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
+        "pre-authorized_code": "oaKazRN8I0IbtZ0C7JuMn5",
+        "tx_code": {
+          "length": 4,
+          "input_mode": "numeric",
+          "description": "Please provide the one-time code that was sent via e-mail"
+        }
+      }
+    }
+  }
+}

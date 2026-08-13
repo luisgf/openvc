@@ -4,6 +4,35 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] — unreleased
+
+### Added
+
+- **OpenID4VCI discovery parsers: untrusted Credential Offers and Issuer
+  Metadata** ([#142](https://github.com/luisgf/openvc/issues/142)).
+  `openvc.openid4vci.parse_credential_offer` (OID4VCI 1.0 §4.1.1) and
+  `parse_credential_issuer_metadata` (§11.2.3) parse the third-party JSON a
+  wallet — or an issuer checking its own deployment — receives, into the
+  frozen dataclasses `CredentialOffer` and `CredentialIssuerMetadata`.
+  Fail-closed per ADR-0007 D7 (parsers in, builders out): `credential_issuer`
+  must be an absolute https URL (it feeds the key proof's `aud` comparison),
+  `credential_configuration_ids` a non-empty array of distinct non-empty
+  strings, every endpoint URL https and absolute when present, and
+  `batch_credential_issuance.batch_size` an integer ≥ 2. Unknown `grants`
+  members and every extension point are preserved verbatim (typed fields and
+  `raw`), never silently dropped; nothing is ever fetched — a by-reference
+  `credential_offer_uri` stays the caller's injected `Fetch`. New typed
+  errors `CredentialOfferMalformed` and `IssuerMetadataMalformed`, plus the
+  wire constants `GRANT_AUTHORIZATION_CODE` and `GRANT_PRE_AUTHORIZED_CODE`.
+  pinned against the spec's own §4.1.1/§4.1.2/§11.2.3 examples and the
+  recorded EU-reference-issuer artifacts from #147. URL validation is the
+  adversarial-review-hardened one: control characters (which `urlparse`
+  silently strips), userinfo, query/fragment and unparseable bracketed
+  literals or ports are all rejected with the typed errors, so the stored
+  `credential_issuer` is byte-for-byte the identifier the key proof's `aud`
+  will be compared against and no raw `ValueError` escapes the module's
+  taxonomy over attacker-controlled input.
+
 ## [1.24.1] — unreleased
 
 ### Fixed

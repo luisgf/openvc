@@ -53,6 +53,12 @@ OpenID Federation ``trust_chain`` proof keys raise a typed
 :class:`UnsupportedProofType`. What this supports claiming is *OpenID4VCI 1.0 key-proof
 verification* — not "issuance", and not HAIP, which additionally requires DPoP, key
 attestation *trust* and client authentication, all of them downstream.
+
+The same fail-closed posture covers **discovery**: :func:`parse_credential_offer` and
+:func:`parse_credential_issuer_metadata` parse the untrusted third-party JSON a wallet
+(or an issuer checking its own deployment) receives — a Credential Offer (§4.1.1) and
+the Credential Issuer Metadata document (§11.2.3) — into frozen, shape-validated
+dataclasses. Parsers, never builders, and never fetchers (ADR-0007 D7).
 """
 from __future__ import annotations
 
@@ -63,6 +69,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlparse
 
 from .errors import OpenvcError
 from .keys import MLDSA_ALGS, InvalidKey, jwk_thumbprint
@@ -74,9 +81,13 @@ from .proof.vc_jwt import ALLOWED_ALGS
 __all__ = [
     "verify_credential_request_proofs",
     "parse_credential_request",
+    "parse_credential_offer",
+    "parse_credential_issuer_metadata",
     "peek_proof_header",
     "peek_key_attestation",
     "CredentialRequest",
+    "CredentialOffer",
+    "CredentialIssuerMetadata",
     "VerifiedProof",
     "UnverifiedKeyAttestation",
     "ProofKeyContext",
@@ -85,11 +96,15 @@ __all__ = [
     "ResolveProofKeyInContext",
     "OpenID4VCIError",
     "CredentialRequestMalformed",
+    "CredentialOfferMalformed",
+    "IssuerMetadataMalformed",
     "UnsupportedProofType",
     "ProofReplayed",
     "PROOF_TYPE_JWT",
     "PROOF_TYP",
     "KEY_ATTESTATION_TYP",
+    "GRANT_AUTHORIZATION_CODE",
+    "GRANT_PRE_AUTHORIZED_CODE",
     "DEFAULT_PROOF_MAX_AGE_S",
     "MAX_PROOF_BYTES",
     "MAX_KEY_ATTESTATION_BYTES",
@@ -121,6 +136,12 @@ MAX_PROOF_BYTES = 16 * 1024
 # needs its own cap; an attestation reached through a proof is already inside the
 # `MAX_PROOF_BYTES` one.
 MAX_KEY_ATTESTATION_BYTES = 16 * 1024
+
+# OID4VCI 1.0 §4.1.1: the two grant types the spec defines. Unknown members of
+# `grants` are NOT rejected — a wallet must be able to see what it chose not to
+# support — so these exist for callers to test membership, not as an allow-list.
+GRANT_AUTHORIZATION_CODE = "authorization_code"
+GRANT_PRE_AUTHORIZED_CODE = "urn:ietf:params:oauth:grant-type:pre-authorized_code"
 
 # The header key parameters App. F.1 defines. Exactly one must be present: two lets an
 # attacker pair a `kid` naming an honest key with a `jwk` they control, and any
@@ -160,6 +181,14 @@ class OpenID4VCIError(OpenvcError):
 
 class CredentialRequestMalformed(OpenID4VCIError):
     """The Credential Request shape is invalid (not the §8.2 wire contract)."""
+
+
+class CredentialOfferMalformed(OpenID4VCIError):
+    """The Credential Offer shape is invalid (not the §4.1 wire contract)."""
+
+
+class IssuerMetadataMalformed(OpenID4VCIError):
+    """The Credential Issuer Metadata shape is invalid (not the §11.2.3 contract)."""
 
 
 class UnsupportedProofType(OpenID4VCIError):
@@ -316,6 +345,46 @@ class CredentialRequest:
     raw: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class CredentialOffer:
+    """A shape-validated OID4VCI 1.0 §4.1.1 Credential Offer. UNTRUSTED input.
+
+    This parses bytes a third party produced; nothing in it has been authenticated —
+    the offer is how a wallet *discovers* an issuer, not proof it is talking to one.
+    Trust in ``credential_issuer`` comes from the metadata fetched under it and the
+    credentials it later signs, not from the offer itself.
+
+    ``grants`` keeps the raw object, including members openvc does not know — a caller
+    must be able to see what it chose not to support (the known members are the
+    :data:`GRANT_AUTHORIZATION_CODE` and :data:`GRANT_PRE_AUTHORIZED_CODE` constants).
+    ``raw`` is the whole decoded document, untouched.
+    """
+    credential_issuer: str = ""                # an absolute https URL
+    credential_configuration_ids: tuple[str, ...] = ()
+    grants: Mapping[str, Any] = field(default_factory=dict)
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CredentialIssuerMetadata:
+    """A shape-validated OID4VCI 1.0 §11.2.3 Credential Issuer Metadata document.
+
+    ``credential_configurations_supported`` and ``raw`` are kept verbatim: the per-
+    configuration shapes are an extension point (format-specific, and profiled by
+    ecosystems), so narrowing them here would reject deployments the spec leaves open.
+    Unknown members are likewise preserved in ``raw``, not silently dropped.
+    """
+    credential_issuer: str = ""                # an absolute https URL
+    credential_endpoint: str = ""              # an absolute https URL
+    authorization_servers: tuple[str, ...] = ()
+    nonce_endpoint: str | None = None
+    deferred_credential_endpoint: str | None = None
+    notification_endpoint: str | None = None
+    credential_configurations_supported: Mapping[str, Any] = field(default_factory=dict)
+    batch_size: int | None = None              # batch_credential_issuance.batch_size
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+
 # --------------------------------------------------------------------------- #
 # Request shape (OID4VCI 1.0 §8.2)
 # --------------------------------------------------------------------------- #
@@ -426,6 +495,197 @@ def _as_mapping(value: Mapping[str, Any] | str, subject: str) -> Mapping[str, An
     if not isinstance(parsed, dict):
         raise CredentialRequestMalformed(f"{subject} must be a JSON object")
     return parsed
+
+
+# --------------------------------------------------------------------------- #
+# Credential Offer and Issuer Metadata (OID4VCI 1.0 §4.1.1, §11.2.3)
+# --------------------------------------------------------------------------- #
+
+def parse_credential_offer(offer: Mapping[str, Any] | str) -> CredentialOffer:
+    """Validate the Credential Offer wire contract and return it structured.
+
+    Accepts the decoded object or a JSON string. A **by-value** offer is the object
+    itself; a **by-reference** ``credential_offer_uri`` is not dereferenced here —
+    openvc fetches nothing, so resolving one is the caller's injected ``Fetch`` (the
+    :mod:`openvc.jwt_vc_issuer` pattern).
+
+    Fail-closed rules (a malformed constraint raises rather than being ignored):
+
+    * ``credential_issuer`` must be present and an absolute **https** URL — it is the
+      identifier the key proof's ``aud`` is compared against, so a malformed one must
+      never reach the verifier;
+    * ``credential_configuration_ids`` must be a non-empty array of distinct non-empty
+      strings;
+    * ``grants``, when present, must be an object. Unknown members are **preserved in
+      ``raw``**, not silently dropped: a caller must see what it chose not to support.
+
+    Raises :class:`CredentialOfferMalformed` on any violation.
+    """
+    offer = _as_offer_mapping(offer)
+
+    issuer = _require_https_url(
+        offer.get("credential_issuer"), "credential_issuer", CredentialOfferMalformed)
+
+    ids = offer.get("credential_configuration_ids")
+    if not isinstance(ids, (list, tuple)) or not ids:
+        raise CredentialOfferMalformed(
+            "credential_configuration_ids must be a non-empty array")
+    seen: set[str] = set()
+    for config_id in ids:
+        if not isinstance(config_id, str) or not config_id:
+            raise CredentialOfferMalformed(
+                "credential_configuration_ids entries must be non-empty strings")
+        if config_id in seen:
+            raise CredentialOfferMalformed(
+                f"duplicate credential_configuration_id {config_id!r}")
+        seen.add(config_id)
+
+    grants = offer.get("grants")
+    if grants is None:
+        grants = {}
+    elif not isinstance(grants, Mapping):
+        raise CredentialOfferMalformed("grants must be an object when present")
+
+    return CredentialOffer(
+        credential_issuer=issuer,
+        credential_configuration_ids=tuple(ids),
+        grants=MappingProxyType(dict(grants)),
+        raw=offer,
+    )
+
+
+def parse_credential_issuer_metadata(
+    metadata: Mapping[str, Any] | str,
+) -> CredentialIssuerMetadata:
+    """Validate the Credential Issuer Metadata contract and return it structured.
+
+    Accepts the decoded object or a JSON string. Endpoint URLs, when present, must be
+    absolute **https**; ``authorization_servers``, when present, a non-empty array of
+    them. ``batch_credential_issuance``, when present, must carry an integer
+    ``batch_size`` ≥ 2 (a batch of one is not a batch). Everything else —
+    per-configuration shapes, display metadata, encryption parameters, unknown
+    members — is preserved verbatim in the result and in ``raw``: this parser fixes
+    the members a *caller acts on* and stays out of the extension points.
+
+    Raises :class:`IssuerMetadataMalformed` on any violation.
+    """
+    metadata = _as_metadata_mapping(metadata)
+
+    issuer = _require_https_url(
+        metadata.get("credential_issuer"), "credential_issuer", IssuerMetadataMalformed)
+
+    endpoint = _require_https_url(
+        metadata.get("credential_endpoint"), "credential_endpoint",
+        IssuerMetadataMalformed)
+
+    servers = metadata.get("authorization_servers")
+    if servers is None:
+        auth_servers: tuple[str, ...] = ()
+    elif isinstance(servers, (list, tuple)) and servers:
+        auth_servers = tuple(
+            _require_https_url(
+                server, "authorization_servers entry", IssuerMetadataMalformed)
+            for server in servers)
+    else:
+        raise IssuerMetadataMalformed(
+            "authorization_servers must be a non-empty array of https URLs")
+
+    optional_endpoints: dict[str, str | None] = {}
+    for name in ("nonce_endpoint", "deferred_credential_endpoint",
+                 "notification_endpoint"):
+        value = metadata.get(name)
+        if value is not None:
+            value = _require_https_url(value, name, IssuerMetadataMalformed)
+        optional_endpoints[name] = value
+
+    configs = metadata.get("credential_configurations_supported")
+    if configs is None:
+        configs = {}
+    elif not isinstance(configs, Mapping):
+        raise IssuerMetadataMalformed(
+            "credential_configurations_supported must be an object when present")
+
+    batch = metadata.get("batch_credential_issuance")
+    batch_size: int | None = None
+    if batch is not None:
+        if not isinstance(batch, Mapping):
+            raise IssuerMetadataMalformed(
+                "batch_credential_issuance must be an object when present")
+        size = batch.get("batch_size")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 2:
+            raise IssuerMetadataMalformed(
+                "batch_credential_issuance.batch_size must be an integer ≥ 2")
+        batch_size = size
+
+    return CredentialIssuerMetadata(
+        credential_issuer=issuer,
+        credential_endpoint=endpoint,
+        authorization_servers=auth_servers,
+        nonce_endpoint=optional_endpoints["nonce_endpoint"],
+        deferred_credential_endpoint=optional_endpoints["deferred_credential_endpoint"],
+        notification_endpoint=optional_endpoints["notification_endpoint"],
+        credential_configurations_supported=MappingProxyType(dict(configs)),
+        batch_size=batch_size,
+        raw=metadata,
+    )
+
+
+def _as_offer_mapping(value: Mapping[str, Any] | str) -> Mapping[str, Any]:
+    """``_as_mapping``, typed for the offer's own error class."""
+    try:
+        return _as_mapping(value, "Credential Offer")
+    except CredentialRequestMalformed as exc:
+        raise CredentialOfferMalformed(str(exc)) from exc
+
+
+def _as_metadata_mapping(value: Mapping[str, Any] | str) -> Mapping[str, Any]:
+    try:
+        return _as_mapping(value, "Credential Issuer Metadata")
+    except CredentialRequestMalformed as exc:
+        raise IssuerMetadataMalformed(str(exc)) from exc
+
+
+def _require_https_url(
+    value: Any, name: str, error: type[OpenID4VCIError],
+) -> str:
+    """A member that must be an absolute https URL, or the document is rejected.
+
+    The scheme check is the one that matters: a ``credential_issuer`` feeds the key
+    proof's ``aud`` comparison and the metadata is fetched under it, so a non-https
+    value here would smuggle a downgrade into every check that trusts the identifier.
+
+    Three rejections beyond the scheme, each because this string *is* an identifier
+    that later compares byte-for-byte against a signed ``aud``:
+
+    * **control characters / whitespace** — ``urlparse`` silently strips ``\\t\\r\\n``,
+      so the stored identifier would disagree with what an HTTP client connects to;
+    * **userinfo, query, fragment, params** — meaningless in an issuer identifier, a
+      visual-spoofing primitive (``https://legit@evil``), and credentials would leak
+      into logs through error messages;
+    * **a netloc that is not a host** — ``hostname``/``port`` raise lazily, so
+      accepting ``https://issuer.example:notaport`` here would hand the caller a raw
+      :class:`ValueError` later, outside this module's error taxonomy.
+    """
+    if not isinstance(value, str) or not value:
+        raise error(f"{name} must be a non-empty https URL string")
+    if any(ord(char) < 0x21 or ord(char) == 0x7F for char in value):
+        raise error(f"{name} contains control characters or whitespace: {value!r}")
+    try:
+        parsed = urlparse(value)
+        # Force the lazy accessors: a bad port or bracketed literal raises here,
+        # inside the typed taxonomy, not later in the caller's fetch code.
+        host, _ = parsed.hostname, parsed.port
+    except ValueError as exc:
+        raise error(f"{name} is not a valid https URL: {value!r} ({exc})") from exc
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise error(f"{name} must be an absolute https URL, got {value!r}")
+    if not host or not host.strip("."):
+        raise error(f"{name} has no usable host: {value!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise error(f"{name} must not carry userinfo: {value!r}")
+    if parsed.params or parsed.query or parsed.fragment:
+        raise error(f"{name} must not carry params, a query or a fragment: {value!r}")
+    return value
 
 
 # --------------------------------------------------------------------------- #

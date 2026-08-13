@@ -1,0 +1,19 @@
+{
+  "_provenance": {
+    "source": "OpenID for Verifiable Credential Issuance 1.0 (Final, 2025-09-16), §4.1.2 Credential Offer by-reference response — the authorization-code example",
+    "url": "https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html",
+    "retrieved": "2026-08-13",
+    "note": "Transcribed verbatim (whitespace normalized). The `issuer_state` value is truncated in the spec; it is an opaque string and parsed as such. The payload sits under `offer` so the parse target stays clean of this provenance member."
+  },
+  "offer": {
+    "credential_issuer": "https://credential-issuer.example.com",
+    "credential_configuration_ids": [
+      "UniversityDegreeCredential"
+    ],
+    "grants": {
+      "authorization_code": {
+        "issuer_state": "eyJhbGciOiJSU0Et...FYUaBy"
+      }
+    }
+  }
+}
