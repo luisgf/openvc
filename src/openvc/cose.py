@@ -161,6 +161,11 @@ def _reject_unhandled_crit(header: dict[Any, Any], kind: str) -> None:
     crit = header[_HDR_CRIT]
     if not isinstance(crit, list) or not crit:
         raise CoseMalformed(f"{kind}: 'crit' (label 2) must be a non-empty array")
+    # A CBOR array/map as a crit entry is unhashable; `lbl not in frozenset`
+    # would raise TypeError past OpenvcError (I14). Bool is a subclass of
+    # int and must not satisfy `alg`/`x5chain` membership (#170).
+    if any(not isinstance(lbl, int) or isinstance(lbl, bool) for lbl in crit):
+        raise CoseMalformed(f"{kind}: 'crit' labels must be integers")
     unknown = [lbl for lbl in crit if lbl not in _KNOWN_CRIT_LABELS]
     if unknown:
         raise CoseMalformed(f"{kind}: unsupported critical header label(s) {unknown!r}")
