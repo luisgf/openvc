@@ -956,10 +956,18 @@ def check_request_within_registration(
             raise RpRegistrationError(f"dcql_query credential #{index} is not an object")
         label = _str_or_none(query.get("id")) or f"#{index}"
         fmt = _str_or_none(query.get("format"))
+        if fmt is None:
+            # Missing/blank/non-string format used to become None on both sides
+            # and match (`None == None`) — a second grant bucket next to
+            # well-formed entries (#161). Same class as the WRPAC identifier
+            # bind: an absent identifier is a failure, never a match.
+            raise RpRegistrationError(
+                f"credential query {label!r} has no string format")
         want_meta = _mapping_or_none(query.get("meta")) or {}
         candidates = [
             c for c in registration.credentials
-            if c.format == fmt and _meta_covered(c.meta, want_meta)
+            if c.format is not None and c.format == fmt
+            and _meta_covered(c.meta, want_meta)
         ]
         if not candidates:
             raise RpRegistrationError(

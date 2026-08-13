@@ -29,6 +29,11 @@ All notable changes to **openvc** are documented here. The format follows
   a `did:web` / status / schema host resolving to `100.64.0.1` (or
   `::ffff:100.64.0.1`) was fetched. The guard now also rejects
   `not ip.is_global`.
+- **A WRPRC or DCQL query with no string `format` no longer matches
+  `None == None`** ([#161](https://github.com/luisgf/openvc/issues/161)).
+  Missing, blank or non-string formats on both sides used to become a
+  second grant bucket next to well-formed entries. An absent format is a
+  failure, never a match.
 
 ## [1.24.0] — 2026-07-29
 
