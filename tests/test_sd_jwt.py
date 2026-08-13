@@ -186,6 +186,17 @@ def test_expired_token_is_rejected():
         suite.verify(sd_jwt, public_key_jwk=key.public_jwk())
 
 
+def test_disclosed_exp_on_the_processed_payload_is_enforced():
+    # RFC 9901 §7.1 step 6: exp/nbf are checked on the processed payload. If the
+    # issuer made `exp` selectively disclosable it is absent from the issuer JWT
+    # and only appears after unpack — that copy must still be enforced.
+    key = _issuer_key()
+    sd_jwt = suite.issue(_base_claims(), signing_key=key,
+                         disclosable=["age", "exp"], expires_in_s=-3600)
+    with pytest.raises(ClaimsInvalid, match="expired"):
+        suite.verify(sd_jwt, public_key_jwk=key.public_jwk())
+
+
 def test_expected_vct_mismatch_is_rejected():
     key = _issuer_key()
     sd_jwt = suite.issue(_base_claims(), signing_key=key, disclosable=["age"])
