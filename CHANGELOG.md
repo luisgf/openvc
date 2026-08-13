@@ -72,6 +72,10 @@ All notable changes to **openvc** are documented here. The format follows
   (RFC 9901 §7.1 step 6). A selectively disclosed validity claim is now
   enforced when the holder presents it, not only when it stays in the
   issuer-JWT body.
+- **A non-string JOSE `kid` is a typed error, not `AttributeError`**
+  ([#175](https://github.com/luisgf/openvc/issues/175)). `peek_issuer`
+  and `DidDocument.key_by_kid` now reject it, so `verify_many` isolates
+  the item instead of aborting the batch.
 
 ## [1.24.0] — 2026-07-29
 

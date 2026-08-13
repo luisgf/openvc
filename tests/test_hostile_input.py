@@ -101,6 +101,45 @@ def test_vc_jwt_peek_typed_on_non_string_iss_and_non_object_vc():
         VcJwtProofSuite().peek_issuer(_jose({"alg": "ES256"}, {"vc": [1, 2]}))
 
 
+def test_vc_jwt_peek_typed_on_non_string_kid():
+    with pytest.raises(OpenvcError):
+        VcJwtProofSuite().peek_issuer(
+            _jose({"alg": "ES256", "kid": 1}, {"iss": "did:example:iss"}))
+    with pytest.raises(OpenvcError):
+        SdJwtVcProofSuite().peek_issuer(
+            _jose({"alg": "EdDSA", "typ": "vc+sd-jwt", "kid": 1},
+                  {"iss": "did:example:iss"}) + "~")
+
+
+def test_verify_many_isolates_a_non_string_kid():
+    # #175. kid:1 used to AttributeError in DidDocument.key_by_kid and abort
+    # the batch. A sibling "not.a.jwt" must still become a typed BatchResult.
+    from openvc.keys import Ed25519SigningKey
+    from openvc.multibase import encode_multibase
+    from openvc.proof._jws import sign_compact
+
+    def _leb128(code: int) -> bytes:
+        out = bytearray()
+        while True:
+            b, code = code & 0x7F, code >> 7
+            out.append(b | (0x80 if code else 0))
+            if not code:
+                return bytes(out)
+
+    key = Ed25519SigningKey.generate(kid="k")
+    raw = base64.urlsafe_b64decode(key.public_jwk()["x"] + "==")
+    did = "did:key:" + encode_multibase(_leb128(0xED) + raw)
+    token = sign_compact(
+        {"alg": key.alg, "typ": "JWT", "kid": 1},
+        {"iss": did, "vc": {"type": ["VerifiableCredential"], "issuer": did,
+                            "credentialSubject": {"id": "did:example:alice"}}},
+        signing_key=key,
+    )
+    results = verify_many([token, "not.a.jwt"])
+    assert len(results) == 2
+    assert all((not r.ok) and isinstance(r.error, OpenvcError) for r in results)
+
+
 def test_verify_many_isolates_a_non_object_payload():
     """The A1 regression: a hostile non-object-payload token must become a fail-closed
     BatchResult, never abort the sibling that follows it."""

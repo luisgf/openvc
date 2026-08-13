@@ -65,6 +65,8 @@ class DidDocument:
         may carry either). If kid is None, fall back to the sole key if unique."""
         if kid is None:
             return self.verification_methods[0] if len(self.verification_methods) == 1 else None
+        if not isinstance(kid, str):
+            return None
         fragment = kid.split("#", 1)[-1]
         return next(
             (vm for vm in self.verification_methods if vm.id == kid or vm.kid == fragment),
