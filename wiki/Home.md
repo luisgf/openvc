@@ -19,7 +19,7 @@ pip install openvc-core
 - **The [API reference](https://luisgf.github.io/openvc/)** is generated from
   the docstrings — every module, class, and function.
 - **[`examples/`](https://github.com/luisgf/openvc/tree/main/examples)** are
-  ten self-contained offline scripts, executed by CI on every push.
+  thirteen self-contained offline scripts, executed by CI on every push.
 
 Every `python` block in this wiki is also executed by CI (`tests/test_docs_blocks.py`),
 so the snippets you read here are guaranteed to run against the current release.
@@ -37,6 +37,9 @@ so the snippets you read here are guaranteed to run against the current release.
 | [Issuing with OpenID4VCI](Issuing-with-OpenID4VCI) | verify a wallet's key proof, then issue bound to the key it proved |
 | [Status lists](Status-Lists) | revocation — check *and* issue, both encodings |
 | [Trust anchors](Trust) | X.509 `x5c`, EU Trusted Lists, the EBSI plugin |
+| [Relying-party certificates](Relying-Party-Certificates) | EUDI WRPAC + WRPRC, the two authorization cross-checks |
+| [Credential schemas](Credential-Schemas) | `credentialSchema` / JSON Schema validation |
+| [Spanish university credential](Spanish-University-Credential) | a worked EUDI-shaped example |
 | [Async verification](Async-Verification) | `verify_credential_async` for asyncio servers |
 | [Keys & HSM backends](Keys-and-HSM) | the `SigningKey` protocol, KMS / Vault / PKCS#11 |
 | [Security model](Security-Model) | assets, trust boundaries, attacker capabilities → controls |

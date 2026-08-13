@@ -49,6 +49,10 @@ All notable changes to **openvc** are documented here. The format follows
   ([#157](https://github.com/luisgf/openvc/issues/157)). Pages OIDC and
   `pages: write` are scoped to the deploy job, which never runs on a
   pull request.
+- **Install tables name `[pq]` and count thirteen examples**
+  ([#154](https://github.com/luisgf/openvc/issues/154)). README and
+  Getting-Started omitted the extra; `[all]` now matches `pyproject.toml`;
+  wiki Home lists the three pages that were already in the sidebar.
 
 ## [1.24.0] — 2026-07-29
 

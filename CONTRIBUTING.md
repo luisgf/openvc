@@ -4,7 +4,7 @@
 
 ```sh
 python -m venv .venv && . .venv/bin/activate
-pip install -e ".[all]"       # core + ebsi + data-integrity + dev tools
+pip install -e ".[all]"       # core + ebsi + data-integrity + schema + trustlist + pq + dev tools
 ```
 
 ## The checks (all must pass)
