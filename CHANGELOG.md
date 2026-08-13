@@ -35,6 +35,13 @@ All notable changes to **openvc** are documented here. The format follows
   second grant bucket next to well-formed entries. An absent format is a
   failure, never a match.
 
+### Fixed (docs)
+
+- **`SECURITY.md` no longer describes a pre-1.0 `0.x` library or a two-alg
+  allow-list** ([#158](https://github.com/luisgf/openvc/issues/158)).
+  Supported versions are the latest 1.x; the JOSE allow-list is
+  `{ES256, ES384, EdDSA, Ed25519}`.
+
 ## [1.24.0] — 2026-07-29
 
 ### Added
