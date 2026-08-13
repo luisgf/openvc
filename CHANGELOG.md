@@ -41,6 +41,10 @@ All notable changes to **openvc** are documented here. The format follows
   allow-list** ([#158](https://github.com/luisgf/openvc/issues/158)).
   Supported versions are the latest 1.x; the JOSE allow-list is
   `{ES256, ES384, EdDSA, Ed25519}`.
+- **README no longer claims every issuer-named URL is SSRF-guarded**
+  ([#153](https://github.com/luisgf/openvc/issues/153)). Status/schema
+  fetches are guarded only through the blessed `openvc.resolvers` defaults;
+  a custom resolver opts out.
 
 ## [1.24.0] — 2026-07-29
 

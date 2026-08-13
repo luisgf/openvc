@@ -122,10 +122,11 @@ lists, remote HSM signing, EU Trusted Lists, EBSI — has a guide in the
   verifies VC-JWT / SD-JWT VC behind an explicit opt-in (`allow_pq=True`) and the `[pq]`
   extra — first-mover space; no maintained Python VC library signs ML-DSA today. Never a
   default trust path; the allow-list above is unchanged unless you opt in.
-- **SSRF-guarded network.** Every issuer-named URL (`did:web`, well-known,
-  status lists, schemas) goes through an https-only fetch that blocks
-  private/loopback/link-local ranges, refuses redirects, and pins the
-  connection to the validated IP (no DNS rebinding).
+- **SSRF-guarded network.** `did:web` and `/.well-known/jwt-vc-issuer` go
+  through an https-only fetch that blocks non-globally-routable addresses,
+  refuses redirects, and pins the connection to the validated IP (no DNS
+  rebinding). Status-list and `credentialSchema` fetches use the same guard
+  via the blessed defaults in `openvc.resolvers`; a custom resolver opts out.
 - **Dependency-light.** The core imports `cryptography` and `pyjwt`, nothing
   else; JSON canonicalization (RFC 8785) and the `ecdsa-sd-2023` CBOR codec are
   hand-rolled on the stdlib, and `pyld` / `httpx` stay behind extras.
