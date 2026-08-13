@@ -911,6 +911,30 @@ def test_a_registration_grant_is_not_widened_by_a_second_spelling():
             "id": "d", "format": "dc+sd-jwt", "claims": [{"path": ["ssn"]}]}))
 
 
+@pytest.mark.parametrize("claim", [[], [{}], [{"path": None}], [None]])
+def test_a_present_empty_claim_is_not_a_missing_key(claim):
+    # HIGH (#160). `_registered_paths` used `or`, so a present-but-empty `claim`
+    # (falsy extraction) fell through to `claims` and widened the grant. After
+    # #152 an empty grant means "nothing"; a second spelling must not refill it.
+    reg = _reg(credentials=[{
+        "format": "dc+sd-jwt", "meta": {"vct_values": ["v"]},
+        "claim": claim,
+        "claims": [{"path": ["ssn"]}]}])
+    with pytest.raises(RpRegistrationError, match="claim path"):
+        check_request_within_registration(reg, _dcql({
+            "id": "d", "format": "dc+sd-jwt", "meta": {"vct_values": ["v"]},
+            "claims": [{"path": ["ssn"]}]}))
+
+
+def test_a_registration_that_only_uses_the_dcql_spelling_still_grants():
+    # Fallback is only for a missing `claim` key, not an empty one.
+    check_request_within_registration(
+        _reg(credentials=[{
+            "format": "dc+sd-jwt", "meta": {},
+            "claims": [{"path": ["name"]}]}]),
+        _dcql({"id": "d", "format": "dc+sd-jwt", "claims": [{"path": ["name"]}]}))
+
+
 @pytest.mark.parametrize("field", ["iat", "exp", "nbf"])
 def test_a_bignum_numericdate_is_a_typed_error_not_an_overflow(registrar, field):
     # HIGH. `math.isfinite` casts to float, so a `10**400` literal — which json.loads

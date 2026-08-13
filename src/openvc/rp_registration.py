@@ -320,8 +320,12 @@ def _registered_paths(entry: Mapping[str, Any]) -> tuple[tuple[Any, ...], ...]:
     TS 119 475 names the member ``claim`` (singular, as in Annex C); the DCQL shape it
     mirrors (OpenID4VP 1.0) names it ``claims``. On this side the spec's spelling wins
     and the other is only a fallback: taking one list rather than the union of both
-    means a second spelling can never *widen* a grant."""
-    return tuple(_paths_under(entry, "claim") or _paths_under(entry, "claims"))
+    means a second spelling can never *widen* a grant. Presence, not truthiness:
+    a present-but-empty ``claim`` (``[]``, ``[{}]``, unusable paths) is an empty
+    grant, not a missing key — falling through via ``or`` used to widen (#160)."""
+    if "claim" in entry:
+        return tuple(_paths_under(entry, "claim"))
+    return tuple(_paths_under(entry, "claims"))
 
 
 def _requested_paths(query: Mapping[str, Any]) -> tuple[tuple[Any, ...], ...]:
