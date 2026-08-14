@@ -170,6 +170,7 @@ request** — there is no partial issuance.
 | 2 | `alg` is allow-listed (`ES256`/`ES384`/`EdDSA`/`Ed25519`), **before** any crypto |
 | 3 | unknown `crit` rejected |
 | 4 | `key_attestation`, if present, is a string and parses as a key attestation |
+| 4b | if you passed `require_key_attestation=True`, the header **must** carry one — before crypto, before the nonce is spent |
 | 5 | **exactly one** of `jwk` / `kid` / `x5c` / `trust_chain` |
 | 6 | the key binds to the header `alg` — no `ES256` over an Ed25519 key; no private members in a `jwk` |
 | 7 | with a `key_attestation`: the key is one of its `attested_keys` (App. D) |
@@ -196,7 +197,7 @@ enabling argument:
 | `x5c` | `trust_anchors=[...]` | rejected — an unanchored chain is decoration, not trust |
 | `kid` | `resolve_proof_key=` or `resolve_proof_key_in_context=` | rejected |
 | `trust_chain` | — | typed `UnsupportedProofType` (OpenID Federation is out of scope) |
-| `key_attestation` | — | **not a key parameter** — see below; a header carrying only this one is rejected |
+| `key_attestation` | `require_key_attestation=True` to *require* it | **not a key parameter** — see below; a header carrying only this one is rejected. Default is not to require it. |
 
 ## Key attestations
 
@@ -227,6 +228,14 @@ the same silent-preference defect the one-key-parameter rule exists to prevent.
 **Which key a `kid` names is not specified.** The spec's own example uses it as an index;
 other wallets use each JWK's `kid` member, or an RFC 7638 thumbprint. openvc will not
 guess between them — that is your ecosystem's rule, and it is three lines above.
+
+If your metadata publishes `key_attestations_required`, pass
+`require_key_attestation=True`. A missing header is then a structure failure —
+`ClaimsInvalid` — **before** the signature and **before** `check_nonce` runs. Without
+the flag you only notice afterwards, by reading `VerifiedProof.key_attestation`, and
+the nonce is already spent: the wallet's §8.3.1 retry becomes a loop. The policy is
+yours; the ordering is only available here. Default `False`, so an issuer that does
+not advertise the requirement is unchanged.
 
 **What openvc does enforce** is App. D's MUST: with a `key_attestation` present, the key
 that signed the proof must be one of its `attested_keys`. Be clear about what that buys.

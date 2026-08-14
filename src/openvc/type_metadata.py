@@ -1,5 +1,5 @@
 """
-openvc.type_metadata — SD-JWT VC Type Metadata (draft-ietf-oauth-sd-jwt-vc-17 §4).
+openvc.type_metadata — SD-JWT VC Type Metadata (draft-ietf-oauth-sd-jwt-vc-18 §4).
 
 Verifier side: resolve the Type Metadata a credential's ``vct`` points to, pin it with
 ``vct#integrity`` (a W3C Subresource-Integrity hash), enforce ``metadata.vct`` equals
@@ -8,6 +8,10 @@ integrity-pinned, cycle-/depth-bounded), compose the inherited claim metadata, a
 validate the processed SD-JWT payload against it — the DCQL-style ``path`` engine plus
 ``mandatory``. Fetch is **opt-in** and every failure is **fail-closed** (§4.7: "*If
 claim metadata processing or validation fails, the SD-JWT VC MUST be rejected*").
+
+``aka_vcts`` (draft-18 §2.2.2.2) is orthogonal: Type Metadata does not
+read it, and a type listed there does not imply a document to fetch. Shape
+validation of the claim lives in :mod:`openvc.proof.sd_jwt`.
 
 Two scope notes tied to the current draft:
 

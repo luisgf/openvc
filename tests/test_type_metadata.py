@@ -1,11 +1,11 @@
 """
 tests/test_type_metadata.py — SD-JWT VC Type Metadata verifier (#21).
 
-Pins the draft-ietf-oauth-sd-jwt-vc-17 §4 processing to the draft's own Appendix B.2
-worked example (the "Betelgeuse education credential" — Figure 28 payload + Figure 29
-Type Metadata `claims`), the DCQL-style `path` engine (§4.6.1), and the fail-closed
-guards: `vct#integrity` (W3C SRI over the raw bytes), the `vct` identity check, and the
-`extends` chain (integrity per link + cycle/depth bound).
+Pins the draft-ietf-oauth-sd-jwt-vc-18 §4 processing to the draft's own Appendix A.2
+worked example (the "Betelgeuse education credential" — payload + Type Metadata
+`claims`; Appendix B.2 in draft-17), the DCQL-style `path` engine (§4.6.1), and the
+fail-closed guards: `vct#integrity` (W3C SRI over the raw bytes), the `vct` identity
+check, and the `extends` chain (integrity per link + cycle/depth bound).
 
 Note: the current draft REMOVED embedded JSON Schema (draft-12) — validation is via the
 `claims` array. The draft's published example integrity hashes are not byte-reproducible
@@ -70,7 +70,7 @@ def _store_resolver(store):
 
 
 # --------------------------------------------------------------------------- #
-# the draft-17 worked example
+# the draft-18 worked example (Appendix A.2; B.2 in -17)
 # --------------------------------------------------------------------------- #
 
 def test_worked_example_claims_validate():

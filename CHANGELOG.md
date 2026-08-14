@@ -4,6 +4,44 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.26.0] — unreleased
+
+### Added
+
+- **`require_key_attestation=` on `verify_credential_request_proofs`**
+  ([#178](https://github.com/luisgf/openvc/issues/178)). An issuer that
+  publishes `key_attestations_required` can now refuse a proof whose header
+  has no `key_attestation` with the structure rules — before the signature
+  and before `check_nonce` runs. Without the flag the same proof verified,
+  the nonce was spent, and the caller only then saw
+  `VerifiedProof.key_attestation is None`: the wallet's §8.3.1 retry became
+  a loop. Default `False`, so an issuer that does not advertise the
+  requirement is unchanged. The policy is the caller's; the ordering is
+  only available here.
+- **`aka_vcts` shape check** (draft-ietf-oauth-sd-jwt-vc-18 §2.2.2.2,
+  [#179](https://github.com/luisgf/openvc/issues/179)). When present, the
+  claim must be a non-empty array of non-empty strings that does not
+  contain the credential's `vct`. Absent stays accepted.
+  `expected_vct` is **not** widened to match an alias — that pin stays
+  exact; callers that want type-alias matching read `claims["aka_vcts"]`.
+
+### Changed
+
+- **SD-JWT VC pin is draft-18** (2026-08-03; IESG *Revised I-D Needed*).
+  Type Metadata §4 is unchanged; the worked example is now Appendix A.2
+  (was B.2 in -17). Historical CHANGELOG entries keep their draft-17
+  wording. Not the RFC cite-swap (#127 still waits on a number).
+
+### Tests
+
+- **A key proof captured from `eudi-lib-jvm-openid4vci-kt` 0.12.2**
+  ([#147](https://github.com/luisgf/openvc/issues/147)). The library the
+  EUDI Android wallet speaks through, driven by the downstream issuer's
+  wallet-harness, captured 2026-07-29. Header is
+  `{alg, typ, kid: "0", key_attestation}` with no `jwk` — the form #150
+  and #178 exist to handle. Verifies end to end with the clock frozen to
+  its own `iat`. Provenance is sha256-enforced in the fixtures README.
+
 ## [1.25.0] — 2026-08-13
 
 ### Added

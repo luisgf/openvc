@@ -3,8 +3,8 @@ openvc.proof.sd_jwt — SD-JWT VC proof suite (selective disclosure).
 
 Implements the IETF SD-JWT VC family:
   * RFC 9901 (the SD-JWT mechanism; formerly draft-ietf-oauth-selective-disclosure-jwt)
-  * draft-ietf-oauth-sd-jwt-vc (the VC profile: ``vct``, ``cnf``, ``status`` …;
-    a draft that builds on RFC 9901)
+  * draft-ietf-oauth-sd-jwt-vc-18 (the VC profile: ``vct``, ``aka_vcts``, ``cnf``,
+    ``status`` …; a draft that builds on RFC 9901)
 
 The third proof profile alongside VC-JWT (:mod:`openvc.proof.vc_jwt`) and Data
 Integrity — and the format EUDI/ARF converges on. It reuses the same JOSE
@@ -39,7 +39,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from ..keys import KeyBackendError, verify_signature
 from ._verify_common import check_jwt_temporal, reject_unknown_crit
@@ -191,6 +191,27 @@ class VerifiedSdJwt:
     confirmation: dict[str, Any] | None   # the ``cnf`` claim, if any
 
 
+def _check_aka_vcts(payload: Mapping[str, Any]) -> None:
+    """draft-18 §2.2.2.2: ``aka_vcts``, when present, is a non-empty array of
+    additional types and MUST NOT contain the credential's ``vct``.
+
+    Absent is fine — the claim is optional. ``expected_vct`` is deliberately
+    *not* widened to match these aliases: that pin is exact, and a union here
+    would be a scope escalation. Callers that want alias matching read
+    ``claims["aka_vcts"]`` themselves.
+    """
+    aka = payload.get("aka_vcts")
+    if aka is None:
+        return
+    if (not isinstance(aka, (list, tuple)) or not aka
+            or not all(isinstance(item, str) and item for item in aka)):
+        raise ClaimsInvalid(
+            "aka_vcts must be a non-empty array of non-empty strings when present")
+    vct = payload.get("vct")
+    if isinstance(vct, str) and vct in aka:
+        raise ClaimsInvalid("aka_vcts must not contain the credential's vct")
+
+
 # --------------------------------------------------------------------------- #
 # proof suite
 # --------------------------------------------------------------------------- #
@@ -265,6 +286,7 @@ class SdJwtVcProofSuite:
             raise SdJwtError("an SD-JWT VC needs an 'iss' claim")
         if not payload.get("vct"):
             raise SdJwtError("an SD-JWT VC needs a 'vct' claim")
+        _check_aka_vcts(payload)
         if expires_in_s is not None:
             payload["exp"] = now + expires_in_s
         if holder_jwk is not None:
@@ -375,6 +397,7 @@ class SdJwtVcProofSuite:
         vct = unpacked.get("vct")
         if expected_vct is not None and vct != expected_vct:
             raise ClaimsInvalid(f"vct {vct!r} != expected {expected_vct!r}")
+        _check_aka_vcts(unpacked)
 
         key_bound = self._verify_key_binding(
             kb_jwt, issuer_jwt, disclosures, claims.get("cnf"),

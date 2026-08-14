@@ -47,6 +47,10 @@ an honest wallet, or the caller's own resolver, producing a key the wallet never
 claimed. Which key in ``attested_keys`` a ``kid`` names is **not** specified by the
 spec — the example uses an index, wallets also use the JWK's own ``kid`` or a
 thumbprint — so that mapping is the caller's, never a guess made here.
+An issuer that publishes ``key_attestations_required`` passes
+``require_key_attestation=True`` so a missing header is a structure failure —
+before crypto, before the nonce is spent — rather than a verified proof whose
+caller then notices the gap and burns a single-use nonce on every retry.
 
 Scope: the ``jwt`` proof type only. The ``attestation`` proof type, ``di_vp`` and
 OpenID Federation ``trust_chain`` proof keys raise a typed
@@ -807,6 +811,7 @@ def verify_credential_request_proofs(
     resolve_proof_key: ResolveProofKey | None = None,
     resolve_proof_key_in_context: ResolveProofKeyInContext | None = None,
     trust_anchors: Sequence[Any] | None = None,
+    require_key_attestation: bool = False,
     max_age_s: int = DEFAULT_PROOF_MAX_AGE_S,
     leeway_s: int = DEFAULT_LEEWAY_S,
     now: datetime | None = None,
@@ -822,7 +827,9 @@ def verify_credential_request_proofs(
     key attestation, and which is the one the attested-key form needs — and
     *trust_anchors* enable the ``kid`` and ``x5c`` key parameters respectively; without
     them, proofs using those parameters are rejected. Passing both resolvers is a caller
-    error. *expected_client_id*, when given, pins the proof's ``iss``. *now* pins the
+    error. *expected_client_id*, when given, pins the proof's ``iss``.
+    *require_key_attestation* refuses a missing ``key_attestation`` header before
+    crypto and before the nonce is spent; default ``False``. *now* pins the
     instant for deterministic tests.
 
     When a proof carries ``key_attestation``, App. D's MUST is enforced: the key that
@@ -870,6 +877,7 @@ def verify_credential_request_proofs(
             resolve_proof_key=resolve_proof_key,
             resolve_proof_key_in_context=resolve_proof_key_in_context,
             trust_anchors=trust_anchors,
+            require_key_attestation=require_key_attestation,
             max_age_s=max_age_s,
             leeway_s=leeway_s,
             current=current,
@@ -922,6 +930,7 @@ def _verify_one_proof(
     resolve_proof_key: ResolveProofKey | None,
     resolve_proof_key_in_context: ResolveProofKeyInContext | None,
     trust_anchors: Sequence[Any] | None,
+    require_key_attestation: bool,
     max_age_s: int,
     leeway_s: int,
     current: int,
@@ -951,6 +960,11 @@ def _verify_one_proof(
         raise ClaimsInvalid("key_attestation header must be a string when present")
     attestation = (
         peek_key_attestation(attestation_jwt) if attestation_jwt is not None else None)
+    if require_key_attestation and attestation is None:
+        # Structure, not crypto: an issuer that publishes key_attestations_required
+        # must not spend the nonce on a wallet that never attested (issue #178).
+        raise ClaimsInvalid(
+            "key proof is missing the required key_attestation header")
 
     public_jwk, key_source = _proof_key(
         header, alg=alg, resolve_proof_key=resolve_proof_key,

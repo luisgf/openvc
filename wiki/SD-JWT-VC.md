@@ -35,6 +35,14 @@ result = suite.verify(
 print(result.vct, result.key_bound, result.claims["given_name"])
 ```
 
+`aka_vcts` (draft-18) is an optional array of *additional* types the issuer asserts
+the credential also is. When present it must be a non-empty list of non-empty
+strings that does not contain `vct`; when absent, nothing changes.
+`expected_vct` stays an exact pin of `vct` — it does **not** match an alias, so a
+verifier that asked for `urn:example:eudi:pid` and received
+`urn:example:eudi:pid:aendgard:1` with that URN in `aka_vcts` still has to make
+that comparison itself.
+
 The pipeline also accepts SD-JWT presentations directly —
 `verify_credential(presentation, ...)` detects the format and resolves the
 issuer key from `iss` (see

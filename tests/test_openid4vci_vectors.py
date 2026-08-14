@@ -15,9 +15,10 @@ from the trusted-list work. These hold the same code to:
     at `https://issuer.eudiw.dev`): its Issuer Metadata and two Credential Offers, in the
     deep-link form a wallet receives them.
 
-What is still self-made is stated in `tests/fixtures/openid4vci/README.md`: no proof here
-came from a shipping wallet, because obtaining one needs a live Credential Endpoint this
-library does not ship.
+What is still self-made is stated in `tests/fixtures/openid4vci/README.md`. The one
+proof that is not is `real/eudi-jvm-wallet-key-proof.jwt`, captured from
+`eudi-lib-jvm-openid4vci-kt` 0.12.2 (the library the EUDI Android wallet speaks
+through) via the downstream issuer's wallet-harness.
 
 Offline and deterministic — the one signed vector is verified at its own `iat`, so the
 fixed bytes stay verifiable forever. Self-contained (tests/ is not a package).
@@ -378,3 +379,101 @@ def test_recorded_artifacts_match_their_documented_digests():
 
     for name, digest in documented.items():
         assert hashlib.sha256((REAL / name).read_bytes()).hexdigest() == digest, name
+
+
+# --------------------------------------------------------------------------- #
+# Captured from the library real EUDI wallets speak through (#147)
+# --------------------------------------------------------------------------- #
+
+# The proof's own `iat`: 2026-07-29T11:53:45Z. Frozen because the signed bytes are
+# fixed; a fixture that had to be re-captured every five minutes would be deleted.
+JVM_IAT = 1785326025
+JVM_ISSUER = "https://vc.luisgf.es/demo"
+JVM_NONCE = "mock-nonce-0123456789"
+
+
+def _jvm_proof() -> str:
+    return (REAL / "eudi-jvm-wallet-key-proof.jwt").read_text(encoding="utf-8").strip()
+
+
+def _jvm_request() -> dict:
+    return {
+        "credential_configuration_id": "ob3",
+        "proofs": {"jwt": [_jvm_proof()]},
+    }
+
+
+def _index_attested(ctx):
+    """This capture's ecosystem reads `kid` as a position in `attested_keys`."""
+    return ctx.key_attestation.attested_keys[int(ctx.kid)]
+
+
+def test_jvm_wallet_key_proof_verifies_end_to_end():
+    """A proof `eudi-lib-jvm-openid4vci-kt` 0.12.2 minted, not one we constructed.
+
+    The form every EUDI wallet actually sends: `kid` is an index, the signing key
+    lives in `key_attestation`, and there is no `jwk`. Clock frozen to the
+    capture so the bytes stay verifiable. `require_key_attestation=True` is the
+    policy the downstream issuer publishes and the reason #178 exists.
+    """
+    store = _Nonces(JVM_NONCE)
+    (proof,) = verify_credential_request_proofs(
+        _jvm_request(),
+        credential_issuer=JVM_ISSUER,
+        check_nonce=store.consume,
+        resolve_proof_key_in_context=_index_attested,
+        require_key_attestation=True,
+        now=_utc(JVM_IAT + 1),
+    )
+    # Shape a re-encode of the fixture cannot silently grow a `jwk` into.
+    assert proof.header["typ"] == "openid4vci-proof+jwt"
+    assert proof.header["kid"] == "0"
+    assert "key_attestation" in proof.header
+    assert "jwk" not in proof.header
+    assert proof.alg == "ES256"
+    assert proof.key_source == "kid"
+    assert proof.issued_at == JVM_IAT
+    assert proof.nonce == JVM_NONCE
+    assert proof.claims == {"aud": JVM_ISSUER, "iat": JVM_IAT, "nonce": JVM_NONCE}
+
+    attested = peek_key_attestation(proof.key_attestation).attested_keys[0]
+    assert proof.public_jwk["kty"] == attested["kty"]
+    assert proof.public_jwk["crv"] == attested["crv"]
+    assert proof.public_jwk["x"] == attested["x"]
+    assert proof.public_jwk["y"] == attested["y"]
+    assert proof.thumbprint == jwk_thumbprint(attested)
+    assert store.calls == [JVM_NONCE]
+
+
+def test_jvm_wallet_key_proof_rejects_a_tampered_signature():
+    """The fixture is a real signature: flipping a byte must not verify or spend the nonce."""
+    header, payload, signature = _jvm_proof().split(".")
+    # The last base64url character of a 64-byte ES256 signature is padded in
+    # unused bits; flipping it can decode to the same bytes. Flip the first.
+    flipped = ("B" if signature[0] != "B" else "C") + signature[1:]
+    tampered = f"{header}.{payload}.{flipped}"
+    store = _Nonces(JVM_NONCE)
+    with pytest.raises(SignatureInvalid):
+        verify_credential_request_proofs(
+            {"credential_configuration_id": "ob3", "proofs": {"jwt": [tampered]}},
+            credential_issuer=JVM_ISSUER,
+            check_nonce=store.consume,
+            resolve_proof_key_in_context=_index_attested,
+            require_key_attestation=True,
+            now=_utc(JVM_IAT + 1),
+        )
+    assert store.calls == []
+
+
+def test_jvm_wallet_key_proof_does_not_burn_the_nonce_when_stale():
+    store = _Nonces(JVM_NONCE)
+    with pytest.raises(ClaimsInvalid):
+        verify_credential_request_proofs(
+            _jvm_request(),
+            credential_issuer=JVM_ISSUER,
+            check_nonce=store.consume,
+            resolve_proof_key_in_context=_index_attested,
+            require_key_attestation=True,
+            now=_utc(JVM_IAT + DEFAULT_PROOF_MAX_AGE_S + 3600),
+        )
+    assert store.calls == []

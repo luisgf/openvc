@@ -684,6 +684,65 @@ def test_a_zero_batch_size_is_rejected():
 
 # ------------------------------------------------------- key attestations (#150) #
 
+def test_require_key_attestation_rejects_a_bare_jwk_proof_before_the_nonce():
+    """An issuer that publishes `key_attestations_required` must not burn the nonce.
+
+    Without the flag the proof verifies (jwk is a legal key parameter) and the
+    caller only then notices `VerifiedProof.key_attestation is None` — after
+    `check_nonce` has already consumed it. The wallet's §8.3.1 retry is then a
+    loop. Structure-before-crypto-before-nonce is the whole point of #178.
+    """
+    key = P256SigningKey.generate(kid="w")
+    seen: list[str] = []
+
+    def consume(nonce: str) -> bool:
+        seen.append(nonce)
+        return True
+
+    with pytest.raises(ClaimsInvalid, match="missing the required key_attestation"):
+        _verify(_request(_proof(key)), check_nonce=consume, require_key_attestation=True)
+    assert seen == []
+
+
+def test_require_key_attestation_accepts_a_proof_that_carries_one():
+    key = P256SigningKey.generate(kid="w")
+    attestation = _attestation(key)
+    verified, = _verify(
+        _request(_proof(key, header_extra={"key_attestation": attestation})),
+        require_key_attestation=True)
+    assert verified.key_attestation == attestation
+
+
+def test_require_key_attestation_defaults_to_off():
+    """Issuers that do not advertise the requirement keep accepting jwk-only proofs."""
+    key = P256SigningKey.generate(kid="w")
+    verified, = _verify(_request(_proof(key)))
+    assert verified.key_attestation is None
+
+
+def test_require_key_attestation_rejects_a_mixed_batch_before_the_nonce():
+    """One attested proof does not let a sibling without one spend the nonce."""
+    attested = P256SigningKey.generate(kid="a")
+    bare = P256SigningKey.generate(kid="b")
+    seen: list[str] = []
+
+    def consume(nonce: str) -> bool:
+        seen.append(nonce)
+        return True
+
+    with pytest.raises(ClaimsInvalid, match="missing the required key_attestation"):
+        _verify(
+            _request(
+                _proof(attested, header_extra={"key_attestation": _attestation(attested)}),
+                _proof(bare),
+            ),
+            check_nonce=consume,
+            require_key_attestation=True,
+            batch_size=2,
+        )
+    assert seen == []
+
+
 def test_key_attestation_is_captured_but_not_verified():
     """The attestation is signed by a key nobody knows, and that is not an error."""
     key = P256SigningKey.generate(kid="w")
