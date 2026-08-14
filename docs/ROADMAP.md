@@ -8,7 +8,9 @@ landed through its own pull request. Browse it by milestone:
   2026-12-24: the third-party `vp_token` capture and the draft→RFC cite swaps
   (Token Status List, SD-JWT VC) remain; the WRPRC parser against the final ETSI
   TS 119 475, the pyld 3.x / PyJWT 2.13 dependency refresh, Python 3.15 in CI,
-  the documentation truth pass and the OID4VCI offer/metadata parsers have shipped.
+  the documentation truth pass, the OID4VCI offer/metadata parsers, the
+  JVM-wallet key-proof fixture, `require_key_attestation`, and the SD-JWT VC
+  draft-18 pin have shipped.
 - **[Conformance & production readiness](https://github.com/luisgf/openvc/milestone/11)** —
   deferred follow-ups that each need a real signed artifact or a launched
   external service before they can land — today: the EBSI production launch

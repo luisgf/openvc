@@ -51,6 +51,7 @@ its metadata), so the retrieval date and these digests are the version.
 | `eudiw-issuer-metadata.json` | `GET https://issuer.eudiw.dev/.well-known/openid-credential-issuer` | `d898a8eba64be7eb28820a1b6d72d5c8d5e9868ee498c625e2754db5864bcc70` |
 | `eudiw-offer-pid-sd-jwt.uri` | Credential Offer for `eu.europa.ec.eudi.pid_vc_sd_jwt`, authorization-code grant, as the issuer's own QR page emits it | `72cb82fd88aedb4de885a15835efcfd2ab08fbe8cf45a18c41c796b3d7947483` |
 | `eudiw-offer-pid-mdl.uri` | Same, two credentials (`pid_vc_sd_jwt` + `mdl_mdoc`) and the `openid-credential-offer://` scheme | `cc8dc0a2745f2a75e99e005a72a4c86bef063eb2aba074b65e1ead332e9737af` |
+| `eudi-jvm-wallet-key-proof.jwt` | Compact `openid4vci-proof+jwt` minted by `eudi-lib-jvm-openid4vci-kt` 0.12.2 (the library the EUDI Android wallet speaks through), driven by the downstream issuer's `infra/wallet-harness` against a throwaway issuer. Captured 2026-07-29. `aud` `https://vc.luisgf.es/demo`, `iat` 1785326025, `nonce` `mock-nonce-0123456789`. Header is `{alg, typ, kid: "0", key_attestation}` — no `jwk`. | `a76d841e3203ab86acb1ccac05ae0d5b3ff628379d01bf3dcaf257c145ca7fc3` |
 
 Both offers are the **deep-link form** a wallet actually receives —
 `<scheme>://credential_offer?credential_offer=<percent-encoded JSON>` — not a
@@ -66,13 +67,12 @@ none of it is what we would have invented.
 
 ## What is deliberately still missing
 
-**Key-proof JWTs captured from a real wallet.** The proofs here are the spec's own
-example and self-made ones; nothing in this directory is a proof a shipping wallet
-produced. Getting one needs a live Credential Endpoint for a wallet to POST to, which
-this library — by ADR-0007 D1 — does not have. Issue #147 records the source: a
-downstream Django issuer built on the ADR-0007 consumer contract will run the EUDI
-reference wallet against its own endpoint, and the request bodies from that run come
-back here with provenance. Until then this gap is stated, not papered over.
+**A proof captured from the EUDI reference wallet *app* on a physical device.**
+`eudi-jvm-wallet-key-proof.jwt` is the library that app speaks through, captured
+off the wire by a harness that is not a wallet we wrote. That is the third-party
+producer #147 asked for. It is not a phone session against a production
+Credential Endpoint (that run is the downstream issuer's #182 and still needs a
+device). The App. F.1 spec proof remains the other signed vector.
 
 **A key attestation from a real wallet provider**, for the same reason and with sharper
 consequences: `key-attestation-app-d.json` is the spec's shape re-encoded here, and the

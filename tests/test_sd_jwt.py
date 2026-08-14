@@ -205,6 +205,34 @@ def test_expected_vct_mismatch_is_rejected():
                      expected_vct="https://credentials.example/other")
 
 
+def test_aka_vcts_is_accepted_and_not_an_expected_vct_alias():
+    """draft-18 §2.2.2.2: additional types travel with the payload; expected_vct stays exact."""
+    key = _issuer_key()
+    alias = "urn:example:eudi:pid"
+    claims = {**_base_claims(), "aka_vcts": [alias]}
+    sd_jwt = suite.issue(claims, signing_key=key, disclosable=["age"])
+    result = suite.verify(sd_jwt, public_key_jwk=key.public_jwk())
+    assert result.claims["aka_vcts"] == [alias]
+    # Widening expected_vct to the alias would be a scope escalation — the pin is exact.
+    with pytest.raises(ClaimsInvalid, match="!= expected"):
+        suite.verify(sd_jwt, public_key_jwk=key.public_jwk(), expected_vct=alias)
+
+
+@pytest.mark.parametrize("aka", [
+    [],
+    [""],
+    ["urn:example:ok", 1],
+    VCT,
+    [VCT],
+    "urn:example:not-an-array",
+])
+def test_aka_vcts_fails_closed_on_the_draft_18_shape(aka):
+    key = _issuer_key()
+    claims = {**_base_claims(), "aka_vcts": aka}
+    with pytest.raises(ClaimsInvalid, match="aka_vcts"):
+        suite.issue(claims, signing_key=key, disclosable=["age"])
+
+
 # --------------------------------------------------------------------------- #
 # nested + array-element disclosure (verifier must handle both)
 # --------------------------------------------------------------------------- #
