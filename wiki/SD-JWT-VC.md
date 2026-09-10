@@ -35,6 +35,15 @@ result = suite.verify(
 print(result.vct, result.key_bound, result.claims["given_name"])
 ```
 
+When `require_key_binding=True`, the KB-JWT (signature, `aud`, `nonce`, `sd_hash`)
+is verified **even if** the issuer JWT is expired or not-yet-valid. A temporal
+failure (`ClaimsInvalid` matching `expired` / `not yet valid`) from that call
+therefore means the presentation was **bound**; a key-binding failure (wrong
+`aud`/`nonce`, missing KB-JWT, or `SignatureInvalid` on the KB) means it was
+unbound — do not treat `EXPIRED` as proof of holder binding. The hosted path
+(`require_key_binding=False`) is unchanged: expiry still fails before any KB
+check.
+
 `aka_vcts` (draft-18) is an optional array of *additional* types the issuer asserts
 the credential also is. When present it must be a non-empty list of non-empty
 strings that does not contain `vct`; when absent, nothing changes.

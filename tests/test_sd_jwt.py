@@ -337,6 +337,81 @@ def test_key_binding_required_but_absent():
                      require_key_binding=True)
 
 
+def _issue_bound_expired(issuer_key, holder_key, **issue_kw):
+    return suite.issue(
+        _base_claims(), signing_key=issuer_key,
+        disclosable=["given_name", "age"],
+        holder_jwk=holder_key.public_jwk(), expires_in_s=-3600, **issue_kw)
+
+
+def test_expired_key_bound_presentation_checks_kb_before_temporal():
+    """#182: require_key_binding=True verifies the KB-JWT even if exp has passed.
+
+    A temporal failure after that call means the presentation was bound; a
+    key-binding failure (wrong nonce, wrong holder key, missing KB) must
+    surface as the binding error, never as 'expired'.
+    """
+    issuer_key, holder_key = _issuer_key(), _issuer_key()
+    sd_jwt = _issue_bound_expired(issuer_key, holder_key)
+    presentation = suite.create_presentation(
+        sd_jwt, holder_key=holder_key, audience="aud", nonce="n")
+
+    with pytest.raises(ClaimsInvalid, match="expired"):
+        suite.verify(presentation, public_key_jwk=issuer_key.public_jwk(),
+                     audience="aud", nonce="n", require_key_binding=True)
+
+    with pytest.raises(ClaimsInvalid, match="nonce"):
+        suite.verify(presentation, public_key_jwk=issuer_key.public_jwk(),
+                     audience="aud", nonce="WRONG", require_key_binding=True)
+
+    with pytest.raises(ClaimsInvalid, match="aud"):
+        suite.verify(presentation, public_key_jwk=issuer_key.public_jwk(),
+                     audience="WRONG", nonce="n", require_key_binding=True)
+
+    other = _issuer_key()
+    forged = suite.create_presentation(
+        sd_jwt, holder_key=other, audience="aud", nonce="n")
+    with pytest.raises(SignatureInvalid, match="KB-JWT"):
+        suite.verify(forged, public_key_jwk=issuer_key.public_jwk(),
+                     audience="aud", nonce="n", require_key_binding=True)
+
+    with pytest.raises(ClaimsInvalid, match="no KB-JWT"):
+        suite.verify(sd_jwt, public_key_jwk=issuer_key.public_jwk(),
+                     audience="aud", nonce="n", require_key_binding=True)
+
+
+def test_not_yet_valid_key_bound_presentation_checks_kb_before_temporal():
+    issuer_key, holder_key = _issuer_key(), _issuer_key()
+    future = int(time.time()) + 3600
+    sd_jwt = suite.issue(
+        dict(_base_claims(), nbf=future), signing_key=issuer_key,
+        disclosable=["given_name", "age"], holder_jwk=holder_key.public_jwk())
+    presentation = suite.create_presentation(
+        sd_jwt, holder_key=holder_key, audience="aud", nonce="n")
+    with pytest.raises(ClaimsInvalid, match="not yet valid"):
+        suite.verify(presentation, public_key_jwk=issuer_key.public_jwk(),
+                     audience="aud", nonce="n", require_key_binding=True)
+    with pytest.raises(ClaimsInvalid, match="nonce"):
+        suite.verify(presentation, public_key_jwk=issuer_key.public_jwk(),
+                     audience="aud", nonce="WRONG", require_key_binding=True)
+
+
+def test_expired_hosted_path_still_rejects_before_kb():
+    """#182: require_key_binding=False keeps temporal-first (hosted / no-KB)."""
+    issuer_key, holder_key = _issuer_key(), _issuer_key()
+    sd_jwt = _issue_bound_expired(issuer_key, holder_key)
+    presentation = suite.create_presentation(
+        sd_jwt, holder_key=holder_key, audience="aud", nonce="n")
+    # A forged KB must not be inspected: expiry is the verdict.
+    other = _issuer_key()
+    forged = suite.create_presentation(
+        sd_jwt, holder_key=other, audience="aud", nonce="n")
+    with pytest.raises(ClaimsInvalid, match="expired"):
+        suite.verify(forged, public_key_jwk=issuer_key.public_jwk())
+    with pytest.raises(ClaimsInvalid, match="expired"):
+        suite.verify(presentation, public_key_jwk=issuer_key.public_jwk())
+
+
 # --------------------------------------------------------------------------- #
 # inspection + status integration
 # --------------------------------------------------------------------------- #

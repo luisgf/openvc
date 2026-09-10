@@ -4,6 +4,19 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.26.1] — unreleased
+
+### Security
+
+- **SD-JWT VC key binding is verified even when the issuer JWT is expired**
+  ([#182](https://github.com/luisgf/openvc/issues/182)). With
+  `require_key_binding=True`, `SdJwtVcProofSuite.verify` (and
+  `verify_credential`) checks the KB-JWT — signature, `aud`, `nonce`,
+  `sd_hash` — **before** `exp`/`nbf`. A temporal failure then means the
+  presentation was bound; a key-binding failure (wrong nonce, forged
+  holder key, missing KB) is no longer hidden behind `ClaimsInvalid:
+  expired`. The hosted path (`require_key_binding=False`) is unchanged.
+
 ## [1.26.0] — 2026-08-14
 
 ### Added
