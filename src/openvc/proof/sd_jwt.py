@@ -359,6 +359,13 @@ class SdJwtVcProofSuite:
         disclosures, and — if a KB-JWT is present (or required) — verifies it
         against the holder key in ``cnf`` and checks ``aud`` / ``nonce`` /
         ``sd_hash``.
+
+        When *require_key_binding* is True the KB-JWT is verified **before**
+        ``exp``/``nbf``: an expired (or not-yet-valid) issuer JWT still has its
+        holder binding checked, so a temporal failure means the presentation was
+        bound and a key-binding failure means it was not. The hosted path
+        (*require_key_binding* False) is unchanged — temporal still runs before
+        any optional KB-JWT.
         """
         issuer_jwt, disclosures, kb_jwt = self._split(presentation)
         header, claims, signing_input, signature = self._decode_jws(issuer_jwt)
@@ -371,15 +378,32 @@ class SdJwtVcProofSuite:
         reject_unknown_crit(header)
         self._verify_signature(alg, public_key_jwk, signing_input, signature,
                                what="issuer JWT")
-        self._check_temporal(claims)
 
-        iss = claims.get("iss")
-        if not isinstance(iss, str):
-            raise ClaimsInvalid("iss claim is missing or not a string")
+        def _iss_and_hash() -> tuple[str, str]:
+            iss_claim = claims.get("iss")
+            if not isinstance(iss_claim, str):
+                raise ClaimsInvalid("iss claim is missing or not a string")
+            alg_name = claims.get("_sd_alg", _DEFAULT_HASH)
+            if alg_name not in _HASHES:
+                raise SdJwtError(f"unsupported _sd_alg {alg_name!r}")
+            return iss_claim, alg_name
 
-        hash_name = claims.get("_sd_alg", _DEFAULT_HASH)
-        if hash_name not in _HASHES:
-            raise SdJwtError(f"unsupported _sd_alg {hash_name!r}")
+        # Presentation path: prove holder binding even when the issuer JWT is
+        # expired / not-yet-valid, then surface the temporal verdict. A
+        # "token has expired" after this call means the KB-JWT verified.
+        # Hosted / no-KB path: temporal first, same order as before.
+        if require_key_binding:
+            iss, hash_name = _iss_and_hash()
+            key_bound = self._verify_key_binding(
+                kb_jwt, issuer_jwt, disclosures, claims.get("cnf"),
+                hash_name=hash_name, audience=audience, nonce=nonce,
+                required=True)
+            self._check_temporal(claims)
+        else:
+            self._check_temporal(claims)
+            iss, hash_name = _iss_and_hash()
+            key_bound = False
+
         by_digest = self._index_disclosures(disclosures, hash_name)
         used: set[str] = set()
         unpacked = _unpack(claims, by_digest, used, set())
@@ -399,10 +423,11 @@ class SdJwtVcProofSuite:
             raise ClaimsInvalid(f"vct {vct!r} != expected {expected_vct!r}")
         _check_aka_vcts(unpacked)
 
-        key_bound = self._verify_key_binding(
-            kb_jwt, issuer_jwt, disclosures, claims.get("cnf"),
-            hash_name=hash_name, audience=audience, nonce=nonce,
-            required=require_key_binding)
+        if not require_key_binding:
+            key_bound = self._verify_key_binding(
+                kb_jwt, issuer_jwt, disclosures, claims.get("cnf"),
+                hash_name=hash_name, audience=audience, nonce=nonce,
+                required=False)
 
         return VerifiedSdJwt(
             claims=unpacked, issuer=iss, vct=vct if isinstance(vct, str) else None,

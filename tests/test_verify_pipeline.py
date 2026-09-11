@@ -222,6 +222,34 @@ def test_sd_jwt_end_to_end():
     assert result.credential["given_name"] == "Ada"
 
 
+def test_sd_jwt_expired_key_bound_presentation_checks_kb():
+    """#182: verify_credential with require_key_binding=True checks the KB-JWT
+    even when the issuer JWT is expired, so a forged holder key is not an
+    EXPIRED verdict."""
+    from openvc.proof.vc_jwt import ClaimsInvalid, SignatureInvalid
+
+    issuer = Ed25519SigningKey.generate(kid=VM)
+    holder = Ed25519SigningKey.generate(kid="did:key:zHolder#0")
+    other = Ed25519SigningKey.generate(kid="did:key:zOther#0")
+    suite = SdJwtVcProofSuite()
+    sd = suite.issue(
+        {"iss": ISS, "given_name": "Ada", "age": 36}, signing_key=issuer,
+        disclosable=["given_name", "age"], holder_jwk=holder.public_jwk(),
+        vct="https://credentials.example/id", expires_in_s=-3600)
+    pres = suite.create_presentation(
+        sd, holder_key=holder, audience="https://verifier.example", nonce="n-1")
+    forged = suite.create_presentation(
+        sd, holder_key=other, audience="https://verifier.example", nonce="n-1")
+    reg = _Registry().add(ISS, VM, issuer.public_jwk())
+    bound = VerificationPolicy(
+        audience="https://verifier.example", nonce="n-1",
+        require_key_binding=True, expected_vct="https://credentials.example/id")
+    with pytest.raises(ClaimsInvalid, match="expired"):
+        verify_credential(pres, resolver=reg, policy=bound)
+    with pytest.raises(SignatureInvalid, match="KB-JWT"):
+        verify_credential(forged, resolver=reg, policy=bound)
+
+
 # --------------------------------------------------------------------------- #
 # Enveloped (VCDM 2.0)
 # --------------------------------------------------------------------------- #
