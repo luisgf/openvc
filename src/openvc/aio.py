@@ -233,7 +233,9 @@ async def _verify_vc_jwt_async(
         token, iss, kid, sd_jwt=False, resolver=resolver,
         jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
         x5c_trust_anchors=x5c_trust_anchors, now=policy.now)
-    verified = suite.verify(token, public_key_jwk=jwk, audience=policy.audience)
+    verified = suite.verify(
+        token, public_key_jwk=jwk, audience=policy.audience,
+        check_temporal=policy.require_not_expired)
     _check_types(verified.credential, policy.expected_types)
     status = await _check_status_async(verified.credential, verified.claims, policy,
                                        resolve_status_list, resolve_status_list_token,
@@ -261,7 +263,8 @@ async def _verify_sd_jwt_async(
         x5c_trust_anchors=x5c_trust_anchors, now=policy.now)
     verified = suite.verify(
         sd_jwt, public_key_jwk=jwk, audience=policy.audience, nonce=policy.nonce,
-        require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct)
+        require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct,
+        check_temporal=policy.require_not_expired)
     status = await _check_status_async(verified.claims, verified.claims, policy,
                                        resolve_status_list, resolve_status_list_token,
                                        credential_issuer=verified.issuer)
@@ -300,11 +303,12 @@ async def _verify_data_integrity_async(
     if fmt in (FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS):
         verified = suite.verify(
             doc, resolver=sync_resolver, expected_proof_purpose=policy.proof_purpose,
-            now=policy.now)
+            now=policy.now, check_temporal=policy.require_not_expired)
     else:
         verified = suite.verify(
             doc, resolver=sync_resolver, expected_proof_purpose=policy.proof_purpose,
-            now=policy.now, extra_contexts=extra_contexts)
+            now=policy.now, extra_contexts=extra_contexts,
+            check_temporal=policy.require_not_expired)
     _bind_issuer_to_verification_method(verified)
     _check_types(verified.credential, policy.expected_types)
     status = await _check_status_async(verified.credential, verified.credential, policy,
@@ -459,7 +463,7 @@ async def _check_status_async(
         else:
             w3c = await check_credential_status_async(
                 w3c_source, resolve_status_list=resolve_status_list)
-            if w3c.revoked:
+            if w3c.revoked and policy.require_not_revoked:
                 raise CredentialRevoked(f"credential {w3c_source.get('id')!r} is revoked")
             if w3c.suspended:
                 raise CredentialSuspended(f"credential {w3c_source.get('id')!r} is suspended")
@@ -478,7 +482,7 @@ async def _check_status_async(
                 ietf = await check_token_status_async(
                     ietf_source, resolve_status_list_token=resolve_status_list_token)
                 if ietf is not None:
-                    if ietf.revoked:
+                    if ietf.revoked and policy.require_not_revoked:
                         raise CredentialRevoked("token is revoked")
                     if ietf.suspended:
                         raise CredentialSuspended("token is suspended")
@@ -527,6 +531,10 @@ def _make_schema_verifier_async(
             leeway_s=policy.leeway_s,
             require_status=policy.require_status,
             now=policy.now,
+            require_not_expired=policy.require_not_expired,
+            require_not_revoked=policy.require_not_revoked,
+            require_status_issuer_binding=policy.require_status_issuer_binding,
+            status_issuer_allowlist=policy.status_issuer_allowlist,
         )
         result = await verify_credential_async(
             _bytes_to_credential(raw), policy=inner_policy, resolver=resolver,

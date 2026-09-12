@@ -82,6 +82,7 @@ def default_type_metadata_resolver(
 def default_status_list_resolver(
     *, resolver: Any = None, jwt_vc_issuer_fetch: Any = None,
     leeway_s: int = 60, extra_contexts: Any = None, fetch: Any = https_text_fetch,
+    expected_issuer: str | None = None,
 ) -> ResolveStatusList:
     """A ``resolve_status_list`` (W3C Bitstring) that fetches the status-list
     credential over the SSRF-guarded https fetch and **verifies** it through the
@@ -91,6 +92,7 @@ def default_status_list_resolver(
     def resolve(url: str) -> dict:
         from .verify import VerificationPolicy, verify_credential
         credential = _as_credential(fetch(url))
+        _require_expected_issuer(_claimed_list_issuer(credential), expected_issuer)
         result = verify_credential(
             credential, resolver=resolver, jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             policy=VerificationPolicy(require_status=False, leeway_s=leeway_s),
@@ -102,6 +104,7 @@ def default_status_list_resolver(
 def default_status_list_token_resolver(
     *, resolver: Any = None, jwt_vc_issuer_fetch: Any = None,
     leeway_s: int = 60, fetch: Any = https_text_fetch,
+    expected_issuer: str | None = None,
 ) -> ResolveStatusListToken:
     """A ``resolve_status_list_token`` (IETF) that fetches the ``statuslist+jwt``
     token over the SSRF-guarded https fetch, resolves the issuer key, verifies the
@@ -117,11 +120,56 @@ def default_status_list_token_resolver(
         if not isinstance(iss, str) or not iss:
             raise StatusListError(
                 "status list token has no string `iss` to resolve its key")
+        _require_expected_issuer(iss, expected_issuer)
         reg = resolver if resolver is not None else default_resolver()
         jwk = _resolve_jose_key(reg, iss, kid, jwt_vc_issuer_fetch)
         return verify_status_list_token(
             token, public_key_jwk=jwk, expected_uri=uri, leeway_s=leeway_s)
     return resolve
+
+
+def _require_expected_issuer(claimed: str | None, expected: str | None) -> None:
+    """Refuse a foreign-issuer list before its key is resolved (skip-work).
+
+    Never admits a list: only skips the second hop when both issuers are
+    readable strings and differ. Unreadable values leave the decision to the
+    authenticated binding check after verification.
+    """
+    if expected is None or claimed is None:
+        return
+    if claimed != expected:
+        from .status import StatusListError
+        raise StatusListError(
+            f"status list issuer {claimed!r} does not match expected issuer {expected!r}")
+
+
+def _claimed_list_issuer(credential: Any) -> str | None:
+    if isinstance(credential, dict):
+        issuer = credential.get("issuer")
+        if isinstance(issuer, str):
+            return issuer
+        if isinstance(issuer, dict):
+            ident = issuer.get("id")
+            return ident if isinstance(ident, str) else None
+        return None
+    if isinstance(credential, str):
+        from .proof._jws import parse_compact
+        try:
+            _, payload, _, _ = parse_compact(credential.strip())
+        except Exception:  # noqa: BLE001 — skip-work; unverified parse
+            return None
+        iss = payload.get("iss")
+        if isinstance(iss, str):
+            return iss
+        vc = payload.get("vc")
+        if isinstance(vc, dict):
+            inner = vc.get("issuer")
+            if isinstance(inner, str):
+                return inner
+            if isinstance(inner, dict):
+                ident = inner.get("id")
+                return ident if isinstance(ident, str) else None
+    return None
 
 
 def _as_credential(raw: str) -> Any:
@@ -153,6 +201,7 @@ def default_credential_schema_resolver_async(
 def default_status_list_resolver_async(
     *, resolver: Any = None, jwt_vc_issuer_fetch: Any = None,
     leeway_s: int = 60, extra_contexts: Any = None, fetch: Any = https_text_fetch_async,
+    expected_issuer: str | None = None,
 ) -> AsyncResolveStatusList:
     """Async :func:`default_status_list_resolver` — fetches the status-list credential
     over the SSRF-guarded async fetch and **verifies** it through the async pipeline
@@ -161,6 +210,7 @@ def default_status_list_resolver_async(
         from .aio import verify_credential_async
         from .verify import VerificationPolicy
         credential = _as_credential(await fetch(url))
+        _require_expected_issuer(_claimed_list_issuer(credential), expected_issuer)
         result = await verify_credential_async(
             credential, resolver=resolver, jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             policy=VerificationPolicy(require_status=False, leeway_s=leeway_s),
@@ -172,6 +222,7 @@ def default_status_list_resolver_async(
 def default_status_list_token_resolver_async(
     *, resolver: Any = None, jwt_vc_issuer_fetch: Any = None,
     leeway_s: int = 60, fetch: Any = https_text_fetch_async,
+    expected_issuer: str | None = None,
 ) -> AsyncResolveStatusListToken:
     """Async :func:`default_status_list_token_resolver` — fetches the ``statuslist+jwt``
     over the SSRF-guarded async fetch, resolves the issuer key via the async pipeline,
@@ -186,6 +237,7 @@ def default_status_list_token_resolver_async(
         if not isinstance(iss, str) or not iss:
             raise StatusListError(
                 "status list token has no string `iss` to resolve its key")
+        _require_expected_issuer(iss, expected_issuer)
         reg = resolver if resolver is not None else default_async_resolver()
         jwk = await _resolve_jose_key_async(reg, iss, kid, jwt_vc_issuer_fetch)
         return verify_status_list_token(

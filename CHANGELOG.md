@@ -4,7 +4,28 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.26.1] — unreleased
+## [1.27.0] — 2026-09-12
+
+### Added
+
+- **`jwt_vc_issuer_fetch`, status resolvers and `x5c_trust_anchors` on
+  `verify_vp_token` / `verify_encrypted_vp_response`**
+  ([#181](https://github.com/luisgf/openvc/issues/181)). The SD-JWT path
+  forwards them to `verify_credential`. `require_status` defaults to
+  `False` (unchanged presentation-layer behaviour); pass `True` plus a
+  resolver to fail-close on credential status.
+- **`VerificationPolicy.require_not_expired` / `require_not_revoked`**
+  (default `True`). Independent of authenticity: signature, issuer,
+  holder-binding and status-list verification still run. Setting either
+  to `False` only waives the matching *disposition*. `VerificationResult.expired`
+  is add-only (default `False`).
+- **`expected_issuer=` on the blessed status-list resolvers.** When both
+  the fetched list's `iss`/`issuer` and the expected value are readable
+  strings and differ, the resolver raises `StatusListError` *before*
+  resolving the list issuer's key.
+- The bundled JSON-LD `document_loader` now tags contexts `static` so
+  pyld does not re-resolve term definitions on every canonicalization
+  ([#183](https://github.com/luisgf/openvc/issues/183)).
 
 ### Security
 
@@ -1748,6 +1769,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.27.0]: https://github.com/luisgf/openvc/releases/tag/v1.27.0
 [1.26.0]: https://github.com/luisgf/openvc/releases/tag/v1.26.0
 [1.25.0]: https://github.com/luisgf/openvc/releases/tag/v1.25.0
 [1.24.0]: https://github.com/luisgf/openvc/releases/tag/v1.24.0

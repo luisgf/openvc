@@ -187,6 +187,7 @@ class VcJwtProofSuite:
         public_key_jwk: dict[str, Any],
         expected_types: list[str] | None = None,
         audience: str | None = None,
+        check_temporal: bool = True,
     ) -> VerifiedCredential:
         """Verify signature + temporal claims + VC-JWT reconciliation."""
         header_b64, _, _ = _split(token)
@@ -205,7 +206,8 @@ class VcJwtProofSuite:
         if alg in ALLOWED_ALGS_PQ:
             # ML-DSA is not a PyJWT algorithm — verify the signature through the
             # dependency-light primitive and validate the JWT claims ourselves.
-            claims = self._verify_mldsa(token, alg, public_key_jwk, audience)
+            claims = self._verify_mldsa(
+                token, alg, public_key_jwk, audience, check_temporal=check_temporal)
         else:
             key = self._jwk_to_key(public_key_jwk, alg)
             try:
@@ -218,7 +220,7 @@ class VcJwtProofSuite:
                     options={
                         "require": ["iss"],
                         "verify_signature": True,
-                        "verify_exp": True,
+                        "verify_exp": check_temporal,
                         "verify_nbf": True,
                         "verify_aud": audience is not None,
                     },
@@ -238,7 +240,9 @@ class VcJwtProofSuite:
         # VCDM 2.0 envelopes among them — may encode expiry ONLY in the credential body;
         # without this an expired such credential would still verify. Same leeway; there
         # is no Data-Integrity proof object on the JOSE path, so pass an empty one.
-        check_validity_window(credential, {}, now=None, leeway_s=self._leeway)
+        check_validity_window(
+            credential, {}, now=None, leeway_s=self._leeway,
+            check_temporal=check_temporal)
 
         issuer, subject = self._reconcile(claims, credential)
         if expected_types:
@@ -291,6 +295,7 @@ class VcJwtProofSuite:
 
     def _verify_mldsa(
         self, token: str, alg: str, public_key_jwk: dict[str, Any], audience: str | None,
+        *, check_temporal: bool = True,
     ) -> dict[str, Any]:
         """Verify an ML-DSA VC-JWT: signature via the dependency-light primitive (PyJWT
         has no ML-DSA), then the JWT claims validated here."""
@@ -319,15 +324,20 @@ class VcJwtProofSuite:
             raise MalformedToken("payload is not valid JSON") from exc
         if not isinstance(claims, dict):
             raise ClaimsInvalid("JWT payload must be a JSON object")
-        self._check_jwt_claims(claims, audience)
+        self._check_jwt_claims(claims, audience, check_temporal=check_temporal)
         return claims
 
-    def _check_jwt_claims(self, claims: dict[str, Any], audience: str | None) -> None:
+    def _check_jwt_claims(
+        self, claims: dict[str, Any], audience: str | None, *,
+        check_temporal: bool = True,
+    ) -> None:
         # Mirror the PyJWT gate for the ML-DSA path: require iss, enforce exp/nbf with the
         # suite leeway (shared non-finite-safe helper), check aud when expected.
         if not isinstance(claims.get("iss"), str):
             raise ClaimsInvalid("the 'iss' claim is required")
-        check_jwt_temporal(claims, leeway_s=self._leeway, subject="token")
+        check_jwt_temporal(
+            claims, leeway_s=self._leeway, subject="token",
+            check_temporal=check_temporal)
         if audience is not None:
             aud = claims.get("aud")
             auds = aud if isinstance(aud, list) else [aud]

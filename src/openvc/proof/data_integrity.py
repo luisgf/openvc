@@ -189,6 +189,7 @@ class DataIntegrityProofSuite:
         expected_domain: str | None = None,
         now: datetime | None = None,
         extra_contexts: Mapping[str, dict] | None = None,
+        check_temporal: bool = True,
     ) -> VerifiedDataIntegrity:
         """Verify the embedded proof end to end.
 
@@ -224,7 +225,9 @@ class DataIntegrityProofSuite:
         check_proof_purpose(proof, expected_proof_purpose)
         check_presentation_binding(
             proof, expected_challenge=expected_challenge, expected_domain=expected_domain)
-        check_validity_window(unsecured, proof, now=now, leeway_s=self._leeway)
+        check_validity_window(
+            unsecured, proof, now=now, leeway_s=self._leeway,
+            check_temporal=check_temporal)
 
         issuer = secured.get("issuer")
         issuer = issuer.get("id") if isinstance(issuer, dict) else issuer

@@ -106,6 +106,7 @@ def check_validity_window(
     *,
     now: datetime | None,
     leeway_s: int,
+    check_temporal: bool = True,
 ) -> None:
     """Enforce the credential's validity window and the proof's own expiry.
 
@@ -130,11 +131,11 @@ def check_validity_window(
             f"credential is not valid before {not_before.isoformat()}")
 
     not_after = _bound(document, "validUntil", "expirationDate")
-    if not_after is not None and instant - leeway > not_after:
+    if check_temporal and not_after is not None and instant - leeway > not_after:
         raise CredentialExpired(f"credential expired at {not_after.isoformat()}")
 
     proof_expires = _bound(proof, "expires", "expirationDate")
-    if proof_expires is not None and instant - leeway > proof_expires:
+    if check_temporal and proof_expires is not None and instant - leeway > proof_expires:
         raise CredentialExpired(f"proof expired at {proof_expires.isoformat()}")
 
 
@@ -172,6 +173,7 @@ def prepare_di_proof(
 def check_jwt_temporal(
     claims: dict[str, Any], *, leeway_s: int, subject: str = "token",
     now: int | None = None,
+    check_temporal: bool = True,
 ) -> None:
     """Enforce a JWT's ``exp``/``nbf`` NumericDate claims, fail-closed.
 
@@ -187,7 +189,7 @@ def check_jwt_temporal(
     if exp is not None:
         if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
             raise ClaimsInvalid(f"{subject} exp must be a finite numeric timestamp")
-        if current > exp + leeway_s:
+        if check_temporal and current > exp + leeway_s:
             raise ClaimsInvalid(f"{subject} has expired")
     nbf = claims.get("nbf")
     if nbf is not None:

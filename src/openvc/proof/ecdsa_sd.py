@@ -594,6 +594,7 @@ class EcdsaSdProofSuite:
         expected_proof_purpose: str | None = "assertionMethod",
         now: datetime | None = None,
         extra_contexts: Mapping[str, dict] | None = None,
+        check_temporal: bool = True,
     ) -> VerifiedSdCredential:
         """Verify a derived proof: the issuer's base signature over the mandatory
         statements, and the per-statement signatures over each disclosed one.
@@ -662,7 +663,9 @@ class EcdsaSdProofSuite:
                 raise SignatureInvalid("a disclosed statement signature does not verify")
 
         check_proof_purpose(proof, expected_proof_purpose)
-        check_validity_window(unsecured, proof, now=now, leeway_s=self._leeway)
+        check_validity_window(
+            unsecured, proof, now=now, leeway_s=self._leeway,
+            check_temporal=check_temporal)
 
         issuer = unsecured.get("issuer")
         issuer = issuer.get("id") if isinstance(issuer, dict) else issuer

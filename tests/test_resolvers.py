@@ -9,9 +9,11 @@ returning it, so a forged status list can never clear revocation.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from openvc import verify_credential
+from openvc import VerificationPolicy, verify_credential
 from openvc.did.base import DidResolutionError, parse_did_document
 from openvc.errors import OpenvcError
 from openvc.fetch import UnsafeUrlError, https_text_fetch
@@ -177,6 +179,73 @@ def test_status_list_token_resolver_requires_iss():
 # --------------------------------------------------------------------------- #
 # the guarded text fetch these default to
 # --------------------------------------------------------------------------- #
+
+def test_status_list_resolver_refuses_foreign_issuer_before_key_fetch():
+    foreign = "did:web:attacker.example"
+    resolved: list[str] = []
+
+    class _Noop:
+        def supports(self, did: str) -> bool:
+            resolved.append(did)
+            return False
+
+        def resolve(self, did: str) -> object:
+            raise AssertionError("foreign issuer key must not be resolved")
+
+    resolve = default_status_list_resolver(
+        resolver=_Noop(), expected_issuer=ISS,
+        fetch=lambda u: json.dumps({"issuer": foreign, "type": ["VerifiableCredential"]}),
+    )
+    with pytest.raises(StatusListError, match="does not match expected issuer"):
+        resolve(LIST_URL)
+    assert foreign not in resolved
+
+
+def test_status_list_token_resolver_refuses_foreign_iss_before_key_fetch():
+    import base64
+
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "ES256", "typ": "statuslist+jwt"}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"iss": "https://evil.example"}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    token = f"{header}.{payload}.sig"
+    resolved: list[str] = []
+
+    class _Noop:
+        def supports(self, did: str) -> bool:
+            resolved.append(did)
+            return False
+
+        def resolve(self, did: str) -> object:
+            raise AssertionError("foreign issuer key must not be resolved")
+
+    resolve = default_status_list_token_resolver(
+        resolver=_Noop(), expected_issuer=ISS, fetch=lambda u: token,
+    )
+    with pytest.raises(StatusListError, match="does not match expected issuer"):
+        resolve(TOKEN_URI)
+    assert not resolved
+
+
+def test_require_not_revoked_returns_authenticated_revoked_status():
+    sk = P256SigningKey.generate(kid=VM)
+    reg = _registry(ISS, VM, sk.public_jwk())
+    entry = build_status_list_entry(status_list_credential=LIST_URL, index=5)
+    subject = VcJwtProofSuite().sign(_subject_cred(credentialStatus=entry), signing_key=sk)
+    revoked = default_status_list_resolver(
+        resolver=reg, fetch=lambda u: _signed_status_vc(sk, 5))
+    result = verify_credential(
+        subject, resolver=reg, resolve_status_list=revoked,
+        policy=VerificationPolicy(require_not_revoked=False),
+    )
+    assert result.status is not None and result.status.revoked
+
 
 def test_https_text_fetch_is_ssrf_guarded():
     with pytest.raises(UnsafeUrlError):

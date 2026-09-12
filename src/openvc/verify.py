@@ -59,7 +59,8 @@ if TYPE_CHECKING:
 from .cache import batch_resolvers
 from .errors import OpenvcError
 from .observability import logger, span
-from .proof._verify_common import DEFAULT_LEEWAY_S
+from .proof._verify_common import DEFAULT_LEEWAY_S, check_jwt_temporal, check_validity_window
+from .proof.errors import ClaimsInvalid, CredentialExpired
 from .schema import (
     SchemaUnavailable,
     SchemaValidationResult,
@@ -152,6 +153,12 @@ class VerificationPolicy:
     # list's issuer to the credential's issuer; the allow-list adds trusted delegates.
     require_status_issuer_binding: bool = False
     status_issuer_allowlist: frozenset[str] | None = None
+    # Independent of authenticity. False still verifies the signature, issuer,
+    # holder-binding, nbf and status *list* — it only stops a matching
+    # expired/revoked *disposition* from failing the call. Default True
+    # (fail-closed). JOSE ``now`` is still wall-clock unless a suite pins it.
+    require_not_expired: bool = True
+    require_not_revoked: bool = True
 
 
 @dataclass(frozen=True)
@@ -166,6 +173,32 @@ class VerificationResult:
     status: Union[StatusResult, TokenStatusResult, None] = None
     schema: SchemaValidationResult | None = None  # credentialSchema validation, if run
     raw: Any = None                            # the underlying suite result
+    # True when temporal checks ran and the credential is past validUntil/exp
+    # but ``require_not_expired`` waived the failure. Default False so existing
+    # constructions stay valid (add-only).
+    expired: bool = False
+
+
+def _expired_flag(
+    policy: VerificationPolicy,
+    credential: dict[str, Any] | None,
+    claims: dict[str, Any] | None,
+) -> bool:
+    """True when expiry was waived and the credential is past its validity window."""
+    if policy.require_not_expired:
+        return False
+    if isinstance(credential, dict):
+        try:
+            check_validity_window(
+                credential, {}, now=policy.now, leeway_s=policy.leeway_s)
+        except CredentialExpired:
+            return True
+    if claims:
+        try:
+            check_jwt_temporal(claims, leeway_s=policy.leeway_s)
+        except ClaimsInvalid as exc:
+            return "expired" in str(exc).lower()
+    return False
 
 
 @dataclass(frozen=True)
@@ -387,6 +420,10 @@ def _make_schema_verifier(
             leeway_s=policy.leeway_s,
             require_status=policy.require_status,
             now=policy.now,
+            require_not_expired=policy.require_not_expired,
+            require_not_revoked=policy.require_not_revoked,
+            require_status_issuer_binding=policy.require_status_issuer_binding,
+            status_issuer_allowlist=policy.status_issuer_allowlist,
         )
         return verify_credential(
             _bytes_to_credential(raw), policy=inner_policy, resolver=resolver,
@@ -481,7 +518,9 @@ def _verify_vc_jwt(token: str, policy: VerificationPolicy, resolver: Any,
         token, iss, kid, sd_jwt=False, resolver=resolver,
         jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
         x5c_trust_anchors=x5c_trust_anchors, now=policy.now)
-    verified = suite.verify(token, public_key_jwk=jwk, audience=policy.audience)
+    verified = suite.verify(
+        token, public_key_jwk=jwk, audience=policy.audience,
+        check_temporal=policy.require_not_expired)
     _check_types(verified.credential, policy.expected_types)
     # W3C status is in the vc object; an IETF `status` claim is in the JWT payload
     status = _check_status(verified.credential, verified.claims, policy,
@@ -492,7 +531,8 @@ def _verify_vc_jwt(token: str, policy: VerificationPolicy, resolver: Any,
     return VerificationResult(
         format=FORMAT_VC_JWT, credential=verified.credential, claims=verified.claims,
         issuer=verified.issuer, subject=verified.subject, status=status,
-        schema=schema, raw=verified)
+        schema=schema, raw=verified,
+        expired=_expired_flag(policy, verified.credential, verified.claims))
 
 
 def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
@@ -509,7 +549,8 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
         x5c_trust_anchors=x5c_trust_anchors, now=policy.now)
     verified = suite.verify(
         sd_jwt, public_key_jwk=jwk, audience=policy.audience, nonce=policy.nonce,
-        require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct)
+        require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct,
+        check_temporal=policy.require_not_expired)
     # the disclosed claims may carry either a W3C credentialStatus or an IETF status
     status = _check_status(verified.claims, verified.claims, policy,
                            resolve_status_list, resolve_status_list_token,
@@ -521,7 +562,8 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
     return VerificationResult(
         format=FORMAT_SD_JWT_VC, credential=verified.claims, claims=verified.claims,
         issuer=verified.issuer, subject=_as_str(verified.claims.get("sub")),
-        key_bound=verified.key_bound, status=status, schema=schema, raw=verified)
+        key_bound=verified.key_bound, status=status, schema=schema, raw=verified,
+        expired=_expired_flag(policy, verified.claims, verified.claims))
 
 
 def _verify_data_integrity(
@@ -550,11 +592,12 @@ def _verify_data_integrity(
     if fmt in (FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS):
         verified = suite.verify(
             doc, resolver=resolver, expected_proof_purpose=policy.proof_purpose,
-            now=policy.now)
+            now=policy.now, check_temporal=policy.require_not_expired)
     else:
         verified = suite.verify(
             doc, resolver=resolver, expected_proof_purpose=policy.proof_purpose,
-            now=policy.now, extra_contexts=extra_contexts)
+            now=policy.now, extra_contexts=extra_contexts,
+            check_temporal=policy.require_not_expired)
     _bind_issuer_to_verification_method(verified)
     _check_types(verified.credential, policy.expected_types)
     # DI credentials use W3C credentialStatus, but pass the doc as the IETF source
@@ -566,7 +609,8 @@ def _verify_data_integrity(
                            verify_inner)
     return VerificationResult(
         format=fmt, credential=verified.credential, issuer=verified.issuer,
-        subject=verified.subject, status=status, schema=schema, raw=verified)
+        subject=verified.subject, status=status, schema=schema, raw=verified,
+        expired=_expired_flag(policy, verified.credential, None))
 
 
 # -- shared helpers --------------------------------------------------------- #
@@ -713,7 +757,7 @@ def _check_status(
             _fail_closed(policy, "credentialStatus", "resolve_status_list")
         else:
             w3c = check_credential_status(w3c_source, resolve_status_list=resolve_status_list)
-            if w3c.revoked:
+            if w3c.revoked and policy.require_not_revoked:
                 raise CredentialRevoked(f"credential {w3c_source.get('id')!r} is revoked")
             if w3c.suspended:
                 raise CredentialSuspended(f"credential {w3c_source.get('id')!r} is suspended")
@@ -733,7 +777,7 @@ def _check_status(
                 ietf = check_token_status(
                     ietf_source, resolve_status_list_token=resolve_status_list_token)
                 if ietf is not None:
-                    if ietf.revoked:
+                    if ietf.revoked and policy.require_not_revoked:
                         raise CredentialRevoked("token is revoked")
                     if ietf.suspended:
                         raise CredentialSuspended("token is suspended")

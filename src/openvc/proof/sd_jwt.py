@@ -362,6 +362,7 @@ class SdJwtVcProofSuite:
         nonce: str | None = None,
         require_key_binding: bool = False,
         expected_vct: str | None = None,
+        check_temporal: bool = True,
     ) -> VerifiedSdJwt:
         """Verify an SD-JWT (VC) presentation end to end.
 
@@ -408,9 +409,9 @@ class SdJwtVcProofSuite:
                 kb_jwt, issuer_jwt, disclosures, claims.get("cnf"),
                 hash_name=hash_name, audience=audience, nonce=nonce,
                 required=True)
-            self._check_temporal(claims)
+            self._check_temporal(claims, check_temporal=check_temporal)
         else:
-            self._check_temporal(claims)
+            self._check_temporal(claims, check_temporal=check_temporal)
             iss, hash_name = _iss_and_hash()
             key_bound = False
 
@@ -426,7 +427,7 @@ class SdJwtVcProofSuite:
         # RFC 9901 §7.1 step 6: nbf/exp are checked on the *processed* payload
         # if present. The issuer-JWT body was already checked above; if
         # `exp`/`nbf` were selectively disclosed they only appear after `_unpack`.
-        self._check_temporal(unpacked)
+        self._check_temporal(unpacked, check_temporal=check_temporal)
 
         vct = unpacked.get("vct")
         if expected_vct is not None and vct != expected_vct:
@@ -493,10 +494,14 @@ class SdJwtVcProofSuite:
         if not ok:
             raise SignatureInvalid(f"{what} signature failed")
 
-    def _check_temporal(self, claims: dict[str, Any]) -> None:
+    def _check_temporal(
+        self, claims: dict[str, Any], *, check_temporal: bool = True
+    ) -> None:
         # NumericDate exp/nbf, fail-closed and non-finite-safe, single-sourced across the
         # JOSE suites (openvc.proof._verify_common.check_jwt_temporal).
-        check_jwt_temporal(claims, leeway_s=self._leeway, subject="token")
+        check_jwt_temporal(
+            claims, leeway_s=self._leeway, subject="token",
+            check_temporal=check_temporal)
 
     def _index_disclosures(self, disclosures: list[str], hash_name: str) -> dict[str, list]:
         by_digest: dict[str, list] = {}

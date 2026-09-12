@@ -180,6 +180,11 @@ def verify_vp_token(
     leeway_s: int = DEFAULT_LEEWAY_S,
     extra_contexts: Mapping[str, dict] | None = None,
     require_holder_binding: bool = False,
+    jwt_vc_issuer_fetch: Any = None,
+    x5c_trust_anchors: Any = None,
+    resolve_status_list: Any = None,
+    resolve_status_list_token: Any = None,
+    require_status: bool = False,
 ) -> VpTokenVerification:
     """Verify an OpenID4VP 1.0 ``vp_token`` against the query and request binding.
 
@@ -266,7 +271,12 @@ def verify_vp_token(
                 expected_origins=expected_origins, trust_anchors=trust_anchors,
                 mdoc_jwk_thumbprint=mdoc_jwk_thumbprint,
                 resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
-                require_holder_binding=require_holder_binding))
+                require_holder_binding=require_holder_binding,
+                jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+                x5c_trust_anchors=x5c_trust_anchors,
+                resolve_status_list=resolve_status_list,
+                resolve_status_list_token=resolve_status_list_token,
+                require_status=require_status))
     return VpTokenVerification(presentations=tuple(verified))
 
 
@@ -285,6 +295,11 @@ def verify_encrypted_vp_response(
     leeway_s: int = DEFAULT_LEEWAY_S,
     extra_contexts: Mapping[str, dict] | None = None,
     require_holder_binding: bool = False,
+    jwt_vc_issuer_fetch: Any = None,
+    x5c_trust_anchors: Any = None,
+    resolve_status_list: Any = None,
+    resolve_status_list_token: Any = None,
+    require_status: bool = False,
 ) -> VpTokenVerification:
     """Decrypt a HAIP ``direct_post.jwt`` response (a JWE) and verify its ``vp_token``.
 
@@ -313,7 +328,12 @@ def verify_encrypted_vp_response(
         expected_origins=expected_origins, trust_anchors=trust_anchors,
         mdoc_jwk_thumbprint=mdoc_jwk_thumbprint, resolver=resolver, now=now,
         leeway_s=leeway_s, extra_contexts=extra_contexts,
-        require_holder_binding=require_holder_binding)
+        require_holder_binding=require_holder_binding,
+        jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+        x5c_trust_anchors=x5c_trust_anchors,
+        resolve_status_list=resolve_status_list,
+        resolve_status_list_token=resolve_status_list_token,
+        require_status=require_status)
 
 
 def _parse_vp_token(vp_token: Mapping[str, Any] | str) -> Mapping[str, Any]:
@@ -433,6 +453,11 @@ def _verify_one(
     mdoc_jwk_thumbprint: bytes | None,
     resolver: Any, now: datetime | None, leeway_s: int,
     extra_contexts: Mapping[str, dict] | None, require_holder_binding: bool,
+    jwt_vc_issuer_fetch: Any = None,
+    x5c_trust_anchors: Any = None,
+    resolve_status_list: Any = None,
+    resolve_status_list_token: Any = None,
+    require_status: bool = False,
 ) -> VerifiedPresentation:
     fmt = query["format"]
     # mso_mdoc binds the holder through DeviceAuth over a SessionTranscript, not a
@@ -447,17 +472,32 @@ def _verify_one(
     if fmt == FORMAT_SD_JWT_VC:
         return _verify_sd_jwt_vc(
             query_id, query, presentation,
-            nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s)
+            nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
+            jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+            x5c_trust_anchors=x5c_trust_anchors,
+            resolve_status_list=resolve_status_list,
+            resolve_status_list_token=resolve_status_list_token,
+            require_status=require_status)
     if fmt == FORMAT_JWT_VC:
         return _verify_jwt_vp(
             query_id, presentation,
             nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
-            require_holder_binding=require_holder_binding)
+            require_holder_binding=require_holder_binding,
+            jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+            x5c_trust_anchors=x5c_trust_anchors,
+            resolve_status_list=resolve_status_list,
+            resolve_status_list_token=resolve_status_list_token,
+            require_status=require_status)
     if fmt == FORMAT_LDP_VC:
         return _verify_ldp_vp(
             query_id, presentation, nonce=nonce, client_id=aud, resolver=resolver,
             now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
-            require_holder_binding=require_holder_binding)
+            require_holder_binding=require_holder_binding,
+            jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+            x5c_trust_anchors=x5c_trust_anchors,
+            resolve_status_list=resolve_status_list,
+            resolve_status_list_token=resolve_status_list_token,
+            require_status=require_status)
     raise UnsupportedPresentationFormat(
         f"Credential Query {query_id!r} has unknown format {fmt!r}")
 
@@ -553,6 +593,11 @@ def _verify_mso_mdoc(
 def _verify_sd_jwt_vc(
     query_id: str, query: Mapping[str, Any], presentation: Any, *,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
+    jwt_vc_issuer_fetch: Any = None,
+    x5c_trust_anchors: Any = None,
+    resolve_status_list: Any = None,
+    resolve_status_list_token: Any = None,
+    require_status: bool = False,
 ) -> VerifiedPresentation:
     from .verify import (
         FORMAT_SD_JWT_VC as _PIPELINE_SD_JWT,
@@ -575,8 +620,13 @@ def _verify_sd_jwt_vc(
     require_binding = bool(query.get("require_cryptographic_holder_binding", True))
     policy = VerificationPolicy(
         audience=client_id, nonce=nonce, require_key_binding=require_binding,
-        require_status=False, now=now, leeway_s=leeway_s)
-    result = verify_credential(presentation, policy=policy, resolver=resolver)
+        require_status=require_status, now=now, leeway_s=leeway_s)
+    result = verify_credential(
+        presentation, policy=policy, resolver=resolver,
+        jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+        x5c_trust_anchors=x5c_trust_anchors,
+        resolve_status_list=resolve_status_list,
+        resolve_status_list_token=resolve_status_list_token)
     if result.format != _PIPELINE_SD_JWT:            # defence in depth vs re-detection
         raise VpTokenMalformed(
             f"Presentation for {query_id!r} did not verify as an SD-JWT VC "
@@ -592,6 +642,11 @@ def _verify_jwt_vp(
     query_id: str, presentation: Any, *,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
     require_holder_binding: bool = False,
+    jwt_vc_issuer_fetch: Any = None,
+    x5c_trust_anchors: Any = None,
+    resolve_status_list: Any = None,
+    resolve_status_list_token: Any = None,
+    require_status: bool = False,
 ) -> VerifiedPresentation:
     from .proof.vp_jwt import VpJwtProofSuite
     from .verify import VerificationPolicy
@@ -599,17 +654,16 @@ def _verify_jwt_vp(
     if not isinstance(presentation, str):
         raise VpTokenMalformed(
             f"a {FORMAT_JWT_VC} Presentation for {query_id!r} must be a compact JWT string")
-    # Credential-level status is out of scope for this layer (see the module docstring), and
-    # verify_vp_token exposes no status resolver — so the embedded VCs must NOT inherit the
-    # pipeline's require_status=True default (which would reject any VC carrying a
-    # credentialStatus). Forward the same status-off policy the sd-jwt and ldp paths use,
-    # with the pinned now/leeway so the embedded temporal check matches the presentation's.
-    policy = VerificationPolicy(require_status=False, now=now, leeway_s=leeway_s)
+    policy = VerificationPolicy(require_status=require_status, now=now, leeway_s=leeway_s)
     # resolver mode authenticates the holder from `iss`, so require_holder_binding binds
     # subject==holder without needing expected_holder (VP-JWT enforces that invariant).
     verified = VpJwtProofSuite(leeway_s=leeway_s).verify(
         presentation, audience=client_id, nonce=nonce, resolver=resolver,
-        require_holder_binding=require_holder_binding, policy=policy)
+        require_holder_binding=require_holder_binding, policy=policy,
+        jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+        x5c_trust_anchors=x5c_trust_anchors,
+        resolve_status_list=resolve_status_list,
+        resolve_status_list_token=resolve_status_list_token)
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_JWT_VC, holder=verified.holder,
         credentials=tuple(verified.credentials), raw=verified)
@@ -619,6 +673,11 @@ def _verify_ldp_vp(
     query_id: str, presentation: Any, *,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
     extra_contexts: Mapping[str, dict] | None, require_holder_binding: bool,
+    jwt_vc_issuer_fetch: Any = None,
+    x5c_trust_anchors: Any = None,
+    resolve_status_list: Any = None,
+    resolve_status_list_token: Any = None,
+    require_status: bool = False,
 ) -> VerifiedPresentation:
     from .verify import VerificationPolicy, verify_credential
 
@@ -676,10 +735,14 @@ def _verify_ldp_vp(
     holder = _vp_holder(query_id, presentation, verified_vp.proof)
 
     # Cascade-verify each embedded credential through the pipeline (fail closed).
-    policy = VerificationPolicy(require_status=False, now=now, leeway_s=leeway_s)
+    policy = VerificationPolicy(require_status=require_status, now=now, leeway_s=leeway_s)
     credentials = tuple(
-        verify_credential(vc, policy=policy, resolver=resolver,
-                          extra_contexts=extra_contexts)
+        verify_credential(
+            vc, policy=policy, resolver=resolver, extra_contexts=extra_contexts,
+            jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+            x5c_trust_anchors=x5c_trust_anchors,
+            resolve_status_list=resolve_status_list,
+            resolve_status_list_token=resolve_status_list_token)
         for vc in _embedded_vcs(query_id, presentation))
 
     # Optional subject binding: require each embedded credential to have been issued

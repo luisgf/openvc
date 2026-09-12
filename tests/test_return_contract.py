@@ -33,11 +33,12 @@ from openvc.verify import VerificationPolicy, VerificationResult
 # that is the point: the field list is frozen API toward 1.0.
 CONTRACT = {
     VerificationResult: ["format", "credential", "issuer", "subject", "claims",
-                         "key_bound", "status", "schema", "raw"],
+                         "key_bound", "status", "schema", "raw", "expired"],
     VerificationPolicy: ["leeway_s", "expected_types", "expected_vct", "audience",
                          "nonce", "require_key_binding", "proof_purpose",
                          "require_status", "require_schema", "now",
-                         "require_status_issuer_binding", "status_issuer_allowlist"],
+                         "require_status_issuer_binding", "status_issuer_allowlist",
+                         "require_not_expired", "require_not_revoked"],
     VerifiedCredential: ["credential", "issuer", "subject", "claims"],
     VerifiedDataIntegrity: ["credential", "issuer", "subject", "proof"],
     VerifiedSdCredential: ["credential", "issuer", "subject", "proof"],

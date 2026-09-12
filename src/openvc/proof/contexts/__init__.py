@@ -66,7 +66,13 @@ def document_loader(
             raise DocumentLoaderError(
                 f"refusing to fetch JSON-LD context over the network: {url!r} "
                 f"(bundle it or pass it via extra_contexts)") from None
-        return {"contextUrl": None, "documentUrl": url, "document": document}
+        return {
+            "contextUrl": None,
+            "documentUrl": url,
+            "document": document,
+            "static": True,
+            "tag": "static",
+        }
 
     return _loader
 
