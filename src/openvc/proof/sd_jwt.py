@@ -78,6 +78,16 @@ def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
+def _ascii_bytes(value: str) -> bytes:
+    # Compact SD-JWT is base64url + '~'. Non-ASCII in a disclosure (or anywhere in
+    # the presented string) must be a typed error: encode("ascii") raising
+    # UnicodeEncodeError would escape OpenvcError and abort verify_many.
+    try:
+        return value.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise SdJwtError("SD-JWT presentation is not ASCII") from exc
+
+
 def _b64url_decode(segment: str) -> bytes:
     return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
 
@@ -336,7 +346,7 @@ class SdJwtVcProofSuite:
         issuer_jwt, disclosures, _ = self._split(sd_jwt)
         presented = issuer_jwt + "~" + "".join(d + "~" for d in disclosures)
         sd_hash = _b64url_encode(
-            _HASHES[self._hash_name](presented.encode("ascii")).digest())
+            _HASHES[self._hash_name](_ascii_bytes(presented)).digest())
         header = {"typ": _KB_TYP, "alg": holder_key.alg}
         payload = {"iat": int(time.time()), "aud": audience, "nonce": nonce, "sd_hash": sd_hash}
         return presented + self._sign_compact(header, payload, holder_key)
@@ -413,8 +423,8 @@ class SdJwtVcProofSuite:
                 f"{len(unreferenced)} disclosure(s) not referenced by any digest")
         unpacked.pop("_sd_alg", None)
 
-        # RFC 9901 §7.1 step 6: nbf/exp (and aud) are checked on the *processed*
-        # payload if present. The issuer-JWT body was already checked above; if
+        # RFC 9901 §7.1 step 6: nbf/exp are checked on the *processed* payload
+        # if present. The issuer-JWT body was already checked above; if
         # `exp`/`nbf` were selectively disclosed they only appear after `_unpack`.
         self._check_temporal(unpacked)
 
@@ -544,7 +554,7 @@ class SdJwtVcProofSuite:
         if nonce is not None and claims.get("nonce") != nonce:
             raise ClaimsInvalid("KB-JWT nonce does not match")
         presented = issuer_jwt + "~" + "".join(d + "~" for d in disclosures)
-        expected = _b64url_encode(_HASHES[hash_name](presented.encode("ascii")).digest())
+        expected = _b64url_encode(_HASHES[hash_name](_ascii_bytes(presented)).digest())
         if claims.get("sd_hash") != expected:
             raise ClaimsInvalid("KB-JWT sd_hash does not match the presented disclosures")
         return True

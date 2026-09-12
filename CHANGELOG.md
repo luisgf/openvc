@@ -16,6 +16,9 @@ All notable changes to **openvc** are documented here. The format follows
   presentation was bound; a key-binding failure (wrong nonce, forged
   holder key, missing KB) is no longer hidden behind `ClaimsInvalid:
   expired`. The hosted path (`require_key_binding=False`) is unchanged.
+  Non-ASCII junk in the compact presentation on that path is a typed
+  `SdJwtError` (it used to be `UnicodeEncodeError` and would abort
+  `verify_many`).
 
 ## [1.26.0] — 2026-08-14
 

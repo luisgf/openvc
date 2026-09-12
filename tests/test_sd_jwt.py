@@ -396,6 +396,19 @@ def test_not_yet_valid_key_bound_presentation_checks_kb_before_temporal():
                      audience="aud", nonce="WRONG", require_key_binding=True)
 
 
+def test_non_ascii_disclosure_is_typed_on_kb_first_path():
+    """#182 adversarial: KB-first encode('ascii') must not leak UnicodeEncodeError."""
+    issuer_key, holder_key = _issuer_key(), _issuer_key()
+    sd_jwt = _issue_bound_expired(issuer_key, holder_key)
+    presentation = suite.create_presentation(
+        sd_jwt, holder_key=holder_key, audience="aud", nonce="n")
+    parts = presentation.split("~")
+    snow = parts[0] + "~\u2603~" + parts[-1]
+    with pytest.raises(SdJwtError, match="ASCII"):
+        suite.verify(snow, public_key_jwk=issuer_key.public_jwk(),
+                     audience="aud", nonce="n", require_key_binding=True)
+
+
 def test_expired_hosted_path_still_rejects_before_kb():
     """#182: require_key_binding=False keeps temporal-first (hosted / no-KB)."""
     issuer_key, holder_key = _issuer_key(), _issuer_key()

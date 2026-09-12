@@ -130,4 +130,7 @@ enforceable, do **not** list it in `disclosable`: a holder could simply omit
 the disclosure and the verifier would never see the pointer. Fail-closed
 status only works for claims the holder cannot withhold — the same applies to
 `ecdsa-sd-2023`'s mandatory pointers (see the
-[Security model](Security-Model)).
+[Security model](Security-Model)). RFC 9901 §9.7 likewise forbids making
+`exp` / `nbf` / `iss` / `cnf` / `aud` selectively disclosable: a withheld
+`exp` cannot be distinguished from an absent one, so an expired credential
+would verify.
