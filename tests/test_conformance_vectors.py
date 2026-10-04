@@ -3,7 +3,8 @@ tests/test_conformance_vectors.py — a wire-format drift alarm for the two IETF
 formats openvc implements that are still pre-RFC (issue #13).
 
 TRACKED DRAFT VERSIONS (review + re-pin when either advances):
-  * SD-JWT VC          — draft-ietf-oauth-sd-jwt-vc-16   (base SD-JWT = RFC 9901)
+  * SD-JWT VC          — draft-ietf-oauth-sd-jwt-vc-18   (base SD-JWT = RFC 9901)
+                         (-19 is out since 2026-08-31; reviewing it is #127's job)
   * Token Status List  — draft-ietf-oauth-status-list-21
 
 Late drafts still shift small normative details (the ``typ`` header, claim names,
@@ -45,7 +46,7 @@ def _p256(kid="did:example:issuer#k"):
 
 
 # --------------------------------------------------------------------------- #
-# SD-JWT VC (draft-ietf-oauth-sd-jwt-vc-16)
+# SD-JWT VC (draft-ietf-oauth-sd-jwt-vc-18)
 # --------------------------------------------------------------------------- #
 
 def test_sd_jwt_vc_wire_constants_match_the_draft():
