@@ -35,6 +35,7 @@ from openvc.proof.errors import ClaimsInvalid, SignatureInvalid
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
 from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.proof.vp_jwt import VpJwtProofSuite
+from openvc.verify import KeyResolutionFailed
 
 NONCE = "n-0S6_WzA2Mj"
 CLIENT_ID = "x509_san_dns:client.example.org"
@@ -531,3 +532,151 @@ def test_dc_api_peek_fails_closed_on_deeply_nested_json():
         assert _peek_audience(FORMAT_JWT_VC, f"h.{seg}.s") is None
     finally:
         sys.setrecursionlimit(old)
+
+
+# --------------------------------------------------------------------------- #
+# injected issuer-trust I/O reaches the presentation layer (#181)
+#
+# ``verify_credential`` has taken ``jwt_vc_issuer_fetch`` and ``x5c_trust_anchors`` for
+# several releases; ``verify_vp_token`` forwards both. A relying party that allows only
+# https issuers plus a budgeted fetch has no other way through the presentation layer.
+# The negatives matter as much as the positives: a DID issuer must never reach the https
+# hook, and an unrelated anchor must not be accepted.
+# --------------------------------------------------------------------------- #
+
+HTTPS_ISS = "https://issuer.example"
+_WELL_KNOWN_URL = f"{HTTPS_ISS}/.well-known/jwt-vc-issuer"
+
+
+def _https_jwks_fetch(issuer_key, *, calls=None):
+    """A ``jwt_vc_issuer_fetch`` stub serving the issuer's own JWK inline."""
+    jwk = dict(issuer_key.public_jwk(), kid=issuer_key.kid)
+
+    def fetch(url):
+        if calls is not None:
+            calls.append(url)
+        return {"issuer": HTTPS_ISS, "jwks": {"keys": [jwk]}}
+
+    return fetch
+
+
+def _sd_jwt_https_presentation(holder, *, signing_key=None, x5c=None):
+    """An SD-JWT VC presentation whose ``iss`` is an https URL (not a DID)."""
+    issuer_key = signing_key or P256SigningKey.generate(kid="issuer-key-1")
+    holder_key, _ = holder
+    extra = {"x5c": x5c} if x5c is not None else {}
+    issued = SdJwtVcProofSuite().issue(
+        {"iss": HTTPS_ISS, "given_name": "Ada", "sub": "did:example:alice"},
+        signing_key=issuer_key, vct=VCT, disclosable=["given_name"],
+        holder_jwk=holder_key.public_jwk(), **extra)
+    return SdJwtVcProofSuite().create_presentation(
+        issued, holder_key=holder_key, audience=CLIENT_ID, nonce=NONCE), issuer_key
+
+
+def test_sd_jwt_https_issuer_resolves_through_jwt_vc_issuer_fetch(holder):
+    pres, issuer_key = _sd_jwt_https_presentation(holder)
+    vp, dcql = {"my_credential": [pres]}, _dcql_sd_jwt()
+    with pytest.raises(KeyResolutionFailed):          # omit the hook -> fails closed
+        verify_vp_token(vp, dcql_query=dcql, nonce=NONCE, client_id=CLIENT_ID)
+    calls: list[str] = []
+    result = verify_vp_token(
+        vp, dcql_query=dcql, nonce=NONCE, client_id=CLIENT_ID,
+        jwt_vc_issuer_fetch=_https_jwks_fetch(issuer_key, calls=calls))
+    (p,) = result.for_query("my_credential")
+    assert p.raw.issuer == HTTPS_ISS
+    assert p.raw.claims["given_name"] == "Ada"
+    assert calls == [_WELL_KNOWN_URL]                 # the well-known URL, not bare iss
+
+
+def test_jwt_vc_https_issuer_cascade_resolves_through_jwt_vc_issuer_fetch(holder):
+    """The hook also reaches the VC-JWT cascaded out of a VP-JWT."""
+    issuer_key = P256SigningKey.generate(kid="issuer-key-1")
+    holder_key, holder_did = holder
+    vc = VcJwtProofSuite().sign(
+        {"@context": ["https://www.w3.org/ns/credentials/v2"],
+         "type": ["VerifiableCredential"], "issuer": HTTPS_ISS,
+         "credentialSubject": {"id": holder_did}},
+        signing_key=issuer_key)
+    vp = VpJwtProofSuite().sign([vc], holder_key=holder_key, audience=CLIENT_ID, nonce=NONCE)
+    token = {"vp1": [vp]}
+    dcql = {"credentials": [{"id": "vp1", "format": FORMAT_JWT_VC}]}
+    with pytest.raises(KeyResolutionFailed):
+        verify_vp_token(token, dcql_query=dcql, nonce=NONCE, client_id=CLIENT_ID)
+    result = verify_vp_token(
+        token, dcql_query=dcql, nonce=NONCE, client_id=CLIENT_ID,
+        jwt_vc_issuer_fetch=_https_jwks_fetch(issuer_key))
+    (p,) = result.for_query("vp1")
+    assert p.credentials[0].issuer == HTTPS_ISS
+
+
+def test_did_issuer_never_reaches_the_https_hook(issuer, holder):
+    """Passing the hook must not turn a DID issuer into a network lookup."""
+    def fetch(url):
+        raise AssertionError(f"jwt_vc_issuer_fetch must not run for a DID issuer: {url}")
+
+    result = verify_vp_token(
+        {"my_credential": [_sd_jwt_presentation(issuer, holder)]},
+        dcql_query=_dcql_sd_jwt(), nonce=NONCE, client_id=CLIENT_ID,
+        jwt_vc_issuer_fetch=fetch)
+    (p,) = result.for_query("my_credential")
+    assert p.format == FORMAT_SD_JWT_VC
+
+
+def _x5c_anchored_presentation(holder):
+    """(presentation, root anchor) for an SD-JWT VC whose signing key is attested by an
+    x5c chain to a self-signed root, with the issuer https URL in the leaf SAN."""
+    import base64
+    import datetime as dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.x509.oid import NameOID
+
+    base = dt.datetime.now(dt.timezone.utc)
+
+    def cert(subject, issuer_cn, issuer_key, subject_pub, *, ca, san=None):
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, subject)]))
+            .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, issuer_cn)]))
+            .public_key(subject_pub).serial_number(x509.random_serial_number())
+            .not_valid_before(base - dt.timedelta(days=1))
+            .not_valid_after(base + dt.timedelta(days=365))
+            .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True))
+        if ca:
+            builder = builder.add_extension(x509.KeyUsage(
+                digital_signature=False, content_commitment=False, key_encipherment=False,
+                data_encipherment=False, key_agreement=False, key_cert_sign=True,
+                crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+        if san is not None:
+            builder = builder.add_extension(
+                x509.SubjectAlternativeName(san), critical=False)
+        return builder.sign(issuer_key, hashes.SHA256())
+
+    root_key = ec.generate_private_key(ec.SECP256R1())
+    root = cert("test root", "test root", root_key, root_key.public_key(), ca=True)
+    signer_priv = ec.generate_private_key(ec.SECP256R1())
+    signer = P256SigningKey(signer_priv, kid="issuer-ds")
+    leaf = cert("issuer DS", "test root", root_key, signer_priv.public_key(), ca=False,
+                san=[x509.UniformResourceIdentifier(HTTPS_ISS)])
+    x5c = [base64.b64encode(leaf.public_bytes(serialization.Encoding.DER)).decode("ascii")]
+    pres, _ = _sd_jwt_https_presentation(holder, signing_key=signer, x5c=x5c)
+    return pres, root
+
+
+def test_x5c_trust_anchors_reach_the_presentation_layer(holder):
+    pres, root = _x5c_anchored_presentation(holder)
+    result = verify_vp_token(
+        {"my_credential": [pres]}, dcql_query=_dcql_sd_jwt(),
+        nonce=NONCE, client_id=CLIENT_ID, x5c_trust_anchors=[root])
+    (p,) = result.for_query("my_credential")
+    assert p.raw.issuer == HTTPS_ISS                  # bound via the anchored leaf SAN
+
+
+def test_x5c_untrusted_anchor_rejected_at_the_presentation_layer(holder):
+    pres, _ = _x5c_anchored_presentation(holder)
+    _, unrelated_root = _x5c_anchored_presentation(holder)
+    with pytest.raises(KeyResolutionFailed):
+        verify_vp_token(
+            {"my_credential": [pres]}, dcql_query=_dcql_sd_jwt(),
+            nonce=NONCE, client_id=CLIENT_ID, x5c_trust_anchors=[unrelated_root])

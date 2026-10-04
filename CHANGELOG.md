@@ -4,6 +4,38 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.1] — unreleased
+
+### Fixed
+
+- **The JSON-LD document loader no longer tags caller-injected contexts
+  `static`** (follow-up to
+  [#183](https://github.com/luisgf/openvc/issues/183)). pyld promotes a
+  document tagged `static` into a **process-global** resolved-context cache
+  keyed by context URL (`pyld.jsonld._resolved_context_cache`, via
+  `ContextResolver`). v1.27.0 tagged everything the loader served, so when two
+  verifications in one process passed **different** documents under the **same**
+  URL through `extra_contexts`, the second silently canonicalized with the
+  first one's term definitions: a valid Data Integrity proof then fails to
+  verify, and one caller's context influences another caller's processing.
+  Only the bundled files are tagged now — they ship read-only, so every loader
+  in the process serves identical bytes for a given URL — and the gate is
+  **provenance, not URL membership**: a caller that shadows a bundled URL with
+  its own document is not tagged either. Results for any single set of contexts
+  are unchanged; injected contexts lose a caching shortcut they could never
+  safely have had.
+
+### Tests
+
+- **The two features v1.27.0 shipped unpinned now have coverage.** The
+  `jwt_vc_issuer_fetch` / `x5c_trust_anchors` passthrough on `verify_vp_token`
+  ([#181](https://github.com/luisgf/openvc/issues/181)) is pinned on both the
+  SD-JWT VC path and the VC-JWT cascade, with the negatives that carry the
+  security weight: a DID issuer must never reach the https well-known hook, and
+  an unrelated x5c anchor must be rejected. New `tests/test_contexts.py` covers
+  the loader's tagging rules and fails closed on an unlisted URL; its last test
+  reproduces the cross-caller context bleed end to end through pyld.
+
 ## [1.27.0] — 2026-09-12
 
 ### Added
