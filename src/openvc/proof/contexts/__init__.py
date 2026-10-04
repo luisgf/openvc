@@ -54,10 +54,23 @@ def document_loader(
 ) -> Callable[[str, Any], dict]:
     """Return a pyld-compatible document loader over the bundled contexts plus
     any *extra_contexts* (``url -> context document``). Never fetches: an
-    unlisted URL raises :class:`DocumentLoaderError`."""
-    cache = bundled_contexts()
+    unlisted URL raises :class:`DocumentLoaderError`.
+
+    Only the **bundled** files are tagged ``static``. pyld promotes a tagged document
+    into a *process-global* resolved-context cache keyed by context URL
+    (``pyld.jsonld._resolved_context_cache``, via ``ContextResolver``), so the tag is
+    sound only for documents that are byte-identical in every loader in the process —
+    which the bundled files are, shipping read-only. A caller-injected document is
+    **never** tagged, including one that shadows a bundled URL: tagging it would publish
+    the first caller's term definitions to every later caller of that URL, and
+    canonicalization would silently use terms the signer never had."""
+    bundled = bundled_contexts()
+    cache = dict(bundled)
     if extra_contexts:
         cache.update(extra_contexts)
+    # Identity, not URL membership: a caller may shadow a bundled URL with its own
+    # document, and that document must not inherit the bundled URL's tag.
+    static_urls = frozenset(url for url, doc in cache.items() if bundled.get(url) is doc)
 
     def _loader(url: str, options: Any = None) -> dict:
         try:
@@ -66,13 +79,15 @@ def document_loader(
             raise DocumentLoaderError(
                 f"refusing to fetch JSON-LD context over the network: {url!r} "
                 f"(bundle it or pass it via extra_contexts)") from None
-        return {
+        loaded: dict[str, Any] = {
             "contextUrl": None,
             "documentUrl": url,
             "document": document,
-            "static": True,
-            "tag": "static",
         }
+        if url in static_urls:
+            loaded["static"] = True        # the jsonld.js shape; pyld itself reads ``tag``
+            loaded["tag"] = "static"
+        return loaded
 
     return _loader
 
