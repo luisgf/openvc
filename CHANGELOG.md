@@ -69,8 +69,12 @@ All notable changes to **openvc** are documented here. The format follows
   SD-JWT with no KB-JWT still verifies, with `key_bound=False`, because the
   presentation's proof is the holder binding. Rejecting, rather than reporting
   `key_bound=False`, is deliberate. A KB-JWT is minted per presentation, so one
-  bound elsewhere is a replayed holder proof, and RFC 9901 has the verifier reject
-  a presentation whose key binding fails. The binding applies to the KB-JWT only;
+  bound elsewhere is a replayed holder proof. RFC 9901 §7.3 makes a presentation
+  whose KB-JWT fails a step invalid, and OpenID4VP 1.0 §14.1.2 rejects the whole
+  response for a presentation without the right nonce. No spec defines a nested
+  KB-JWT's values (OpenID4VP §13.2 does not support nesting at all), so openvc holds
+  it to the ones §B.3.6 gives every KB-JWT: the Client Identifier, or `origin:`
+  over the DC API, and the request nonce. The binding applies to the KB-JWT only;
   a nested VC-JWT's own `aud` is still not pinned. This was a wrong flag, not a
   bypass: the presentation's own binding was always enforced. The semantics are
   written up in the wiki under *Presentations → SD-JWT VCs nested in a W3C

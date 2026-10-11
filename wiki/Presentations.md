@@ -259,6 +259,15 @@ with its own `audience` / `nonce`, which take precedence over any `audience` / `
 in a `policy` you pass to it. The rule is scoped to the KB-JWT: a nested VC-JWT is a
 credential, and its own `aud` is never pinned to you.
 
+**What the specs say.** No spec defines what a nested KB-JWT's `aud` and `nonce`
+should be. RFC 9901 §4.3 leaves both to the protocol, and OpenID4VP 1.0 does not
+support a presentation nested inside another at all (§13.2). In OpenID4VP's terms an
+SD-JWT + KB-JWT *is* a presentation (Appendix B.3). openvc still accepts the nesting,
+because VCDM 2.0 and VC-JOSE-COSE use it to envelope an SD-JWT. But it holds a nested
+KB-JWT to the only values OpenID4VP defines for any KB-JWT (§B.3.6): the Client
+Identifier, or `origin:<origin>` over the DC API, and the request `nonce`. Those are
+exactly what the presentation itself is bound to.
+
 **Why reject rather than report `key_bound=False`.** Earlier releases checked a nested
 KB-JWT's signature and `sd_hash` but had no `aud` / `nonce` to check it against, so
 they reported `key_bound=True` for a KB-JWT minted for another verifier.
@@ -268,12 +277,22 @@ That flag vouched for a holder proof made for someone else. Downgrading the resu
 - A KB-JWT is minted per presentation, so one bound elsewhere, arriving inside a
   response to you, is a replayed or relayed holder proof. That is evidence of an
   attack, not a weaker binding.
-- RFC 9901 §7.3 says that if any key-binding step fails, the verifier MUST reject the
-  presentation.
+- The specs treat a failed binding as fatal. Under RFC 9901 §7.3, a KB-JWT that fails
+  any step makes the presentation invalid, and "processing MUST be aborted".
+  OpenID4VP 1.0 §14.1.2 rejects the whole response when any presentation in it lacks
+  the right nonce.
 - A lenient mode inside a signature check is surface we would rather not add.
 
 Refusing nested SD-JWTs altogether would break legitimate VCDM 2.0 enveloped
-credentials.
+credentials, whose specification examples carry no KB-JWT.
+
+**A stripped KB-JWT is not an error.** Without a KB-JWT, the nested credential reports
+`key_bound=False` and the response still verifies, because the presentation's proof is
+the holder binding. Anyone who cannot satisfy the binding can simply drop the KB-JWT.
+So decide whether you need the nested credential's *own* key binding before you look
+at what arrived (RFC 9901 §9.5), and if you do, require `key_bound is True`. With
+`VpJwtProofSuite.verify`, `policy=VerificationPolicy(require_key_binding=True)`
+enforces that for every nested SD-JWT.
 
 This holds only for credentials nested in a presentation, where you have no way to
 pass the binding yourself. At the top level — `verify_credential`, or
