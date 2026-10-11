@@ -83,13 +83,18 @@ All notable changes to **openvc** are documented here. The format follows
   `verify_credential_async` and `verify_many_async` returned `expired=False` for
   the same expired credential: an async caller that waived expiry in order to
   inspect it was told the credential was current. The async lanes now compute
-  the flag with the sync helper, and both pipelines return equal results. This
-  also aligns the cases where computing the flag rejects the credential under
-  the waiver — an SD-JWT VC carrying a future or malformed `validFrom` claim, or
-  a VC-JWT whose `validFrom` falls after a pinned `policy.now`: the sync
-  pipeline raised a typed error there while the async one accepted, and now
-  both raise it. The `VerificationResult` fields are unchanged. Found by the
-  adversarial review of [#187](https://github.com/luisgf/openvc/pull/187).
+  the flag with the sync helper, and both pipelines return equal results. The
+  `VerificationResult` fields are unchanged. Found by the adversarial review of
+  [#187](https://github.com/luisgf/openvc/pull/187).
+- **Waiving expiry no longer rejects a credential the default policy
+  accepts.** Computing the flag re-read dates the suite had not enforced:
+  VCDM-named claims on an SD-JWT VC (`validFrom`, `expirationDate`, …, which
+  the SD-JWT suite never reads) and a VC-JWT body at a pinned `policy.now`
+  (the suite reads it at the current time). A future or malformed value there
+  made the sync pipeline raise `CredentialNotYetValid` / `MalformedTimestamp`
+  under `require_not_expired=False` only — contrary to the waiver's contract of
+  stopping just the expiry failure. The flag now only observes, on both
+  pipelines. Found by this fix's own adversarial review.
 
 ### Tests
 
@@ -110,8 +115,8 @@ All notable changes to **openvc** are documented here. The format follows
   the waiver; both must report `expired is True` and return equal results.
   Controls: a current credential is not flagged, the same credentials still
   fail without the waiver, and a pinned `policy.now` decides the Data
-  Integrity verdict on both pipelines. The rejecting edge cases above are
-  pinned to reach the same outcome on both pipelines, whichever it is.
+  Integrity verdict on both pipelines. The edge cases above must verify under
+  the waiver on both pipelines, as they do under the default policy.
 
 ## [1.27.1] — 2026-10-04
 

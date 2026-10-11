@@ -22,7 +22,6 @@ import pytest
 
 from openvc import VerificationPolicy, verify_credential, verify_credential_async
 from openvc.did.base import DidResolutionError, as_async_resolver, parse_did_document
-from openvc.errors import OpenvcError
 from openvc.keys import Ed25519SigningKey, P256SigningKey
 from openvc.proof.errors import ProofError
 
@@ -192,26 +191,28 @@ def _sd_jwt_with(claims):
         signing_key=key, vct="https://credentials.example/id"), key
 
 
-def _outcome(verify):
-    try:
-        return verify()
-    except OpenvcError as exc:
-        return type(exc)
+# Computing the flag reads VCDM dates the SD-JWT suite never reads, and reads the
+# VC-JWT body at policy.now where the suite uses the wall clock. Through v1.27.1 the
+# sync pipeline raised on these under the waiver (and async accepted) although the
+# default policy accepts them on both.
+EDGE_CASES = {
+    "sd-jwt-future-validFrom":
+        (lambda: _sd_jwt_with({"validFrom": "2099-01-01T00:00:00Z"}), None),
+    "sd-jwt-malformed-validFrom":
+        (lambda: _sd_jwt_with({"validFrom": "not-a-date"}), None),
+    "sd-jwt-numeric-expirationDate":
+        (lambda: _sd_jwt_with({"expirationDate": 1735689600}), None),
+    "vc-jwt-now-before-validFrom":
+        (lambda: _vc_jwt_valid_until(False), datetime(2019, 6, 1, tzinfo=timezone.utc)),
+}
 
 
-@pytest.mark.parametrize("credential, key, now", [
-    (*_sd_jwt_with({"validFrom": "2099-01-01T00:00:00Z"}), None),
-    (*_sd_jwt_with({"validFrom": "not-a-date"}), None),
-    (*_vc_jwt_valid_until(False), datetime(2019, 6, 1, tzinfo=timezone.utc)),
-], ids=["sd-jwt-future-validFrom", "sd-jwt-malformed-validFrom", "vc-jwt-now-before-validFrom"])
-def test_waiver_edge_cases_reach_the_same_outcome(credential, key, now):
-    # Computing the flag reads VCDM dates the SD-JWT suite never reads, and reads
-    # the VC-JWT body at policy.now rather than the wall clock. Whatever verdict
-    # that gives, both pipelines must reach it: on v1.27.1 sync raised here while
-    # async accepted.
-    policy = VerificationPolicy(require_not_expired=False, now=now)
+@pytest.mark.parametrize("case", list(EDGE_CASES))
+def test_waiver_never_rejects_what_the_default_policy_accepts(case):
+    build, now = EDGE_CASES[case]
+    credential, key = build()
     registry = _registry(key.public_jwk())
-    sync = _outcome(lambda: verify_credential(credential, policy=policy, resolver=registry))
-    asyncr = _outcome(lambda: asyncio.run(verify_credential_async(
-        credential, policy=policy, resolver=as_async_resolver(registry))))
+    verify_credential(credential, policy=VerificationPolicy(now=now), resolver=registry)  # accepted
+    sync, asyncr = _both(credential, key, VerificationPolicy(require_not_expired=False, now=now))
+    assert sync.expired is False
     assert asyncr == sync
