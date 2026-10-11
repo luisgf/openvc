@@ -4,6 +4,38 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.2] — unreleased
+
+### Fixed
+
+- **The async pipeline now sets `VerificationResult.expired`.** Since 1.27.0,
+  `VerificationPolicy(require_not_expired=False)` waives the expiry failure and
+  reports it on the result as `expired=True` — but only `verify_credential` did.
+  The `openvc.aio` lanes (VC-JWT, SD-JWT VC, Data Integrity, and enveloped
+  credentials through them) built their result without the flag, so
+  `verify_credential_async` and `verify_many_async` returned `expired=False` for
+  the same expired credential: an async caller that waived expiry in order to
+  inspect it was told the credential was current. The async lanes now compute
+  the flag with the sync helper, and both pipelines return equal results. This
+  also aligns the cases where computing the flag rejects the credential under
+  the waiver — an SD-JWT VC carrying a future or malformed `validFrom` claim, or
+  a VC-JWT whose `validFrom` falls after a pinned `policy.now`: the sync
+  pipeline raised a typed error there while the async one accepted, and now
+  both raise it. The `VerificationResult` fields are unchanged. Found by the
+  adversarial review of [#187](https://github.com/luisgf/openvc/pull/187).
+
+### Tests
+
+- New `tests/test_expired_flag_parity.py` — the first tests of the flag. One
+  expired credential per format (VC-JWT with a past `exp`, VC-JWT with only a
+  past `validUntil`, SD-JWT VC, Data Integrity `eddsa-jcs-2022` and
+  `eddsa-rdfc-2022`, an enveloped VC-JWT) goes through both pipelines under
+  the waiver; both must report `expired is True` and return equal results.
+  Controls: a current credential is not flagged, the same credentials still
+  fail without the waiver, and a pinned `policy.now` decides the Data
+  Integrity verdict on both pipelines. The rejecting edge cases above are
+  pinned to reach the same outcome on both pipelines, whichever it is.
+
 ## [1.27.1] — 2026-10-04
 
 ### Fixed
