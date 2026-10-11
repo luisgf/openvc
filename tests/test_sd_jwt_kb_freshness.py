@@ -22,6 +22,8 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import os
+import time
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -73,7 +75,7 @@ def _present(parties, *, iat=_UNSET):
     """The issued SD-JWT plus a hand-made KB-JWT carrying exactly this ``iat``
     (``_UNSET`` leaves the claim out). Signed by the real holder key with a correct
     ``sd_hash``, so the only thing under test is the creation time."""
-    _, holder_key, issued = parties
+    holder_key, issued = parties[1], parties[2]
     presented = issued if issued.endswith("~") else issued + "~"
     payload = {"aud": AUD, "nonce": NONCE,
                "sd_hash": _b64(hashlib.sha256(presented.encode("ascii")).digest())}
@@ -183,8 +185,9 @@ def test_kb_max_age_must_be_a_non_negative_int(parties, bad):
 
 
 def test_pinned_now_reverifies_an_archived_presentation(parties):
-    # Archived on 2026-01-01: unpinned (wall clock) it is stale; pinned to its own
-    # instant it verifies — re-verification pins `now`, it never switches the check off.
+    # Received and logged on 2026-01-01: unpinned (wall clock) it is stale; pinned to
+    # that recorded receipt time it verifies. Re-verification pins `now` to what *we*
+    # logged — never to the token's own iat — and never switches the check off.
     archived_at = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
     presentation = _present(parties, iat=int(archived_at.timestamp()))
     with pytest.raises(ClaimsInvalid, match="too old"):
@@ -276,3 +279,165 @@ def test_expiry_waiver_does_not_waive_kb_freshness(parties):
     with pytest.raises(ClaimsInvalid, match="too old") as excinfo:
         verify_credential(presentation, policy=_policy(now=NOW, require_not_expired=False))
     assert "expired" not in str(excinfo.value).lower()
+
+
+# --------------------------------------------------------------------------- #
+# adversarial review of PR #187 — each test named for the attack it pins
+# --------------------------------------------------------------------------- #
+
+class _NoOffset(dt.tzinfo):
+    """Aware by type, naive by Python's own definition: utcoffset() answers None."""
+
+    def utcoffset(self, d):
+        return None
+
+    def dst(self, d):
+        return None
+
+    def tzname(self, d):
+        return "no-offset"
+
+
+class _Raising(dt.tzinfo):
+    def utcoffset(self, d):
+        raise RuntimeError("tzinfo exploded")
+
+    def dst(self, d):
+        return None
+
+    def tzname(self, d):
+        return "boom"
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs POSIX time.tzset")
+@pytest.mark.parametrize("naive", [NOW.replace(tzinfo=None), NOW.replace(tzinfo=_NoOffset())],
+                         ids=["naive", "utcoffset-None"])
+def test_naive_now_is_utc_not_host_local_time(parties, naive):
+    """x5c, mdoc and the Data Integrity window read a naive `now` as UTC. Read as
+    host-local time instead, the KB window shifted by the UTC offset — on a UTC+9 host a
+    fresh KB-JWT came out "in the future" and a 9-hour-stale one verified."""
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "JST-9"                      # UTC+9, POSIX form: needs no tzdata
+    time.tzset()
+    try:
+        assert _verify(parties, _present(parties, iat=T), now=naive).key_bound is True
+        with pytest.raises(ClaimsInvalid, match="too old"):
+            _verify(parties, _present(parties, iat=T - 9 * 3600), now=naive)
+    finally:
+        if old is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
+
+
+@pytest.mark.parametrize("bad_now", [T, NOW.isoformat(), NOW.date()], ids=["int", "str", "date"])
+def test_now_that_is_not_a_datetime_fails_typed(parties, bad_now):
+    with pytest.raises(SdJwtError, match="now must be a datetime"):
+        _verify(parties, _present(parties, iat=T), now=bad_now)
+
+
+def test_now_with_a_raising_tzinfo_fails_typed(parties):
+    with pytest.raises(SdJwtError, match="now cannot be read"):
+        _verify(parties, _present(parties, iat=T),
+                now=dt.datetime(2026, 10, 10, tzinfo=_Raising()))
+
+
+@pytest.mark.parametrize("extreme", [dt.datetime.min, dt.datetime.max], ids=["min", "max"])
+def test_extreme_naive_now_stays_typed(parties, extreme):
+    # Converted through the host's local zone these overflowed into a bare ValueError.
+    with pytest.raises(ClaimsInvalid):
+        _verify(parties, _present(parties, iat=T), now=extreme)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), None, "60", -1, True, 60.0])
+def test_leeway_must_be_a_non_negative_int(bad):
+    # It is added to both edges of the window: NaN or infinity switched it off.
+    with pytest.raises(SdJwtError, match="leeway_s"):
+        SdJwtVcProofSuite(leeway_s=bad)
+
+
+def test_nan_leeway_in_the_policy_fails_typed_not_open(parties):
+    ancient = _present(parties, iat=0)              # 56 years stale
+    with pytest.raises(SdJwtError, match="leeway_s"):
+        verify_credential(ancient, policy=_policy(now=NOW, leeway_s=float("nan")))
+
+
+@pytest.mark.parametrize("knob", ["kb_max_age_s", "leeway_s"])
+@pytest.mark.parametrize("bad", [float("nan"), -1, None, "60", True])
+def test_verify_vp_token_rejects_a_bad_knob_up_front(parties, knob, bad):
+    from openvc.openid4vp import OpenID4VPError
+
+    dcql = {"credentials": [{"id": "pid", "format": FORMAT_SD_JWT_VC}]}
+    with pytest.raises(OpenID4VPError, match=knob):
+        verify_vp_token({"pid": [_present(parties, iat=T)]}, dcql_query=dcql,
+                        nonce=NONCE, client_id=AUD, now=NOW, **{knob: bad})
+
+
+@pytest.fixture(scope="module")
+def nested_parties():
+    """As `parties`, but the holder is a did:key: the jwt_vc_json and ldp_vc lanes
+    resolve the presenting holder too."""
+    issuer_key, issuer_did = _did_key_p256()
+    holder_key, holder_did = _did_key_p256()
+    issued = SdJwtVcProofSuite().issue(
+        {"iss": issuer_did, "given_name": "Ada", "sub": holder_did},
+        signing_key=issuer_key, vct=VCT, disclosable=["given_name"],
+        holder_jwk=holder_key.public_jwk())
+    return issuer_key, holder_key, issued
+
+
+def test_kb_max_age_reaches_an_sd_jwt_nested_in_a_vp_jwt(nested_parties):
+    from openvc.openid4vp import FORMAT_JWT_VC
+    from openvc.proof.vp_jwt import VpJwtProofSuite
+
+    nested = _present(nested_parties, iat=int(time.time()) - 200)
+    vp = VpJwtProofSuite().sign([nested], holder_key=nested_parties[1],
+                                audience=AUD, nonce=NONCE)
+    token, dcql = {"q": [vp]}, {"credentials": [{"id": "q", "format": FORMAT_JWT_VC}]}
+    result = verify_vp_token(token, dcql_query=dcql, nonce=NONCE, client_id=AUD)
+    assert result.for_query("q")[0].credentials[0].key_bound is True     # 200 s < 300 s
+    with pytest.raises(ClaimsInvalid, match="too old"):                 # used to be ignored
+        verify_vp_token(token, dcql_query=dcql, nonce=NONCE, client_id=AUD, kb_max_age_s=10)
+
+
+def test_kb_max_age_reaches_an_sd_jwt_nested_in_an_ldp_vp(nested_parties):
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    from openvc.keys import Ed25519SigningKey
+    from openvc.proof.di_jcs import EddsaJcsProofSuite
+
+    priv = ed25519.Ed25519PrivateKey.generate()
+    mb = encode_multibase(bytes([0xED, 0x01]) + Ed25519SigningKey(priv, kid="_").public_key_raw())
+    vp_key = Ed25519SigningKey(priv, kid=f"did:key:{mb}#{mb}")
+    v2 = "https://www.w3.org/ns/credentials/v2"
+    nested = _present(nested_parties, iat=int(time.time()) - 200)
+    vp = {"@context": [v2], "type": ["VerifiablePresentation"], "holder": f"did:key:{mb}",
+          "verifiableCredential": [{"@context": [v2], "type": ["EnvelopedVerifiableCredential"],
+                                    "id": "data:application/dc+sd-jwt," + nested}]}
+    signed = EddsaJcsProofSuite().add_proof(
+        vp, signing_key=vp_key, verification_method=vp_key.kid,
+        proof_purpose="authentication", challenge=NONCE, domain=AUD)
+    token, dcql = {"c1": [signed]}, {"credentials": [{"id": "c1", "format": "ldp_vc"}]}
+    result = verify_vp_token(token, dcql_query=dcql, nonce=NONCE, client_id=AUD)
+    assert result.presentations[0].credentials[0].key_bound is True
+    with pytest.raises(ClaimsInvalid, match="too old"):
+        verify_vp_token(token, dcql_query=dcql, nonce=NONCE, client_id=AUD, kb_max_age_s=10)
+
+
+def test_kb_max_age_reaches_the_json_schema_inner_verifier(parties):
+    from openvc.aio import _make_schema_verifier_async, default_async_resolver
+    from openvc.verify import _make_schema_verifier, default_resolver
+
+    raw = _present(parties, iat=int(time.time()) - 200).encode()
+    for kb_max_age_s, fresh in ((300, True), (10, False)):
+        policy = VerificationPolicy(require_status=False, kb_max_age_s=kb_max_age_s)
+        inner = _make_schema_verifier(policy, default_resolver(), None, None, None, None, None, 0)
+        inner_async = _make_schema_verifier_async(
+            policy, default_async_resolver(), None, None, None, None, None, 0)
+        for run in (lambda: inner(raw), lambda: asyncio.run(inner_async(raw))):
+            if fresh:
+                run()
+            else:
+                with pytest.raises(ClaimsInvalid, match="too old"):
+                    run()

@@ -67,7 +67,6 @@ dataclasses. Parsers, never builders, and never fetchers (ADR-0007 D7).
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
@@ -83,6 +82,7 @@ from .proof._verify_common import (
     check_jwt_temporal,
     is_numeric_date,
     reject_unknown_crit,
+    utc_epoch,
 )
 from .proof.errors import ClaimsInvalid, MalformedToken, UnsupportedAlgorithm
 from .proof.vc_jwt import ALLOWED_ALGS
@@ -873,7 +873,7 @@ def verify_credential_request_proofs(
         raise UnsupportedProofType(
             f"proof type {request.proof_type!r} is not supported (only 'jwt')")
 
-    current = int(time.time()) if now is None else int(now.timestamp())
+    current = utc_epoch(now, error=CredentialRequestMalformed)   # a naive `now` is UTC
     verified = tuple(
         _verify_one_proof(
             value,

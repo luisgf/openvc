@@ -56,9 +56,13 @@ transaction, but only you know how old that nonce is; this window is the freshne
 bound a stateless verifier can enforce itself.
 
 `now` — on `SdJwtVcProofSuite.verify`, `VerificationPolicy` and `verify_vp_token` —
-pins the instant the window is evaluated at. To re-verify an archived presentation,
-pin `now` to the presentation's own time; do not widen the window. (The issuer JWT's
-`exp`/`nbf` still use the current time, as on every JOSE suite.)
+pins the instant the window is evaluated at; a naive datetime is UTC, as everywhere in
+openvc. To re-verify an archived presentation, pin `now` to the **receipt time your
+system recorded**, and do not widen the window. Never pin it to a value read from the
+presentation itself: its own `iat` would make every KB-JWT fresh and switch the window
+off. The window also covers SD-JWT VCs nested inside `jwt_vc_json` and `ldp_vc`
+presentations. (The issuer JWT's `exp`/`nbf` still use the current time, as on every
+JOSE suite.)
 
 `aka_vcts` (draft-18) is an optional array of *additional* types the issuer asserts
 the credential also is. When present it must be a non-empty list of non-empty

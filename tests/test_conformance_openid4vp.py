@@ -33,10 +33,11 @@ from openvc.proof.errors import ClaimsInvalid
 
 FX = Path(__file__).parent / "fixtures" / "openid4vp"
 
-# Both fixtures were recorded on 2026-07-07; this is their KB-JWTs' own `iat`. A KB-JWT
-# is a freshness artifact (RFC 9901 §7.3 step 5.5, #186), so a recorded one verifies
-# only with the clock pinned to the instant it was made — exactly how a verifier
-# re-checks an archived presentation. Unpinned, it is (correctly) refused as stale.
+# Both fixtures were recorded at 2026-07-07T09:00:34Z — the instant we generated them,
+# which we know independently of the bytes. A KB-JWT is a freshness artifact (RFC 9901
+# §7.3 step 5.5, #186), so a recorded one verifies only with the clock pinned to when it
+# was received, exactly as a verifier re-checks an archived presentation against the
+# receipt time it logged. Unpinned, it is (correctly) refused as stale.
 RECORDED_AT = dt.datetime.fromtimestamp(1783414834, dt.timezone.utc)
 
 

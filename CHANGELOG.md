@@ -17,9 +17,9 @@ All notable changes to **openvc** are documented here. The format follows
   [@EgorKhaklin](https://github.com/EgorKhaklin) (polaris-id) contributed on
   [#121](https://github.com/luisgf/openvc/issues/121), through its "an hour
   later" control — thank you. Any KB-JWT that is present is now refused when
-  its `iat` is missing, non-numeric or non-finite, older than `kb_max_age_s` plus the
-  leeway, or future-dated beyond the leeway. Defence in depth, not a bypass:
-  the enforced `nonce` + `aud` binding already stopped cross-transaction
+  its `iat` is missing, non-numeric or non-finite, older than `kb_max_age_s` plus
+  the leeway, or future-dated beyond the leeway. Defence in depth, not a
+  bypass: the enforced `nonce` + `aud` binding already stopped cross-transaction
   replay, but this window is the only freshness bound a stateless verifier can
   enforce, since only the caller knows how old its nonce is. A stale KB-JWT is a
   *binding* failure, never an `expired` verdict, so `require_not_expired=False`
@@ -33,6 +33,24 @@ All notable changes to **openvc** are documented here. The format follows
   bignum is now read as not finite, the reading `openvc.rp_registration`
   already made, and fails closed as `ClaimsInvalid`.
 
+- **Fixed before merge, from the adversarial review of PR #187** — none of them
+  let a crafted `iat` through; they were in how the clock and the knobs are
+  wired:
+  - A **naive `now` was read as host-local time** in the new window, while
+    `x5c`, `mdoc` and the Data Integrity validity window read it as UTC — one
+    call evaluated two instants, and the KB window shifted by the host's UTC
+    offset, accepting a stale KB-JWT and refusing a fresh one. The OpenID4VCI
+    key proof carried the same reading since it shipped. Both now go through one
+    `utc_epoch`, which also treats a `tzinfo` answering `utcoffset() = None` as
+    naive and turns a non-`datetime` or a raising `tzinfo` into a typed error.
+  - **`kb_max_age_s` did not reach SD-JWT VCs nested in `jwt_vc_json` or
+    `ldp_vc` presentations**, nor the JsonSchemaCredential inner verifier (sync
+    and async): they silently used the 300 s default.
+  - **`leeway_s` was unvalidated** while added to both edges of the window: a
+    `NaN` or infinite leeway switched it off, and `None` or a string raised a
+    bare `TypeError`. `SdJwtVcProofSuite` and `verify_vp_token` now require a
+    non-negative `int`, as they do for `kb_max_age_s`.
+
 ### Added
 
 - **`kb_max_age_s`** — the KB-JWT freshness window, default
@@ -42,15 +60,18 @@ All notable changes to **openvc** are documented here. The format follows
   `verify_encrypted_vp_response`.
 - **`now` on `SdJwtVcProofSuite.verify`**, and `VerificationPolicy.now` /
   `verify_vp_token(now=…)` now also pin the instant the KB-JWT window is
-  evaluated at. Re-verifying an archived presentation means pinning `now` to its
-  own instant, not switching the check off. The issuer JWT's `exp`/`nbf` still
-  use the current time, as on every JOSE suite.
+  evaluated at; a naive datetime is UTC. Re-verifying an archived presentation
+  means pinning `now` to the receipt time you recorded — never to a value read
+  from the presentation, whose own `iat` would switch the window off. The issuer
+  JWT's `exp`/`nbf` still use the current time, as on every JOSE suite.
 
 ### Changed
 
 - The freshness rule is single-sourced in `proof/_verify_common.py`
-  (`check_iat_freshness`, `is_numeric_date`) and shared by the KB-JWT and the
-  OpenID4VCI key proof; the key-proof error messages are unchanged.
+  (`check_iat_freshness`, `is_numeric_date`, `utc_epoch`,
+  `non_negative_seconds`) and shared by the KB-JWT and the OpenID4VCI key proof;
+  the key-proof error messages are unchanged. A naive `now` passed to
+  `verify_credential_request` is now read as UTC, as everywhere else in openvc.
 
 ### Tests
 

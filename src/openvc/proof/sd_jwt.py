@@ -48,7 +48,9 @@ from ._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
     check_iat_freshness,
     check_jwt_temporal,
+    non_negative_seconds,
     reject_unknown_crit,
+    utc_epoch,
 )
 from .errors import (
     ClaimsInvalid,
@@ -242,7 +244,8 @@ class SdJwtVcProofSuite:
     ) -> None:
         if hash_name not in _HASHES:
             raise SdJwtError(f"unsupported hash {hash_name!r}")
-        self._leeway = leeway_s
+        # Added to both edges of every window here, so NaN would switch them off.
+        self._leeway = non_negative_seconds(leeway_s, name="leeway_s", error=SdJwtError)
         self._hash_name = hash_name
         # allow_pq merges the EXPERIMENTAL ML-DSA algs into this suite's allow-list; the
         # default suite rejects ML-DSA at the allow-list, before any crypto (ADR-0004).
@@ -390,15 +393,14 @@ class SdJwtVcProofSuite:
         Any KB-JWT that is present is held to RFC 9901 §7.3 step 5.5: its ``iat`` is
         required, must be a finite number, must not be older than *kb_max_age_s* (plus
         the suite leeway) and must not be in the future beyond the leeway. *now* pins
-        the instant that window is evaluated at — a verifier re-checking an archived
-        presentation pins it to the presentation's own instant rather than switching
-        the check off. The issuer JWT's ``exp``/``nbf`` still use the current time, as
-        on every JOSE suite.
+        the instant that window is evaluated at (a naive datetime is UTC). To re-check
+        an archived presentation, pin it to the **receipt time your system recorded** —
+        never to a value read from the presentation itself: its own ``iat`` would make
+        every KB-JWT fresh and switch the window off. The issuer JWT's ``exp``/``nbf``
+        still use the current time, as on every JOSE suite.
         """
-        if isinstance(kb_max_age_s, bool) or not isinstance(kb_max_age_s, int) \
-                or kb_max_age_s < 0:
-            raise SdJwtError("kb_max_age_s must be a non-negative int (seconds)")
-        current = int(time.time()) if now is None else int(now.timestamp())
+        non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=SdJwtError)
+        current = utc_epoch(now, error=SdJwtError)       # a naive `now` is UTC
         issuer_jwt, disclosures, kb_jwt = self._split(presentation)
         header, claims, signing_input, signature = self._decode_jws(issuer_jwt)
 

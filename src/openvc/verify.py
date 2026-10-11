@@ -167,7 +167,8 @@ class VerificationPolicy:
     require_not_expired: bool = True
     require_not_revoked: bool = True
     # How old an SD-JWT KB-JWT's `iat` may be, evaluated at `now` (RFC 9901 §7.3 step
-    # 5.5). Any KB-JWT present is held to it; pin `now` to re-verify an archived one.
+    # 5.5). Any KB-JWT present is held to it. To re-verify an archived one, pin `now`
+    # to the receipt time your system recorded — never a value read from the token.
     kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S
 
 
@@ -434,6 +435,7 @@ def _make_schema_verifier(
             require_not_revoked=policy.require_not_revoked,
             require_status_issuer_binding=policy.require_status_issuer_binding,
             status_issuer_allowlist=policy.status_issuer_allowlist,
+            kb_max_age_s=policy.kb_max_age_s,
         )
         return verify_credential(
             _bytes_to_credential(raw), policy=inner_policy, resolver=resolver,

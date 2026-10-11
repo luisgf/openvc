@@ -36,6 +36,7 @@ from .errors import (
     MalformedToken,
     PresentationBindingError,
     ProofMalformed,
+    ProofError,
     ProofPurposeMismatch,
     UnsupportedCryptosuite,
 )
@@ -225,6 +226,40 @@ def check_jwt_temporal(
             raise ClaimsInvalid(f"{subject} is not yet valid")
 
 
+def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
+    """*now* as integer epoch seconds, read the way every openvc clock check reads it:
+    ``None`` is the current time, and a **naive** datetime is UTC — never the host's
+    local zone. ``x5c``, ``mdoc`` and :func:`check_validity_window` make the same call;
+    reading a naive pin as local time would shift a freshness window by the host's UTC
+    offset (up to 14 h), and in both directions at once: stale accepted, fresh refused.
+
+    "Naive" is Python's own definition, ``utcoffset() is None`` — which also covers a
+    ``tzinfo`` that answers ``None``. Anything that is not a ``datetime``, or whose
+    ``tzinfo`` raises, becomes *error*: typed, so a misconfigured pin cannot escape
+    ``verify_many`` as a bare exception.
+    """
+    if now is None:
+        return int(time.time())
+    if not isinstance(now, datetime):
+        raise error(f"now must be a datetime or None, not {type(now).__name__}")
+    try:
+        if now.utcoffset() is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return int(now.timestamp())
+    except Exception as exc:                  # a caller's tzinfo may raise anything
+        raise error(f"now cannot be read as an instant: {exc}") from exc
+
+
+def non_negative_seconds(value: Any, *, name: str, error: type[Exception] = ProofError) -> int:
+    """Validate a duration knob — a leeway, a maximum age — as a non-negative ``int``
+    of seconds (not a ``bool``). A ``NaN``/``Infinity`` leeway would make every window
+    comparison ``False``, i.e. switch the window off, and ``None`` or a string would
+    surface mid-verification as a bare ``TypeError``."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise error(f"{name} must be a non-negative int (seconds), got {value!r}")
+    return value
+
+
 def check_iat_freshness(
     iat: Any, *, max_age_s: int, leeway_s: int, current: int, subject: str,
 ) -> int:
@@ -388,6 +423,8 @@ __all__ = [
     "prepare_di_proof",
     "is_numeric_date",
     "match_alg",
+    "non_negative_seconds",
     "reject_unknown_crit",
     "resolve_verification_key",
+    "utc_epoch",
 ]

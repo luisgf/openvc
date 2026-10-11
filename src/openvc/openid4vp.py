@@ -53,7 +53,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .errors import OpenvcError
-from .proof._verify_common import DEFAULT_KB_MAX_AGE_S, DEFAULT_LEEWAY_S
+from .proof._verify_common import (
+    DEFAULT_KB_MAX_AGE_S,
+    DEFAULT_LEEWAY_S,
+    non_negative_seconds,
+)
 from .proof.errors import ClaimsInvalid
 
 if TYPE_CHECKING:
@@ -210,7 +214,10 @@ def verify_vp_token(
     *now* pins the evaluation instant for the validity window, and for the SD-JWT VC
     Key Binding JWT's freshness window: its ``iat`` must be no older than
     *kb_max_age_s* (default 300 s) plus *leeway_s*, and not in the future (RFC 9901
-    §7.3 step 5.5). Verifying an archived response means pinning *now* to its instant.
+    §7.3 step 5.5). It applies to SD-JWT VCs nested in ``jwt_vc_json`` / ``ldp_vc``
+    presentations too. To verify an archived response, pin *now* to the receipt time
+    your system recorded — never to a value read from the response itself. A naive
+    *now* is UTC.
 
     An ``mso_mdoc`` Presentation (ISO 18013-5, **experimental**) is verified over the
     Digital Credentials API flow: pass *trust_anchors* (the IACA root
@@ -256,6 +263,10 @@ def verify_vp_token(
         raise ClaimsInvalid("verify_vp_token requires a non-empty nonce")
     accepted_auds = _dc_api_accepted_auds(client_id, expected_origins)
 
+    # Validate the duration knobs once, up front — a NaN leeway would switch every window
+    # off, and a lane with no SD-JWT in it would otherwise never look at kb_max_age_s.
+    non_negative_seconds(leeway_s, name="leeway_s", error=OpenID4VPError)
+    non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=OpenID4VPError)
     token = _parse_vp_token(vp_token)
     if not token:
         raise VpTokenMalformed("vp_token contains no presentations")
@@ -490,6 +501,7 @@ def _verify_one(
         return _verify_jwt_vp(
             query_id, presentation,
             nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
+            kb_max_age_s=kb_max_age_s,
             require_holder_binding=require_holder_binding,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             x5c_trust_anchors=x5c_trust_anchors,
@@ -500,6 +512,7 @@ def _verify_one(
         return _verify_ldp_vp(
             query_id, presentation, nonce=nonce, client_id=aud, resolver=resolver,
             now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
+            kb_max_age_s=kb_max_age_s,
             require_holder_binding=require_holder_binding,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             x5c_trust_anchors=x5c_trust_anchors,
@@ -657,6 +670,7 @@ def _verify_jwt_vp(
     resolve_status_list: Any = None,
     resolve_status_list_token: Any = None,
     require_status: bool = False,
+    kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
 ) -> VerifiedPresentation:
     from .proof.vp_jwt import VpJwtProofSuite
     from .verify import VerificationPolicy
@@ -664,7 +678,9 @@ def _verify_jwt_vp(
     if not isinstance(presentation, str):
         raise VpTokenMalformed(
             f"a {FORMAT_JWT_VC} Presentation for {query_id!r} must be a compact JWT string")
-    policy = VerificationPolicy(require_status=require_status, now=now, leeway_s=leeway_s)
+    # Nested SD-JWT VCs are held to the caller's KB-JWT window too, not the default.
+    policy = VerificationPolicy(require_status=require_status, now=now, leeway_s=leeway_s,
+                                kb_max_age_s=kb_max_age_s)
     # resolver mode authenticates the holder from `iss`, so require_holder_binding binds
     # subject==holder without needing expected_holder (VP-JWT enforces that invariant).
     verified = VpJwtProofSuite(leeway_s=leeway_s).verify(
@@ -688,6 +704,7 @@ def _verify_ldp_vp(
     resolve_status_list: Any = None,
     resolve_status_list_token: Any = None,
     require_status: bool = False,
+    kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
 ) -> VerifiedPresentation:
     from .verify import VerificationPolicy, verify_credential
 
@@ -745,7 +762,9 @@ def _verify_ldp_vp(
     holder = _vp_holder(query_id, presentation, verified_vp.proof)
 
     # Cascade-verify each embedded credential through the pipeline (fail closed).
-    policy = VerificationPolicy(require_status=require_status, now=now, leeway_s=leeway_s)
+    # Nested SD-JWT VCs are held to the caller's KB-JWT window too, not the default.
+    policy = VerificationPolicy(require_status=require_status, now=now, leeway_s=leeway_s,
+                                kb_max_age_s=kb_max_age_s)
     credentials = tuple(
         verify_credential(
             vc, policy=policy, resolver=resolver, extra_contexts=extra_contexts,
