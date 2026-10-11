@@ -19,6 +19,7 @@ eddsa-jcs example, the RFC 8785 suite) are pinned in ``test_jwe`` / ``test_di_jc
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -31,6 +32,13 @@ from openvc.openid4vp import FORMAT_SD_JWT_VC
 from openvc.proof.errors import ClaimsInvalid
 
 FX = Path(__file__).parent / "fixtures" / "openid4vp"
+
+# Both fixtures were recorded at 2026-07-07T09:00:34Z — the instant we generated them,
+# which we know independently of the bytes. A KB-JWT is a freshness artifact (RFC 9901
+# §7.3 step 5.5, #186), so a recorded one verifies only with the clock pinned to when it
+# was received, exactly as a verifier re-checks an archived presentation against the
+# receipt time it logged. Unpinned, it is (correctly) refused as stale.
+RECORDED_AT = dt.datetime.fromtimestamp(1783414834, dt.timezone.utc)
 
 
 def _load(name: str) -> dict:
@@ -50,7 +58,8 @@ def test_sd_jwt_vc_vp_token_conforms_and_verifies():
     assert "~" in v["vp_token"]["my_credential"][0]
 
     result = verify_vp_token(
-        v["vp_token"], dcql_query=v["dcql_query"], nonce=v["nonce"], client_id=v["client_id"])
+        v["vp_token"], dcql_query=v["dcql_query"], nonce=v["nonce"], client_id=v["client_id"],
+        now=RECORDED_AT)
     (p,) = result.for_query("my_credential")
     assert p.format == FORMAT_SD_JWT_VC == v["expect"]["format"]
     assert p.raw.claims["given_name"] == v["expect"]["given_name"]
@@ -59,9 +68,10 @@ def test_sd_jwt_vc_vp_token_conforms_and_verifies():
 
 def test_sd_jwt_vc_vp_token_is_binding_evident():
     v = _load("sd_jwt_vc_vp_token.json")
-    with pytest.raises(ClaimsInvalid):                    # a stale nonce must be rejected
+    with pytest.raises(ClaimsInvalid, match="nonce"):     # a stale nonce must be rejected
         verify_vp_token(v["vp_token"], dcql_query=v["dcql_query"],
-                        nonce="not-the-recorded-nonce", client_id=v["client_id"])
+                        nonce="not-the-recorded-nonce", client_id=v["client_id"],
+                        now=RECORDED_AT)
 
 
 # --------------------------------------------------------------------------- #
@@ -73,7 +83,7 @@ def test_haip_encrypted_vp_token_conforms_and_verifies():
     key = P256KeyAgreementKey.from_jwk(h["verifier_encryption_key"], kid="verifier#enc")
     result = verify_encrypted_vp_response(
         h["response_jwe"], key=key, dcql_query=h["dcql_query"],
-        nonce=h["nonce"], client_id=h["client_id"])
+        nonce=h["nonce"], client_id=h["client_id"], now=RECORDED_AT)
     (p,) = result.for_query("my_credential")
     assert p.format == h["expect"]["format"]
     assert p.raw.claims["given_name"] == h["expect"]["given_name"]

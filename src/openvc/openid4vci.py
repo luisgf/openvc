@@ -67,8 +67,6 @@ dataclasses. Parsers, never builders, and never fetchers (ADR-0007 D7).
 from __future__ import annotations
 
 import json
-import math
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
@@ -78,7 +76,14 @@ from urllib.parse import urlparse
 from .errors import OpenvcError
 from .keys import MLDSA_ALGS, InvalidKey, jwk_thumbprint
 from .proof._jws import parse_compact, verify_compact
-from .proof._verify_common import DEFAULT_LEEWAY_S, check_jwt_temporal, reject_unknown_crit
+from .proof._verify_common import (
+    DEFAULT_LEEWAY_S,
+    check_iat_freshness,
+    check_jwt_temporal,
+    is_numeric_date,
+    reject_unknown_crit,
+    utc_epoch,
+)
 from .proof.errors import ClaimsInvalid, MalformedToken, UnsupportedAlgorithm
 from .proof.vc_jwt import ALLOWED_ALGS
 
@@ -791,7 +796,7 @@ def _attestation_timestamp(value: Any, name: str) -> int | None:
     """
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if not is_numeric_date(value):
         raise ClaimsInvalid(
             f"key attestation {name} must be a finite numeric timestamp when present")
     return int(value)
@@ -868,7 +873,7 @@ def verify_credential_request_proofs(
         raise UnsupportedProofType(
             f"proof type {request.proof_type!r} is not supported (only 'jwt')")
 
-    current = int(time.time()) if now is None else int(now.timestamp())
+    current = utc_epoch(now, error=CredentialRequestMalformed)   # a naive `now` is UTC
     verified = tuple(
         _verify_one_proof(
             value,
@@ -1171,23 +1176,8 @@ def _check_audience(aud: Any, credential_issuer: str) -> None:
 
 
 def _check_freshness(iat: Any, *, max_age_s: int, leeway_s: int, current: int) -> int:
-    """``iat`` freshness, in **both** directions.
-
-    ``check_jwt_temporal`` covers ``exp``/``nbf`` and never looks at ``iat``, but a key
-    proof's whole purpose is freshness, and wallets are not required to set ``exp``.
-
-    The future-dated direction is the one implementations forget: without it a wallet
-    signs once with ``iat = now + 10y`` and holds a proof that never goes stale. The
-    non-finite guard matters for the same reason it does in ``check_jwt_temporal`` —
-    ``json.loads`` accepts ``NaN``, and every comparison against it is ``False``, i.e.
-    *never stale*.
-    """
-    if iat is None:
-        raise ClaimsInvalid("key proof is missing the required iat")
-    if isinstance(iat, bool) or not isinstance(iat, (int, float)) or not math.isfinite(iat):
-        raise ClaimsInvalid("key proof iat must be a finite numeric timestamp")
-    if current - iat > max_age_s + leeway_s:
-        raise ClaimsInvalid("key proof is too old")
-    if iat - current > leeway_s:
-        raise ClaimsInvalid("key proof iat is in the future")
-    return int(iat)
+    """``iat`` freshness, in **both** directions — the rule is single-sourced in
+    :func:`openvc.proof._verify_common.check_iat_freshness`, shared with the SD-JWT
+    Key Binding JWT."""
+    return check_iat_freshness(
+        iat, max_age_s=max_age_s, leeway_s=leeway_s, current=current, subject="key proof")
