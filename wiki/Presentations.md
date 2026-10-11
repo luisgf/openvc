@@ -252,8 +252,9 @@ Over the Digital Credentials API it is the one `origin:<origin>` *this* presenta
 is bound to — another of your `expected_origins` does not qualify. So a nested
 `key_bound=True` now means what it says. A KB-JWT signed by the credential's `cnf`
 key was made for *this* verifier and *this* request, its `sd_hash` covers the
-disclosures you received, and it passed RFC 9901 §7.3 step 5.6, which is the step
-that makes a KB-JWT a binding at all. `VpJwtProofSuite.verify` applies the same rule
+disclosures you received, and its `iat` falls within `kb_max_age_s` (see
+[SD-JWT VC](SD-JWT-VC)). It passed RFC 9901 §7.3 step 5.6, which is the step that
+makes a KB-JWT a binding at all. `VpJwtProofSuite.verify` applies the same rule
 with its own `audience` / `nonce`, which take precedence over any `audience` / `nonce`
 in a `policy` you pass to it. The rule is scoped to the KB-JWT: a nested VC-JWT is a
 credential, and its own `aud` is never pinned to you.

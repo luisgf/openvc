@@ -77,9 +77,10 @@ The pipeline also accepts SD-JWT presentations directly —
 issuer key from `iss` (see
 [Resolving issuer keys](Resolving-Issuer-Keys)).
 
-**What `key_bound` attests.** `key_bound=True` means a KB-JWT was present and
-verified against the credential's `cnf` key, over the disclosures you received.
-Its `aud` and `nonce` are checked against the values **you pass**, and only then.
+**What `key_bound` attests.** `key_bound=True` means a KB-JWT was present,
+verified against the credential's `cnf` key over the disclosures you received, and
+within the freshness window above. Its `aud` and `nonce` are checked against the
+values **you pass**, and only then.
 Without `audience` + `nonce`, the flag proves possession of the key for some
 verifier, not a binding to you. Pass both, or set `require_key_binding=True`, which
 refuses to run without them. An SD-JWT VC nested in a `jwt_vc_json` / `ldp_vc`
