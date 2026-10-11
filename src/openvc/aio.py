@@ -264,7 +264,8 @@ async def _verify_sd_jwt_async(
     verified = suite.verify(
         sd_jwt, public_key_jwk=jwk, audience=policy.audience, nonce=policy.nonce,
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct,
-        check_temporal=policy.require_not_expired)
+        check_temporal=policy.require_not_expired,
+        kb_max_age_s=policy.kb_max_age_s, now=policy.now)
     status = await _check_status_async(verified.claims, verified.claims, policy,
                                        resolve_status_list, resolve_status_list_token,
                                        credential_issuer=verified.issuer)
@@ -535,6 +536,7 @@ def _make_schema_verifier_async(
             require_not_revoked=policy.require_not_revoked,
             require_status_issuer_binding=policy.require_status_issuer_binding,
             status_issuer_allowlist=policy.status_issuer_allowlist,
+            kb_max_age_s=policy.kb_max_age_s,
         )
         result = await verify_credential_async(
             _bytes_to_credential(raw), policy=inner_policy, resolver=resolver,
