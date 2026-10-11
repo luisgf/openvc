@@ -59,7 +59,12 @@ if TYPE_CHECKING:
 from .cache import batch_resolvers
 from .errors import OpenvcError
 from .observability import logger, span
-from .proof._verify_common import DEFAULT_LEEWAY_S, check_jwt_temporal, check_validity_window
+from .proof._verify_common import (
+    DEFAULT_KB_MAX_AGE_S,
+    DEFAULT_LEEWAY_S,
+    check_jwt_temporal,
+    check_validity_window,
+)
 from .proof.errors import ClaimsInvalid, CredentialExpired
 from .schema import (
     SchemaUnavailable,
@@ -136,8 +141,10 @@ class VerificationPolicy:
     ``require_schema`` is **False** by default (opt-in): ``credentialSchema`` is
     validated only when a ``resolve_credential_schema`` fetch is supplied; set it
     True to reject a credential that declares a schema but is verified without
-    one. ``now`` pins the evaluation instant for Data Integrity temporal checks
-    (the JOSE suites use the current time)."""
+    one. ``now`` pins the evaluation instant for Data Integrity temporal checks and
+    for the SD-JWT Key Binding JWT freshness window (the JOSE suites' ``exp``/``nbf``
+    use the current time). ``kb_max_age_s`` bounds how old a KB-JWT's ``iat`` may be
+    (RFC 9901 §7.3 step 5.5)."""
     leeway_s: int = DEFAULT_LEEWAY_S
     expected_types: Sequence[str] | None = None
     expected_vct: str | None = None
@@ -159,6 +166,10 @@ class VerificationPolicy:
     # (fail-closed). JOSE ``now`` is still wall-clock unless a suite pins it.
     require_not_expired: bool = True
     require_not_revoked: bool = True
+    # How old an SD-JWT KB-JWT's `iat` may be, evaluated at `now` (RFC 9901 §7.3 step
+    # 5.5). Any KB-JWT present is held to it. To re-verify an archived one, pin `now`
+    # to the receipt time your system recorded — never a value read from the token.
+    kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S
 
 
 @dataclass(frozen=True)
@@ -430,6 +441,7 @@ def _make_schema_verifier(
             require_not_revoked=policy.require_not_revoked,
             require_status_issuer_binding=policy.require_status_issuer_binding,
             status_issuer_allowlist=policy.status_issuer_allowlist,
+            kb_max_age_s=policy.kb_max_age_s,
         )
         return verify_credential(
             _bytes_to_credential(raw), policy=inner_policy, resolver=resolver,
@@ -562,7 +574,8 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
     verified = suite.verify(
         sd_jwt, public_key_jwk=jwk, audience=audience, nonce=nonce,
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct,
-        check_temporal=policy.require_not_expired)
+        check_temporal=policy.require_not_expired,
+        kb_max_age_s=policy.kb_max_age_s, now=policy.now)
     # the disclosed claims may carry either a W3C credentialStatus or an IETF status
     status = _check_status(verified.claims, verified.claims, policy,
                            resolve_status_list, resolve_status_list_token,
