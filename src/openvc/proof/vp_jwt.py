@@ -130,7 +130,10 @@ class VpJwtProofSuite:
         ``audience``/``nonce`` a passed ``policy`` holds — so its result's
         ``key_bound=True`` means bound to this exchange. A KB-JWT made for another
         verifier or nonce fails the whole presentation (``ClaimsInvalid``). One with no
-        KB-JWT reports ``key_bound=False``: the VP signature is the holder binding."""
+        KB-JWT reports ``key_bound=False``: the VP signature authenticates the presenter,
+        never the credential's ``cnf`` key. If you need that, pass
+        ``policy=VerificationPolicy(require_key_binding=True)``, or use
+        *require_holder_binding*."""
         if not audience or not nonce:
             raise ClaimsInvalid("VP-JWT verify requires a non-empty audience and nonce")
 

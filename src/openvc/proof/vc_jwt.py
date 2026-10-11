@@ -121,6 +121,21 @@ def _split(token: str) -> tuple[str, str, str]:
     return header_b64, payload_b64, sig_b64
 
 
+def _reject_sd_jwt_typ(header: dict[str, Any]) -> None:
+    """Explicit typing (RFC 8725 §3.11): a JWS typed as an SD-JWT issuer JWT or a Key
+    Binding JWT is never a VC-JWT. Without this, an SD-JWT VC's issuer JWT with its
+    ``~`` tail dropped — whose payload carries a ``vc`` object for some issuers —
+    verified here, so a holder-bound credential slipped past key binding (#189)."""
+    typ = header.get("typ")
+    if not isinstance(typ, str):
+        return
+    media = typ.lower()
+    if media.startswith("application/"):           # RFC 7515 §4.1.9 allows the prefix
+        media = media[len("application/"):]
+    if media == "sd-jwt" or media.endswith("+sd-jwt") or media == "kb+jwt":
+        raise MalformedToken(f"a JWS typed {typ!r} is not a VC-JWT")
+
+
 # --------------------------------------------------------------------------- #
 # Proof suite
 # --------------------------------------------------------------------------- #
@@ -202,6 +217,7 @@ class VcJwtProofSuite:
         if alg not in self._algs:                          # allow-list BEFORE crypto
             raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
         reject_unknown_crit(header)
+        _reject_sd_jwt_typ(header)
 
         if alg in ALLOWED_ALGS_PQ:
             # ML-DSA is not a PyJWT algorithm — verify the signature through the

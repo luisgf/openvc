@@ -54,31 +54,47 @@ All notable changes to **openvc** are documented here. The format follows
 - **An SD-JWT VC nested in a `jwt_vc_json` or `ldp_vc` presentation no longer
   reports `key_bound=True` for a Key Binding JWT made for another verifier**
   ([#189](https://github.com/luisgf/openvc/issues/189)). Found by the
-  adversarial review of [#187](https://github.com/luisgf/openvc/pull/187). `verify_vp_token` and
-  `VpJwtProofSuite.verify` verify every credential embedded in a W3C
-  presentation, but they built the nested policy with no audience or nonce. A
-  nested KB-JWT therefore had its signature and `sd_hash` checked and its `aud` /
-  `nonce` skipped. That is RFC 9901 §7.3 step 5.6, the step that makes a KB-JWT a
-  binding at all. An SD-JWT + KB-JWT minted for verifier B, wrapped in a VP
-  correctly bound to verifier A, verified at A with `key_bound=True`. A nested
-  KB-JWT is now held to the presentation's own binding: the VP-JWT `aud` /
-  `nonce`, the Data Integrity `domain` / `challenge`, or the DC API `origin:` that
-  presentation is bound to. It is also held to the `iat` window above. One bound
-  anywhere else rejects the whole response (`ClaimsInvalid`). This covers bare SD-JWTs and those inside an
+  adversarial review of [#187](https://github.com/luisgf/openvc/pull/187).
+  `verify_vp_token` and `VpJwtProofSuite.verify` verify every credential embedded
+  in a W3C presentation, but built the nested policy with no audience or nonce.
+  A nested KB-JWT therefore had its signature and `sd_hash` checked but its `aud`
+  / `nonce` skipped. That is RFC 9901 §7.3 step 5.6, the step that makes a KB-JWT
+  a binding at all. An SD-JWT + KB-JWT minted for verifier B, wrapped in a VP
+  correctly bound to verifier A, verified at A with `key_bound=True`.
+
+  A nested KB-JWT is now held to the presentation's own binding: the VP-JWT
+  `aud` / `nonce`, the Data Integrity `domain` / `challenge`, or the DC API
+  `origin:` openvc matched the presentation to. It is also held to the `iat`
+  window above. A KB-JWT bound anywhere else rejects the whole response
+  (`ClaimsInvalid`). This covers bare SD-JWTs and those inside an
   `EnvelopedVerifiableCredential`, at every depth the pipeline unwraps. A nested
-  SD-JWT with no KB-JWT still verifies, with `key_bound=False`, because the
-  presentation's proof is the holder binding. Rejecting, rather than reporting
-  `key_bound=False`, is deliberate. A KB-JWT is minted per presentation, so one
-  bound elsewhere is a replayed holder proof. RFC 9901 §7.3 makes a presentation
-  whose KB-JWT fails a step invalid, and OpenID4VP 1.0 §14.1.2 rejects the whole
-  response for a presentation without the right nonce. No spec defines a nested
-  KB-JWT's values (OpenID4VP §13.2 does not support nesting at all), so openvc holds
-  it to the ones §B.3.6 gives every KB-JWT: the Client Identifier, or `origin:`
-  over the DC API, and the request nonce. The binding applies to the KB-JWT only;
-  a nested VC-JWT's own `aud` is still not pinned. This was a wrong flag, not a
-  bypass: the presentation's own binding was always enforced. The semantics are
-  written up in the wiki under *Presentations → SD-JWT VCs nested in a W3C
-  presentation*.
+  SD-JWT with no KB-JWT still verifies, with `key_bound=False`; the
+  presentation's proof authenticates the presenter but never the credential's
+  `cnf` key.
+
+  Rejecting, rather than reporting `key_bound=False`, is deliberate. A KB-JWT is
+  minted per presentation, so one bound elsewhere is a replayed holder proof.
+  RFC 9901 §7.3 makes a presentation whose KB-JWT fails a step invalid, and
+  OpenID4VP 1.0 §14.1.2 rejects the whole response for a presentation without
+  the right nonce. No spec defines a nested KB-JWT's values (OpenID4VP §13.2 does
+  not support nesting at all), so openvc uses the ones §B.3.6 gives every KB-JWT:
+  the Client Identifier, or `origin:` over the DC API, and the request nonce. The
+  binding applies to the KB-JWT only; a nested VC-JWT's own `aud` is still not
+  pinned. This was a wrong flag, not a bypass: the presentation's own binding was
+  always enforced. The semantics are written up in the wiki under
+  *Presentations → SD-JWT VCs nested in a W3C presentation*.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **A JWS typed as an SD-JWT or a KB-JWT is no longer accepted as a VC-JWT.**
+    RFC 8725 §3.11 calls this explicit typing. An SD-JWT VC's issuer JWT with its
+    `~` tail dropped verified as a VC-JWT whenever its payload carried a `vc`
+    object. It reported `key_bound=None`, which got around a nested
+    `require_key_binding=True` that this change had just made satisfiable.
+    `VcJwtProofSuite.verify` now refuses a `typ` of `sd-jwt`, `*+sd-jwt` or
+    `kb+jwt` (an `application/` prefix is optional) as `MalformedToken`, before
+    any crypto runs.
+  - The internal presentation binding is validated as two non-empty strings; a
+    `(None, None)` would have switched the check off silently.
 
 ### Added
 
@@ -101,14 +117,17 @@ All notable changes to **openvc** are documented here. The format follows
   `non_negative_seconds`) and shared by the KB-JWT and the OpenID4VCI key proof;
   the key-proof error messages are unchanged. A naive `now` passed to
   `verify_credential_request` is now read as UTC, as everywhere else in openvc.
+- **A nested KB-JWT is bound to the presentation's own `audience` / `nonce`,
+  not to any in the `policy` passed to `VpJwtProofSuite.verify`.** A caller who
+  pointed nested KB-JWTs at other values through that `policy` is now rejected
+  (#189). The `policy`'s `audience` still applies to a nested VC-JWT.
 
 ### Fixed
 
 - **`VpJwtProofSuite.verify` can now require key binding on nested SD-JWT
   VCs.** A cascade `policy` with `require_key_binding=True` used to fail every
   time, because the nested verification had no `aud` / `nonce` to bind against.
-  It now uses the presentation's. Those values also take precedence over any
-  `audience` / `nonce` in that `policy`, for the nested KB-JWT only.
+  It now uses the presentation's.
 
 ### Tests
 

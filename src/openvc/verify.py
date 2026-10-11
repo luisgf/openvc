@@ -570,7 +570,13 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
     # nonce, overriding the policy's: key_bound=True must never vouch for a holder proof
     # made for another verifier or transaction (RFC 9901 §7.3 step 5.6). It is scoped to
     # the KB-JWT — a nested VC-JWT's own `aud` is not the verifier's to pin.
-    audience, nonce = kb_binding if kb_binding is not None else (policy.audience, policy.nonce)
+    if kb_binding is None:
+        audience, nonce = policy.audience, policy.nonce
+    elif (isinstance(kb_binding, tuple) and len(kb_binding) == 2
+          and all(isinstance(v, str) and v for v in kb_binding)):
+        audience, nonce = kb_binding
+    else:                       # (None, None) would silently switch the binding off
+        raise ClaimsInvalid("a presentation binding must be a non-empty (audience, nonce)")
     verified = suite.verify(
         sd_jwt, public_key_jwk=jwk, audience=audience, nonce=nonce,
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct,

@@ -242,14 +242,15 @@ JWT, separate from the presentation's proof, and the rule for it is:
 
 | The nested SD-JWT VC… | Result |
 |---|---|
-| has no KB-JWT | verifies, `key_bound=False` — the presentation's proof is the holder binding |
+| has no KB-JWT | verifies, `key_bound=False` — the presentation's proof authenticates the presenter, never the credential's `cnf` key |
 | has a KB-JWT bound to this exchange — same `aud` and `nonce` as the presentation | verifies, `key_bound=True` |
 | has a KB-JWT bound anywhere else — another verifier, another nonce, the bare host | **the whole response is rejected** (`ClaimsInvalid`) |
 
 "Same exchange" means the presentation's own binding. For a VP-JWT that is its `aud`
 and `nonce`. For an `ldp_vc` presentation it is the proof's `domain` and `challenge`.
-Over the Digital Credentials API it is the one `origin:<origin>` *this* presentation
-is bound to — another of your `expected_origins` does not qualify. So a nested
+Over the Digital Credentials API it is the `origin:<origin>` that openvc matched this
+presentation to: the first of its `aud` / `domain` values that is one of your
+`expected_origins`. No other origin qualifies, even one the presentation also lists. So a nested
 `key_bound=True` now means what it says. A KB-JWT signed by the credential's `cnf`
 key was made for *this* verifier and *this* request, its `sd_hash` covers the
 disclosures you received, and its `iat` falls within `kb_max_age_s` (see
@@ -287,8 +288,9 @@ Refusing nested SD-JWTs altogether would break legitimate VCDM 2.0 enveloped
 credentials, whose specification examples carry no KB-JWT.
 
 **A stripped KB-JWT is not an error.** Without a KB-JWT, the nested credential reports
-`key_bound=False` and the response still verifies, because the presentation's proof is
-the holder binding. Anyone who cannot satisfy the binding can simply drop the KB-JWT.
+`key_bound=False` and the response still verifies. The presentation's proof
+authenticates whoever presented, but nothing then proves that they hold the credential's
+`cnf` key. Anyone who cannot satisfy the binding can simply drop the KB-JWT.
 So decide whether you need the nested credential's *own* key binding before you look
 at what arrived (RFC 9901 §9.5), and if you do, require `key_bound is True`. With
 `VpJwtProofSuite.verify`, `policy=VerificationPolicy(require_key_binding=True)`

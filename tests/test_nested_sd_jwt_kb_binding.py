@@ -306,3 +306,69 @@ def test_suite_require_key_binding_is_now_satisfiable_for_nested(issuer, holder)
     unbound = _vp_jwt(holder, [_sd_jwt(issuer, holder)])
     with pytest.raises(ClaimsInvalid, match="no KB-JWT present"):
         _suite_verify(unbound, policy=policy)
+
+
+# --------------------------------------------------------------------------- #
+# Fixed before merge — from this change's adversarial review
+# --------------------------------------------------------------------------- #
+
+def _sd_jwt_issuer_jwt_with_vc(issuer, holder):
+    """An SD-JWT VC whose issuer payload also carries a `vc` object (legacy EBSI-style),
+    with its `~` tail dropped: a compact JWS that the pipeline routes as a VC-JWT."""
+    issuer_key, issuer_did = issuer
+    holder_key, holder_did = holder
+    issued = SdJwtVcProofSuite().issue(
+        {"iss": issuer_did, "sub": holder_did, "given_name": "Ada",
+         "vc": {"@context": [V2], "type": ["VerifiableCredential"], "issuer": issuer_did,
+                "credentialSubject": {"id": holder_did}}},
+        signing_key=issuer_key, vct=VCT, disclosable=["given_name"],
+        holder_jwk=holder_key.public_jwk())
+    return issued.split("~", 1)[0]
+
+
+def test_sd_jwt_issuer_jwt_rerouted_as_vc_jwt_cannot_dodge_key_binding(issuer, holder):
+    # Dropping the `~` tail turned a holder-bound SD-JWT VC into a "VC-JWT" with
+    # key_bound=None, sidestepping a nested require_key_binding=True. Explicit typing
+    # (RFC 8725 §3.11) now refuses a JWS typed dc+sd-jwt on the VC-JWT path.
+    from openvc.proof.errors import MalformedToken
+    from openvc.verify import verify_credential
+
+    jws = _sd_jwt_issuer_jwt_with_vc(issuer, holder)
+    policy = VerificationPolicy(require_status=False, require_key_binding=True)
+    with pytest.raises(MalformedToken, match="is not a VC-JWT"):
+        _suite_verify(_vp_jwt(holder, [jws]), policy=policy)
+    with pytest.raises(MalformedToken, match="is not a VC-JWT"):
+        verify_credential(jws, policy=policy)
+    with pytest.raises(MalformedToken, match="is not a VC-JWT"):
+        _jwt_vc_json(_vp_jwt(holder, [jws]))
+
+
+@pytest.mark.parametrize("typ,refused", [
+    ("dc+sd-jwt", True), ("vc+sd-jwt", True), ("application/dc+sd-jwt", True),
+    ("SD-JWT", True), ("kb+jwt", True), ("KB+JWT", True),
+    ("JWT", False), ("vc+jwt", False), ("application/vc+ld+json+jwt", False), (None, False),
+])
+def test_vc_jwt_refuses_sd_jwt_and_kb_jwt_typ_before_crypto(typ, refused):
+    from openvc.proof.errors import MalformedToken
+    from openvc.proof.vc_jwt import _reject_sd_jwt_typ
+
+    header = {"alg": "ES256"} if typ is None else {"alg": "ES256", "typ": typ}
+    if refused:
+        with pytest.raises(MalformedToken, match="is not a VC-JWT"):
+            _reject_sd_jwt_typ(header)
+    else:
+        _reject_sd_jwt_typ(header)
+
+
+@pytest.mark.parametrize("binding", [
+    (None, None), (CLIENT_ID, None), ("", NONCE), (CLIENT_ID,), [CLIENT_ID, NONCE], "ab", 5,
+])
+def test_a_malformed_internal_binding_fails_closed_and_typed(issuer, holder, binding):
+    # The private binding never silently switches off ((None, None) used to) nor raises
+    # a bare unpack error.
+    from openvc.verify import verify_credential
+
+    nested = _sd_jwt(issuer, holder, kb=(OTHER_AUD, OTHER_NONCE))
+    with pytest.raises(ClaimsInvalid, match="presentation binding"):
+        verify_credential(nested, policy=VerificationPolicy(require_status=False),
+                          _kb_binding=binding)

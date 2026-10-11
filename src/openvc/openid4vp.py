@@ -257,7 +257,9 @@ def verify_vp_token(
     ``EnvelopedVerifiableCredential``) may carry its own KB-JWT. If it does, that KB-JWT
     must be bound to the **same** audience and nonce as the presentation, or the response
     is rejected — so a nested result's ``key_bound=True`` means bound to this exchange.
-    Without one it reports ``key_bound=False``; the VP proof is then the holder binding.
+    Without one it reports ``key_bound=False``: the VP proof authenticates the presenter,
+    never the credential's ``cnf`` key. Check ``key_bound``, or pass
+    *require_holder_binding*, if you need that.
 
     With no ``credential_sets``, every Credential Query is required and its absence is
     rejected. When the query *does* carry ``credential_sets``, per-query completeness
