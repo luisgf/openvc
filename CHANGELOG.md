@@ -4,6 +4,66 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.0] — unreleased
+
+### Security
+
+- **The SD-JWT Key Binding JWT's `iat` is now required and bounded**
+  ([#186](https://github.com/luisgf/openvc/issues/186)). RFC 9901 §4.3 makes
+  it REQUIRED and §7.3 step 5.5 has the verifier check it is "within an
+  acceptable window"; openvc never read it, so a KB-JWT of any age — or with no
+  `iat` at all — verified. Every self-made test minted a fresh KB-JWT and
+  checked it at once; a third-party capture offered on
+  [#121](https://github.com/luisgf/openvc/issues/121) found it with its "an hour
+  later" control. Any KB-JWT that is present is now refused when its `iat` is
+  missing, non-numeric or non-finite, older than `kb_max_age_s` plus the
+  leeway, or future-dated beyond the leeway. Defence in depth, not a bypass:
+  the enforced `nonce` + `aud` binding already stopped cross-transaction
+  replay, but this window is the only freshness bound a stateless verifier can
+  enforce, since only the caller knows how old its nonce is. A stale KB-JWT is a
+  *binding* failure, never an `expired` verdict, so `require_not_expired=False`
+  does not waive it.
+- **A 400-digit `exp` / `nbf` / `iat` no longer escapes as a bare
+  `OverflowError`.** `json.loads` turns such a literal into a Python `int`, and
+  `math.isfinite` raised on it instead of answering — in the shared JOSE temporal
+  check (SD-JWT VC, KB-JWT, VP-JWT, the ML-DSA VC-JWT lane) and in OpenID4VCI's
+  key-proof and key-attestation timestamps. Anyone who can sign their own token
+  (a `did:key` is enough) could abort a `verify_many` batch with it. Such a
+  bignum is now read as not finite, the reading `openvc.rp_registration`
+  already made, and fails closed as `ClaimsInvalid`.
+
+### Added
+
+- **`kb_max_age_s`** — the KB-JWT freshness window, default
+  `openvc.proof.sd_jwt.DEFAULT_KB_MAX_AGE_S` (300 s, the same budget as an
+  OpenID4VCI key proof) — on `SdJwtVcProofSuite.verify`, `VerificationPolicy`
+  (a new defaulted field, add-only), `verify_vp_token` and
+  `verify_encrypted_vp_response`.
+- **`now` on `SdJwtVcProofSuite.verify`**, and `VerificationPolicy.now` /
+  `verify_vp_token(now=…)` now also pin the instant the KB-JWT window is
+  evaluated at. Re-verifying an archived presentation means pinning `now` to its
+  own instant, not switching the check off. The issuer JWT's `exp`/`nbf` still
+  use the current time, as on every JOSE suite.
+
+### Changed
+
+- The freshness rule is single-sourced in `proof/_verify_common.py`
+  (`check_iat_freshness`, `is_numeric_date`) and shared by the KB-JWT and the
+  OpenID4VCI key proof; the key-proof error messages are unchanged.
+
+### Tests
+
+- New `tests/test_sd_jwt_kb_freshness.py` crafts KB-JWTs with every hostile
+  `iat` (missing, string, boolean, `NaN`, `±Infinity`, `±10**400`, stale,
+  future-dated) and pins both edges of the window, the `now` pin, the expiry
+  waiver, and that the window reaches the suite, `verify_credential`, the async
+  pipeline and `verify_vp_token`.
+- The two recorded OpenID4VP drift-alarm fixtures (#20) are now verified with
+  `now` pinned to their 2026-07-07 recording instant. Unpinned, their KB-JWTs
+  are — correctly — three months stale; they had only been passing because the
+  claim was never read. The nonce-mismatch test now asserts *why* it fails, so it
+  cannot pass on staleness instead.
+
 ## [1.27.1] — 2026-10-04
 
 ### Fixed

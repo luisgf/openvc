@@ -35,14 +35,30 @@ result = suite.verify(
 print(result.vct, result.key_bound, result.claims["given_name"])
 ```
 
-When `require_key_binding=True`, the KB-JWT (signature, `aud`, `nonce`, `sd_hash`)
-is verified **even if** the issuer JWT is expired or not-yet-valid. A temporal
-failure (`ClaimsInvalid` matching `expired` / `not yet valid`) from that call
-therefore means the presentation was **bound**; a key-binding failure (wrong
-`aud`/`nonce`, missing KB-JWT, or `SignatureInvalid` on the KB) means it was
-unbound — do not treat `EXPIRED` as proof of holder binding. The hosted path
-(`require_key_binding=False`) is unchanged: expiry still fails before any KB
-check.
+When `require_key_binding=True`, the KB-JWT (signature, `iat` window, `aud`,
+`nonce`, `sd_hash`) is verified **even if** the issuer JWT is expired or
+not-yet-valid. A temporal failure (`ClaimsInvalid` matching `expired` / `not yet
+valid`) from that call therefore means the presentation was **bound**; a key-binding
+failure (wrong `aud`/`nonce`, a stale or future-dated KB-JWT, missing KB-JWT, or
+`SignatureInvalid` on the KB) means it was unbound — do not treat `EXPIRED` as proof
+of holder binding. The hosted path (`require_key_binding=False`) is unchanged: expiry
+still fails before any KB check.
+
+**KB-JWT freshness.** RFC 9901 makes the KB-JWT `iat` REQUIRED (§4.3) and has the
+verifier check it is "within an acceptable window" (§7.3 step 5.5). openvc requires
+it, refuses a non-numeric or non-finite one, and refuses a KB-JWT older than
+`kb_max_age_s` — default `DEFAULT_KB_MAX_AGE_S`, 300 seconds — plus the leeway, or
+dated in the future beyond the leeway. Any KB-JWT that is present is held to it,
+whether or not binding was required. These are binding failures (`KB-JWT is too
+old`, `KB-JWT iat is in the future`), never an `expired` verdict, so
+`require_not_expired=False` does not waive them. The `nonce` binds a KB-JWT to one
+transaction, but only you know how old that nonce is; this window is the freshness
+bound a stateless verifier can enforce itself.
+
+`now` — on `SdJwtVcProofSuite.verify`, `VerificationPolicy` and `verify_vp_token` —
+pins the instant the window is evaluated at. To re-verify an archived presentation,
+pin `now` to the presentation's own time; do not widen the window. (The issuer JWT's
+`exp`/`nbf` still use the current time, as on every JOSE suite.)
 
 `aka_vcts` (draft-18) is an optional array of *additional* types the issuer asserts
 the credential also is. When present it must be a non-empty list of non-empty

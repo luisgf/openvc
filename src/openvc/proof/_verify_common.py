@@ -53,6 +53,12 @@ def reject_unknown_crit(header: dict[str, Any]) -> None:
 
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
 
+# How old an SD-JWT Key Binding JWT's `iat` may be (RFC 9901 §7.3, step 5.5: "within an
+# acceptable window" — the size is verifier policy). A KB-JWT is minted when the holder
+# submits the presentation, so minutes are generous; same budget as an OpenID4VCI key
+# proof (`openvc.openid4vci.DEFAULT_PROOF_MAX_AGE_S`).
+DEFAULT_KB_MAX_AGE_S = 300
+
 # Fractional seconds in an XSD/ISO dateTime. Python's fromisoformat only accepted
 # exactly 3 or 6 fractional digits before 3.11, so we normalise to microseconds
 # (the date has no '.' and a numeric tz offset has none either, so this only ever
@@ -170,6 +176,26 @@ def prepare_di_proof(
     return proof, proof_config, signature
 
 
+def is_numeric_date(value: Any) -> bool:
+    """True when *value* is a JSON NumericDate openvc will compare against a clock: an
+    ``int`` or ``float``, not a ``bool``, and finite.
+
+    Two traps live here. ``json.loads`` accepts ``NaN``/``Infinity``, and every
+    comparison against them is ``False`` — i.e. *never expires*, *never stale*. And it
+    accepts arbitrarily large integers (``1`` followed by 400 zeros), which
+    :func:`math.isfinite` casts to float and answers with a bare ``OverflowError`` —
+    an untyped exception that escapes ``OpenvcError`` and aborts ``verify_many``. Such
+    a bignum is read as *not finite*, the same reading the WRPRC parser makes
+    (:mod:`openvc.rp_registration`), so it fails closed and typed.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:                   # an int no float can hold
+        return False
+
+
 def check_jwt_temporal(
     claims: dict[str, Any], *, leeway_s: int, subject: str = "token",
     now: int | None = None,
@@ -187,16 +213,42 @@ def check_jwt_temporal(
     current = int(time.time()) if now is None else now
     exp = claims.get("exp")
     if exp is not None:
-        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
+        if not is_numeric_date(exp):
             raise ClaimsInvalid(f"{subject} exp must be a finite numeric timestamp")
         if check_temporal and current > exp + leeway_s:
             raise ClaimsInvalid(f"{subject} has expired")
     nbf = claims.get("nbf")
     if nbf is not None:
-        if isinstance(nbf, bool) or not isinstance(nbf, (int, float)) or not math.isfinite(nbf):
+        if not is_numeric_date(nbf):
             raise ClaimsInvalid(f"{subject} nbf must be a finite numeric timestamp")
         if current + leeway_s < nbf:
             raise ClaimsInvalid(f"{subject} is not yet valid")
+
+
+def check_iat_freshness(
+    iat: Any, *, max_age_s: int, leeway_s: int, current: int, subject: str,
+) -> int:
+    """Require a holder-minted proof's ``iat`` and bound it in **both** directions;
+    return it as an ``int``.
+
+    Single-sources the freshness rule for the OpenID4VCI key proof and the SD-JWT Key
+    Binding JWT (RFC 9901 §4.3 makes its ``iat`` REQUIRED; §7.3 step 5.5 bounds it).
+    :func:`check_jwt_temporal` covers ``exp``/``nbf`` and never looks at ``iat``, but
+    these proofs exist to be fresh and are not required to carry ``exp``.
+
+    Stale means older than *max_age_s* + *leeway_s* at *current* (epoch seconds). The
+    future-dated direction is the one implementations forget: without it a holder
+    signs once with ``iat = now + 10y`` and holds a proof that never goes stale.
+    """
+    if iat is None:
+        raise ClaimsInvalid(f"{subject} is missing the required iat")
+    if not is_numeric_date(iat):
+        raise ClaimsInvalid(f"{subject} iat must be a finite numeric timestamp")
+    if current - iat > max_age_s + leeway_s:
+        raise ClaimsInvalid(f"{subject} is too old")
+    if iat - current > leeway_s:
+        raise ClaimsInvalid(f"{subject} iat is in the future")
+    return int(iat)
 
 
 def check_proof_purpose(proof: dict[str, Any], expected: str | None) -> None:
@@ -322,16 +374,19 @@ __all__ = [
     "ALG_PROFILE",
     "CredentialExpired",
     "CredentialNotYetValid",
+    "DEFAULT_KB_MAX_AGE_S",
     "DEFAULT_LEEWAY_S",
     "KeyResolutionError",
     "MalformedTimestamp",
     "PresentationBindingError",
     "ProofPurposeMismatch",
+    "check_iat_freshness",
     "check_jwt_temporal",
     "check_presentation_binding",
     "check_proof_purpose",
     "check_validity_window",
     "prepare_di_proof",
+    "is_numeric_date",
     "match_alg",
     "reject_unknown_crit",
     "resolve_verification_key",

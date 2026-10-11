@@ -25,7 +25,8 @@ The holder chooses which disclosures to send; the verifier hashes each received
 disclosure, matches it against the digests, and reconstructs only the disclosed
 claims. A **Key Binding JWT** (``typ: kb+jwt``), signed by the holder key named in
 the issuer's ``cnf``, binds a presentation to an audience + nonce and to the exact
-set of disclosures (via ``sd_hash``).
+set of disclosures (via ``sd_hash``), and dates it: its ``iat`` is required and must
+fall within ``kb_max_age_s`` of the verifier's ``now`` (RFC 9901 §7.3 step 5.5).
 
 Revocation is out of band: an SD-JWT VC's ``status`` claim can carry an IETF Token
 Status List reference — check it with :func:`openvc.status.check_token_status`
@@ -39,10 +40,16 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 from ..keys import KeyBackendError, verify_signature
-from ._verify_common import check_jwt_temporal, reject_unknown_crit
+from ._verify_common import (
+    DEFAULT_KB_MAX_AGE_S,
+    check_iat_freshness,
+    check_jwt_temporal,
+    reject_unknown_crit,
+)
 from .errors import (
     ClaimsInvalid,
     MalformedToken,
@@ -363,6 +370,8 @@ class SdJwtVcProofSuite:
         require_key_binding: bool = False,
         expected_vct: str | None = None,
         check_temporal: bool = True,
+        kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
+        now: datetime | None = None,
     ) -> VerifiedSdJwt:
         """Verify an SD-JWT (VC) presentation end to end.
 
@@ -377,7 +386,19 @@ class SdJwtVcProofSuite:
         bound and a key-binding failure means it was not. The hosted path
         (*require_key_binding* False) is unchanged — temporal still runs before
         any optional KB-JWT.
+
+        Any KB-JWT that is present is held to RFC 9901 §7.3 step 5.5: its ``iat`` is
+        required, must be a finite number, must not be older than *kb_max_age_s* (plus
+        the suite leeway) and must not be in the future beyond the leeway. *now* pins
+        the instant that window is evaluated at — a verifier re-checking an archived
+        presentation pins it to the presentation's own instant rather than switching
+        the check off. The issuer JWT's ``exp``/``nbf`` still use the current time, as
+        on every JOSE suite.
         """
+        if isinstance(kb_max_age_s, bool) or not isinstance(kb_max_age_s, int) \
+                or kb_max_age_s < 0:
+            raise SdJwtError("kb_max_age_s must be a non-negative int (seconds)")
+        current = int(time.time()) if now is None else int(now.timestamp())
         issuer_jwt, disclosures, kb_jwt = self._split(presentation)
         header, claims, signing_input, signature = self._decode_jws(issuer_jwt)
 
@@ -408,7 +429,7 @@ class SdJwtVcProofSuite:
             key_bound = self._verify_key_binding(
                 kb_jwt, issuer_jwt, disclosures, claims.get("cnf"),
                 hash_name=hash_name, audience=audience, nonce=nonce,
-                required=True)
+                required=True, current=current, max_age_s=kb_max_age_s)
             self._check_temporal(claims, check_temporal=check_temporal)
         else:
             self._check_temporal(claims, check_temporal=check_temporal)
@@ -438,7 +459,7 @@ class SdJwtVcProofSuite:
             key_bound = self._verify_key_binding(
                 kb_jwt, issuer_jwt, disclosures, claims.get("cnf"),
                 hash_name=hash_name, audience=audience, nonce=nonce,
-                required=False)
+                required=False, current=current, max_age_s=kb_max_age_s)
 
         return VerifiedSdJwt(
             claims=unpacked, issuer=iss, vct=vct if isinstance(vct, str) else None,
@@ -529,6 +550,8 @@ class SdJwtVcProofSuite:
         audience: str | None,
         nonce: str | None,
         required: bool,
+        current: int,
+        max_age_s: int,
     ) -> bool:
         if required and (audience is None or nonce is None):
             # A KB-JWT proves possession of the holder key and that these disclosures were
@@ -554,6 +577,12 @@ class SdJwtVcProofSuite:
             raise ClaimsInvalid("no cnf.jwk in the issuer JWT for key binding")
         self._verify_signature(alg, cnf["jwk"], signing_input, signature, what="KB-JWT")
 
+        # RFC 9901 §4.3: `iat` is REQUIRED; §7.3 step 5.5: within an acceptable window.
+        # The nonce binds a KB-JWT to one transaction, but only the caller knows how old
+        # that nonce is — this window is the freshness bound a stateless verifier owns.
+        check_iat_freshness(
+            claims.get("iat"), max_age_s=max_age_s, leeway_s=self._leeway,
+            current=current, subject="KB-JWT")
         if audience is not None and claims.get("aud") != audience:
             raise ClaimsInvalid("KB-JWT aud does not match")
         if nonce is not None and claims.get("nonce") != nonce:
@@ -566,6 +595,7 @@ class SdJwtVcProofSuite:
 
 
 __all__ = [
+    "DEFAULT_KB_MAX_AGE_S",
     "SdJwtError",
     "SdJwtVcProofSuite",
     "VerifiedSdJwt",

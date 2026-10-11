@@ -53,7 +53,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .errors import OpenvcError
-from .proof._verify_common import DEFAULT_LEEWAY_S
+from .proof._verify_common import DEFAULT_KB_MAX_AGE_S, DEFAULT_LEEWAY_S
 from .proof.errors import ClaimsInvalid
 
 if TYPE_CHECKING:
@@ -185,6 +185,7 @@ def verify_vp_token(
     resolve_status_list: Any = None,
     resolve_status_list_token: Any = None,
     require_status: bool = False,
+    kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
 ) -> VpTokenVerification:
     """Verify an OpenID4VP 1.0 ``vp_token`` against the query and request binding.
 
@@ -206,7 +207,10 @@ def verify_vp_token(
       in the list. CIR (EU) 2025/1569 pins remote presentation to OpenID4VP + the DC API.
 
     *resolver* resolves issuer/holder keys (a :class:`~openvc.did.base.DidResolverRegistry`);
-    *now* pins the evaluation instant for the validity window.
+    *now* pins the evaluation instant for the validity window, and for the SD-JWT VC
+    Key Binding JWT's freshness window: its ``iat`` must be no older than
+    *kb_max_age_s* (default 300 s) plus *leeway_s*, and not in the future (RFC 9901
+    §7.3 step 5.5). Verifying an archived response means pinning *now* to its instant.
 
     An ``mso_mdoc`` Presentation (ISO 18013-5, **experimental**) is verified over the
     Digital Credentials API flow: pass *trust_anchors* (the IACA root
@@ -276,7 +280,7 @@ def verify_vp_token(
                 x5c_trust_anchors=x5c_trust_anchors,
                 resolve_status_list=resolve_status_list,
                 resolve_status_list_token=resolve_status_list_token,
-                require_status=require_status))
+                require_status=require_status, kb_max_age_s=kb_max_age_s))
     return VpTokenVerification(presentations=tuple(verified))
 
 
@@ -300,6 +304,7 @@ def verify_encrypted_vp_response(
     resolve_status_list: Any = None,
     resolve_status_list_token: Any = None,
     require_status: bool = False,
+    kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
 ) -> VpTokenVerification:
     """Decrypt a HAIP ``direct_post.jwt`` response (a JWE) and verify its ``vp_token``.
 
@@ -325,6 +330,7 @@ def verify_encrypted_vp_response(
         raise VpTokenMalformed("decrypted response has no vp_token member")
     return verify_vp_token(
         payload["vp_token"], dcql_query=dcql_query, nonce=nonce, client_id=client_id,
+        kb_max_age_s=kb_max_age_s,
         expected_origins=expected_origins, trust_anchors=trust_anchors,
         mdoc_jwk_thumbprint=mdoc_jwk_thumbprint, resolver=resolver, now=now,
         leeway_s=leeway_s, extra_contexts=extra_contexts,
@@ -458,6 +464,7 @@ def _verify_one(
     resolve_status_list: Any = None,
     resolve_status_list_token: Any = None,
     require_status: bool = False,
+    kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
 ) -> VerifiedPresentation:
     fmt = query["format"]
     # mso_mdoc binds the holder through DeviceAuth over a SessionTranscript, not a
@@ -473,6 +480,7 @@ def _verify_one(
         return _verify_sd_jwt_vc(
             query_id, query, presentation,
             nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
+            kb_max_age_s=kb_max_age_s,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             x5c_trust_anchors=x5c_trust_anchors,
             resolve_status_list=resolve_status_list,
@@ -598,6 +606,7 @@ def _verify_sd_jwt_vc(
     resolve_status_list: Any = None,
     resolve_status_list_token: Any = None,
     require_status: bool = False,
+    kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
 ) -> VerifiedPresentation:
     from .verify import (
         FORMAT_SD_JWT_VC as _PIPELINE_SD_JWT,
@@ -620,7 +629,8 @@ def _verify_sd_jwt_vc(
     require_binding = bool(query.get("require_cryptographic_holder_binding", True))
     policy = VerificationPolicy(
         audience=client_id, nonce=nonce, require_key_binding=require_binding,
-        require_status=require_status, now=now, leeway_s=leeway_s)
+        require_status=require_status, now=now, leeway_s=leeway_s,
+        kb_max_age_s=kb_max_age_s)
     result = verify_credential(
         presentation, policy=policy, resolver=resolver,
         jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
