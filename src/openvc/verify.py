@@ -310,6 +310,7 @@ def verify_credential(
     x5c_trust_anchors: Any = None,
     extra_contexts: Any = None,
     _depth: int = 0,
+    _kb_binding: tuple[str, str] | None = None,
 ) -> VerificationResult:
     """Verify a credential in any supported format against *policy*.
 
@@ -346,10 +347,14 @@ def verify_credential(
     logger.debug("verify: format=%s", fmt)
     with span("openvc.verify_credential", format=fmt):
         try:
+            # _kb_binding is internal: the (audience, nonce) of the presentation this
+            # credential is nested in (VP-JWT / ldp_vc). Only the SD-JWT handler reads
+            # it — a KB-JWT the credential carries must be bound to that same exchange.
             result = _verify_by_format(
                 credential, fmt, policy, resolver, resolve_status_list,
                 resolve_status_list_token, resolve_credential_schema,
-                jwt_vc_issuer_fetch, x5c_trust_anchors, extra_contexts, _depth)
+                jwt_vc_issuer_fetch, x5c_trust_anchors, extra_contexts, _depth,
+                _kb_binding)
         except OpenvcError as exc:              # which check failed, no secrets
             logger.info("verify failed: format=%s error=%s", fmt, type(exc).__name__)
             raise
@@ -361,11 +366,12 @@ def _verify_by_format(
     credential: Any, fmt: str, policy: VerificationPolicy, resolver: Any,
     resolve_status_list: Any, resolve_status_list_token: Any,
     resolve_credential_schema: Any, jwt_vc_issuer_fetch: Any, x5c_trust_anchors: Any,
-    extra_contexts: Any, _depth: int,
+    extra_contexts: Any, _depth: int, kb_binding: tuple[str, str] | None = None,
 ) -> VerificationResult:
     if fmt == FORMAT_ENVELOPED:
         if _depth >= 2:
             raise UnknownCredentialFormat("enveloped credential nested too deeply")
+        # The envelope is transparent: an SD-JWT inside it keeps the binding.
         return verify_credential(
             _unwrap_enveloped(credential), policy=policy, resolver=resolver,
             resolve_status_list=resolve_status_list,
@@ -373,7 +379,7 @@ def _verify_by_format(
             resolve_credential_schema=resolve_credential_schema,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             x5c_trust_anchors=x5c_trust_anchors,
-            extra_contexts=extra_contexts, _depth=_depth + 1)
+            extra_contexts=extra_contexts, _depth=_depth + 1, _kb_binding=kb_binding)
 
     # Closure the schema layer uses to verify a JsonSchemaCredential (the schema
     # wrapped in its own signed VC); built here where every resolver + _depth is in
@@ -391,7 +397,7 @@ def _verify_by_format(
         return _verify_sd_jwt(
             credential, policy, resolver, resolve_status_list,
             resolve_status_list_token, resolve_credential_schema,
-            jwt_vc_issuer_fetch, x5c_trust_anchors, verify_inner)
+            jwt_vc_issuer_fetch, x5c_trust_anchors, verify_inner, kb_binding)
     return _verify_data_integrity(
         credential, fmt, policy, resolver, resolve_status_list,
         resolve_status_list_token, resolve_credential_schema, extra_contexts,
@@ -538,7 +544,8 @@ def _verify_vc_jwt(token: str, policy: VerificationPolicy, resolver: Any,
 def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
                    resolve_status_list: Any, resolve_status_list_token: Any,
                    resolve_credential_schema: Any, jwt_vc_issuer_fetch: Any,
-                   x5c_trust_anchors: Any, verify_inner: Any) -> VerificationResult:
+                   x5c_trust_anchors: Any, verify_inner: Any,
+                   kb_binding: tuple[str, str] | None = None) -> VerificationResult:
     from .proof.sd_jwt import SdJwtVcProofSuite
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
@@ -547,8 +554,13 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
         sd_jwt, iss, kid, sd_jwt=True, resolver=resolver,
         jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
         x5c_trust_anchors=x5c_trust_anchors, now=policy.now)
+    # Nested in a presentation, the KB-JWT is held to that presentation's audience +
+    # nonce, overriding the policy's: key_bound=True must never vouch for a holder proof
+    # made for another verifier or transaction (RFC 9901 §7.3 step 5.6). It is scoped to
+    # the KB-JWT — a nested VC-JWT's own `aud` is not the verifier's to pin.
+    audience, nonce = kb_binding if kb_binding is not None else (policy.audience, policy.nonce)
     verified = suite.verify(
-        sd_jwt, public_key_jwk=jwk, audience=policy.audience, nonce=policy.nonce,
+        sd_jwt, public_key_jwk=jwk, audience=audience, nonce=nonce,
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct,
         check_temporal=policy.require_not_expired)
     # the disclosed claims may carry either a W3C credentialStatus or an IETF status

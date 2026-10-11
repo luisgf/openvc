@@ -230,6 +230,57 @@ engagement, NFC/BLE/QR proximity, issuance/provisioning, and any COSE *signing* 
 — openvc consumes and verifies. The redirect / `direct_post` mdoc handover is not yet
 wired; use the Digital Credentials API flow.
 
+## SD-JWT VCs nested in a W3C presentation
+
+A `jwt_vc_json` VP-JWT or an `ldp_vc` presentation can embed an SD-JWT VC — bare in
+`verifiableCredential`, or as a VCDM 2.0 `EnvelopedVerifiableCredential`
+(`data:application/dc+sd-jwt,…`). OpenID4VP 1.0 itself only defines an SD-JWT VC as
+its own `dc+sd-jwt` format, where the `vp_token` value *is* the SD-JWT + KB-JWT; the
+nested shape comes from the W3C data model, and openvc cascade-verifies it like any
+other embedded credential. Such a nested SD-JWT may carry **its own** Key Binding
+JWT, separate from the presentation's proof, and the rule for it is:
+
+| The nested SD-JWT VC… | Result |
+|---|---|
+| has no KB-JWT | verifies, `key_bound=False` — the presentation's proof is the holder binding |
+| has a KB-JWT bound to this exchange — same `aud` and `nonce` as the presentation | verifies, `key_bound=True` |
+| has a KB-JWT bound anywhere else — another verifier, another nonce, the bare host | **the whole response is rejected** (`ClaimsInvalid`) |
+
+"Same exchange" means the presentation's own binding. For a VP-JWT that is its `aud`
+and `nonce`. For an `ldp_vc` presentation it is the proof's `domain` and `challenge`.
+Over the Digital Credentials API it is the one `origin:<origin>` *this* presentation
+is bound to — another of your `expected_origins` does not qualify. So a nested
+`key_bound=True` now means what it says. A KB-JWT signed by the credential's `cnf`
+key was made for *this* verifier and *this* request, its `sd_hash` covers the
+disclosures you received, and it passed RFC 9901 §7.3 step 5.6, which is the step
+that makes a KB-JWT a binding at all. `VpJwtProofSuite.verify` applies the same rule
+with its own `audience` / `nonce`, which take precedence over any `audience` / `nonce`
+in a `policy` you pass to it. The rule is scoped to the KB-JWT: a nested VC-JWT is a
+credential, and its own `aud` is never pinned to you.
+
+**Why reject rather than report `key_bound=False`.** Earlier releases checked a nested
+KB-JWT's signature and `sd_hash` but had no `aud` / `nonce` to check it against, so
+they reported `key_bound=True` for a KB-JWT minted for another verifier.
+That flag vouched for a holder proof made for someone else. Downgrading the result to
+`key_bound=False` would have been the wrong fix, for three reasons:
+
+- A KB-JWT is minted per presentation, so one bound elsewhere, arriving inside a
+  response to you, is a replayed or relayed holder proof. That is evidence of an
+  attack, not a weaker binding.
+- RFC 9901 §7.3 says that if any key-binding step fails, the verifier MUST reject the
+  presentation.
+- A lenient mode inside a signature check is surface we would rather not add.
+
+Refusing nested SD-JWTs altogether would break legitimate VCDM 2.0 enveloped
+credentials.
+
+This holds only for credentials nested in a presentation, where you have no way to
+pass the binding yourself. At the top level — `verify_credential`, or
+`SdJwtVcProofSuite.verify` — the KB-JWT's `aud` / `nonce` are checked against the
+values *you* pass (see [SD-JWT VC](SD-JWT-VC)). A nested `key_bound=True` also does
+not mean that the presentation's signer controls the credential's `cnf` key. To
+require that a credential was issued to the presenter, use `require_holder_binding`.
+
 ## Replay: what the bindings buy you
 
 `aud`/`domain` pins the presentation to *your* verifier; `nonce`/`challenge`

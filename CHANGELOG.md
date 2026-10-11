@@ -4,6 +4,43 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.2] — unreleased
+
+### Security
+
+- **An SD-JWT VC nested in a `jwt_vc_json` or `ldp_vc` presentation no longer
+  reports `key_bound=True` for a Key Binding JWT made for another verifier.**
+  Found by the adversarial review of
+  [#187](https://github.com/luisgf/openvc/pull/187). `verify_vp_token` and
+  `VpJwtProofSuite.verify` verify every credential embedded in a W3C
+  presentation, but they built the nested policy with no audience or nonce. A
+  nested KB-JWT therefore had its signature and `sd_hash` checked and its `aud` /
+  `nonce` skipped. That is RFC 9901 §7.3 step 5.6, the step that makes a KB-JWT a
+  binding at all. An SD-JWT + KB-JWT minted for verifier B, wrapped in a VP
+  correctly bound to verifier A, verified at A with `key_bound=True`. A nested
+  KB-JWT is now held to the presentation's own binding: the VP-JWT `aud` /
+  `nonce`, the Data Integrity `domain` / `challenge`, or the DC API `origin:` that
+  presentation is bound to. One bound anywhere else rejects the whole response
+  (`ClaimsInvalid`). This covers bare SD-JWTs and those inside an
+  `EnvelopedVerifiableCredential`, at every depth the pipeline unwraps. A nested
+  SD-JWT with no KB-JWT still verifies, with `key_bound=False`, because the
+  presentation's proof is the holder binding. Rejecting, rather than reporting
+  `key_bound=False`, is deliberate. A KB-JWT is minted per presentation, so one
+  bound elsewhere is a replayed holder proof, and RFC 9901 has the verifier reject
+  a presentation whose key binding fails. The binding applies to the KB-JWT only;
+  a nested VC-JWT's own `aud` is still not pinned. This was a wrong flag, not a
+  bypass: the presentation's own binding was always enforced. The semantics are
+  written up in the wiki under *Presentations → SD-JWT VCs nested in a W3C
+  presentation*.
+
+### Fixed
+
+- **`VpJwtProofSuite.verify` can now require key binding on nested SD-JWT
+  VCs.** A cascade `policy` with `require_key_binding=True` used to fail every
+  time, because the nested verification had no `aud` / `nonce` to bind against.
+  It now uses the presentation's. Those values also take precedence over any
+  `audience` / `nonce` in that `policy`, for the nested KB-JWT only.
+
 ## [1.27.1] — 2026-10-04
 
 ### Fixed

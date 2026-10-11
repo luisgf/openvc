@@ -242,6 +242,12 @@ def verify_vp_token(
     presenter cannot pass off a third party's credential as their own; off by default
     (a holder may legitimately present another party's credential).
 
+    An SD-JWT VC nested in a ``jwt_vc_json`` / ``ldp_vc`` presentation (bare, or in an
+    ``EnvelopedVerifiableCredential``) may carry its own KB-JWT. If it does, that KB-JWT
+    must be bound to the **same** audience and nonce as the presentation, or the response
+    is rejected — so a nested result's ``key_bound=True`` means bound to this exchange.
+    Without one it reports ``key_bound=False``; the VP proof is then the holder binding.
+
     With no ``credential_sets``, every Credential Query is required and its absence is
     rejected. When the query *does* carry ``credential_sets``, per-query completeness
     is **not** enforced here (a follow-up): an empty ``vp_token`` is still rejected, but
@@ -657,6 +663,7 @@ def _verify_jwt_vp(
     policy = VerificationPolicy(require_status=require_status, now=now, leeway_s=leeway_s)
     # resolver mode authenticates the holder from `iss`, so require_holder_binding binds
     # subject==holder without needing expected_holder (VP-JWT enforces that invariant).
+    # The suite also binds any nested SD-JWT's KB-JWT to this same aud + nonce.
     verified = VpJwtProofSuite(leeway_s=leeway_s).verify(
         presentation, audience=client_id, nonce=nonce, resolver=resolver,
         require_holder_binding=require_holder_binding, policy=policy,
@@ -742,7 +749,9 @@ def _verify_ldp_vp(
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             x5c_trust_anchors=x5c_trust_anchors,
             resolve_status_list=resolve_status_list,
-            resolve_status_list_token=resolve_status_list_token)
+            resolve_status_list_token=resolve_status_list_token,
+            # a nested SD-JWT's KB-JWT is bound to this VP's domain (aud) + challenge
+            _kb_binding=(client_id, nonce))
         for vc in _embedded_vcs(query_id, presentation))
 
     # Optional subject binding: require each embedded credential to have been issued
