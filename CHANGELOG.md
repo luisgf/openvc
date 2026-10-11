@@ -52,9 +52,9 @@ All notable changes to **openvc** are documented here. The format follows
     non-negative `int`, as they do for `kb_max_age_s`.
 
 - **An SD-JWT VC nested in a `jwt_vc_json` or `ldp_vc` presentation no longer
-  reports `key_bound=True` for a Key Binding JWT made for another verifier.**
-  Found by the adversarial review of
-  [#187](https://github.com/luisgf/openvc/pull/187). `verify_vp_token` and
+  reports `key_bound=True` for a Key Binding JWT made for another verifier**
+  ([#189](https://github.com/luisgf/openvc/issues/189)). Found by the
+  adversarial review of [#187](https://github.com/luisgf/openvc/pull/187). `verify_vp_token` and
   `VpJwtProofSuite.verify` verify every credential embedded in a W3C
   presentation, but they built the nested policy with no audience or nonce. A
   nested KB-JWT therefore had its signature and `sd_hash` checked and its `aud` /
