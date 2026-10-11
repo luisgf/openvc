@@ -13,10 +13,11 @@ All notable changes to **openvc** are documented here. The format follows
   it REQUIRED and §7.3 step 5.5 has the verifier check it is "within an
   acceptable window"; openvc never read it, so a KB-JWT of any age — or with no
   `iat` at all — verified. Every self-made test minted a fresh KB-JWT and
-  checked it at once; a third-party capture offered on
-  [#121](https://github.com/luisgf/openvc/issues/121) found it with its "an hour
-  later" control. Any KB-JWT that is present is now refused when its `iat` is
-  missing, non-numeric or non-finite, older than `kb_max_age_s` plus the
+  checked it at once. It was found by the third-party OpenID4VP capture that
+  [@EgorKhaklin](https://github.com/EgorKhaklin) (polaris-id) contributed on
+  [#121](https://github.com/luisgf/openvc/issues/121), through its "an hour
+  later" control — thank you. Any KB-JWT that is present is now refused when
+  its `iat` is missing, non-numeric or non-finite, older than `kb_max_age_s` plus the
   leeway, or future-dated beyond the leeway. Defence in depth, not a bypass:
   the enforced `nonce` + `aud` binding already stopped cross-transaction
   replay, but this window is the only freshness bound a stateless verifier can
