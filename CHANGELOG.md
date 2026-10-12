@@ -4,6 +4,43 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.1] — unreleased
+
+### Security
+
+- **A hostile status-list index is a typed `StatusListError`, not a bare
+  `OverflowError` that aborts a whole batch.** `parse_status_entries` read
+  `credentialStatus.statusListIndex` with `int()` and caught `TypeError` /
+  `ValueError` but not `OverflowError`. A signed VC-JWT whose index was
+  `Infinity`, `-Infinity`, `1e400` or `-1e400` (`json.loads` reads the last two
+  as infinities) raised `OverflowError: cannot convert float infinity to
+  integer`. That escaped `OpenvcError`, so it aborted `verify_many` /
+  `verify_many_async` for every item, not just the bad one, and escaped
+  `verify_credential` / `verify_credential_async` too. A self-issued `did:jwk`
+  could mint one. `require_status=False` did not help: the entries are parsed
+  before the resolver check. Both `BitstringStatusListEntry` and
+  `StatusList2021Entry` were affected.
+
+  The W3C `statusListIndex` and the IETF Token Status List `status.status_list.idx`
+  (SD-JWT VC, or a VC-JWT's JWT payload) now share one index rule. A
+  non-negative integer is accepted, and for the W3C index so is a string of ASCII
+  digits, which is the form the REC requires. The rule now also rejects inputs
+  that `int()` silently coerced into a different bit:
+  - a `bool` (`true` was read as index 1);
+  - any `float`, including `NaN` and an integral `5.0` (`3.7` was read as 3);
+  - a sign, whitespace, an underscore or a non-ASCII digit in the string
+    (`"+5"`, `" 5"`, `"5_0"` and `"٥"` were read as 5, 5, 50 and 5);
+  - a negative index, or one at or past 2^27, the most statuses any list openvc
+    decodes can hold (the 16 MiB decompression cap at one bit per status).
+    Neither can address a bit. Both used to pass parsing and failed only once a
+    list was fetched, so they passed outright under `require_status=False`.
+
+  A W3C index that `int()` refused (`"abc"`) already failed this way, even under
+  `require_status=False`. These shapes now do too, and in a batch they fail only
+  their own item. The IETF parser already refused floats, bools and negatives;
+  it now also refuses an `idx` past the cap. Error messages never `repr()` a
+  container or an integer wider than 64 bits.
+
 ## [1.29.0] — 2026-10-12
 
 ### Security

@@ -31,6 +31,7 @@ from typing import Any, Awaitable, Callable
 
 from ..observability import logger, span
 from ._decompress import DecompressionBomb, inflate_bounded
+from ._index import status_index
 from .bitstring import StatusListError
 
 # IETF status values (draft-ietf-oauth-status-list, "Status Types").
@@ -153,10 +154,9 @@ def parse_token_status_ref(claims: dict[str, Any]) -> TokenStatusRef | None:
     idx = ref.get("idx")
     if not uri or idx is None:
         raise StatusListError("status_list reference needs both uri and idx")
-    if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0:
-        raise StatusListError(
-            f"status_list idx must be a non-negative integer, got {idx!r}")
-    return TokenStatusRef(uri=str(uri), index=idx)
+    # the draft makes idx a JSON integer: no string, float or bool form
+    return TokenStatusRef(
+        uri=str(uri), index=status_index(idx, field="status_list idx", allow_string=False))
 
 
 def _status_list_claim(token_claims: dict[str, Any]) -> tuple[int, str]:

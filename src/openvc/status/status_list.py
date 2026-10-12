@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable
 
 from ..errors import OpenvcError
 from ..observability import logger, span
+from ._index import status_index
 from .bitstring import decode_bitstring, get_status_bit
 
 # Fetch+verify a status-list credential URL -> the status-list VC as a dict.
@@ -95,13 +96,11 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
         if not url or index is None:
             raise StatusListError(
                 "status entry needs statusListCredential and statusListIndex")
-        try:
-            index_int = int(index)         # the spec encodes the index as a string
-        except (TypeError, ValueError) as exc:
-            raise StatusListError(f"invalid statusListIndex {index!r}") from exc
         entries.append(StatusEntry(
             status_list_credential=str(url),
-            index=index_int,
+            # the spec encodes the index as a base-10 string; a JSON integer is
+            # tolerated, a float / bool / signed or non-ASCII string is not
+            index=status_index(index, field="statusListIndex", allow_string=True),
             purpose=raw.get("statusPurpose", PURPOSE_REVOCATION),
             entry_type=next(iter(matched)),
         ))
