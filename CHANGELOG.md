@@ -4,6 +4,38 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.1] — unreleased
+
+### Fixed
+
+- **An unhashable `alg`, `typ`, `_sd_alg` or `cryptosuite` is a typed error, not a
+  bare `TypeError`** ([#211](https://github.com/luisgf/openvc/issues/211)). Found
+  by the adversarial review of [#194](https://github.com/luisgf/openvc/pull/194).
+  Eight allow-list checks ran `value not in <set>` on a value read from the token
+  without first checking that it was a string. A JSON array or object is
+  unhashable, so the test raised a bare `TypeError` that escaped `OpenvcError`, and
+  one such item aborted a whole `verify_many` / `verify_many_async` batch. None of
+  them needs a trusted key. Most run before any signature check, and the rest need
+  only a signature that any `did:key` can make:
+  - the `alg` of a VC-JWT, and of every token verified through the shared
+    compact-JWS layer: a VP-JWT (a `jwt_vc_json` presentation, or a VC-JWT nested in
+    one), the IETF status-list token and the OpenID4VCI key proof;
+  - the SD-JWT issuer JWT's `alg` and `typ`, and the Key Binding JWT's `alg`;
+  - the SD-JWT `_sd_alg`;
+  - the OpenID4VP `ldp_vc` holder proof's `cryptosuite`;
+  - the OpenID4VCI key proof's `typ`.
+
+  Each now raises the class that a well-formed but disallowed value already got:
+  `UnsupportedAlgorithm` for an `alg`, `SdJwtError` for the SD-JWT `typ` and
+  `_sd_alg`, `UnsupportedPresentationFormat` for the cryptosuite, and
+  `ClaimsInvalid` for the key-proof `typ`.
+- **The allow-list error messages name a rejected container by its type.** On
+  Python 3.14 `json.loads` accepts an array nested deeply enough that `repr()` of it
+  raises a bare `RecursionError`. A message that quoted the value with `repr()` then
+  escaped `OpenvcError` from the very `raise` meant to report it. This covers the
+  sites above, plus the JWE `alg` / `enc`, WRPRC `alg` and LoTE `alg` checks. Those
+  already type-checked the value but still quoted it.
+
 ## [1.29.0] — 2026-10-12
 
 ### Security

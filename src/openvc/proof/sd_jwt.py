@@ -50,6 +50,7 @@ from ._verify_common import (
     check_jwt_temporal,
     non_negative_seconds,
     reject_unknown_crit,
+    safe_repr,
     utc_epoch,
 )
 from .errors import (
@@ -404,11 +405,14 @@ class SdJwtVcProofSuite:
         issuer_jwt, disclosures, kb_jwt = self._split(presentation)
         header, claims, signing_input, signature = self._decode_jws(issuer_jwt)
 
+        # allow-list BEFORE crypto. A JSON array/object `alg` / `typ` is unhashable:
+        # type-check it first, or `in frozenset` raises a bare TypeError
         alg = header.get("alg")
-        if alg not in self._algs:                     # allow-list BEFORE crypto
-            raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
-        if header.get("typ") not in _ACCEPTED_ISSUER_TYP:
-            raise SdJwtError(f"unexpected issuer JWT typ {header.get('typ')!r}")
+        if not isinstance(alg, str) or alg not in self._algs:
+            raise UnsupportedAlgorithm(f"algorithm {safe_repr(alg)} is not permitted")
+        typ = header.get("typ")
+        if not isinstance(typ, str) or typ not in _ACCEPTED_ISSUER_TYP:
+            raise SdJwtError(f"unexpected issuer JWT typ {safe_repr(typ)}")
         reject_unknown_crit(header)
         self._verify_signature(alg, public_key_jwk, signing_input, signature,
                                what="issuer JWT")
@@ -418,8 +422,8 @@ class SdJwtVcProofSuite:
             if not isinstance(iss_claim, str):
                 raise ClaimsInvalid("iss claim is missing or not a string")
             alg_name = claims.get("_sd_alg", _DEFAULT_HASH)
-            if alg_name not in _HASHES:
-                raise SdJwtError(f"unsupported _sd_alg {alg_name!r}")
+            if not isinstance(alg_name, str) or alg_name not in _HASHES:
+                raise SdJwtError(f"unsupported _sd_alg {safe_repr(alg_name)}")
             return iss_claim, alg_name
 
         # Presentation path: prove holder binding even when the issuer JWT is
@@ -572,8 +576,9 @@ class SdJwtVcProofSuite:
         if header.get("typ") != _KB_TYP:
             raise SdJwtError(f"KB-JWT typ must be {_KB_TYP!r}")
         alg = header.get("alg")
-        if alg not in self._algs:
-            raise UnsupportedAlgorithm(f"KB-JWT algorithm {alg!r} is not permitted")
+        if not isinstance(alg, str) or alg not in self._algs:     # unhashable-safe
+            raise UnsupportedAlgorithm(
+                f"KB-JWT algorithm {safe_repr(alg)} is not permitted")
         reject_unknown_crit(header)
         if not isinstance(cnf, dict) or not isinstance(cnf.get("jwk"), dict):
             raise ClaimsInvalid("no cnf.jwk in the issuer JWT for key binding")
