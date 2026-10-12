@@ -51,9 +51,10 @@ it, refuses a non-numeric or non-finite one, and refuses a KB-JWT older than
 dated in the future beyond the leeway. Any KB-JWT that is present is held to it,
 whether or not binding was required. These are binding failures (`KB-JWT is too
 old`, `KB-JWT iat is in the future`), never an `expired` verdict, so
-`require_not_expired=False` does not waive them. The `nonce` binds a KB-JWT to one
-transaction, but only you know how old that nonce is; this window is the freshness
-bound a stateless verifier can enforce itself.
+`require_not_expired=False` does not waive them
+([what the waiver covers](Getting-Started#waiving-expiry-or-revocation)). The
+`nonce` binds a KB-JWT to one transaction, but only you know how old that nonce
+is; this window is the freshness bound a stateless verifier can enforce itself.
 
 `now` — on `SdJwtVcProofSuite.verify`, `VerificationPolicy` and `verify_vp_token` —
 pins the instant the window is evaluated at; a naive datetime is UTC, as everywhere in
