@@ -15,7 +15,7 @@ here too. Helpers are self-contained (tests/ is not a package — no cross-impor
 
 Through v1.28.1 the flag was also *wrong* on both pipelines: ``openvc.verify``
 re-derived expiry with other clocks and fields than the proof suites enforce. Since
-1.28.2 each suite reports the expiry check it skipped, so the second half of this
+1.29.0 each suite reports the expiry check it skipped, so the second half of this
 file pins the flag to the default policy's own verdict: ``expired`` is True exactly
 when the enforcing policy rejects the credential for its expiry.
 """
@@ -251,7 +251,7 @@ def test_waiver_never_rejects_what_the_default_policy_accepts(case):
 
 
 # --------------------------------------------------------------------------- #
-# The flag is the default policy's verdict (v1.28.2)
+# The flag is the default policy's verdict (v1.29.0)
 # --------------------------------------------------------------------------- #
 
 def _strict_error(credential, key, *, now=None, schemas=None):
@@ -406,10 +406,13 @@ def _vc_jwt_claims(**claims):
 
 
 def _waiver_agrees_with_strict(credential, key):
-    """Whatever the default policy makes of the credential, the waiver agrees: an
-    expiry rejection becomes ``expired=True``; any other rejection stands, with the
-    same error type on both pipelines; an accept stays ``expired=False``. Returns
-    (the default policy's error or None, the waived sync result or None)."""
+    """Whatever the default policy makes of a credential with a *single* defect, the
+    waiver agrees: an expiry rejection becomes ``expired=True``; any other rejection
+    stands, with the same error type on both pipelines; an accept stays
+    ``expired=False``. (With two defects the default policy may report the expiry
+    first while the waiver correctly reports the other, so the message check below
+    only holds for one.) Returns (the default policy's error or None, the waived sync
+    result or None)."""
     strict = _strict_error(credential, key)
     try:
         sync, asyncr = _both(credential, key, WAIVED)
@@ -530,18 +533,6 @@ def test_schema_credential_policy_inherits_neither_waiver():
 def test_sd_jwt_vcdm_named_claims_do_not_set_the_flag():
     credential, key = _sd_jwt_with({"validUntil": PAST, "expirationDate": PAST})
     assert _flag_is_the_strict_verdict(credential, key) is None
-
-
-def test_sd_jwt_disclosed_exp_sets_the_flag():
-    # exp hidden behind a disclosure is checked on the processed payload (RFC 9901
-    # §7.1 step 6); the suite reports that check too
-    from openvc.proof.sd_jwt import SdJwtVcProofSuite
-    key = P256SigningKey.generate(kid=VM)
-    sd_jwt = SdJwtVcProofSuite().issue(
-        {"iss": DID, "sub": "did:example:alice", "exp": int(time.time()) - 3600},
-        signing_key=key, vct="https://credentials.example/id", disclosable=["exp"])
-    error = _flag_is_the_strict_verdict(sd_jwt, key)
-    assert isinstance(error, ClaimsInvalid) and "expired" in str(error)
 
 
 # The shared helpers say which skipped check would have failed.

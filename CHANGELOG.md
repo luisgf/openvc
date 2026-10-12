@@ -16,7 +16,7 @@ All notable changes to **openvc** are documented here. The format follows
   have failed:
   - VC-JWT: the JWT `exp`, as PyJWT judges it, or the body's `validUntil` /
     `expirationDate`;
-  - SD-JWT VC: `exp`, in the payload or disclosed;
+  - SD-JWT VC: `exp`;
   - Data Integrity: the credential's `validUntil` / `expirationDate`, or the
     proof's own `expires`.
 
@@ -44,6 +44,10 @@ All notable changes to **openvc** are documented here. The format follows
   check, so every other claim check still runs. A `TypeError` from PyJWT's
   `int()` coercion of a non-scalar `exp` / `nbf` / `iat` is typed as
   `ClaimsInvalid` on this path.
+- `openvc.verify` no longer imports `CredentialExpired`, `ProofError`,
+  `check_validity_window` or `check_jwt_temporal`. The removed helper had
+  pulled them in since 1.27.0; they were never in its `__all__`. Import them
+  from `openvc.proof.errors` and `openvc.proof._verify_common`.
 
 ### Fixed
 
@@ -90,7 +94,7 @@ All notable changes to **openvc** are documented here. The format follows
   - a proof `expires` on all seven Data Integrity suite/curve combinations;
   - both clock directions of the VC-JWT body;
   - the PyJWT-coerced and boundary `exp`s;
-  - the SD-JWT VCDM claims, and a disclosed `exp`;
+  - the SD-JWT VCDM claims;
   - the expired and current schema VC.
 
   The coerced-`exp` cases assert only agreement with the default policy, so

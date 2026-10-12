@@ -208,8 +208,8 @@ class VerifiedSdJwt:
     vct: str | None                # verifiable credential type
     key_bound: bool                # a valid KB-JWT was present and verified
     confirmation: dict[str, Any] | None   # the ``cnf`` claim, if any
-    # check_temporal=False only: the issuer JWT's ``exp`` (in the payload or disclosed)
-    # has passed, i.e. the expiry check that was skipped would have failed.
+    # check_temporal=False only: the issuer JWT's ``exp`` has passed, i.e. the expiry
+    # check that was skipped would have failed.
     expired: bool = False
 
 
