@@ -189,15 +189,52 @@ def test_mldsa_lane_rejects_malformed_numeric_date(claim, raw):
                 token, public_key_jwk=key.public_jwk(), check_temporal=check_temporal)
 
 
-@pytest.mark.parametrize("exc", [TypeError("int() argument"), ValueError("bad")])
-def test_pyjwt_cast_errors_stay_typed(monkeypatch, exc):
-    # If a future PyJWT raised from a cast the shape gate did not anticipate, it would
-    # still surface as ClaimsInvalid, never as a bare exception.
+@pytest.mark.parametrize(
+    "exc", [TypeError("int() argument"), ValueError("bad"), RecursionError("depth")])
+def test_pyjwt_errors_stay_typed(monkeypatch, exc):
+    # Whatever PyJWT raises from attacker bytes past the shape gate (a cast, its own
+    # json.loads running out of depth) surfaces as ClaimsInvalid, never bare.
     def _raise(*_args, **_kwargs):
         raise exc
     monkeypatch.setattr(vc_jwt._JWT, "decode", _raise)
     with pytest.raises(ClaimsInvalid):
         VcJwtProofSuite().verify(_good(), public_key_jwk=KEY.public_jwk())
+
+
+@pytest.mark.parametrize("batch", ["sync", "async"])
+def test_nesting_depth_ladder_never_aborts_a_batch(batch):
+    # Found by the adversarial review of this fix. On Python <= 3.11 the json depth
+    # limit shrinks with stack depth, and PyJWT parses the payload a few frames deeper
+    # than openvc does. Some nesting depth therefore passes openvc's parse and raised a
+    # bare RecursionError inside PyJWT, after the signature verified. That depth moves
+    # with the caller's stack but the band is narrow, so one batch carrying a ladder of
+    # depths always hits it. On 3.12+ there is no band; the ladder must pass there too.
+    deep = [_mint({"x": "[" * n + "]" * n}) for n in range(600, 1000)]
+    credentials = [_good(), *deep, _good()]
+    if batch == "sync":
+        results = verify_many(credentials)
+    else:
+        results = asyncio.run(verify_many_async(credentials))
+    assert results[0].ok and results[-1].ok
+    assert all(r.ok or isinstance(r.error, ProofError) for r in results)
+
+
+@pytest.mark.parametrize("where", ["header", "signature"])
+def test_non_ascii_token_is_malformed(where):
+    # PyJWT UTF-8-encodes the token before decoding it, so a lone surrogate in the
+    # signature segment (the one openvc never parses itself) raised a bare
+    # UnicodeEncodeError. A compact JWS is ASCII; anything else is MalformedToken.
+    header, payload, signature = _good().split(".")
+    if where == "header":
+        header = "é" + header
+    else:
+        signature = signature + "\ud800"
+    token = f"{header}.{payload}.{signature}"
+    with pytest.raises(MalformedToken, match="non-ASCII"):
+        VcJwtProofSuite().verify(token, public_key_jwk=KEY.public_jwk())
+    results = verify_many([_good(), token, _good()])
+    assert [r.ok for r in results] == [True, False, True]
+    assert isinstance(results[1].error, MalformedToken)
 
 
 # -- the helper itself ------------------------------------------------------------ #

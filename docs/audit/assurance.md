@@ -198,7 +198,11 @@ unreachable) plus the lane-uniform `crit` rejection.
 Not an advisory, but the same surface (found 2026-10-12, fixed in 1.28.2): PyJWT
 casts `exp`/`nbf`/`iat` with `int()` and catches only `ValueError`, so a signed
 `"nbf": null` raised a bare `TypeError` out of `_JWT.decode`, outside `OpenvcError`.
-`vc_jwt` now checks those shapes itself before the decode (`check_numeric_dates`),
-and maps any `TypeError`/`ValueError` from the decode to `ClaimsInvalid`. `cryptography` 49.0.0
+`vc_jwt` now checks those shapes itself before the decode (`check_numeric_dates`).
+The fix's adversarial review found two more untyped exits from the decode. One is
+a `RecursionError` from PyJWT's own `json.loads` on Python ≤ 3.11, where the depth
+limit depends on stack depth. The other is a `UnicodeEncodeError` from a non-ASCII
+signature segment. Non-ASCII tokens are now refused before decoding, and any
+`TypeError`/`ValueError`/`RecursionError` from the decode maps to `ClaimsInvalid`. `cryptography` 49.0.0
 (2026-06-12, stricter X.509 parsing) confirmed compatible: full suite green, and CI
 resolves the newest `cryptography` on every run.

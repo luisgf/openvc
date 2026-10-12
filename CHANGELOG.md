@@ -21,24 +21,36 @@ All notable changes to **openvc** are documented here. The format follows
   token: a self-issued `did:jwk` is enough. Under `require_not_expired=False`,
   PyJWT skipped `exp` altogether, so an `exp` of `NaN`, `±Infinity`, `"abc"`,
   `1e400`, `null`, `[]` or `{}` verified. The SD-JWT VC and ML-DSA lanes
-  already rejected all of these except `null`.
+  already rejected these `exp` values, apart from `null`.
 
   The VC-JWT suite now checks the shape of `exp`, `nbf` and `iat` before PyJWT
   reads them. It uses `is_numeric_date`, the helper the SD-JWT lane already
-  uses. A present value that is not a finite JSON number is a `ClaimsInvalid` on
-  both the classic and the ML-DSA lane, whatever the expiry policy, and
-  `verify_many` reports it as that item's error while the rest still verify. As
-  a backstop, a `TypeError` or `ValueError` from PyJWT is also caught as
-  `ClaimsInvalid`. The check runs on the payload before the signature, so a
-  token that is both forged and malformed now reports `ClaimsInvalid` rather
-  than `SignatureInvalid`. Either way it is rejected.
+  uses for `exp` / `nbf`. A present value that is not a finite JSON number is a
+  `ClaimsInvalid` on both the classic and the ML-DSA lane, whatever the expiry
+  policy, and `verify_many` reports it as that item's error while the rest
+  still verify. The check runs on the payload before the signature, so a token
+  that is both forged and malformed now reports `ClaimsInvalid` rather than
+  `SignatureInvalid`. Either way it is rejected.
+
+  The adversarial review of this fix found two more ways a signed VC-JWT could
+  escape PyJWT untyped, both closed here. On Python 3.10 and 3.11 the JSON
+  depth limit shrinks as the stack grows, and PyJWT parses the payload a few
+  frames deeper than openvc does. A narrow band of nesting depths therefore
+  passed openvc's parse and raised a bare `RecursionError` inside PyJWT. One
+  batch carrying a ladder of depths always hit it, and `verify_vp_token` was
+  exposed the same way. Separately, a lone surrogate in the signature segment
+  raised a bare `UnicodeEncodeError`. A non-ASCII token is now a
+  `MalformedToken` before anything is decoded. As a backstop, a `TypeError`,
+  `ValueError` or `RecursionError` from PyJWT is now caught as
+  `ClaimsInvalid`.
 
   Some tokens that used to verify are now rejected: a numeric string
   (`"exp": "1999999999"`), a bool (`"nbf": true`) and an integer too large for
   a float. PyJWT `int()`-cast the first two, and the third never expires.
-  RFC 7519 §2 defines a NumericDate as a JSON number, and the SD-JWT VC lane
-  already refused all three. On the ML-DSA lane, `null` is now rejected rather
-  than read as absent, and `iat` is checked for the first time.
+  RFC 7519 §2 defines a NumericDate as a JSON number. On the ML-DSA lane,
+  `null` is now rejected rather than read as absent, and the shape of `iat` is
+  checked for the first time. That lane still does not reject a future `iat`,
+  which the classic lane does.
 
 ### Fixed (docs)
 

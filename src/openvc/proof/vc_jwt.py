@@ -119,6 +119,12 @@ def _b64url_decode(segment: str) -> bytes:
 
 
 def _split(token: str) -> tuple[str, str, str]:
+    # A compact JWS is base64url and dots, all ASCII. Reject anything else up front:
+    # PyJWT encodes the token to UTF-8 before decoding it, so a lone surrogate in the
+    # signature segment (the one segment openvc never parses itself) raised a bare
+    # UnicodeEncodeError out of the decode.
+    if not token.isascii():
+        raise MalformedToken("token is not a compact JWS (non-ASCII characters)")
     try:
         header_b64, payload_b64, sig_b64 = token.split(".")
     except ValueError as exc:
@@ -255,10 +261,13 @@ class VcJwtProofSuite:
                 )
             except pyjwt.InvalidSignatureError as exc:
                 raise SignatureInvalid(str(exc)) from exc
-            except (pyjwt.PyJWTError, OverflowError, TypeError, ValueError) as exc:
-                # Backstop for PyJWT's int() casts on attacker claims: the shape gate
-                # above should stop every such value, but if a future PyJWT cast raised
-                # anyway, the error would still be typed.
+            except (pyjwt.PyJWTError, OverflowError, TypeError, ValueError,
+                    RecursionError) as exc:
+                # Backstop for PyJWT on attacker bytes. Its int() casts are stopped by
+                # the shape gate above. RecursionError comes from its own json.loads,
+                # which catches only ValueError. On Python <= 3.11 the json depth limit
+                # shrinks with stack depth, and PyJWT parses a few frames deeper than
+                # peek_claims, so a payload can pass our parse and overflow PyJWT's.
                 raise ClaimsInvalid(str(exc)) from exc
 
         credential = claims.get("vc")
