@@ -81,7 +81,10 @@ result = verify_credential(
 ```
 
 Opting *out* (accepting a credential without checking its declared status) is
-an explicit policy decision, not a default.
+an explicit policy decision, not a default. To keep checking status but accept a
+revoked credential anyway, set `VerificationPolicy(require_not_revoked=False)`
+and read `result.status.revoked`; suspension still rejects. See
+[Waiving expiry or revocation](Getting-Started#waiving-expiry-or-revocation).
 
 ## Hardening you get for free
 

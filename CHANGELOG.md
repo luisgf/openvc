@@ -62,6 +62,18 @@ All notable changes to **openvc** are documented here. The format follows
   `VpJwtProofSuite.verify` takes no DCQL query and is unchanged. The semantics are
   written up in the wiki under *Presentations → Holder binding on the W3C formats*.
 
+### Fixed (docs)
+
+- **The expiry and revocation waivers have a wiki home.**
+  `VerificationPolicy.require_not_expired` / `require_not_revoked` and
+  `VerificationResult.expired` shipped in 1.27.0 with only a passing mention in
+  the manual. Getting Started now has a *Waiving expiry or revocation* section.
+  It covers what each knob waives and what still runs, and how to read the
+  result (`expired`, `status.revoked`). It also notes that the sync and async
+  pipelines compute `expired` identically since 1.28.0
+  ([#188](https://github.com/luisgf/openvc/pull/188)), and carries a runnable
+  offline example. The SD-JWT VC and Status lists pages link to it.
+
 ## [1.28.1] — 2026-10-12
 
 ### Security
