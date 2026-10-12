@@ -93,8 +93,10 @@ What the result tells you:
 
 - **`result.expired`** is `True` when the expiry waiver is on and the credential
   has expired: a VC-JWT's `exp` or body `validUntil` / `expirationDate`, an
-  SD-JWT VC's `exp`, or a Data Integrity credential's `validUntil` /
-  `expirationDate`. With the default policy it is always `False`, because an
+  SD-JWT VC's `exp` (plus `validUntil` / `expirationDate` when it is a W3C
+  credential secured as SD-JWT, see
+  [SD-JWT VC](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt-vcsd-jwt)), or a Data
+  Integrity credential's `validUntil` / `expirationDate`. With the default policy it is always `False`, because an
   expired credential raises instead (`CredentialExpired`, or `ClaimsInvalid` for
   a JWT `exp`).
 - **Revocation has no result flag.** A waived revocation verifies, and
