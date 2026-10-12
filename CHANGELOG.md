@@ -4,6 +4,47 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.2] — unreleased
+
+Two older findings from the adversarial review of
+[#190](https://github.com/luisgf/openvc/pull/190), plus a sibling of the first
+([#193](https://github.com/luisgf/openvc/issues/193)).
+
+### Security
+
+- **A `jwt_vc_json` presentation that embeds no credential no longer answers a
+  Credential Query.** `verify_vp_token` accepted a VP-JWT whose
+  `vp.verifiableCredential` was `[]` or missing and returned a verified
+  presentation with zero credentials. The lane does no DCQL claim matching, so
+  the query counted as answered by a VP that proved only the holder's key, and
+  `require_holder_binding=True` held vacuously. That lane now raises
+  `VpTokenMalformed`, as the `ldp_vc` lane already did. `VpJwtProofSuite.verify`
+  still accepts a credential-less VP, which VCDM allows (DID Auth, for example).
+  It returns an empty `credentials` tuple; a caller that needs a credential must
+  check for one.
+
+### Fixed
+
+- **A dict credential whose `type` is not a string or an array is
+  `UnknownCredentialFormat`, not a bare `TypeError`.** `detect_format` ran
+  `"EnvelopedVerifiableCredential" in types` on a `type` of `null`, a number or a
+  bool. This was reachable at the top level, inside an
+  `EnvelopedVerifiableCredential`, and nested in `jwt_vc_json` and `ldp_vc`
+  presentations. The exception escaped `OpenvcError`, so one such item aborted a
+  whole `verify_many` / `verify_many_async` batch instead of becoming that item's
+  `error`. A `type` that is a JSON object is rejected the same way. A missing
+  `type` still classifies by the proof.
+- **A signed VC-JWT whose `vc.type` is not a string or an array fails
+  `expected_types` with a typed error.** The same membership test in
+  `_check_types` crashed once `policy.expected_types` was set. The pipeline now
+  raises `TypeMismatch`, and `VcJwtProofSuite.verify(expected_types=…)` raises
+  `ClaimsInvalid`. Any `did:key` can issue, so the issuer signature does not make
+  this shape trusted.
+- **A VP-JWT `vp.verifiableCredential` of `5`, `null`, `true` or `1.5` is
+  `ClaimsInvalid`, not a bare `TypeError`.** `VpJwtProofSuite.verify` ran
+  `list(raw)` on any value that was not a string or an object. An explicit `null`
+  counts as malformed, not as absent.
+
 ## [1.28.1] — 2026-10-12
 
 ### Security

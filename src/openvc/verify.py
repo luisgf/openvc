@@ -268,6 +268,10 @@ def detect_format(credential: Any) -> str:
     if isinstance(credential, dict):
         types = credential.get("type", [])
         types = [types] if isinstance(types, str) else types
+        if not isinstance(types, list):                  # VCDM: a string or an array; a
+            raise UnknownCredentialFormat(               # null/number/bool/object is malformed
+                f"credential `type` must be a string or an array, "
+                f"not {type(types).__name__}")
         if "EnvelopedVerifiableCredential" in types:
             return FORMAT_ENVELOPED
         proof = credential.get("proof")
@@ -726,7 +730,9 @@ def _check_types(credential: dict[str, Any], expected: Sequence[str] | None) -> 
     if not expected:
         return
     types = credential.get("type", [])
-    types = [types] if isinstance(types, str) else types
+    # a VC-JWT's `vc.type` is issuer-signed but still attacker-shaped: a non-array
+    # carries none of the expected types (a typed TypeMismatch, never a bare TypeError)
+    types = [types] if isinstance(types, str) else (types if isinstance(types, list) else [])
     missing = [t for t in expected if t not in types]
     if missing:
         raise TypeMismatch(f"credential is missing required type(s): {missing}")

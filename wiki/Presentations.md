@@ -50,6 +50,12 @@ result = VpJwtProofSuite().verify(
 print(result.holder, len(result.credentials), result.credentials[0].subject)
 ```
 
+A VP-JWT with no `verifiableCredential` is valid VCDM (DID Auth, for example):
+`verify` accepts it and returns an empty `credentials` tuple, so if you need a
+credential, check that one is there. `verify_vp_token` does this for you. A
+`verifiableCredential` that is neither a credential nor an array (a number, a
+bool, `null`) is rejected with `ClaimsInvalid`.
+
 ## OpenID4VP 1.0: `verify_vp_token`
 
 For an [OpenID4VP](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html)
@@ -170,7 +176,10 @@ cascade-verified through `verify_credential`. All four whole-document
 cryptosuites are accepted — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (need the
 `[data-integrity]` extra) and `eddsa-jcs-2022` / `ecdsa-jcs-2019` (pyld-free).
 A bare string or a bare credential (no VP wrapper) under an `ldp_vc` query is
-rejected: the holder binding lives only on a presentation proof. `mso_mdoc` is
+rejected: the holder binding lives only on a presentation proof. A W3C
+presentation under an `ldp_vc` or `jwt_vc_json` query must also embed at least
+one credential. A VP that proves only the holder's key does not answer a
+Credential Query, so it is rejected with `VpTokenMalformed`. `mso_mdoc` is
 verified over the Digital Credentials API flow — see [ISO mdoc](#iso-mdoc-mso_mdoc) below.
 
 The reported `holder` is the **authenticated** identity — the DID that controls
