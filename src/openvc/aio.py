@@ -74,6 +74,7 @@ from .verify import (
     _bytes_to_credential,
     _check_types,
     _enforce_status_issuer,
+    _expired_flag,
     _fail_closed,
     _unwrap_enveloped,
     detect_format,
@@ -245,7 +246,8 @@ async def _verify_vc_jwt_async(
     return VerificationResult(
         format=FORMAT_VC_JWT, credential=verified.credential, claims=verified.claims,
         issuer=verified.issuer, subject=verified.subject, status=status,
-        schema=schema, raw=verified)
+        schema=schema, raw=verified,
+        expired=_expired_flag(policy, verified.credential, verified.claims))
 
 
 async def _verify_sd_jwt_async(
@@ -274,7 +276,8 @@ async def _verify_sd_jwt_async(
     return VerificationResult(
         format=FORMAT_SD_JWT_VC, credential=verified.claims, claims=verified.claims,
         issuer=verified.issuer, subject=_as_str(verified.claims.get("sub")),
-        key_bound=verified.key_bound, status=status, schema=schema, raw=verified)
+        key_bound=verified.key_bound, status=status, schema=schema, raw=verified,
+        expired=_expired_flag(policy, verified.claims, verified.claims))
 
 
 async def _verify_data_integrity_async(
@@ -319,7 +322,8 @@ async def _verify_data_integrity_async(
                                        resolve_credential_schema, verify_inner)
     return VerificationResult(
         format=fmt, credential=verified.credential, issuer=verified.issuer,
-        subject=verified.subject, status=status, schema=schema, raw=verified)
+        subject=verified.subject, status=status, schema=schema, raw=verified,
+        expired=_expired_flag(policy, verified.credential, None))
 
 
 # -- async key resolution --------------------------------------------------- #

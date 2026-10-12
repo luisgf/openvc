@@ -73,6 +73,29 @@ All notable changes to **openvc** are documented here. The format follows
   the key-proof error messages are unchanged. A naive `now` passed to
   `verify_credential_request` is now read as UTC, as everywhere else in openvc.
 
+### Fixed
+
+- **The async pipeline now sets `VerificationResult.expired`.** Since 1.27.0,
+  `VerificationPolicy(require_not_expired=False)` waives the expiry failure and
+  reports it on the result as `expired=True` — but only `verify_credential` did.
+  The `openvc.aio` lanes (VC-JWT, SD-JWT VC, Data Integrity, and enveloped
+  credentials through them) built their result without the flag, so
+  `verify_credential_async` and `verify_many_async` returned `expired=False` for
+  the same expired credential: an async caller that waived expiry in order to
+  inspect it was told the credential was current. The async lanes now compute
+  the flag with the sync helper, and both pipelines return equal results. The
+  `VerificationResult` fields are unchanged. Found by the adversarial review of
+  [#187](https://github.com/luisgf/openvc/pull/187).
+- **Waiving expiry no longer rejects a credential the default policy
+  accepts.** Computing the flag re-read dates the suite had not enforced:
+  VCDM-named claims on an SD-JWT VC (`validFrom`, `expirationDate`, …, which
+  the SD-JWT suite never reads) and a VC-JWT body at a pinned `policy.now`
+  (the suite reads it at the current time). A future or malformed value there
+  made the sync pipeline raise `CredentialNotYetValid` / `MalformedTimestamp`
+  under `require_not_expired=False` only — contrary to the waiver's contract of
+  stopping just the expiry failure. The flag now only observes, on both
+  pipelines. Found by this fix's own adversarial review.
+
 ### Tests
 
 - New `tests/test_sd_jwt_kb_freshness.py` crafts KB-JWTs with every hostile
@@ -85,6 +108,15 @@ All notable changes to **openvc** are documented here. The format follows
   are — correctly — three months stale; they had only been passing because the
   claim was never read. The nonce-mismatch test now asserts *why* it fails, so it
   cannot pass on staleness instead.
+- New `tests/test_expired_flag_parity.py` — the first tests of the flag. One
+  expired credential per format (VC-JWT with a past `exp`, VC-JWT with only a
+  past `validUntil`, SD-JWT VC, Data Integrity `eddsa-jcs-2022` and
+  `eddsa-rdfc-2022`, an enveloped VC-JWT) goes through both pipelines under
+  the waiver; both must report `expired is True` and return equal results.
+  Controls: a current credential is not flagged, the same credentials still
+  fail without the waiver, and a pinned `policy.now` decides the Data
+  Integrity verdict on both pipelines. The edge cases above must verify under
+  the waiver on both pipelines, as they do under the default policy.
 
 ## [1.27.1] — 2026-10-04
 
