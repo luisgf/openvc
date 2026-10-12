@@ -128,6 +128,12 @@ class VpJwtProofSuite:
         it. *audience* and *nonce* are required and must be non-empty — VP-JWT has
         no unbound mode.
 
+        A VP with no ``verifiableCredential`` (VCDM allows one, e.g. DID Auth) verifies
+        with an empty *credentials* tuple — a caller that needs a credential must check
+        for one (:func:`openvc.openid4vp.verify_vp_token` does). A
+        ``verifiableCredential`` that is neither a credential nor an array (a number,
+        a bool, ``null``) raises ``ClaimsInvalid``.
+
         **Nested SD-JWT VCs.** An embedded SD-JWT VC (bare, or inside an
         ``EnvelopedVerifiableCredential``) that carries a Key Binding JWT has it
         verified against **this** presentation's *audience* and *nonce* — whatever
@@ -179,8 +185,18 @@ class VpJwtProofSuite:
 
         from ..cache import batch_resolvers
         from ..verify import verify_credential
+        # VCDM: `verifiableCredential` is optional (a VP with none, e.g. DID Auth, stays
+        # valid here), else one credential or an array. Any other shape — a number, a
+        # bool, an explicit null — is a malformed presentation, not an empty one.
         raw = vp.get("verifiableCredential", [])
-        entries = [raw] if isinstance(raw, (str, dict)) else list(raw)
+        if isinstance(raw, (str, dict)):
+            entries = [raw]
+        elif isinstance(raw, list):
+            entries = raw
+        else:
+            raise ClaimsInvalid(
+                f"vp.verifiableCredential must be a credential or an array, "
+                f"not {type(raw).__name__}")
         # Dedupe resolution across the embedded credentials: a VP whose 5 credentials share
         # an issuer resolves that DID once, not five times (and fetches+verifies a shared
         # status list once). The cascade stays fail-fast — a VP is valid only if *every*
