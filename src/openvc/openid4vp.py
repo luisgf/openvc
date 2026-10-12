@@ -699,6 +699,13 @@ def _verify_jwt_vp(
         x5c_trust_anchors=x5c_trust_anchors,
         resolve_status_list=resolve_status_list,
         resolve_status_list_token=resolve_status_list_token)
+    # A presentation answering a Credential Query must carry at least one credential
+    # (as the ldp_vc lane's _embedded_vcs requires). The suite accepts a credential-less
+    # VP — VCDM allows one, e.g. DID Auth — so the OpenID4VP rule is enforced here.
+    if not verified.credentials:
+        raise VpTokenMalformed(
+            f"the {FORMAT_JWT_VC} Presentation for {query_id!r} embeds no "
+            f"verifiableCredential")
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_JWT_VC, holder=verified.holder,
         credentials=tuple(verified.credentials), raw=verified)
