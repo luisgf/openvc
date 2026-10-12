@@ -16,7 +16,9 @@ Presentations 1.0 (Final, 2025-07-09). Given the ``vp_token`` a wallet returned,
      **full, prefixed** Client Identifier (e.g. ``x509_san_dns:client.example.org``,
      the redirect / ``direct_post`` flow — pass *client_id*), or — over the **W3C
      Digital Credentials API** — the calling web ``origin:<origin>`` (Appendix A; pass
-     *expected_origins*). Exactly one is given.
+     *expected_origins*). Exactly one is given. Unless the Credential Query sets
+     ``require_cryptographic_holder_binding`` to ``false``, every credential a W3C
+     presentation carries must also be bound to its authenticated holder (§B.1).
 
 This is deliberately **not** an OpenID4VP framework: it builds no Authorization
 Request, hosts no ``request_uri``, and keeps no session/state — the verifier owns the
@@ -57,6 +59,7 @@ from .proof._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
     DEFAULT_LEEWAY_S,
     non_negative_seconds,
+    safe_repr,
 )
 from .proof.errors import ClaimsInvalid
 
@@ -262,19 +265,37 @@ def verify_vp_token(
     never a self-asserted field. For ``dc+sd-jwt`` it is the issuer-signed ``sub``: the
     KB-JWT proves the presenter holds the ``cnf`` key the issuer bound to ``sub``, so
     ``sub`` is trustworthy, though it is the issuer's identifier for the holder rather
-    than the KB signer's own key thumbprint. *require_holder_binding* additionally
-    requires, for the W3C VP formats (``ldp_vc``, ``jwt_vc_json``), that every embedded
-    credential was issued to that holder (``credentialSubject.id == holder``) — so a
-    presenter cannot pass off a third party's credential as their own; off by default
-    (a holder may legitimately present another party's credential).
+    than the KB signer's own key thumbprint.
 
-    An SD-JWT VC nested in a ``jwt_vc_json`` / ``ldp_vc`` presentation (bare, or in an
-    ``EnvelopedVerifiableCredential``) may carry its own KB-JWT. If it does, that KB-JWT
-    must be bound to the **same** audience and nonce as the presentation, or the response
-    is rejected — so a nested result's ``key_bound=True`` means bound to this exchange.
-    Without one it reports ``key_bound=False``: the VP proof authenticates the presenter,
-    never the credential's ``cnf`` key. Check ``key_bound``, or pass
-    *require_holder_binding*, if you need that.
+    For the W3C VP formats, the VP proof alone does not bind the credentials it carries
+    to the presenter. So when a Credential Query requires **Cryptographic Holder
+    Binding** — its ``require_cryptographic_holder_binding``, default ``true`` (OpenID4VP
+    1.0 §6.1, §B.1) — every embedded credential must be bound to the authenticated holder,
+    or the response is rejected (``ClaimsInvalid``):
+
+    * an **SD-JWT VC** (bare, or in an ``EnvelopedVerifiableCredential``) must carry a
+      KB-JWT bound to this exchange (``key_bound=True``); one with no KB-JWT, or no
+      ``cnf``, is rejected. The VP signer never stands in for the ``cnf`` key;
+    * every other credential (**VC-JWT**, **Data Integrity**) must name the holder as its
+      single subject (``sub`` / ``credentialSubject.id``). A bearer credential (no subject
+      id), one whose ``credentialSubject`` is an array, or another party's credential is
+      rejected. Subject and holder are compared as strings, so the same key under two DID
+      methods is two different holders.
+
+    A ``jwt_vc_json`` or ``ldp_vc`` presentation must embed at least one credential,
+    whatever the flag.
+
+    To accept a credential the presenter is not bound to — §14.1.1's "the Holder may not
+    be the subject of the Credential" — set the flag to ``false`` in that query.
+    A non-boolean flag is :class:`VpTokenMalformed`.
+    *require_holder_binding* is the caller's own, stricter switch: whatever the query
+    says, every embedded credential's subject — an SD-JWT VC's ``sub`` included — must
+    be the authenticated holder.
+
+    A KB-JWT that a nested SD-JWT VC does carry must be bound to the **same** audience and
+    nonce as the presentation, whatever the flag, or the response is rejected — so a
+    nested result's ``key_bound=True`` means bound to this exchange. With the flag
+    ``false``, a nested SD-JWT VC without one reports ``key_bound=False``.
 
     With no ``credential_sets``, every Credential Query is required and its absence is
     rejected. When the query *does* carry ``credential_sets``, per-query completeness
@@ -406,6 +427,12 @@ def _index_dcql(dcql_query: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
             raise VpTokenMalformed(f"Credential Query {query_id!r} needs a string format")
         if query_id in queries:
             raise VpTokenMalformed(f"duplicate Credential Query id {query_id!r}")
+        # A malformed flag fails safe: coercing it would let bool(None) / bool(0) opt the
+        # query out of holder binding.
+        if not isinstance(entry.get("require_cryptographic_holder_binding", True), bool):
+            raise VpTokenMalformed(
+                f"Credential Query {query_id!r}: require_cryptographic_holder_binding "
+                f"must be a boolean")
         queries[query_id] = entry
     return queries
 
@@ -514,9 +541,12 @@ def _verify_one(
                    if fmt in (FORMAT_JWT_VC, FORMAT_LDP_VC) else None)
     # The audience is the client_id (redirect flow) or the DC-API calling origin.
     aud = _effective_audience(fmt, presentation, client_id, accepted_auds)
+    # Cryptographic Holder Binding is required unless the query opted out (OpenID4VP 1.0
+    # §6.1, default true); _index_dcql has already checked that the flag is a boolean.
+    require_binding = query.get("require_cryptographic_holder_binding", True)
     if fmt == FORMAT_SD_JWT_VC:
         return _verify_sd_jwt_vc(
-            query_id, query, presentation,
+            query_id, query, presentation, require_binding=require_binding,
             nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
             kb_max_age_s=kb_max_age_s,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
@@ -526,7 +556,7 @@ def _verify_one(
             require_status=require_status)
     if fmt == FORMAT_JWT_VC:
         return _verify_jwt_vp(
-            query_id, presentation,
+            query_id, presentation, require_binding=require_binding,
             nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
             kb_max_age_s=kb_max_age_s, type_values=type_values,
             extra_contexts=extra_contexts,
@@ -538,7 +568,8 @@ def _verify_one(
             require_status=require_status)
     if fmt == FORMAT_LDP_VC:
         return _verify_ldp_vp(
-            query_id, presentation, nonce=nonce, client_id=aud, resolver=resolver,
+            query_id, presentation, require_binding=require_binding,
+            nonce=nonce, client_id=aud, resolver=resolver,
             now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
             kb_max_age_s=kb_max_age_s, type_values=type_values,
             require_holder_binding=require_holder_binding,
@@ -640,7 +671,7 @@ def _verify_mso_mdoc(
 
 
 def _verify_sd_jwt_vc(
-    query_id: str, query: Mapping[str, Any], presentation: Any, *,
+    query_id: str, query: Mapping[str, Any], presentation: Any, *, require_binding: bool,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
     jwt_vc_issuer_fetch: Any = None,
     x5c_trust_anchors: Any = None,
@@ -666,8 +697,6 @@ def _verify_sd_jwt_vc(
     if "~" not in presentation:
         raise VpTokenMalformed(
             f"a {FORMAT_SD_JWT_VC} Presentation for {query_id!r} must be an SD-JWT")
-    # Holder binding is required unless the query opted out (default true, §10.4).
-    require_binding = bool(query.get("require_cryptographic_holder_binding", True))
     policy = VerificationPolicy(
         audience=client_id, nonce=nonce, require_key_binding=require_binding,
         require_status=require_status, now=now, leeway_s=leeway_s,
@@ -690,7 +719,7 @@ def _verify_sd_jwt_vc(
 
 
 def _verify_jwt_vp(
-    query_id: str, presentation: Any, *,
+    query_id: str, presentation: Any, *, require_binding: bool,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
     require_holder_binding: bool = False,
     jwt_vc_issuer_fetch: Any = None,
@@ -708,9 +737,10 @@ def _verify_jwt_vp(
     if not isinstance(presentation, str):
         raise VpTokenMalformed(
             f"a {FORMAT_JWT_VC} Presentation for {query_id!r} must be a compact JWT string")
-    # Nested SD-JWT VCs are held to the caller's KB-JWT window too, not the default.
+    # Nested SD-JWT VCs are held to the caller's KB-JWT window too, not the default, and
+    # need a KB-JWT at all when the query requires holder binding.
     policy = VerificationPolicy(require_status=require_status, now=now, leeway_s=leeway_s,
-                                kb_max_age_s=kb_max_age_s)
+                                kb_max_age_s=kb_max_age_s, require_key_binding=require_binding)
     # resolver mode authenticates the holder from `iss`, so require_holder_binding binds
     # subject==holder without needing expected_holder (VP-JWT enforces that invariant).
     # The suite also binds any nested SD-JWT's KB-JWT to this same aud + nonce.
@@ -723,11 +753,14 @@ def _verify_jwt_vp(
         resolve_status_list_token=resolve_status_list_token)
     # A presentation answering a Credential Query must carry at least one credential
     # (as the ldp_vc lane's _embedded_vcs requires). The suite accepts a credential-less
-    # VP — VCDM allows one, e.g. DID Auth — so the OpenID4VP rule is enforced here.
+    # VP — VCDM allows one, e.g. DID Auth — so the OpenID4VP rule is enforced here; an
+    # empty one would also meet the holder binding below vacuously.
     if not verified.credentials:
         raise VpTokenMalformed(
             f"the {FORMAT_JWT_VC} Presentation for {query_id!r} embeds no "
             f"verifiableCredential")
+    if require_binding:
+        _check_holder_bound(query_id, verified.credentials, verified.holder)
     _check_type_values(query_id, type_values, verified.credentials, extra_contexts)
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_JWT_VC, holder=verified.holder,
@@ -735,7 +768,7 @@ def _verify_jwt_vp(
 
 
 def _verify_ldp_vp(
-    query_id: str, presentation: Any, *,
+    query_id: str, presentation: Any, *, require_binding: bool,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
     extra_contexts: Mapping[str, dict] | None, require_holder_binding: bool,
     jwt_vc_issuer_fetch: Any = None,
@@ -778,10 +811,11 @@ def _verify_ldp_vp(
             f"the {FORMAT_LDP_VC} Presentation for {query_id!r} has no Data Integrity "
             f"holder proof")
     cryptosuite = proof.get("cryptosuite")
-    if cryptosuite not in _LDP_VP_CRYPTOSUITES:
+    # a JSON array/object cryptosuite is unhashable: type-check before `in frozenset`
+    if not isinstance(cryptosuite, str) or cryptosuite not in _LDP_VP_CRYPTOSUITES:
         raise UnsupportedPresentationFormat(
             f"the {FORMAT_LDP_VC} Presentation for {query_id!r} uses an unsupported "
-            f"Data Integrity cryptosuite {cryptosuite!r}")
+            f"Data Integrity cryptosuite {safe_repr(cryptosuite)}")
 
     # Verify the holder's authentication proof, bound to the request: challenge = the
     # transaction nonce, domain = the full prefixed client_id. The holder key is
@@ -802,9 +836,10 @@ def _verify_ldp_vp(
     holder = _vp_holder(query_id, presentation, verified_vp.proof)
 
     # Cascade-verify each embedded credential through the pipeline (fail closed).
-    # Nested SD-JWT VCs are held to the caller's KB-JWT window too, not the default.
+    # Nested SD-JWT VCs are held to the caller's KB-JWT window too, not the default, and
+    # need a KB-JWT at all when the query requires holder binding.
     policy = VerificationPolicy(require_status=require_status, now=now, leeway_s=leeway_s,
-                                kb_max_age_s=kb_max_age_s)
+                                kb_max_age_s=kb_max_age_s, require_key_binding=require_binding)
     credentials = tuple(
         verify_credential(
             vc, policy=policy, resolver=resolver, extra_contexts=extra_contexts,
@@ -816,6 +851,8 @@ def _verify_ldp_vp(
             _kb_binding=(client_id, nonce))
         for vc in _embedded_vcs(query_id, presentation))
 
+    if require_binding:
+        _check_holder_bound(query_id, credentials, holder)
     # Optional subject binding: require each embedded credential to have been issued
     # to the authenticated holder (the presenter owns what they present).
     if require_holder_binding:
@@ -881,6 +918,37 @@ def _vp_holder(
             f"the {FORMAT_LDP_VC} Presentation for {query_id!r} claims holder "
             f"{claimed!r} but was authenticated by {authenticated!r}")
     return authenticated
+
+
+def _check_holder_bound(query_id: str, credentials: Sequence[Any], holder: str | None) -> None:
+    # Cryptographic Holder Binding for the W3C VP formats (OpenID4VP 1.0 §2, §B.1): the VP
+    # proof authenticates *holder*, which binds a credential only if that credential is
+    # bound to the same holder. An SD-JWT VC is bound by its `cnf` key, so it needs a
+    # KB-JWT bound to this exchange (the suite already required one) — the VP signer never
+    # stands in for that key. Any other format names its holder as its single subject — a
+    # credentialSubject array has none (a VC-JWT would otherwise report its `sub` even when
+    # the array names someone else). Anything that is not an SD-JWT takes the subject
+    # rule, so an unforeseen format fails closed.
+    from .verify import FORMAT_SD_JWT_VC as _PIPELINE_SD_JWT
+
+    for result in credentials:
+        if result.format == _PIPELINE_SD_JWT:
+            if result.key_bound is not True:            # defence in depth vs the policy
+                raise ClaimsInvalid(
+                    f"Credential Query {query_id!r} requires cryptographic holder binding: "
+                    f"a nested SD-JWT VC has no Key Binding JWT bound to this presentation")
+            continue
+        credential = result.credential
+        if isinstance(credential, Mapping) and isinstance(
+                credential.get("credentialSubject"), list):
+            raise ClaimsInvalid(
+                f"Credential Query {query_id!r} requires cryptographic holder binding: a "
+                f"credential with a credentialSubject array has no single subject to bind")
+        if not holder or not result.subject or result.subject != holder:
+            raise ClaimsInvalid(
+                f"Credential Query {query_id!r} requires cryptographic holder binding: "
+                f"credential subject {result.subject!r} is not the authenticated holder "
+                f"{holder!r}")
 
 
 def _check_vct(query_id: str, query: Mapping[str, Any], vct: str | None) -> None:
