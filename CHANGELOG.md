@@ -4,6 +4,46 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.2] — unreleased
+
+### Security
+
+- **A W3C credential secured as SD-JWT is now held to its own `validFrom` /
+  `validUntil`** ([#198](https://github.com/luisgf/openvc/issues/198)). Found by
+  the adversarial review of [#188](https://github.com/luisgf/openvc/pull/188).
+  The SD-JWT lane enforced only the JWT `exp` / `nbf`, on both pipelines. That
+  let a VCDM credential secured with SD-JWT (VC-JOSE-COSE `vc+sd-jwt`), whose only
+  expiry was a past `validUntil`, verify under the default policy, bare or inside
+  an `EnvelopedVerifiableCredential`. VC-JOSE-COSE §3.2.1 makes that credential
+  the SD-JWT's claim set itself, and §3.1.3 says its `exp` dates the signature,
+  not the data. `SdJwtVcProofSuite.verify` now applies the same VCDM window check
+  as the VC-JWT lane:
+  - `validFrom` / `validUntil`, or the VCDM 1.1 `issuanceDate` /
+    `expirationDate`, are checked on the processed payload, so a disclosed
+    `validUntil` counts.
+  - It uses the current time and the suite leeway, like the VC-JWT lane.
+  - A present but unparseable value fails closed (`MalformedTimestamp`).
+  - `require_not_expired=False` waives only the expiry, and reports
+    `expired=True`.
+
+  The payload counts as a VCDM credential when its `@context` names a VCDM base
+  context, or when its `typ` is `vc+sd-jwt` and it has no `vct`. Both signals are
+  issuer-signed; the media type of an enveloping `data:` URL is not consulted.
+  **IETF SD-JWT VCs are unaffected:** a `dc+sd-jwt` one, or one with the
+  pre-draft-06 `vc+sd-jwt` typ and a `vct`, that merely has a claim named
+  `validUntil` still verifies, because that name is not a validity bound in its
+  vocabulary. With key binding required, the window is checked after the KB-JWT,
+  so an expiry verdict still means the presentation was bound.
+
+### Fixed
+
+- **`expired` is no longer set for an IETF SD-JWT VC's claim named
+  `validUntil`.** Under `require_not_expired=False`, the pipelines read any
+  SD-JWT's claims as a VCDM document, so a `dc+sd-jwt` credential with a past
+  `validUntil` claim came back `expired=True`. Yet strict verification accepted
+  it, so nothing had been waived. The flag now reads that window only where the
+  suite enforces it (#198).
+
 ## [1.28.1] — 2026-10-12
 
 ### Security

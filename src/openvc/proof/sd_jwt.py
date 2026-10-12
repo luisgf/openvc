@@ -48,6 +48,7 @@ from ._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
     check_iat_freshness,
     check_jwt_temporal,
+    check_validity_window,
     non_negative_seconds,
     reject_unknown_crit,
     utc_epoch,
@@ -67,6 +68,13 @@ _DEFAULT_HASH = "sha-256"
 _ISSUER_TYP = "dc+sd-jwt"                       # current draft (older: vc+sd-jwt)
 _ACCEPTED_ISSUER_TYP = frozenset({"dc+sd-jwt", "vc+sd-jwt"})
 _KB_TYP = "kb+jwt"
+# W3C VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload. It is also the typ the
+# IETF drafts used before draft-06 renamed it, so on its own it does not mean VCDM.
+_W3C_TYP = "vc+sd-jwt"
+_VCDM_CONTEXTS = frozenset({
+    "https://www.w3.org/ns/credentials/v2",            # VCDM 2.0
+    "https://www.w3.org/2018/credentials/v1",          # VCDM 1.1
+})
 _SALT_BYTES = 16                               # 128-bit salt (spec minimum)
 # Nesting bound for _unpack, parity with the sibling codecs (cbor.py=64, _jcs.py=100).
 # A hostile presentation can nest claims deeply, or chain disclosures (each disclosing an
@@ -229,6 +237,24 @@ def _check_aka_vcts(payload: Mapping[str, Any]) -> None:
     vct = payload.get("vct")
     if isinstance(vct, str) and vct in aka:
         raise ClaimsInvalid("aka_vcts must not contain the credential's vct")
+
+
+def _declares_vcdm(typ: Any, claims: Mapping[str, Any]) -> bool:
+    """Whether a processed SD-JWT payload is a W3C VCDM credential (VC-JOSE-COSE §3.2.1),
+    whose ``validFrom`` / ``validUntil`` (VCDM 1.1: ``issuanceDate`` / ``expirationDate``)
+    are then enforced as on the VC-JWT lane. Either issuer-signed signal is enough:
+
+    * its ``@context`` names a VCDM base context (as a string or anywhere in an array); or
+    * the ``typ`` is ``vc+sd-jwt`` and it has no ``vct``. The typ alone is ambiguous: an
+      IETF SD-JWT VC from before draft-06 carries it too, but always with a ``vct``.
+
+    An IETF SD-JWT VC that merely has a claim *named* ``validUntil`` is neither: the name
+    means nothing in its vocabulary, so it is not read as a validity bound."""
+    context = claims.get("@context")
+    entries = context if isinstance(context, list) else [context]
+    if any(isinstance(entry, str) and entry in _VCDM_CONTEXTS for entry in entries):
+        return True
+    return typ == _W3C_TYP and claims.get("vct") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -398,6 +424,12 @@ class SdJwtVcProofSuite:
         never to a value read from the presentation itself: its own ``iat`` would make
         every KB-JWT fresh and switch the window off. The issuer JWT's ``exp``/``nbf``
         still use the current time, as on every JOSE suite.
+
+        When the payload is a W3C VCDM credential (``vc+sd-jwt`` per VC-JOSE-COSE: a
+        VCDM ``@context``, or the ``vc+sd-jwt`` typ with no ``vct``), its ``validFrom`` /
+        ``validUntil`` are enforced too, like the VC-JWT suite does (current time, same
+        leeway; ``check_temporal=False`` waives only the expiry). An IETF SD-JWT VC's
+        claims are never read as a VCDM validity window.
         """
         non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=SdJwtError)
         current = utc_epoch(now, error=SdJwtError)       # a naive `now` is UTC
@@ -451,6 +483,15 @@ class SdJwtVcProofSuite:
         # if present. The issuer-JWT body was already checked above; if
         # `exp`/`nbf` were selectively disclosed they only appear after `_unpack`.
         self._check_temporal(unpacked, check_temporal=check_temporal)
+
+        # A W3C credential secured as SD-JWT *is* this claim set (VC-JOSE-COSE §3.2.1), and
+        # its `exp` dates the signature, not the data (§3.1.3): an issuer may put the expiry
+        # only in `validUntil`. Enforce the VCDM window as the VC-JWT lane does — on the
+        # processed payload, same leeway, wall clock like `exp`.
+        if _declares_vcdm(header.get("typ"), unpacked):
+            check_validity_window(
+                unpacked, {}, now=None, leeway_s=self._leeway,
+                check_temporal=check_temporal)
 
         vct = unpacked.get("vct")
         if expected_vct is not None and vct != expected_vct:
@@ -594,6 +635,15 @@ class SdJwtVcProofSuite:
         if claims.get("sd_hash") != expected:
             raise ClaimsInvalid("KB-JWT sd_hash does not match the presented disclosures")
         return True
+
+
+def _vcdm_credential(presentation: str, claims: dict[str, Any]) -> dict[str, Any] | None:
+    """*claims* when the verified *presentation* is a W3C VCDM credential (see
+    :func:`_declares_vcdm`), else ``None``: the document the pipeline's observe-only
+    ``expired`` flag may read a VCDM validity window from. Call only after ``verify``
+    accepted *presentation* — it re-reads the issuer JWT's ``typ`` unverified."""
+    header = SdJwtVcProofSuite._decode_jws(presentation.split("~", 1)[0])[0]
+    return claims if _declares_vcdm(header.get("typ"), claims) else None
 
 
 __all__ = [

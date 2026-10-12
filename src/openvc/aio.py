@@ -255,7 +255,7 @@ async def _verify_sd_jwt_async(
     resolve_status_list_token: Any, resolve_credential_schema: Any,
     jwt_vc_issuer_fetch: Any, x5c_trust_anchors: Any, verify_inner: Any,
 ) -> VerificationResult:
-    from .proof.sd_jwt import SdJwtVcProofSuite
+    from .proof.sd_jwt import SdJwtVcProofSuite, _vcdm_credential
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
     iss, kid = suite.peek_issuer(sd_jwt)
@@ -277,7 +277,9 @@ async def _verify_sd_jwt_async(
         format=FORMAT_SD_JWT_VC, credential=verified.claims, claims=verified.claims,
         issuer=verified.issuer, subject=_as_str(verified.claims.get("sub")),
         key_bound=verified.key_bound, status=status, schema=schema, raw=verified,
-        expired=_expired_flag(policy, verified.claims, verified.claims))
+        # an IETF SD-JWT VC's claim merely named validUntil is not a validity bound
+        expired=_expired_flag(
+            policy, _vcdm_credential(sd_jwt, verified.claims), verified.claims))
 
 
 async def _verify_data_integrity_async(

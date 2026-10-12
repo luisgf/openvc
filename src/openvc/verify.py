@@ -142,9 +142,10 @@ class VerificationPolicy:
     validated only when a ``resolve_credential_schema`` fetch is supplied; set it
     True to reject a credential that declares a schema but is verified without
     one. ``now`` pins the evaluation instant for Data Integrity temporal checks and
-    for the SD-JWT Key Binding JWT freshness window (the JOSE suites' ``exp``/``nbf``
-    use the current time). ``kb_max_age_s`` bounds how old a KB-JWT's ``iat`` may be
-    (RFC 9901 §7.3 step 5.5)."""
+    for the SD-JWT Key Binding JWT freshness window (the JOSE suites' ``exp``/``nbf``,
+    and the VCDM ``validFrom``/``validUntil`` they enforce, use the current time).
+    ``kb_max_age_s`` bounds how old a KB-JWT's ``iat`` may be (RFC 9901 §7.3 step
+    5.5)."""
     leeway_s: int = DEFAULT_LEEWAY_S
     expected_types: Sequence[str] | None = None
     expected_vct: str | None = None
@@ -197,9 +198,10 @@ def _expired_flag(
 ) -> bool:
     """True when expiry was waived and the credential is past its validity window.
 
-    The flag only observes: the suite already enforced (or, for SD-JWT VCDM-named
-    claims, never reads) not-yet-valid and malformed dates, so those never fail the
-    call from here — the waiver must not reject what the default policy accepts."""
+    The flag only observes: the suite already enforced not-yet-valid and malformed
+    dates, so those never fail the call from here — the waiver must not reject what
+    the default policy accepts. The SD-JWT lane passes its claims as *credential* only
+    when they are a VCDM credential, the one case its suite enforces that window."""
     if policy.require_not_expired:
         return False
     if isinstance(credential, dict):
@@ -564,7 +566,7 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
                    resolve_credential_schema: Any, jwt_vc_issuer_fetch: Any,
                    x5c_trust_anchors: Any, verify_inner: Any,
                    kb_binding: tuple[str, str] | None = None) -> VerificationResult:
-    from .proof.sd_jwt import SdJwtVcProofSuite
+    from .proof.sd_jwt import SdJwtVcProofSuite, _vcdm_credential
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
     iss, kid = suite.peek_issuer(sd_jwt)
@@ -600,7 +602,9 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
         format=FORMAT_SD_JWT_VC, credential=verified.claims, claims=verified.claims,
         issuer=verified.issuer, subject=_as_str(verified.claims.get("sub")),
         key_bound=verified.key_bound, status=status, schema=schema, raw=verified,
-        expired=_expired_flag(policy, verified.claims, verified.claims))
+        # an IETF SD-JWT VC's claim merely named validUntil is not a validity bound
+        expired=_expired_flag(
+            policy, _vcdm_credential(sd_jwt, verified.claims), verified.claims))
 
 
 def _verify_data_integrity(
