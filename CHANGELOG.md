@@ -4,7 +4,62 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.28.2] — unreleased
+## [1.28.2] — 2026-10-12
+
+### Security
+
+- **A `jwt_vc_json` presentation must embed at least one credential**
+  ([#193](https://github.com/luisgf/openvc/issues/193)). Found by the
+  adversarial review of [#190](https://github.com/luisgf/openvc/pull/190),
+  together with the typed-error fixes below. `verify_vp_token` accepted a VP-JWT
+  whose `vp.verifiableCredential` was `[]` or missing and returned a verified
+  presentation with zero credentials. The Credential Query counted as answered
+  with nothing presented, and `require_holder_binding=True` held vacuously. That
+  lane now raises `VpTokenMalformed`, as the `ldp_vc` lane already did.
+
+  This guarantees that a credential was presented and verified, nothing more.
+  For `jwt_vc_json` and `ldp_vc`, openvc does not match the DCQL
+  `meta.type_values` and never judges the issuer: a credential the holder minted
+  from their own `did:key` still answers the query. Check each result's `issuer`
+  and `type` against what you trust. `VpJwtProofSuite.verify` still accepts a
+  credential-less VP, which VCDM allows (DID Auth, for example). It returns an
+  empty `credentials` tuple; a caller that needs a credential must check for one.
+
+### Fixed
+
+- **A dict credential whose `type` is not a string or an array is
+  `UnknownCredentialFormat`, not a bare `TypeError`.** `detect_format` ran
+  `"EnvelopedVerifiableCredential" in types` on a `type` of `null`, a number or a
+  bool. This was reachable at the top level, inside an
+  `EnvelopedVerifiableCredential`, and nested in `jwt_vc_json` and `ldp_vc`
+  presentations. The exception escaped `OpenvcError`, so one such item aborted a
+  whole `verify_many` / `verify_many_async` batch instead of becoming that item's
+  `error`. A `type` that is a JSON object is rejected the same way. A missing
+  `type` still classifies by the proof.
+- **A signed VC-JWT whose `vc.type` is not a string or an array fails
+  `expected_types` with a typed error.** The same membership test in
+  `_check_types` crashed once `policy.expected_types` was set. The pipeline now
+  raises `TypeMismatch`, and `VcJwtProofSuite.verify(expected_types=…)` raises
+  `ClaimsInvalid`. Any `did:key` can issue, so the issuer signature does not make
+  this shape trusted.
+- **A VP-JWT `vp.verifiableCredential` of `5`, `null`, `true` or `1.5` is
+  `ClaimsInvalid`, not a bare `TypeError`.** `VpJwtProofSuite.verify` ran
+  `list(raw)` on any value that was not a string or an object. An explicit `null`
+  counts as malformed, not as absent.
+
+Fixed before merge, from this change's own adversarial review:
+- **A `type` that is a JSON object no longer satisfies `expected_types` through
+  its keys.** `{"UniversityDegreeCredential": true}` passed a check for
+  `UniversityDegreeCredential`, on the VC-JWT and Data Integrity paths alike. It
+  now fails (`TypeMismatch`, or `UnknownCredentialFormat` at detection). The
+  issuer could have signed that type as an array, so this grants nothing an
+  issuer could not already claim, but the shape is malformed.
+- **A deeply nested `proof.cryptosuite` is `UnknownCredentialFormat`, not a bare
+  `RecursionError`.** `detect_format` put the value's `repr()` in its error
+  message. On Python 3.14 `json.loads` accepts nesting deep enough to overflow
+  `repr()`. A non-string cryptosuite is now named by its type.
+- A `tuple` `type`, from a Python caller that built the credential in-process,
+  is still accepted as an array.
 
 ### Security
 
@@ -2036,6 +2091,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.28.2]: https://github.com/luisgf/openvc/releases/tag/v1.28.2
 [1.28.1]: https://github.com/luisgf/openvc/releases/tag/v1.28.1
 [1.28.0]: https://github.com/luisgf/openvc/releases/tag/v1.28.0
 [1.27.1]: https://github.com/luisgf/openvc/releases/tag/v1.27.1
