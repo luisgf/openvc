@@ -8,18 +8,22 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
-- **A `jwt_vc_json` presentation that embeds no credential no longer answers a
-  Credential Query** ([#193](https://github.com/luisgf/openvc/issues/193)). Found
-  by the adversarial review of [#190](https://github.com/luisgf/openvc/pull/190),
-  together with the three typed-error fixes below. `verify_vp_token` accepted a
-  VP-JWT whose `vp.verifiableCredential` was `[]` or missing and returned a
-  verified presentation with zero credentials. The lane does no DCQL claim matching, so
-  the query counted as answered by a VP that proved only the holder's key, and
-  `require_holder_binding=True` held vacuously. That lane now raises
-  `VpTokenMalformed`, as the `ldp_vc` lane already did. `VpJwtProofSuite.verify`
-  still accepts a credential-less VP, which VCDM allows (DID Auth, for example).
-  It returns an empty `credentials` tuple; a caller that needs a credential must
-  check for one.
+- **A `jwt_vc_json` presentation must embed at least one credential**
+  ([#193](https://github.com/luisgf/openvc/issues/193)). Found by the
+  adversarial review of [#190](https://github.com/luisgf/openvc/pull/190),
+  together with the typed-error fixes below. `verify_vp_token` accepted a VP-JWT
+  whose `vp.verifiableCredential` was `[]` or missing and returned a verified
+  presentation with zero credentials. The Credential Query counted as answered
+  with nothing presented, and `require_holder_binding=True` held vacuously. That
+  lane now raises `VpTokenMalformed`, as the `ldp_vc` lane already did.
+
+  This guarantees that a credential was presented and verified, nothing more.
+  For `jwt_vc_json` and `ldp_vc`, openvc does not match the DCQL
+  `meta.type_values` and never judges the issuer: a credential the holder minted
+  from their own `did:key` still answers the query. Check each result's `issuer`
+  and `type` against what you trust. `VpJwtProofSuite.verify` still accepts a
+  credential-less VP, which VCDM allows (DID Auth, for example). It returns an
+  empty `credentials` tuple; a caller that needs a credential must check for one.
 
 ### Fixed
 
@@ -42,6 +46,20 @@ All notable changes to **openvc** are documented here. The format follows
   `ClaimsInvalid`, not a bare `TypeError`.** `VpJwtProofSuite.verify` ran
   `list(raw)` on any value that was not a string or an object. An explicit `null`
   counts as malformed, not as absent.
+
+Fixed before merge, from this change's own adversarial review:
+- **A `type` that is a JSON object no longer satisfies `expected_types` through
+  its keys.** `{"UniversityDegreeCredential": true}` passed a check for
+  `UniversityDegreeCredential`, on the VC-JWT and Data Integrity paths alike. It
+  now fails (`TypeMismatch`, or `UnknownCredentialFormat` at detection). The
+  issuer could have signed that type as an array, so this grants nothing an
+  issuer could not already claim, but the shape is malformed.
+- **A deeply nested `proof.cryptosuite` is `UnknownCredentialFormat`, not a bare
+  `RecursionError`.** `detect_format` put the value's `repr()` in its error
+  message. On Python 3.14 `json.loads` accepts nesting deep enough to overflow
+  `repr()`. A non-string cryptosuite is now named by its type.
+- A `tuple` `type`, from a Python caller that built the credential in-process,
+  is still accepted as an array.
 
 ### Fixed (docs)
 

@@ -268,7 +268,7 @@ def detect_format(credential: Any) -> str:
     if isinstance(credential, dict):
         types = credential.get("type", [])
         types = [types] if isinstance(types, str) else types
-        if not isinstance(types, list):                  # VCDM: a string or an array; a
+        if not isinstance(types, (list, tuple)):         # VCDM: a string or an array; a
             raise UnknownCredentialFormat(               # null/number/bool/object is malformed
                 f"credential `type` must be a string or an array, "
                 f"not {type(types).__name__}")
@@ -279,8 +279,12 @@ def detect_format(credential: Any) -> str:
             cryptosuite = proof.get("cryptosuite")
             fmt = _CRYPTOSUITE_FORMAT.get(cryptosuite) if isinstance(cryptosuite, str) else None
             if fmt is None:
+                # name a non-str by its type: repr() of a deeply nested one raises a
+                # bare RecursionError
+                shown = (repr(cryptosuite) if isinstance(cryptosuite, str)
+                         else type(cryptosuite).__name__)
                 raise UnknownCredentialFormat(
-                    f"unsupported Data Integrity cryptosuite {cryptosuite!r}")
+                    f"unsupported Data Integrity cryptosuite {shown}")
             return fmt
         raise UnknownCredentialFormat(
             "dict has no `proof` and is not an EnvelopedVerifiableCredential")
@@ -731,8 +735,10 @@ def _check_types(credential: dict[str, Any], expected: Sequence[str] | None) -> 
         return
     types = credential.get("type", [])
     # a VC-JWT's `vc.type` is issuer-signed but still attacker-shaped: a non-array
-    # carries none of the expected types (a typed TypeMismatch, never a bare TypeError)
-    types = [types] if isinstance(types, str) else (types if isinstance(types, list) else [])
+    # carries none of the expected types (a typed TypeMismatch, never a bare TypeError,
+    # and never an object whose KEYS would pass the membership test)
+    types = ([types] if isinstance(types, str)
+             else types if isinstance(types, (list, tuple)) else [])
     missing = [t for t in expected if t not in types]
     if missing:
         raise TypeMismatch(f"credential is missing required type(s): {missing}")

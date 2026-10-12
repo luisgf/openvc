@@ -178,8 +178,11 @@ cryptosuites are accepted — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (need the
 A bare string or a bare credential (no VP wrapper) under an `ldp_vc` query is
 rejected: the holder binding lives only on a presentation proof. A W3C
 presentation under an `ldp_vc` or `jwt_vc_json` query must also embed at least
-one credential. A VP that proves only the holder's key does not answer a
-Credential Query, so it is rejected with `VpTokenMalformed`. `mso_mdoc` is
+one credential, or it is rejected with `VpTokenMalformed`. That only guarantees
+a credential was presented and verified. For these two formats openvc does not
+match the DCQL `meta.type_values`, and it never judges the issuer: any `did:key`
+can issue a credential that verifies. Check each result's `issuer` and `type`
+against what you trust. `mso_mdoc` is
 verified over the Digital Credentials API flow — see [ISO mdoc](#iso-mdoc-mso_mdoc) below.
 
 The reported `holder` is the **authenticated** identity — the DID that controls

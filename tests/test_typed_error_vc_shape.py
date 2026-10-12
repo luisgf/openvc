@@ -174,17 +174,37 @@ def test_enveloped_non_container_type_is_typed(type_value):
 @pytest.mark.parametrize("type_value", [
     pytest.param("VerifiableCredential", id="string"),
     pytest.param(["VerifiableCredential"], id="array"),
+    pytest.param(("VerifiableCredential",), id="tuple-python-api"),
     pytest.param(_ABSENT, id="absent"),
 ])
 def test_detect_format_still_classifies_a_well_shaped_or_absent_type(type_value):
-    # No over-correction: a string, an array, or no `type` at all still classify by the
-    # proof (a missing `type` is left for the proof suite / VCDM checks to judge).
+    # No over-correction: a string, an array (a tuple, from a Python caller that built
+    # the dict in-process; JCS signs it as an array), or no `type` at all still classify
+    # by the proof (a missing `type` is left for the proof suite / VCDM checks to judge).
     doc = _hostile_doc()
     if type_value is _ABSENT:
         del doc["type"]
     else:
         doc["type"] = type_value
     assert detect_format(doc) == FORMAT_DI_EDDSA_JCS
+
+
+def _deeply_nested_list(depth: int = 100_000) -> list:
+    deep: list = []
+    for _ in range(depth):
+        deep = [deep]
+    return deep
+
+
+def test_deeply_nested_cryptosuite_is_typed():
+    # The error message used to repr() the cryptosuite: a deeply nested one (json.loads
+    # accepts ~116k levels on 3.14) raised a bare RecursionError from detect_format.
+    doc = {"type": ["VerifiableCredential"],
+           "proof": {"type": "DataIntegrityProof", "cryptosuite": _deeply_nested_list()}}
+    with pytest.raises(UnknownCredentialFormat, match="cryptosuite list"):
+        detect_format(doc)
+    (result,) = verify_many([doc])
+    assert isinstance(result.error, UnknownCredentialFormat)
 
 
 def test_verify_many_isolates_a_non_container_type(issuer):
@@ -225,7 +245,11 @@ def test_ldp_vc_nested_non_container_type_is_typed():
 
 # -- sibling: a signed VC-JWT's `vc.type` meets policy.expected_types ------- #
 
-@pytest.mark.parametrize("vc_type", [None, 5, True])
+@pytest.mark.parametrize("vc_type", [
+    pytest.param(None, id="null"), pytest.param(5, id="int"), pytest.param(True, id="bool"),
+    # an object whose KEY is the expected type used to pass `"X" in {"X": ...}` silently
+    pytest.param({"VerifiableCredential": True}, id="object-keyed-by-expected-type"),
+])
 def test_vc_jwt_non_container_type_with_expected_types_is_typed(issuer, vc_type):
     # The issuer signs the token, but any did:key is an issuer: the shape is hostile.
     token = _vc_jwt(issuer, vc_type=vc_type)
