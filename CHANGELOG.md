@@ -6,6 +6,20 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.28.2] — unreleased
 
+### Fixed
+
+- **`VpJwtProofSuite.verify` with a pinned `holder_key_jwk` and no `resolver`
+  works again** ([#200](https://github.com/luisgf/openvc/issues/200)). It raised
+  a bare `AttributeError` instead, even for a VP with no credentials, so the
+  failure escaped `OpenvcError` and aborted batch callers. The resolver was
+  defaulted only when the holder key was not pinned. Since 1.6.0
+  ([#24](https://github.com/luisgf/openvc/issues/24)) the cascade passes it to
+  `batch_resolvers`, which cannot take `None`. The resolver now defaults to
+  `default_resolver()` whenever none is given, as in `verify_credential` and as
+  before 1.6.0. A pinned key still decides the VP signature and is never
+  resolved. The resolver serves only the embedded credentials' issuers. This
+  failed closed: nothing verified that should not.
+
 ### Fixed (docs)
 
 - **The expiry and revocation waivers have a wiki home.**
