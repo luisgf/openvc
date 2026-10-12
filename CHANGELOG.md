@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.28.1] — unreleased
+## [1.28.1] — 2026-10-12
 
 ### Security
 
@@ -316,8 +316,6 @@ All notable changes to **openvc** are documented here. The format follows
   `credential_issuer` is byte-for-byte the identifier the key proof's `aud`
   will be compared against and no raw `ValueError` escapes the module's
   taxonomy over attacker-controlled input.
-
-## [1.24.1] — unreleased
 
 ### Fixed
 
@@ -1978,6 +1976,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.28.1]: https://github.com/luisgf/openvc/releases/tag/v1.28.1
 [1.28.0]: https://github.com/luisgf/openvc/releases/tag/v1.28.0
 [1.27.1]: https://github.com/luisgf/openvc/releases/tag/v1.27.1
 [1.27.0]: https://github.com/luisgf/openvc/releases/tag/v1.27.0
