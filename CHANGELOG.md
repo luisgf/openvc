@@ -33,6 +33,22 @@ All notable changes to **openvc** are documented here. The format follows
     need for key binding is policy, never whether a KB-JWT arrived. One without a
     KB-JWT, or without `cnf`, is rejected. The VP signer never stands in for the
     `cnf` key, even when it is the same key.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **A `jwt_vc_json` VP that embeds no credential is rejected** (`VpTokenMalformed`),
+    under any query. An empty or missing `verifiableCredential` met "every embedded
+    credential is bound" vacuously, so an attacker-signed VP with nothing in it
+    answered the query. `ldp_vc` already refused it.
+  - **A VC-JWT with a `credentialSubject` array no longer passes the subject rule on
+    its `sub`.** `VcJwtProofSuite` reports the JWT `sub` as the subject whenever it
+    is a string, and reconciles it only with a `credentialSubject` *object*. An
+    array, even one naming someone else, slipped through when `sub` was the
+    holder. Holder binding now needs a single subject; any array fails closed. The
+    `sub` is issuer-signed, so this was not attacker-forgeable.
+  - **`VpJwtProofSuite.verify` raises `ClaimsInvalid`, not a bare `TypeError`, for a
+    `vp.verifiableCredential` that is neither a credential nor an array** (`null`, a
+    number, a boolean). This predates this release; any presenter could trigger it
+    with their own key.
 - **A non-boolean `require_cryptographic_holder_binding` is `VpTokenMalformed`** on
   every Credential Query, `dc+sd-jwt` included. The `dc+sd-jwt` lane coerced it with
   `bool()`, so a `null` or a `0` silently opted the query out of holder binding.
@@ -44,8 +60,12 @@ All notable changes to **openvc** are documented here. The format follows
   presenter:
   - another party's credential;
   - a bearer credential with no subject id;
-  - a multi-subject credential;
+  - a credential whose `credentialSubject` is an array;
+  - a credential issued to the same key under another DID method (subjects and
+    signers are compared as DID strings);
   - a nested SD-JWT VC with no KB-JWT.
+
+  A `jwt_vc_json` VP with no credential is rejected under any query.
 
   The `verify_vp_token` docstring described subject binding as "off by default". That
   was true of `require_holder_binding`, but it ignored the query's own default. This

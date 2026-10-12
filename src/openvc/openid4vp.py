@@ -261,8 +261,13 @@ def verify_vp_token(
       KB-JWT bound to this exchange (``key_bound=True``); one with no KB-JWT, or no
       ``cnf``, is rejected. The VP signer never stands in for the ``cnf`` key;
     * every other credential (**VC-JWT**, **Data Integrity**) must name the holder as its
-      subject (``sub`` / ``credentialSubject.id``). A bearer credential (no subject id), a
-      multi-subject one, or another party's credential is rejected.
+      single subject (``sub`` / ``credentialSubject.id``). A bearer credential (no subject
+      id), one whose ``credentialSubject`` is an array, or another party's credential is
+      rejected. Subject and holder are compared as strings, so the same key under two DID
+      methods is two different holders.
+
+    A ``jwt_vc_json`` presentation must embed at least one credential, as an ``ldp_vc``
+    one already had to, whatever the flag.
 
     To accept a credential the presenter is not bound to — §14.1.1's "the Holder may not
     be the subject of the Credential" — set the flag to ``false`` in that query.
@@ -723,6 +728,12 @@ def _verify_jwt_vp(
         x5c_trust_anchors=x5c_trust_anchors,
         resolve_status_list=resolve_status_list,
         resolve_status_list_token=resolve_status_list_token)
+    # A Presentation answering a Credential Query must carry a credential, as ldp_vc's
+    # _embedded_vcs requires; an empty one would meet the holder binding vacuously.
+    if not verified.credentials:
+        raise VpTokenMalformed(
+            f"the {FORMAT_JWT_VC} Presentation for {query_id!r} embeds no "
+            f"verifiableCredential")
     if require_binding:
         _check_holder_bound(query_id, verified.credentials, verified.holder)
     return VerifiedPresentation(
@@ -885,8 +896,10 @@ def _check_holder_bound(query_id: str, credentials: Sequence[Any], holder: str |
     # proof authenticates *holder*, which binds a credential only if that credential is
     # bound to the same holder. An SD-JWT VC is bound by its `cnf` key, so it needs a
     # KB-JWT bound to this exchange (the suite already required one) — the VP signer never
-    # stands in for that key. Any other format names its holder as its subject. Anything
-    # that is not an SD-JWT takes the subject rule, so an unforeseen format fails closed.
+    # stands in for that key. Any other format names its holder as its single subject — a
+    # credentialSubject array has none (a VC-JWT would otherwise report its `sub` even when
+    # the array names someone else). Anything that is not an SD-JWT takes the subject
+    # rule, so an unforeseen format fails closed.
     from .verify import FORMAT_SD_JWT_VC as _PIPELINE_SD_JWT
 
     for result in credentials:
@@ -895,7 +908,14 @@ def _check_holder_bound(query_id: str, credentials: Sequence[Any], holder: str |
                 raise ClaimsInvalid(
                     f"Credential Query {query_id!r} requires cryptographic holder binding: "
                     f"a nested SD-JWT VC has no Key Binding JWT bound to this presentation")
-        elif not holder or not result.subject or result.subject != holder:
+            continue
+        credential = result.credential
+        if isinstance(credential, Mapping) and isinstance(
+                credential.get("credentialSubject"), list):
+            raise ClaimsInvalid(
+                f"Credential Query {query_id!r} requires cryptographic holder binding: a "
+                f"credential with a credentialSubject array has no single subject to bind")
+        if not holder or not result.subject or result.subject != holder:
             raise ClaimsInvalid(
                 f"Credential Query {query_id!r} requires cryptographic holder binding: "
                 f"credential subject {result.subject!r} is not the authenticated holder "

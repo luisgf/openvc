@@ -249,8 +249,14 @@ credential fails, the whole response is rejected (`ClaimsInvalid`):
 So these are all rejected under a default query:
 - another party's credential;
 - a bearer credential with no subject id;
-- a credential with several subjects, even when the presenter is one of them;
+- a credential whose `credentialSubject` is an array, even when the presenter is one of
+  its subjects or the issuer signed a `sub` naming them;
 - an SD-JWT VC with its KB-JWT stripped, or with no `cnf` at all.
+
+Subject and signer are compared as DID strings, never by key. A VP signed as
+`did:jwk:<key>` does not bind a credential issued to `did:key:<same key>`; issue to the
+DID the wallet presents with. A `jwt_vc_json` presentation must also embed at least one
+credential, under any query, as an `ldp_vc` one always had to.
 
 The VP signer never stands in for an SD-JWT's `cnf` key, even when it is the same key:
 SD-JWT key binding is the KB-JWT (RFC 9901), which also covers the disclosures you

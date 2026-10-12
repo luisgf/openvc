@@ -175,7 +175,13 @@ class VpJwtProofSuite:
         from ..cache import batch_resolvers
         from ..verify import verify_credential
         raw = vp.get("verifiableCredential", [])
-        entries = [raw] if isinstance(raw, (str, dict)) else list(raw)
+        if isinstance(raw, (str, dict)):
+            entries = [raw]
+        elif isinstance(raw, list):
+            entries = list(raw)
+        else:                   # list(None) / list(5) would escape as a bare TypeError
+            raise ClaimsInvalid(
+                "VP-JWT vp.verifiableCredential must be a credential or an array of them")
         # Dedupe resolution across the embedded credentials: a VP whose 5 credentials share
         # an issuer resolves that DID once, not five times (and fetches+verifies a shared
         # status list once). The cascade stays fail-fast — a VP is valid only if *every*

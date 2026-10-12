@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -32,6 +33,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from openvc.keys import P256SigningKey
 from openvc.multibase import encode_multibase
 from openvc.openid4vp import VpTokenMalformed, _check_holder_bound, verify_vp_token
+from openvc.proof._jws import sign_compact
 from openvc.proof.di_jcs import EcdsaJcsProofSuite
 from openvc.proof.errors import ClaimsInvalid
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
@@ -53,6 +55,7 @@ LANES = ["jwt_vc_json", "ldp_vc"]
 
 NO_KB = "key binding required but no KB-JWT present"
 NOT_HOLDER = "is not the authenticated holder"
+SUBJECT_ARRAY = "credentialSubject array"
 
 
 def _party():
@@ -120,6 +123,19 @@ def _di_vc(issuer, subject=None):
          "credentialSubject": cs},
         signing_key=issuer_key, verification_method=issuer_key.kid,
         proof_purpose="assertionMethod")
+
+
+def _raw_jws(signer, payload):
+    """A compact JWS over an arbitrary *payload*, for shapes the suites never sign."""
+    signer_key, _ = signer
+    return sign_compact({"alg": signer_key.alg, "typ": "JWT", "kid": signer_key.kid},
+                        payload, signing_key=signer_key)
+
+
+def _raw_vp_jwt(signer, vp):
+    now = int(time.time())
+    return _raw_jws(signer, {"iss": signer[1], "aud": CLIENT_ID, "nonce": NONCE,
+                             "iat": now, "nbf": now, "exp": now + 300, "vp": vp})
 
 
 def _enveloped(sd_jwt):
@@ -243,8 +259,57 @@ def test_multi_subject_credential_rejected(issuer, victim, lane):
     # A credentialSubject array has no single subject to bind — fail closed, even when
     # the presenter is one of the subjects.
     vc = _vc_jwt(issuer, credential_subject=[{"id": victim[1]}, {"id": "did:example:bob"}])
-    with pytest.raises(ClaimsInvalid, match=NOT_HOLDER):
+    with pytest.raises(ClaimsInvalid, match=SUBJECT_ARRAY):
         _verify(lane, _present(lane, victim, [vc]))
+
+
+@pytest.mark.parametrize("lane", LANES)
+@pytest.mark.parametrize("subjects", [
+    pytest.param(["holder", "did:example:bob"], id="holder-and-bob"),
+    pytest.param(["did:example:bob"], id="bob-only"),
+    pytest.param(["holder"], id="one-element"),
+])
+def test_subject_array_rejected_even_with_an_issuer_signed_sub(
+        issuer, victim, lane, subjects):
+    # Review finding (#201): VcJwtProofSuite reports the JWT `sub` as the subject whenever
+    # it is a string, and only reconciles it with a credentialSubject *object*. With an
+    # array, `sub` = holder satisfied the subject rule even when the array named someone
+    # else. Holder binding needs a single subject, so any array fails closed.
+    cs = [{"id": victim[1] if s == "holder" else s} for s in subjects]
+    vc = _raw_jws(issuer, {"iss": issuer[1], "sub": victim[1], "vc": {
+        "@context": [V2], "type": ["VerifiableCredential"], "issuer": issuer[1],
+        "credentialSubject": cs}})
+    with pytest.raises(ClaimsInvalid, match=SUBJECT_ARRAY):
+        _verify(lane, _present(lane, victim, [vc]))
+    p = _verify(lane, _present(lane, victim, [vc]), False)          # opted out: accepted
+    assert p.credentials[0].subject == victim[1]
+
+
+@pytest.mark.parametrize("flag", [*REQUIRED, pytest.param(False, id="flag-false")])
+@pytest.mark.parametrize("vp", [
+    pytest.param({"verifiableCredential": []}, id="empty-list"),
+    pytest.param({}, id="no-verifiableCredential"),
+])
+def test_jwt_vc_json_presentation_without_credentials_rejected(attacker, vp, flag):
+    # Review finding (#201): a VP-JWT carrying no credential met "every embedded credential
+    # is bound" vacuously and answered the query with nothing. ldp_vc already refused it
+    # (_embedded_vcs); a Presentation answering a Credential Query must carry one.
+    signed = _raw_vp_jwt(attacker, {"@context": [V2], "type": ["VerifiablePresentation"],
+                                    **vp})
+    with pytest.raises(VpTokenMalformed, match="embeds no verifiableCredential"):
+        _verify("jwt_vc_json", signed, flag)
+
+
+@pytest.mark.parametrize("junk", [None, 5, 1.5, True])
+def test_junk_verifiable_credential_is_a_typed_error(attacker, junk):
+    # Review finding (#201): `list(raw)` on a non-list raised a bare TypeError from
+    # VpJwtProofSuite.verify, escaping the OpenvcError family.
+    signed = _raw_vp_jwt(attacker, {"@context": [V2], "type": ["VerifiablePresentation"],
+                                    "verifiableCredential": junk})
+    with pytest.raises(ClaimsInvalid, match="verifiableCredential must be"):
+        _verify("jwt_vc_json", signed)
+    with pytest.raises(ClaimsInvalid, match="verifiableCredential must be"):
+        VpJwtProofSuite().verify(signed, audience=CLIENT_ID, nonce=NONCE)
 
 
 @pytest.mark.parametrize("lane", LANES)
