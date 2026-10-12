@@ -99,8 +99,8 @@ def _present(lane, bodies):
                            proof_purpose="authentication", challenge=NONCE, domain=CLIENT_ID)
 
 
-def _verify(lane, vp, type_values=None, *, meta=None, **kw):
-    query = {"id": "q", "format": lane}
+def _verify(lane, vp, type_values=None, *, meta=None, query_extra=None, **kw):
+    query = {"id": "q", "format": lane, **(query_extra or {})}
     if meta is not None:
         query["meta"] = meta
     elif type_values is not None:
@@ -269,8 +269,11 @@ def test_nested_sd_jwt_never_matches(lane):
              "verifiableCredential": [sd_jwt]},
             signing_key=hk, verification_method=hk.kid, proof_purpose="authentication",
             challenge=NONCE, domain=CLIENT_ID)
+    # Opted out of holder binding (#196), so the KB-less SD-JWT gets as far as the type
+    # check: even with an issuer-signed @context + type, it never matches.
     with pytest.raises(ClaimsInvalid, match="none of the requested type_values"):
-        _verify(lane, vp, [[VC_IRI]])
+        _verify(lane, vp, [[VC_IRI]],
+                query_extra={"require_cryptographic_holder_binding": False})
 
 
 MALFORMED = [
