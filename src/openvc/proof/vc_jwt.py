@@ -47,6 +47,7 @@ from .errors import (  # noqa: F401
     UnsupportedAlgorithm,
 )
 from ._verify_common import (
+    check_expected_audience,
     check_jwt_audience,
     check_jwt_temporal,
     check_numeric_dates,
@@ -217,6 +218,7 @@ class VcJwtProofSuite:
         check_temporal: bool = True,
     ) -> VerifiedCredential:
         """Verify signature + temporal claims + VC-JWT reconciliation."""
+        check_expected_audience(audience)          # before PyJWT sees it, on both lanes
         header_b64, _, _ = _split(token)
         try:
             header = json.loads(_b64url_decode(header_b64))

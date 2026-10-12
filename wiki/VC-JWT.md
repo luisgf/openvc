@@ -55,7 +55,8 @@ already hold the key. Normally you let the pipeline resolve it from the
   present-but-unparseable timestamp rejects. `exp`, `nbf` and `iat` must each be
   a finite JSON number (RFC 7519 NumericDate) when present. `null`, a string
   (even `"1700000000"`), a bool, `NaN`/`Infinity` or a container is a
-  `ClaimsInvalid`. An `iat` more than the leeway in the future is rejected too.
+  `ClaimsInvalid`. A token at or past `exp` plus the leeway has expired, and an
+  `iat` more than the leeway in the future is rejected too.
   `require_not_expired=False` waives an *expired* verdict, never a malformed
   date, a future `nbf` or a future `iat`. In `verify_many` such a token fails as
   its own item. The classic lane (PyJWT) and the ML-DSA lane apply the same
@@ -66,7 +67,8 @@ already hold the key. Normally you let the pipeline resolve it from the
   of its values: `audience=` on the suite, or `VerificationPolicy(audience=...)` on
   the pipeline. Without one, a VC-JWT addressed to another relying party is a
   `ClaimsInvalid`, not a credential anyone who holds it can use. `aud` must be a
-  string or an array of strings. A VC-JWT without `aud` verifies when you pass no
+  string or an array of strings, and the audience you pass must be a non-empty
+  string (a list of audiences is refused, not matched). A VC-JWT without `aud` verifies when you pass no
   audience, and fails when you pass one. VCDM's JWT encoding defines `aud` only for
   presentations, so most VC-JWTs carry none.
 

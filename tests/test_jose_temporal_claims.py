@@ -53,6 +53,7 @@ NOW = int(time.time())
 LEEWAY = 60                              # every suite's default
 FUTURE = NOW + 3600                      # far past the leeway
 VCT = "https://credentials.example.com/identity_credential"
+AUD, NONCE = "https://verifier.example", "n-0S6_WzA2Mj"
 
 # Raw JSON text, spliced into the payload unparsed, so NaN / Infinity / 1e400 / a bignum
 # reach the verifier exactly as an attacker writes them (json.dumps cannot emit 1e400).
@@ -128,6 +129,17 @@ def test_helper_leaves_iat_optional_and_unbounded_in_age():
     check_jwt_temporal({"iat": 0}, leeway_s=LEEWAY)                # 1970: old, not stale
 
 
+def test_helper_exp_boundary_is_exclusive_and_unrounded():
+    # Found by the adversarial review: the helper truncated the clock to an int and
+    # accepted exactly at exp + leeway. RFC 7519 §4.1.4: the current time MUST be
+    # before exp. PyJWT (classic lane) rejects at the boundary; so does the helper now.
+    check_jwt_temporal({"exp": NOW - LEEWAY + 1}, leeway_s=LEEWAY, now=NOW)
+    with pytest.raises(ClaimsInvalid, match="has expired"):
+        check_jwt_temporal({"exp": NOW - LEEWAY}, leeway_s=LEEWAY, now=NOW)
+    with pytest.raises(ClaimsInvalid, match="has expired"):          # sub-second past
+        check_jwt_temporal({"exp": NOW - LEEWAY + 0.5}, leeway_s=LEEWAY, now=NOW + 0.9)
+
+
 def test_helper_waiver_switches_off_only_the_exp_comparison():
     expired = {"exp": NOW - 3600}
     with pytest.raises(ClaimsInvalid, match="has expired"):
@@ -164,13 +176,29 @@ def test_status_token_well_formed_dates_still_verify():
     assert claims["status_list"]["bits"] == 1
 
 
-def test_status_token_now_pin_before_iat_still_verifies():
-    # Only exp is compared. A verifier re-checking an archived credential pins `now`
-    # to its receipt time, and the list it fetches today is newer than that pin. A
-    # future-iat or nbf comparison would reject every such re-check.
+@pytest.mark.parametrize("claim", ["nbf", "iat"])
+def test_status_token_rejects_a_future_nbf_or_iat(claim):
+    # Found by the adversarial review: only exp was compared, so a list whose nbf was
+    # a year ahead verified (RFC 7519 §4.1.5). The resolvers never pin `now`, so this
+    # is the wall clock.
+    token = _status_token({claim: str(NOW + 365 * 86400)})
+    with pytest.raises(StatusListError, match="not yet valid|iat is in the future"):
+        verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk())
+
+
+def test_status_token_window_is_judged_at_the_pinned_now():
+    # exp, nbf and iat are judged at one instant. A pin inside the window verifies; a
+    # pin before the list existed does not, and neither does one after it went stale.
     token = _status_token({"iat": str(NOW), "nbf": str(NOW), "exp": str(NOW + 3600)})
-    pin = datetime.fromtimestamp(NOW, timezone.utc) - timedelta(days=30)
-    verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk(), now=pin)
+    at = datetime.fromtimestamp(NOW, timezone.utc)
+    verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk(),
+                             now=at + timedelta(minutes=30))
+    with pytest.raises(StatusListError, match="not yet valid|iat is in the future"):
+        verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk(),
+                                 now=at - timedelta(days=30))
+    with pytest.raises(StatusListError, match="expired"):
+        verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk(),
+                                 now=at + timedelta(days=30))
 
 
 def test_status_token_expiry_unchanged():
@@ -181,17 +209,27 @@ def test_status_token_expiry_unchanged():
 
 # -- SD-JWT VC issuer JWT --------------------------------------------------------- #
 
-def _sd_jwt(extra: dict[str, str] | None = None, *, disclosures: list[str] = ()) -> str:
-    """A self-issued SD-JWT VC (did:jwk) with no KB-JWT. *extra* maps claim -> raw
-    JSON in the issuer-JWT body; each disclosure is a raw JSON array."""
+def _sd_jwt(extra: dict[str, str] | None = None, *, disclosures: list[str] = (),
+            kb: dict[str, str] | None = None) -> str:
+    """A self-issued SD-JWT VC (did:jwk). *extra* maps claim -> raw JSON in the
+    issuer-JWT body; each disclosure is a raw JSON array. With *kb*, a KB-JWT signed by
+    HOLDER (bound via cnf, with a correct sd_hash) carries those extra raw claims."""
     encoded = [_b64(d.encode()) for d in disclosures]
-    members = [f'"iss": {json.dumps(ISSUER_DID)}', f'"vct": {json.dumps(VCT)}']
+    members = [f'"iss": {json.dumps(ISSUER_DID)}', f'"vct": {json.dumps(VCT)}',
+               f'"cnf": {{"jwk": {json.dumps(HOLDER.public_jwk())}}}']
     if encoded:
         digests = [_b64(hashlib.sha256(d.encode()).digest()) for d in encoded]
         members += [f'"_sd": {json.dumps(digests)}', '"_sd_alg": "sha-256"']
     members += [f"{json.dumps(k)}: {v}" for k, v in (extra or {}).items()]
     header = {"alg": "ES256", "typ": "dc+sd-jwt", "kid": ISSUER.kid}
-    return _jws(header, members, ISSUER) + "~" + "".join(d + "~" for d in encoded)
+    presented = _jws(header, members, ISSUER) + "~" + "".join(d + "~" for d in encoded)
+    if kb is None:
+        return presented
+    sd_hash = _b64(hashlib.sha256(presented.encode()).digest())
+    kb_members = [f'"iat": {NOW}', f'"aud": {json.dumps(AUD)}',
+                  f'"nonce": {json.dumps(NONCE)}', f'"sd_hash": "{sd_hash}"']
+    kb_members += [f"{json.dumps(k)}: {v}" for k, v in kb.items()]
+    return presented + _jws({"alg": "ES256", "typ": "kb+jwt"}, kb_members, HOLDER)
 
 
 def _sd_good() -> str:
@@ -269,9 +307,42 @@ def test_sd_jwt_waiver_still_accepts_a_well_formed_expired_exp():
     assert verify_credential(expired, policy=WAIVED).expired is True
 
 
-# -- VP-JWT ----------------------------------------------------------------------- #
+# -- SD-JWT Key Binding JWT -------------------------------------------------------- #
 
-AUD, NONCE = "https://verifier.example", "n-0S6_WzA2Mj"
+KB_POLICY = VerificationPolicy(audience=AUD, nonce=NONCE, require_key_binding=True)
+KB_WAIVED = VerificationPolicy(audience=AUD, nonce=NONCE, require_key_binding=True,
+                               require_not_expired=False)
+KB_BAD = {
+    "exp-past": ("exp", str(NOW - 3600)),
+    "exp-nan": ("exp", "NaN"),
+    "exp-null": ("exp", "null"),
+    "exp-string": ("exp", '"abc"'),
+    "nbf-future": ("nbf", str(FUTURE)),
+    "nbf-null": ("nbf", "null"),
+    "nbf-string": ("nbf", '"abc"'),
+}
+
+
+@pytest.mark.parametrize("policy", [pytest.param(KB_POLICY, id="default"),
+                                    pytest.param(KB_WAIVED, id="waived")])
+@pytest.mark.parametrize("name", list(KB_BAD))
+def test_kb_jwt_own_exp_and_nbf_are_enforced(name, policy):
+    # Found by the adversarial review: the KB-JWT lane only read iat, so a holder's
+    # KB-JWT with an expired, NaN, null or future-dated exp/nbf verified. These are
+    # binding failures, never an `expired` verdict, and the waiver does not cover them.
+    claim, raw = KB_BAD[name]
+    token = _sd_jwt(kb={claim: raw})
+    with pytest.raises(ClaimsInvalid, match="KB-JWT") as caught:
+        verify_credential(token, policy=policy)
+    assert "expired" not in str(caught.value)
+
+
+def test_kb_jwt_with_well_formed_dates_still_binds():
+    token = _sd_jwt(kb={"exp": str(NOW + 300), "nbf": str(NOW - 10)})
+    assert verify_credential(token, policy=KB_POLICY).key_bound is True
+
+
+# -- VP-JWT ----------------------------------------------------------------------- #
 
 
 def _vp(extra: dict[str, str] | None = None) -> str:

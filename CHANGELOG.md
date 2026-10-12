@@ -52,16 +52,16 @@ All notable changes to **openvc** are documented here. The format follows
   checked for the first time. (The entry below brings the other JOSE lanes into
   line.)
 
-- **Every JOSE lane now applies one rule to `exp`, `nbf` and `iat`, and a VC-JWT's
-  `aud` is enforced** (RFC 7519 §2 and §4.1.3;
-  [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)). The adversarial
-  review of #195 found the lanes disagreeing, all reproduced on v1.28.2:
+- **The JOSE credential, presentation, key-binding, status-list and key-proof
+  lanes now apply one rule to `exp`, `nbf` and `iat`, and a VC-JWT's `aud` is
+  enforced** (RFC 7519 §2, §4.1.3–§4.1.6;
+  [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)). The adversarial review of #195 found the lanes
+  disagreeing, all reproduced on v1.28.2:
   - **Status-list token, a fail-open.** `verify_status_list_token` accepted an
     `exp` of `NaN`, `Infinity` or `1e400`. Every comparison against those is
     false, so the status list never went stale, although the code comment said it
-    failed closed. It now uses `is_numeric_date`, and also shape-checks `nbf` and
-    `iat` (`StatusListError`). Only `exp` is compared with the clock, so a `now`
-    pin older than the list still verifies.
+    failed closed. It also never compared `nbf` or `iat`, so a list dated a year
+    ahead verified. It now runs the shared rule and raises `StatusListError`.
   - **SD-JWT VC issuer JWT.** `iat` was never shape-checked: `null`, `[]`,
     `"abc"`, `"1999999999"`, `true`, `NaN`, `1e400` and a bignum all verified,
     under the default policy and the expiry waiver. They are now `ClaimsInvalid`,
@@ -77,26 +77,50 @@ All notable changes to **openvc** are documented here. The format follows
     token MUST then be rejected. Both lanes now run `check_jwt_audience` after
     the signature verifies.
 
-  `check_jwt_temporal` now single-sources the rule for the SD-JWT VC, VP-JWT,
-  VC-JWT ML-DSA and OpenID4VCI key-proof lanes. A present date must be a finite
-  JSON number, `null` included. `exp` is compared with the clock, and that is
+  `check_jwt_temporal` now single-sources the rule for the SD-JWT VC issuer JWT
+  and KB-JWT, the VP-JWT, the VC-JWT ML-DSA lane, the status-list token and the
+  OpenID4VCI key proof. A present date must be a finite JSON number, `null`
+  included. A token at or past `exp` plus the leeway has expired, and that is
   the only comparison `require_not_expired=False` switches off. A future `nbf`
-  is rejected, and so is an `iat` more than the leeway in the future.
+  is rejected, and so is an `iat` more than the leeway in the future. The
+  key-attestation JWT and the WRPRC keep their own date handling.
+
+  The adversarial review of this change found four more gaps, closed here:
+  - **The KB-JWT's own `exp`/`nbf` were never read.** A holder's KB-JWT with an
+    expired, `NaN`, `null` or future-dated `exp`/`nbf` still bound. They are now
+    binding failures (`KB-JWT is outside its own exp/nbf window`, or a malformed
+    date), never an `expired` verdict, and the waiver does not cover them.
+  - **The `exp` boundary was off by up to a second.** The helper truncated the
+    clock to an integer and accepted a token exactly at `exp` plus the leeway.
+    RFC 7519 §4.1.4 says the current time MUST be before `exp`, which is what
+    PyJWT checks on the classic lane.
+  - **An empty or non-string audience split the VC-JWT lanes.** PyJWT matched a
+    list of audiences on the classic lane only, and an empty audience matched an
+    empty `aud` on the ML-DSA lane only. Both are now refused up front.
+  - **The status-list token compared only `exp`**, so a list dated a year ahead
+    verified. Folded into the status-list bullet above.
 
 ### Changed
 
 - **Behaviour change: tokens that used to verify are now rejected**
-  ([ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)). Each case fails
-  closed with a typed error, and in `verify_many` it fails only its own item.
+  ([ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)). Each case fails closed with a typed error, and in
+  `verify_many` it fails only its own item.
   - `"exp": null`, `"nbf": null` or `"iat": null` on an SD-JWT VC issuer JWT, a
-    VP-JWT, a status-list token, and `exp`/`nbf: null` on an OpenID4VCI key proof
-    (which already required `iat`). These lanes used to read `null` as absent, or
-    never read the claim. RFC 7519 §2 defines a NumericDate as a JSON number,
-    and VC-JWT already rejects `null` (#195). An issuer that serialises an unset
-    date as `null` must leave the claim out instead.
+    KB-JWT, a VP-JWT, a status-list token, and `exp`/`nbf: null` on an
+    OpenID4VCI key proof (the KB-JWT and the key proof already required `iat`).
+    These lanes used to read `null` as absent, or never read the claim. RFC 7519
+    §2 defines a NumericDate as a JSON number, and VC-JWT already rejects `null`
+    (#195). An issuer that serialises an unset date as `null` must leave the
+    claim out instead.
   - An `iat` more than the leeway (60 s by default) in the future, on an SD-JWT
-    VC issuer JWT, a VP-JWT or an ML-DSA VC-JWT. The expiry waiver does not
-    cover it.
+    VC issuer JWT, a VP-JWT, an ML-DSA VC-JWT or a status-list token. The expiry
+    waiver does not cover it.
+  - A KB-JWT whose own `exp` has passed or whose `nbf` has not arrived.
+  - A status-list token whose `nbf` has not arrived. Its window is judged at
+    `now` when you pin one (the resolvers never do), so a pin earlier than the
+    list's `iat`/`nbf` now rejects the list: it did not exist at that instant.
+  - A token exactly at `exp` plus the leeway, on every lane that uses
+    `check_jwt_temporal`. It used to verify for up to one more second.
   - A VC-JWT that carries `aud` when no audience is passed. Pass `audience=` to
     `VcJwtProofSuite.verify`, or `VerificationPolicy(audience=...)` to the
     pipeline, with a value from its `aud`. A VC-JWT without `aud` still
@@ -105,6 +129,9 @@ All notable changes to **openvc** are documented here. The format follows
     `aud`. VCDM's JWT encoding defines `aud` only for presentations, and none of
     the third-party VC-JWT or SD-JWT VC vectors in the test fixtures carries one.
   - An `aud` that is not a string or an array of strings, on either VC-JWT lane.
+  - An expected audience that is not `None` or a non-empty string: a list,
+    tuple or set (which the classic lane used to match through PyJWT), `""`, or
+    a number. It is now a `ClaimsInvalid` on both VC-JWT lanes.
 
 ## [1.28.2] — 2026-10-12
 

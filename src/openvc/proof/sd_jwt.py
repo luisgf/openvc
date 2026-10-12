@@ -48,6 +48,7 @@ from ._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
     check_iat_freshness,
     check_jwt_temporal,
+    check_numeric_dates,
     non_negative_seconds,
     reject_unknown_crit,
     utc_epoch,
@@ -591,6 +592,17 @@ class SdJwtVcProofSuite:
         check_iat_freshness(
             claims.get("iat"), max_age_s=max_age_s, leeway_s=self._leeway,
             current=current, subject="KB-JWT")
+        # RFC 9901 defines no exp/nbf on a KB-JWT, but a signed one is not ignored: same
+        # shape rule as the issuer JWT, evaluated at the same `current` as the iat window.
+        # A window failure is a binding failure, phrased without "expired": callers read
+        # an `expired` ClaimsInvalid from a required-binding verify as "bound, but the
+        # issuer JWT expired" (wiki/SD-JWT-VC.md), and no waiver applies here.
+        check_numeric_dates(claims, "exp", "nbf", subject="KB-JWT")
+        try:
+            check_jwt_temporal(claims, leeway_s=self._leeway, subject="KB-JWT",
+                               now=current)
+        except ClaimsInvalid as exc:
+            raise ClaimsInvalid("KB-JWT is outside its own exp/nbf window") from exc
         if audience is not None and claims.get("aud") != audience:
             raise ClaimsInvalid("KB-JWT aud does not match")
         if nonce is not None and claims.get("nonce") != nonce:

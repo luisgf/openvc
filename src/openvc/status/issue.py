@@ -31,7 +31,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from ..proof._verify_common import is_numeric_date
+from ..proof._verify_common import check_jwt_temporal
+from ..proof.errors import ClaimsInvalid
 from ..proof._jws import sign_compact, verify_compact
 from ..proof.vc_jwt import SigningKey
 from .bitstring import StatusListError, encode_bitstring
@@ -175,7 +176,8 @@ def verify_status_list_token(
     """Verify a status-list token and return its claims.
 
     Allow-lists the algorithm, requires ``typ: statuslist+jwt``, verifies the
-    signature, checks ``exp`` (within *leeway_s*), and — when *expected_uri* is
+    signature, checks ``exp`` / ``nbf`` / ``iat`` (finite numbers when present, ``null``
+    included; within *leeway_s* of *now*), and — when *expected_uri* is
     given — that ``sub`` equals the URL it was fetched from (the IETF anti-swap
     check). The returned dict carries the ``status_list`` member, so it can be
     handed straight to :func:`~openvc.status.token_status_list.check_token_status`
@@ -187,24 +189,18 @@ def verify_status_list_token(
     if expected_uri is not None and claims.get("sub") != expected_uri:
         raise StatusListError(
             f"status list token sub {claims.get('sub')!r} != expected {expected_uri!r}")
-    # exp/nbf/iat are NumericDates (RFC 7519 §2): a present one, null included, that is
-    # not a finite JSON number fails closed. Only exp is compared — a `now` pin re-checks
-    # an archived credential, and a list fetched today is legitimately newer than it.
-    for name in ("nbf", "iat"):
-        if name in claims and not is_numeric_date(claims[name]):
-            raise StatusListError(
-                f"status list token {name} must be a finite numeric timestamp")
-    if "exp" in claims:
-        exp = claims["exp"]
-        # exp is a NumericDate (RFC 7519); a present-but-non-numeric exp fails
-        # CLOSED — skipping it would let a stale/superseded list be accepted (the
-        # same fail-open bug openvc.proof._verify_common is written to avoid).
-        if not is_numeric_date(exp):        # NaN/Infinity/1e400 would never go stale
-            raise StatusListError(
-                f"status list token exp must be a finite numeric timestamp, got {exp!r}")
-        instant = _epoch(now) if now is not None else int(time.time())
-        if instant - max(0, leeway_s) > exp:
-            raise StatusListError("status list token has expired")
+    # The shared JOSE rule (ADR-0008): a present exp/nbf/iat, null included, must be a
+    # finite JSON number. A non-numeric exp used to be caught, but NaN / Infinity / 1e400
+    # passed and made every comparison False, so the list never went stale. exp, nbf and
+    # a future iat are all judged at one instant: *now* when pinned, else the wall clock
+    # (the resolvers never pin it). A pin earlier than the list's iat/nbf therefore
+    # rejects it: the list did not exist at that instant.
+    instant = _epoch(now) if now is not None else None
+    try:
+        check_jwt_temporal(claims, leeway_s=max(0, leeway_s),
+                           subject="status list token", now=instant)
+    except ClaimsInvalid as exc:
+        raise StatusListError(str(exc)) from exc
     return claims
 
 

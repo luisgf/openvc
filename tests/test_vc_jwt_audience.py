@@ -152,6 +152,17 @@ def test_malformed_aud_is_rejected(lane, audience, name, aud):
         _verify(lane, aud, audience)
 
 
+@pytest.mark.parametrize("lane", _lanes())
+@pytest.mark.parametrize("audience", [[RP], (RP,), {RP}, "", 5],
+                         ids=["list", "tuple", "set", "empty", "int"])
+def test_audience_must_be_a_non_empty_string(lane, audience):
+    # Found by the adversarial review. PyJWT matched an iterable audience on the
+    # classic lane only, and an empty audience matched an empty aud on the ML-DSA lane
+    # only. Both lanes now refuse anything but None or a non-empty string, clearly.
+    with pytest.raises(ClaimsInvalid, match="non-empty string"):
+        _verify(lane, f'"{RP}"', audience)
+
+
 # -- unchanged: a token without aud ------------------------------------------------ #
 
 @pytest.mark.parametrize("lane", _lanes())

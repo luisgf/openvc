@@ -210,7 +210,7 @@ def check_numeric_dates(
     This checks shape only and compares nothing against a clock, so an expiry waiver
     cannot switch it off. Presence means the key exists: JSON ``null`` is rejected too,
     because RFC 7519 §2 defines a NumericDate as a JSON number. :func:`check_jwt_temporal`
-    runs it first, so every JOSE lane shares the rule. The VC-JWT lane also runs it
+    runs it first, so every lane that calls it shares the rule. The VC-JWT lane also runs it
     before PyJWT sees the token. PyJWT casts ``exp``/``nbf``/``iat`` with ``int()`` and
     catches only ``ValueError``, so a signed ``"nbf": null`` used to escape as a bare
     ``TypeError``. A string such as ``"1"`` or a bool cast silently instead of failing.
@@ -227,17 +227,20 @@ def check_jwt_temporal(
 ) -> None:
     """Enforce a JWT's ``exp``/``nbf``/``iat`` NumericDate claims, fail-closed.
 
-    Single-sources the JOSE temporal rule for the SD-JWT VC, VP-JWT, VC-JWT (ML-DSA)
-    and OpenID4VCI key-proof paths so it cannot drift between them. The classic VC-JWT
-    lane gets the same verdicts from PyJWT, behind the same shape gate.
+    Single-sources the JOSE temporal rule for the SD-JWT VC issuer JWT and KB-JWT,
+    VP-JWT, VC-JWT (ML-DSA), status-list token and OpenID4VCI key-proof paths so it
+    cannot drift between them. The classic VC-JWT lane applies the same rules through
+    PyJWT, behind the same shape gate (PyJWT truncates a fractional date to an ``int``,
+    so a verdict can differ within one second of a boundary).
 
     * **Shape** (:func:`check_numeric_dates`): a present ``exp``/``nbf``/``iat`` that is
       ``null``, a bool, a string, a container, **non-finite** (``NaN``/``Infinity``,
       which ``json.loads`` accepts and which would make every comparison ``False``, i.e.
       *never expire*) or a bignum no float holds is rejected. Skipping it would be a
       fail-open expiry bypass.
-    * ``exp``: past it by more than *leeway_s* is ``has expired``. This is the only
-      comparison *check_temporal* (the expiry waiver) switches off.
+    * ``exp``: at or past ``exp`` + *leeway_s* is ``has expired`` (RFC 7519 §4.1.4: the
+      current time MUST be before it). This is the only comparison *check_temporal* (the
+      expiry waiver) switches off.
     * ``nbf``: before it by more than *leeway_s* is ``is not yet valid``.
     * ``iat``: more than *leeway_s* in the future is ``iat is in the future``, the rule
       PyJWT applies on the classic VC-JWT lane. A token minted "later" than now is
@@ -246,16 +249,30 @@ def check_jwt_temporal(
       exist to be fresh).
 
     *now* pins the instant (epoch seconds) for deterministic tests; ``None`` uses the
-    current time.
+    current time, unrounded: truncating it would accept a token up to a second past its
+    window.
     """
     check_numeric_dates(claims, "exp", "nbf", "iat", subject=subject)
-    current = int(time.time()) if now is None else now
-    if "exp" in claims and check_temporal and current > claims["exp"] + leeway_s:
+    current: float = time.time() if now is None else now
+    if "exp" in claims and check_temporal and current >= claims["exp"] + leeway_s:
         raise ClaimsInvalid(f"{subject} has expired")
     if "nbf" in claims and current + leeway_s < claims["nbf"]:
         raise ClaimsInvalid(f"{subject} is not yet valid")
     if "iat" in claims and claims["iat"] - current > leeway_s:
         raise ClaimsInvalid(f"{subject} iat is in the future")
+
+
+def check_expected_audience(audience: Any) -> None:
+    """Reject an expected *audience* that is not ``None`` or a non-empty string.
+
+    PyJWT would also match a list of audiences, and an empty string would match an
+    empty ``aud`` on the ML-DSA lane but not on PyJWT's. Both are a caller
+    misconfiguration, refused up front rather than half-supported on one lane.
+    """
+    if audience is not None and (not isinstance(audience, str) or not audience):
+        raise ClaimsInvalid(
+            f"the expected audience must be a non-empty string or None, "
+            f"not {audience!r}")
 
 
 def check_jwt_audience(
@@ -274,9 +291,13 @@ def check_jwt_audience(
       *audience* the verifier cannot be one of them, so a token restricted to some
       other relying party is rejected rather than accepted by whoever holds it.
 
+    *audience* itself must be ``None`` or a non-empty string
+    (:func:`check_expected_audience`).
+
     Used by both VC-JWT lanes (ADR-0008). PyJWT, on the classic lane, applies the same
     rule by default; openvc used to pass ``verify_aud=False`` when no audience was given.
     """
+    check_expected_audience(audience)
     if "aud" not in claims:
         if audience is not None:
             raise ClaimsInvalid(f"{subject} has no aud claim; expected {audience!r}")
@@ -484,6 +505,7 @@ __all__ = [
     "PresentationBindingError",
     "ProofPurposeMismatch",
     "check_iat_freshness",
+    "check_expected_audience",
     "check_jwt_audience",
     "check_jwt_temporal",
     "check_numeric_dates",

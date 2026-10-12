@@ -49,8 +49,11 @@ verifier check it is "within an acceptable window" (§7.3 step 5.5). openvc requ
 it, refuses a non-numeric or non-finite one, and refuses a KB-JWT older than
 `kb_max_age_s` — default `DEFAULT_KB_MAX_AGE_S`, 300 seconds — plus the leeway, or
 dated in the future beyond the leeway. Any KB-JWT that is present is held to it,
-whether or not binding was required. These are binding failures (`KB-JWT is too
-old`, `KB-JWT iat is in the future`), never an `expired` verdict, so
+whether or not binding was required. A KB-JWT's own `exp`/`nbf`, which RFC 9901
+does not define, are held to the same rule when present: finite numbers (`null`
+included), judged at the same instant. These are binding failures (`KB-JWT is too
+old`, `KB-JWT iat is in the future`, `KB-JWT is outside its own exp/nbf window`),
+never an `expired` verdict, so
 `require_not_expired=False` does not waive them
 ([what the waiver covers](Getting-Started#waiving-expiry-or-revocation)). The
 `nonce` binds a KB-JWT to one transaction, but only you know how old that nonce
@@ -73,8 +76,9 @@ rule covers the processed payload, so an `iat` the issuer made selectively
 disclosable is checked once it is disclosed. `require_not_expired=False` waives only
 an expired `exp`, never a malformed date, a future `nbf` or a future `iat`. Before
 1.28.3 this lane read `"exp": null` / `"nbf": null` as absent and never looked at
-`iat`. The issuer JWT's `aud` is not checked: in SD-JWT VC the audience binding lives
-in the KB-JWT (see [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)).
+`iat`. The issuer JWT's `aud` is **not** checked: an issuer JWT addressed to another
+relying party still verifies. Whether RFC 7519 §4.1.3 should apply to it is left open
+in [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md).
 
 `aka_vcts` (draft-18) is an optional array of *additional* types the issuer asserts
 the credential also is. When present it must be a non-empty list of non-empty
