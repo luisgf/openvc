@@ -65,7 +65,12 @@ from .proof._verify_common import (
     check_jwt_temporal,
     check_validity_window,
 )
-from .proof.errors import ClaimsInvalid, CredentialExpired, ProofError
+from .proof.errors import (
+    ClaimsInvalid,
+    CredentialExpired,
+    CredentialNotYetValid,
+    MalformedTimestamp,
+)
 from .schema import (
     SchemaUnavailable,
     SchemaValidationResult,
@@ -199,7 +204,9 @@ def _expired_flag(
 
     The flag only observes: the suite already enforced (or, for SD-JWT VCDM-named
     claims, never reads) not-yet-valid and malformed dates, so those never fail the
-    call from here — the waiver must not reject what the default policy accepts."""
+    call from here — the waiver must not reject what the default policy accepts.
+    A ``policy.now`` / ``leeway_s`` it cannot evaluate is not such a verdict: that
+    typed ``ProofError`` propagates rather than reading as ``expired=False``."""
     if policy.require_not_expired:
         return False
     if isinstance(credential, dict):
@@ -208,7 +215,7 @@ def _expired_flag(
                 credential, {}, now=policy.now, leeway_s=policy.leeway_s)
         except CredentialExpired:
             return True
-        except ProofError:
+        except (CredentialNotYetValid, MalformedTimestamp):
             pass
     if claims:
         try:

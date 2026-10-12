@@ -159,6 +159,22 @@ def test_verify_rejects_expired_certificate():
         verify_rp_access_certificate(leaf, trust_anchors=[ca], now=_AT)
 
 
+@pytest.mark.parametrize("window, ok", [
+    ((_AT - dt.timedelta(days=1), _AT + dt.timedelta(days=1)), True),    # pin inside, today out
+    ((_AT + dt.timedelta(days=1), _AT + dt.timedelta(days=3650)), False),  # pin before, today in
+])
+def test_verify_judges_validity_at_the_pinned_now_not_the_wall_clock(window, ok):
+    # the window brackets the pin and excludes today (or the reverse), so reading the
+    # wall clock instead of `now` flips the verdict either way
+    ca, ca_key, ca_name = _ca()
+    leaf = _wrpac(ca_key, ca_name, before=window[0], after=window[1])
+    if ok:
+        verify_rp_access_certificate(leaf, trust_anchors=[ca], now=_AT)
+    else:
+        with pytest.raises(RpCertError):
+            verify_rp_access_certificate(leaf, trust_anchors=[ca], now=_AT)
+
+
 def test_verify_enforces_required_eku():
     ca, ca_key, ca_name = _ca()
     leaf = _wrpac(ca_key, ca_name, eku=RP_EKU)

@@ -348,6 +348,27 @@ def test_mistyped_now_is_a_typed_mdoc_error(now):
         mdoc.verify_device_response(dr, trust_anchors=[iaca], session_transcript=st, now=now)
 
 
+@pytest.mark.parametrize("bound, ok", [
+    ({"valid_until": NOW - dt.timedelta(seconds=60)}, True),    # expired one leeway ago: in
+    ({"valid_until": NOW - dt.timedelta(seconds=61)}, False),
+    ({"valid_from": NOW + dt.timedelta(seconds=60)}, True),     # valid one leeway ahead: in
+    ({"valid_from": NOW + dt.timedelta(seconds=61)}, False),
+])
+def test_mso_validity_leeway_is_exact_at_the_window_edge(bound, ok):
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st, **bound)
+
+    def verify():
+        return mdoc.verify_device_response(
+            dr, trust_anchors=[iaca], session_transcript=st, now=NOW, leeway_s=60)
+
+    if ok:
+        verify()
+    else:
+        with pytest.raises(mdoc.MdocValidityError):
+            verify()
+
+
 def test_untrusted_iaca_rejected():
     st = dcapi_session_transcript(ORIGIN, NONCE)
     dr, _ = _build_online(session_transcript=st)

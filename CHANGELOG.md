@@ -8,9 +8,9 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Fixed
 
-- **A misconfigured `now` or `leeway_s` on the Data Integrity lanes is a typed
-  `ProofError`, not a bare `AttributeError` / `OverflowError`.** Found by the
-  adversarial review of [#203](https://github.com/luisgf/openvc/pull/203).
+- **A misconfigured `now` or `leeway_s` on a datetime validity window is a typed
+  error, not a bare `AttributeError` / `OverflowError`.** Found by the adversarial
+  review of [#203](https://github.com/luisgf/openvc/pull/203).
   `check_validity_window` read `now.tzinfo`, so an epoch `int` or an ISO string
   raised `AttributeError`. It also added the leeway with plain datetime arithmetic,
   so a `now` within the leeway of `datetime.max` / `datetime.min` raised
@@ -18,15 +18,25 @@ All notable changes to **openvc** are documented here. The format follows
   `TypeError`. Each of these escaped `OpenvcError`, so one bad
   `VerificationPolicy` aborted a whole `verify_many` / `verify_many_async` batch
   instead of failing each item. The SD-JWT lane already typed the same mistake
-  through `utc_epoch`. The VC-JWT body window shares this check.
+  through `utc_epoch`. The VC-JWT body window (`validUntil` / `expirationDate`)
+  shares this check. The JWT `exp` / `nbf` leeway on the classic VC-JWT lane is
+  still PyJWT's own and is unchanged.
 
   `openvc.proof._verify_common` gains `utc_instant`, the datetime-returning sibling
   of `utc_epoch`, and `utc_window`, which bounds-checks `instant ± leeway` once.
-  Five copies of the same reader now go through them, each with its own error
+  Seven copies of the same reader now go through them, each with its own error
   class: the Data Integrity window (`ProofError`), `x5c` (`X5cError`), mdoc
-  (`MdocError`), the WRPAC check (`RpCertError`) and the WRPRC window
-  (`RpRegistrationError`). An `x5c` VC-JWT verified with an `int` `policy.now`
-  also escaped as `AttributeError`.
+  (`MdocError`), the WRPAC check (`RpCertError`), the WRPRC window
+  (`RpRegistrationError`), and the `walk_lotl` / `walk_lote` Trusted List walkers
+  and the pinned LoTE signer check (`TrustListError`). An `x5c` VC-JWT verified
+  with an `int` `policy.now` also escaped as `AttributeError`.
+
+  Under `require_not_expired=False`, VC-JWT and SD-JWT VC read `policy.now` only
+  to compute `result.expired` from the credential body's `validUntil` /
+  `expirationDate`. A pin that check cannot evaluate is now that item's
+  `ProofError`. Before, an `int` pin aborted the batch. Fixed before merge, from
+  this change's own adversarial review: a first version swallowed the new error
+  there and returned a verified `expired=False` for an expired credential.
 - **An mdoc whose MSO is valid until 9999-12-31 verifies.** `_check_validity`
   added the leeway to the issuer's dates. A "never expires" `validUntil` of
   `9999-12-31T23:59:59Z`, or a `validFrom` of `0001-01-01`, raised a bare
@@ -38,6 +48,13 @@ Side effects of the shared reader, all edge cases:
 - A `tzinfo` whose `utcoffset()` returns `None` is naive by Python's definition.
   Such a pin is now read as UTC on these lanes. They used to read it as the host's
   local time.
+- A `now` within the leeway of `datetime.max` / `datetime.min` is a typed error
+  even when the credential has only one bound, so the edge that overflows is never
+  compared. Before, such a pin either got a verdict or overflowed, depending on
+  which bounds the credential carried.
+- `now` is passed on as a plain `datetime` in UTC, so a caller's `datetime`
+  subclass is not consulted again. A subclass whose UTC conversion is not UTC is a
+  typed error.
 - On mdoc, a negative `leeway_s` now counts as 0, as it already did on the Data
   Integrity and WRPRC windows. It used to narrow the window.
 

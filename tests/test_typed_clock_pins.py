@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from openvc import VerificationPolicy, verify_many
+from openvc import VerificationPolicy, verify_credential, verify_many
 from openvc.aio import verify_many_async
 from openvc.errors import OpenvcError
 from openvc.keys import Ed25519SigningKey
@@ -38,11 +38,14 @@ from openvc.proof._verify_common import (
 )
 from openvc.proof.di_jcs import EddsaJcsProofSuite
 from openvc.proof.errors import ProofError
+from openvc.proof.sd_jwt import SdJwtVcProofSuite
+from openvc.proof.vc_jwt import VcJwtProofSuite
 
 UTC = timezone.utc
 VC2 = "https://www.w3.org/ns/credentials/v2"
 NOW_2021 = datetime(2021, 1, 1, tzinfo=UTC)
 MINUS_5 = timezone(timedelta(hours=-5))
+_WINDOW = {"validFrom": "2020-01-01T00:00:00Z", "validUntil": "2022-01-01T00:00:00Z"}
 
 # Pins that are not an instant at all, or that leave datetime's range once read as UTC
 # or widened by the leeway. Every one used to escape as AttributeError/OverflowError.
@@ -129,6 +132,32 @@ def test_utc_instant_rejects_a_bad_pin_typed(now):
         utc_instant(now)
 
 
+class _SubDatetime(datetime):
+    """A caller's datetime subclass (pendulum, pandas and friends)."""
+
+
+class _NaiveAstimezone(datetime):
+    """A subclass whose astimezone() hands back a naive datetime."""
+
+    def astimezone(self, tz=None):
+        return datetime(self.year, self.month, self.day, self.hour)
+
+
+def test_utc_instant_returns_a_plain_utc_datetime_for_a_subclass():
+    instant = utc_instant(_SubDatetime(2020, 12, 31, 19, tzinfo=MINUS_5))
+    assert type(instant) is datetime and instant.tzinfo is UTC and instant == NOW_2021
+
+
+def test_utc_instant_rejects_a_subclass_whose_utc_conversion_lies():
+    # left naive, it would surface later as a bare "can't compare offset-naive and
+    # offset-aware datetimes" TypeError inside the window comparison
+    with pytest.raises(ProofError, match="cannot be read"):
+        utc_instant(_NaiveAstimezone(2021, 1, 1, tzinfo=MINUS_5))
+    with pytest.raises(ProofError):
+        check_validity_window(_WINDOW, {}, now=_NaiveAstimezone(2021, 1, 1, tzinfo=MINUS_5),
+                              leeway_s=60)
+
+
 def test_utc_instant_raises_the_callers_error_class():
     with pytest.raises(_ConfigError, match="not int"):
         utc_instant(0, error=_ConfigError)
@@ -182,9 +211,6 @@ def test_utc_window_rejects_a_leeway_that_cannot_widen_the_window(leeway):
 # check_validity_window — the Data Integrity temporal check
 # --------------------------------------------------------------------------- #
 
-_WINDOW = {"validFrom": "2020-01-01T00:00:00Z", "validUntil": "2022-01-01T00:00:00Z"}
-
-
 @pytest.mark.parametrize("now", _BAD_NOWS)
 def test_check_validity_window_types_a_bad_now(now):
     with pytest.raises(ProofError) as info:
@@ -234,12 +260,17 @@ def _leb128(code: int) -> bytes:
             return bytes(out)
 
 
-def _di_credential() -> dict:
-    """An eddsa-jcs-2022 credential signed by a fresh did:key (no network, no pyld)."""
+def _did_key_signer() -> tuple[Ed25519SigningKey, str]:
+    """A fresh Ed25519 key whose kid is its own offline-resolvable did:key method."""
     priv = ed25519.Ed25519PrivateKey.generate()
     raw = base64.urlsafe_b64decode(Ed25519SigningKey(priv, kid="tmp").public_jwk()["x"] + "==")
     did = "did:key:" + encode_multibase(_leb128(0xED) + raw)
-    vm = f"{did}#{did[len('did:key:'):]}"
+    return Ed25519SigningKey(priv, kid=f"{did}#{did[len('did:key:'):]}"), did
+
+
+def _di_credential() -> dict:
+    """An eddsa-jcs-2022 credential signed by a fresh did:key (no network, no pyld)."""
+    key, did = _did_key_signer()
     credential = {
         "@context": [VC2],
         "type": ["VerifiableCredential"],
@@ -248,7 +279,7 @@ def _di_credential() -> dict:
         "credentialSubject": {"id": "did:example:alice"},
     }
     return EddsaJcsProofSuite().add_proof(
-        credential, signing_key=Ed25519SigningKey(priv, kid=vm), verification_method=vm)
+        credential, signing_key=key, verification_method=key.kid)
 
 
 @pytest.mark.parametrize("now", _BAD_NOWS)
@@ -287,3 +318,55 @@ def test_verify_many_async_fails_each_item_on_a_bad_now(now):
         batch, policy=VerificationPolicy(require_status=False, now=now)))
     assert [r.index for r in out] == [0, 1]
     assert all(not r.ok and isinstance(r.error, ProofError) for r in out)
+
+
+# --------------------------------------------------------------------------- #
+# The expiry waiver — a bad pin is not read as "not expired"
+# --------------------------------------------------------------------------- #
+# A VC-JWT or SD-JWT VC that expires only by its body `validUntil` (no JWT `exp`) is
+# judged under `require_not_expired=False` by the pipeline's `expired` flag, the one
+# place those lanes read `policy.now`. That flag swallowed every ProofError, so a pin
+# the window check could not evaluate came back as a verified `expired=False`.
+
+def _expired_vc_jwt() -> str:
+    key, did = _did_key_signer()
+    return VcJwtProofSuite().sign({
+        "@context": [VC2],
+        "type": ["VerifiableCredential"],
+        "issuer": did,
+        "validUntil": "2021-01-01T00:00:00Z",
+        "credentialSubject": {"id": "did:example:alice"},
+    }, signing_key=key)
+
+
+def _expired_sd_jwt() -> str:
+    key, did = _did_key_signer()
+    return SdJwtVcProofSuite().issue(
+        {"iss": did, "sub": "did:example:alice", "given_name": "Ada",
+         "validUntil": "2021-01-01T00:00:00Z"},
+        signing_key=key, vct="https://credentials.example/id", disclosable=["given_name"])
+
+
+_JOSE_BODY_EXPIRED = [pytest.param(_expired_vc_jwt, id="vc-jwt"),
+                      pytest.param(_expired_sd_jwt, id="sd-jwt")]
+
+
+@pytest.mark.parametrize("make", _JOSE_BODY_EXPIRED)
+def test_expiry_waiver_flags_a_body_expired_jose_credential(make):
+    result = verify_credential(make(), policy=VerificationPolicy(
+        require_status=False, require_not_expired=False, now=datetime(2026, 1, 1, tzinfo=UTC)))
+    assert result.expired is True
+
+
+@pytest.mark.parametrize("now", [
+    pytest.param(1_767_225_600, id="epoch-int"),
+    pytest.param("2026-01-01", id="iso-string"),
+    pytest.param(datetime.max - timedelta(seconds=30), id="within-leeway-of-max"),
+])
+@pytest.mark.parametrize("make", _JOSE_BODY_EXPIRED)
+def test_expiry_waiver_does_not_read_a_bad_pin_as_not_expired(make, now):
+    policy = VerificationPolicy(require_status=False, require_not_expired=False, now=now)
+    for out in (verify_many([make()], policy=policy),
+                asyncio.run(verify_many_async([make()], policy=policy))):
+        assert out[0].result is None                     # never a verified expired=False
+        assert isinstance(out[0].error, ProofError)

@@ -143,10 +143,12 @@ The window is evaluated at `VerificationPolicy.now` (or the suite's `now=`):
 `None` is the current time and a naive `datetime` is UTC. A `now` that is not a
 `datetime`, such as an epoch `int` or an ISO string, raises `ProofError`. So does
 a `now` within the leeway of `datetime.min` / `datetime.max`, and a `leeway_s`
-that cannot widen the window. These are configuration errors, so `verify_many`
-reports one on each item rather than aborting the batch. The `x5c`, mdoc and
-relying-party certificate checks read `now` the same way, each raising its own
-error class.
+that is not a number or is too large to add to `now`. A negative or `NaN` leeway
+counts as 0. These are configuration errors, so `verify_many` reports one on each
+item rather than aborting the batch. The same holds under
+`require_not_expired=False`: a pin the `expired` flag cannot evaluate is an error,
+never `expired=False`. The `x5c`, mdoc, relying-party certificate and Trusted
+List checks read `now` the same way, each raising its own error class.
 
 ## Conformance
 

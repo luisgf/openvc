@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -19,6 +19,7 @@ from openvc.trustlist import (
     Select,
     ServiceStatus,
     ServiceType,
+    TrustListError,
     TrustListParseError,
     TrustListSignatureError,
     TrustListSignatureUnavailable,
@@ -306,6 +307,22 @@ def test_walk_expired_national_tl_is_skipped_with_problem():
                     fetch=_fetch_from(_store(**{DE_URL: expired_de})))
     assert res.anchors == ()
     assert len(res.problems) == 1 and res.problems[0].stage == "expired"
+
+
+@pytest.mark.parametrize("now", [
+    1_783_296_000,                                                     # epoch int
+    "2026-07-06T00:00:00Z",                                            # ISO string
+    datetime.max.replace(tzinfo=timezone(timedelta(hours=-5))),        # no UTC form
+])
+def test_walk_lotl_types_a_bad_now_before_any_fetch(now):
+    # read through the shared utc_instant: a typed TrustListError, never a bare
+    # AttributeError / OverflowError
+    def _never(url):
+        raise AssertionError("a bad pin must fail before any fetch")
+
+    with pytest.raises(TrustListError, match="now"):
+        walk_lotl(LOTL_URL, lotl_signer_certs=["c"], verify_signature=_ok_sig,
+                  fetch=_never, now=now)
 
 
 def test_walk_lotl_fetch_failure_yields_only_a_problem():

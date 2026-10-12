@@ -18,9 +18,10 @@ your own. Without it, consumption raises :class:`TrustListSignatureUnavailable`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable, Sequence
 
+from ..proof._verify_common import utc_instant
 from .errors import (
     TrustListError,
     TrustListParseError,
@@ -154,7 +155,7 @@ def walk_lotl(
     verified / is expired contributes no anchors and is recorded in the result's
     ``problems`` — never silently trusted (ADR-0003 D6). Pass *now* to pin the
     expiry evaluation instant."""
-    instant = _utc(now) if now is not None else datetime.now(timezone.utc)
+    instant = utc_instant(now, error=TrustListError)   # naive is UTC; a bad pin is typed
     problems: list[TrustListProblem] = []
 
     try:
@@ -217,12 +218,6 @@ def _stage(exc: TrustListError) -> str:
 
 def _expired(tl: TrustList, now: datetime) -> bool:
     return tl.next_update is not None and tl.next_update < now
-
-
-def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 __all__ = [

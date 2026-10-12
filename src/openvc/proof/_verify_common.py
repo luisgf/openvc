@@ -267,15 +267,20 @@ def utc_instant(now: Any, *, error: type[Exception] = ProofError) -> datetime:
     ``tzinfo`` raises, or that has no UTC equivalent (``datetime.max`` at a negative
     offset overflows) becomes *error* — not a bare ``AttributeError`` /
     ``OverflowError`` that would abort ``verify_many`` instead of failing one item.
+    The result is a plain ``datetime`` in ``timezone.utc``, so no caller subclass or
+    ``tzinfo`` is consulted again by the comparisons downstream.
     """
     if now is None:
         return datetime.now(timezone.utc)
     if not isinstance(now, datetime):
         raise error(f"now must be a datetime or None, not {type(now).__name__}")
     try:
-        if now.utcoffset() is None:
-            return now.replace(tzinfo=timezone.utc)
-        return now.astimezone(timezone.utc)
+        aware = (now.replace(tzinfo=timezone.utc) if now.utcoffset() is None
+                 else now.astimezone(timezone.utc))
+        if aware.utcoffset() != timedelta(0):          # a subclass that lied about UTC
+            raise ValueError(f"astimezone(UTC) gave offset {aware.utcoffset()}")
+        return datetime(aware.year, aware.month, aware.day, aware.hour, aware.minute,
+                        aware.second, aware.microsecond, tzinfo=timezone.utc)
     except Exception as exc:                  # a caller's tzinfo may raise anything
         raise error(f"now cannot be read as an instant: {exc}") from exc
 
@@ -284,7 +289,8 @@ def utc_window(
     now: Any, leeway_s: Any, *, error: type[Exception] = ProofError,
 ) -> tuple[datetime, timedelta]:
     """``(instant, leeway)`` for a validity window evaluated at *now* — the instant from
-    :func:`utc_instant`, the leeway a ``timedelta`` (a negative one counts as 0).
+    :func:`utc_instant`, the leeway a ``timedelta`` (a negative or ``NaN`` one counts
+    as 0, which only narrows the window).
 
     The window edges ``instant ± leeway`` are computed here once, so a caller comparing
     them cannot overflow: a *now* within the leeway of ``datetime.max`` /
@@ -297,8 +303,8 @@ def utc_window(
         leeway = timedelta(seconds=max(0, leeway_s))
         instant - leeway, instant + leeway        # both edges must be datetimes
     except (TypeError, ValueError, OverflowError) as exc:
-        raise error(f"leeway_s {leeway_s!r} does not fit a window at "
-                    f"{instant.isoformat()}: {exc}") from exc
+        raise error(f"the window now ± leeway_s ({instant.isoformat()} ± {leeway_s!r}) "
+                    f"does not fit a datetime: {exc}") from exc
     return instant, leeway
 
 

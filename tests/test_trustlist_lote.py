@@ -28,6 +28,7 @@ from openvc.trustlist import (
     LoteServiceType,
     LoteType,
     Select,
+    TrustListError,
     TrustListParseError,
     TrustListProfileError,
     TrustListSignatureError,
@@ -286,6 +287,25 @@ def test_rejects_a_pinned_leaf_outside_its_validity_window(registrar_anchor):
     token = _sign(_doc(_b64(registrar_anchor[0])), op_key, op_cert)
     with pytest.raises(TrustListSignatureError, match="validity window"):
         consume_lote(token, expected_signer_certs=[op_cert], now=_NOW)
+
+
+@pytest.mark.parametrize("now", [
+    1_784_678_400,                                                     # epoch int
+    "2026-07-22T00:00:00Z",                                            # ISO string
+    dt.datetime.max.replace(tzinfo=dt.timezone(dt.timedelta(hours=-5))),   # no UTC form
+])
+def test_a_bad_now_is_a_typed_trust_list_error(signed, now):
+    # the pinned-leaf path and walk_lote read `now` through the shared utc_instant
+    token, _, op_cert = signed
+
+    def _never(url):
+        raise AssertionError("a bad pin must fail before any fetch")
+
+    with pytest.raises(TrustListError, match="now"):
+        consume_lote(token, expected_signer_certs=[op_cert], now=now)
+    with pytest.raises(TrustListError, match="now"):
+        walk_lote("https://lote.example/root", lote_signer_certs=[op_cert],
+                  fetch=_never, now=now)
 
 
 def test_rejects_a_signer_whose_organization_matches_no_operator_name(registrar_anchor):
