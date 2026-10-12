@@ -139,6 +139,15 @@ and **issuer binding** — the proof's `verificationMethod` must be controlled
 by the credential's `issuer` DID, so an attacker cannot sign someone else's
 `issuer` with their own key.
 
+The window is evaluated at `VerificationPolicy.now` (or the suite's `now=`):
+`None` is the current time and a naive `datetime` is UTC. A `now` that is not a
+`datetime`, such as an epoch `int` or an ISO string, raises `ProofError`. So does
+a `now` within the leeway of `datetime.min` / `datetime.max`, and a `leeway_s`
+that cannot widen the window. These are configuration errors, so `verify_many`
+reports one on each item rather than aborting the batch. The `x5c`, mdoc and
+relying-party certificate checks read `now` the same way, each raising its own
+error class.
+
 ## Conformance
 
 `eddsa-rdfc-2022` reproduces the official W3C

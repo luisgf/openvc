@@ -124,13 +124,7 @@ def check_validity_window(
     deterministically regardless of wall-clock. An absent bound is not a
     violation, but a present-but-unparseable one fails closed (see :func:`_bound`).
     """
-    if now is None:
-        instant = datetime.now(timezone.utc)
-    elif now.tzinfo is None:                      # a naive now is taken as UTC, not
-        instant = now.replace(tzinfo=timezone.utc)  # silently as system-local time
-    else:
-        instant = now.astimezone(timezone.utc)
-    leeway = timedelta(seconds=max(0, leeway_s))
+    instant, leeway = utc_window(now, leeway_s)     # a bad pin is a typed ProofError
 
     not_before = _bound(document, "validFrom", "issuanceDate")
     if not_before is not None and instant + leeway < not_before:
@@ -229,9 +223,10 @@ def check_jwt_temporal(
 def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
     """*now* as integer epoch seconds, read the way every openvc clock check reads it:
     ``None`` is the current time, and a **naive** datetime is UTC — never the host's
-    local zone. ``x5c``, ``mdoc`` and :func:`check_validity_window` make the same call;
-    reading a naive pin as local time would shift a freshness window by the host's UTC
-    offset (up to 14 h), and in both directions at once: stale accepted, fresh refused.
+    local zone. :func:`utc_instant` is the same reading for the checks that compare
+    datetimes; reading a naive pin as local time would shift a freshness window by the
+    host's UTC offset (up to 14 h), and in both directions at once: stale accepted,
+    fresh refused.
 
     "Naive" is Python's own definition, ``utcoffset() is None`` — which also covers a
     ``tzinfo`` that answers ``None``. Anything that is not a ``datetime``, or whose
@@ -248,6 +243,51 @@ def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
         return int(now.timestamp())
     except Exception as exc:                  # a caller's tzinfo may raise anything
         raise error(f"now cannot be read as an instant: {exc}") from exc
+
+
+def utc_instant(now: Any, *, error: type[Exception] = ProofError) -> datetime:
+    """*now* as an aware UTC ``datetime``: :func:`utc_epoch`'s reading for the checks
+    that compare datetimes (a Data Integrity validity window, an X.509 path-validation
+    time, an mdoc ``validityInfo``, a WRPRC window). ``None`` is the current time and a
+    naive datetime is UTC.
+
+    Anything that is not a ``datetime`` (an epoch ``int``, an ISO string), whose
+    ``tzinfo`` raises, or that has no UTC equivalent (``datetime.max`` at a negative
+    offset overflows) becomes *error* — not a bare ``AttributeError`` /
+    ``OverflowError`` that would abort ``verify_many`` instead of failing one item.
+    """
+    if now is None:
+        return datetime.now(timezone.utc)
+    if not isinstance(now, datetime):
+        raise error(f"now must be a datetime or None, not {type(now).__name__}")
+    try:
+        if now.utcoffset() is None:
+            return now.replace(tzinfo=timezone.utc)
+        return now.astimezone(timezone.utc)
+    except Exception as exc:                  # a caller's tzinfo may raise anything
+        raise error(f"now cannot be read as an instant: {exc}") from exc
+
+
+def utc_window(
+    now: Any, leeway_s: Any, *, error: type[Exception] = ProofError,
+) -> tuple[datetime, timedelta]:
+    """``(instant, leeway)`` for a validity window evaluated at *now* — the instant from
+    :func:`utc_instant`, the leeway a ``timedelta`` (a negative one counts as 0).
+
+    The window edges ``instant ± leeway`` are computed here once, so a caller comparing
+    them cannot overflow: a *now* within the leeway of ``datetime.max`` /
+    ``datetime.min``, or an infinite or out-of-range leeway, becomes *error* here — as
+    does a leeway that is not a number — instead of a bare ``OverflowError`` /
+    ``TypeError`` mid-check.
+    """
+    instant = utc_instant(now, error=error)
+    try:
+        leeway = timedelta(seconds=max(0, leeway_s))
+        instant - leeway, instant + leeway        # both edges must be datetimes
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise error(f"leeway_s {leeway_s!r} does not fit a window at "
+                    f"{instant.isoformat()}: {exc}") from exc
+    return instant, leeway
 
 
 def non_negative_seconds(value: Any, *, name: str, error: type[Exception] = ProofError) -> int:
@@ -427,4 +467,6 @@ __all__ = [
     "reject_unknown_crit",
     "resolve_verification_key",
     "utc_epoch",
+    "utc_instant",
+    "utc_window",
 ]

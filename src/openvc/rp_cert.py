@@ -28,10 +28,11 @@ from __future__ import annotations
 import base64
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Sequence
 
 from .errors import OpenvcError
+from .proof._verify_common import utc_instant
 
 
 class RpCertError(OpenvcError):
@@ -261,12 +262,7 @@ def verify_rp_access_certificate(
     leaf = _load_cert(cert)
     inter = [_load_cert(i) for i in intermediates]
 
-    if now is None:
-        instant = datetime.now(timezone.utc)
-    elif now.tzinfo is None:                            # a naive now is taken as UTC, not
-        instant = now.replace(tzinfo=timezone.utc)      # silently as the host's local time
-    else:
-        instant = now.astimezone(timezone.utc)
+    instant = utc_instant(now, error=RpCertError)       # naive is UTC; a bad pin is typed
 
     # webpki CA policy keeps basicConstraints/path checks strict; permit_all on the
     # end-entity relaxes only the TLS EKU a WRPAC (an e-seal cert) would not carry.

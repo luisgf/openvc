@@ -4,6 +4,43 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.1] — unreleased
+
+### Fixed
+
+- **A misconfigured `now` or `leeway_s` on the Data Integrity lanes is a typed
+  `ProofError`, not a bare `AttributeError` / `OverflowError`.** Found by the
+  adversarial review of [#203](https://github.com/luisgf/openvc/pull/203).
+  `check_validity_window` read `now.tzinfo`, so an epoch `int` or an ISO string
+  raised `AttributeError`. It also added the leeway with plain datetime arithmetic,
+  so a `now` within the leeway of `datetime.max` / `datetime.min` raised
+  `OverflowError`, as did a `leeway_s` past year 9999. A string `leeway_s` raised
+  `TypeError`. Each of these escaped `OpenvcError`, so one bad
+  `VerificationPolicy` aborted a whole `verify_many` / `verify_many_async` batch
+  instead of failing each item. The SD-JWT lane already typed the same mistake
+  through `utc_epoch`. The VC-JWT body window shares this check.
+
+  `openvc.proof._verify_common` gains `utc_instant`, the datetime-returning sibling
+  of `utc_epoch`, and `utc_window`, which bounds-checks `instant ± leeway` once.
+  Five copies of the same reader now go through them, each with its own error
+  class: the Data Integrity window (`ProofError`), `x5c` (`X5cError`), mdoc
+  (`MdocError`), the WRPAC check (`RpCertError`) and the WRPRC window
+  (`RpRegistrationError`). An `x5c` VC-JWT verified with an `int` `policy.now`
+  also escaped as `AttributeError`.
+- **An mdoc whose MSO is valid until 9999-12-31 verifies.** `_check_validity`
+  added the leeway to the issuer's dates. A "never expires" `validUntil` of
+  `9999-12-31T23:59:59Z`, or a `validFrom` of `0001-01-01`, raised a bare
+  `OverflowError` from `verify_device_response`. The leeway now widens the
+  verifier's instant, as on every other lane.
+
+Side effects of the shared reader, all edge cases:
+
+- A `tzinfo` whose `utcoffset()` returns `None` is naive by Python's definition.
+  Such a pin is now read as UTC on these lanes. They used to read it as the host's
+  local time.
+- On mdoc, a negative `leeway_s` now counts as 0, as it already did on the Data
+  Integrity and WRPRC windows. It used to narrow the window.
+
 ## [1.29.0] — 2026-10-12
 
 ### Security

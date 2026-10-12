@@ -220,6 +220,16 @@ def test_verify_rejects_mistyped_trust_params_as_typed_error():
         verify_rp_access_certificate(leaf, trust_anchors=[ca], now="2026-01-01")   # str now
 
 
+def test_verify_types_a_now_with_no_utc_equivalent():
+    # datetime.max at a negative offset overflows when read as UTC — a typed RpCertError,
+    # not a bare OverflowError (read through the shared utc_instant)
+    ca, ca_key, ca_name = _ca()
+    leaf = _wrpac(ca_key, ca_name)
+    late = dt.datetime.max.replace(tzinfo=dt.timezone(dt.timedelta(hours=-5)))
+    with pytest.raises(RpCertError, match="now"):
+        verify_rp_access_certificate(leaf, trust_anchors=[ca], now=late)
+
+
 def test_verify_accepts_anchors_in_any_certificate_form():
     # trust_anchors is symmetric with cert/intermediates — DER/PEM/base64/Certificate all
     # work, and a bad anchor entry is a typed error, not a silent drop (adversarial-review L2).

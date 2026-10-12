@@ -32,6 +32,7 @@ from typing import Any, Callable, Sequence
 
 from . import cbor, cose
 from .errors import OpenvcError
+from .proof._verify_common import utc_window
 from .x5c import X5cError, check_mdoc_signed_within_ds_validity, resolve_mdoc_signer_key
 
 __all__ = [
@@ -269,7 +270,7 @@ def _verify_issuer_signed(
         chain = cose.x5chain_ders(issuer_auth)
     except cose.CoseError as exc:
         raise MdocMalformed(f"issuerAuth: {exc}") from exc
-    instant = _instant(now)
+    instant, leeway = utc_window(now, leeway_s, error=MdocError)   # a bad pin is typed
     try:
         issuer_key = resolve_mdoc_signer_key(chain, trust_anchors=trust_anchors, now=instant)
     except X5cError as exc:
@@ -293,7 +294,7 @@ def _verify_issuer_signed(
     hasher = _DIGEST_ALGS.get(alg_name) if isinstance(alg_name, str) else None
     if hasher is None:
         raise MdocMalformed(f"MSO digestAlgorithm {alg_name!r} is not SHA-256/384/512")
-    validity = _check_validity(mso, instant, leeway_s)
+    validity = _check_validity(mso, instant, leeway)
     if validity.signed is not None:                   # bind `signed` to the DS cert window
         try:
             check_mdoc_signed_within_ds_validity(chain, validity.signed)
@@ -400,7 +401,7 @@ def _plain(value: Any) -> Any:
 # validityInfo
 # --------------------------------------------------------------------------- #
 
-def _check_validity(mso: dict[Any, Any], instant: datetime, leeway_s: int) -> MdocValidity:
+def _check_validity(mso: dict[Any, Any], instant: datetime, leeway: timedelta) -> MdocValidity:
     info = mso.get(_MSO_VALIDITY)
     if not isinstance(info, dict):
         raise MdocMalformed("MSO has no validityInfo map")
@@ -411,10 +412,11 @@ def _check_validity(mso: dict[Any, Any], instant: datetime, leeway_s: int) -> Md
         raise MdocMalformed("MSO validityInfo needs a signed time (ISO 18013-5 §9.1.2.4)")
     if valid_from is None or valid_until is None:
         raise MdocMalformed("MSO validityInfo needs both validFrom and validUntil")
-    leeway = timedelta(seconds=leeway_s)
-    if instant < valid_from - leeway:
+    # The leeway goes on the verifier's instant (bounds checked by utc_window), never on
+    # the issuer's dates: a "never expires" validUntil of 9999-12-31 plus a minute overflows.
+    if instant + leeway < valid_from:
         raise MdocValidityError(f"MSO is not yet valid (validFrom {valid_from.isoformat()})")
-    if instant > valid_until + leeway:
+    if instant - leeway > valid_until:
         raise MdocValidityError(f"MSO has expired (validUntil {valid_until.isoformat()})")
     return MdocValidity(signed=signed, valid_from=valid_from, valid_until=valid_until)
 
@@ -522,11 +524,3 @@ def _verify_device_auth(
             raise MdocDeviceAuthError("DeviceMac does not verify (holder binding failed)")
         return
     raise MdocMalformed("deviceAuth has neither deviceSignature nor deviceMac")
-
-
-def _instant(now: datetime | None) -> datetime:
-    if now is None:
-        return datetime.now(timezone.utc)
-    if now.tzinfo is None:
-        return now.replace(tzinfo=timezone.utc)
-    return now.astimezone(timezone.utc)

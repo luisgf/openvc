@@ -101,6 +101,19 @@ def test_naive_now_treated_as_utc_not_host_local():
         resolve_x5c_key(x5c, ISS, trust_anchors=[root], now=naive_after_expiry)
 
 
+@pytest.mark.parametrize("now", [
+    1_783_296_000,                                             # epoch int
+    "2026-07-06T00:00:00Z",                                    # ISO string
+    dt.datetime.max.replace(tzinfo=dt.timezone(dt.timedelta(hours=-5))),   # no UTC form
+])
+def test_mistyped_now_is_a_typed_x5c_error(now):
+    # read through the shared utc_instant: a bad pin is X5cError, never a bare
+    # AttributeError / OverflowError that would escape OpenvcError and abort verify_many
+    x5c, root = _chain()
+    with pytest.raises(X5cError, match="now"):
+        resolve_x5c_key(x5c, ISS, trust_anchors=[root], now=now)
+
+
 def test_issuer_not_in_san_rejected():
     x5c, root = _chain(leaf_san=[x509.UniformResourceIdentifier("https://other.example")])
     with pytest.raises(X5cError, match="not bound|SAN"):
@@ -197,3 +210,16 @@ def test_pipeline_x5c_untrusted_anchor_rejected():
     with pytest.raises(KeyResolutionFailed):
         verify_credential(token, x5c_trust_anchors=[other_root],
                           policy=VerificationPolicy(require_status=False))
+
+
+def test_pipeline_x5c_mistyped_now_fails_the_item_not_the_batch():
+    # policy.now reaches the x5c chain check on a VC-JWT; an int pin was a bare
+    # AttributeError there, which escaped OpenvcError and aborted verify_many
+    from openvc import VerificationPolicy, verify_many
+    from openvc.verify import KeyResolutionFailed
+
+    x5c, root, leaf_key = _chain_with_leaf_key()
+    token = _vc_jwt_with_x5c(leaf_key, x5c)
+    out = verify_many([token, token], x5c_trust_anchors=[root],
+                      policy=VerificationPolicy(require_status=False, now=1_783_296_000))
+    assert all(isinstance(r.error, KeyResolutionFailed) for r in out)
