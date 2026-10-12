@@ -76,6 +76,77 @@ In production the issuer key usually lives in an HSM/KMS and is addressed by
 - Every failure raises a subclass of a single root, so
   `except OpenvcError` catches any openvc rejection.
 
+## Waiving expiry or revocation
+
+Two `VerificationPolicy` knobs, both `True` by default, turn an *expired* or
+*revoked* verdict from a rejection into something you read off the result — for
+an audit trail, or to tell a holder *why* a credential is no longer accepted.
+They are independent of authenticity: each waives one disposition and nothing
+else.
+
+| Set to `False` | Waives | Still enforced |
+|---|---|---|
+| `require_not_expired` | the JWT `exp` (VC-JWT, SD-JWT VC), the credential's `validUntil` / `expirationDate`, and a Data Integrity proof's `expires` | signature and the alg allow-list, issuer key resolution and binding, holder binding (KB-JWT signature, `aud` / `nonce`, `iat` window), `nbf` / `validFrom` / `issuanceDate`, malformed timestamps, `x5c` chain validity, every status check |
+| `require_not_revoked` | a set `revocation` bit, W3C Bitstring or IETF Token Status List | all of the above, expiry included; fetching and verifying the status list; failing closed without a resolver (`require_status`); and **suspension**, which still raises `CredentialSuspended` |
+
+What the result tells you:
+
+- **`result.expired`** is `True` when the expiry waiver is on and the credential
+  has expired: a VC-JWT's `exp` or body `validUntil` / `expirationDate`, an
+  SD-JWT VC's `exp`, or a Data Integrity credential's `validUntil` /
+  `expirationDate`. With the default policy it is always `False`, because an
+  expired credential raises instead (`CredentialExpired`, or `ClaimsInvalid` for
+  a JWT `exp`).
+- **Revocation has no result flag.** A waived revocation verifies, and
+  `result.status.revoked` is `True`. `status` is the resolved status; the W3C
+  entry wins when a credential declares both conventions.
+- **Both pipelines compute `expired` the same way.** `verify_credential` and
+  `verify_credential_async` (and `verify_many` / `verify_many_async`) share the
+  same code for every format, so they agree on the same credential and policy.
+  Before 1.28.0 ([#188](https://github.com/luisgf/openvc/pull/188)) the async
+  pipeline always reported `expired=False`. The flag only observes: turning the
+  waiver on never rejects a credential the default policy would accept.
+- **The knobs live on `VerificationPolicy`**, so they apply to
+  `verify_credential`, `verify_many` and their async twins. `verify_vp_token`
+  builds its own policy, so the waivers never reach a presentation verified
+  there.
+
+```python
+import asyncio
+
+from cryptography.hazmat.primitives.asymmetric import ed25519
+
+from openvc import VerificationPolicy, verify_credential, verify_credential_async
+from openvc.keys import Ed25519SigningKey
+from openvc.multibase import encode_multibase
+from openvc.proof.errors import CredentialExpired
+from openvc.proof.vc_jwt import VcJwtProofSuite
+
+private_key = ed25519.Ed25519PrivateKey.generate()
+public_raw = Ed25519SigningKey(private_key, kid="_").public_key_raw()
+mb = encode_multibase(bytes([0xED, 0x01]) + public_raw)
+issuer = Ed25519SigningKey(private_key, kid=f"did:key:{mb}#{mb}")
+
+# Correctly signed, but its validity window closed in 2020.
+token = VcJwtProofSuite().sign({
+    "@context": ["https://www.w3.org/ns/credentials/v2"],
+    "type": ["VerifiableCredential"],
+    "issuer": f"did:key:{mb}",
+    "validUntil": "2020-01-01T00:00:00Z",
+    "credentialSubject": {"id": "did:example:alice"},
+}, signing_key=issuer)
+
+try:
+    verify_credential(token)                       # default policy: expiry rejects
+except CredentialExpired as exc:
+    print("rejected:", exc)
+
+audit = VerificationPolicy(require_not_expired=False)
+result = verify_credential(token, policy=audit)   # signature, issuer, nbf still checked
+assert result.expired
+assert asyncio.run(verify_credential_async(token, policy=audit)).expired
+```
+
 ## Where next
 
 - One credential format per guide: [VC-JWT](VC-JWT), [SD-JWT VC](SD-JWT-VC),

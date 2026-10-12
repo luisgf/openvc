@@ -24,6 +24,27 @@ All notable changes to **openvc** are documented here. The format follows
   `check_validity_window` and `check_jwt_temporal` (`openvc.proof._verify_common`)
   return the same verdict as a `bool`.
 
+### Changed
+
+- **An expired or revoked `JsonSchemaCredential` now fails under every
+  policy.** The schema VC's inner verification copied `require_not_expired` /
+  `require_not_revoked` from the outer policy, and kept only the credential from
+  that result. Under the waiver an expired schema VC was therefore applied, with
+  `schema.validated=True` and `expired=False`, while the default policy rejects
+  it with `SchemaResolutionError`. The waivers concern the verified credential's
+  own disposition. The schema VC is a trust input that credential depends on,
+  like a status-list credential (which the blessed resolvers verify under the
+  default policy) or an `x5c` chain, so it no longer inherits them. One helper
+  now builds the inner policy for both pipelines.
+- **The VC-JWT waiver no longer skips the `exp` shape check.** Under
+  `require_not_expired=False` the suite switched PyJWT's `exp` check off
+  entirely, so an `exp` of `"soon"`, `{}`, `[]`, `null` or `NaN` verified there
+  and not under the default policy. PyJWT now judges `exp` under both policies.
+  Only after it reports an expiry does the waiver decode again without that
+  check, so every other claim check still runs. A `TypeError` from PyJWT's
+  `int()` coercion of a non-scalar `exp` / `nbf` / `iat` is typed as
+  `ClaimsInvalid` on this path.
+
 ### Fixed
 
 - **`VerificationResult.expired` is now the default policy's verdict.**
@@ -49,26 +70,17 @@ All notable changes to **openvc** are documented here. The format follows
   have rejected the credential for its own expiry. Found by the adversarial
   review of [#188](https://github.com/luisgf/openvc/pull/188).
 
-### Changed
+### Fixed (docs)
 
-- **An expired or revoked `JsonSchemaCredential` now fails under every
-  policy.** The schema VC's inner verification copied `require_not_expired` /
-  `require_not_revoked` from the outer policy, and kept only the credential from
-  that result. Under the waiver an expired schema VC was therefore applied, with
-  `schema.validated=True` and `expired=False`, while the default policy rejects
-  it with `SchemaResolutionError`. The waivers concern the verified credential's
-  own disposition. The schema VC is a trust input that credential depends on,
-  like a status-list credential (which the blessed resolvers verify under the
-  default policy) or an `x5c` chain, so it no longer inherits them. One helper
-  now builds the inner policy for both pipelines.
-- **The VC-JWT waiver no longer skips the `exp` shape check.** Under
-  `require_not_expired=False` the suite switched PyJWT's `exp` check off
-  entirely, so an `exp` of `"soon"`, `{}`, `[]`, `null` or `NaN` verified there
-  and not under the default policy. PyJWT now judges `exp` under both policies.
-  Only after it reports an expiry does the waiver decode again without that
-  check, so every other claim check still runs. A `TypeError` from PyJWT's
-  `int()` coercion of a non-scalar `exp` / `nbf` / `iat` is typed as
-  `ClaimsInvalid` on this path.
+- **The expiry and revocation waivers have a wiki home.**
+  `VerificationPolicy.require_not_expired` / `require_not_revoked` and
+  `VerificationResult.expired` shipped in 1.27.0 with only a passing mention in
+  the manual. Getting Started now has a *Waiving expiry or revocation* section.
+  It covers what each knob waives and what still runs, and how to read the
+  result (`expired`, `status.revoked`). It also notes that the sync and async
+  pipelines compute `expired` identically since 1.28.0
+  ([#188](https://github.com/luisgf/openvc/pull/188)), and carries a runnable
+  offline example. The SD-JWT VC and Status lists pages link to it.
 
 ### Tests
 
