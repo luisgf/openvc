@@ -125,7 +125,7 @@ All notable changes to **openvc** are documented here. The format follows
   disagree with the verdict it stood in for. The values below were identical on
   the sync and async pipelines, which 1.28.0 had made agree:
 
-  | Credential | Default policy | `expired` under the waiver in 1.28.1 |
+  | Credential | Default policy | `expired` under the waiver in 1.28.2 |
   |---|---|---|
   | Data Integrity proof whose own `expires` passed (every suite, ecdsa-sd-2023 derived and P-384 included) | `CredentialExpired: proof expired` | `False` |
   | VC-JWT body `validUntil` passed at the current time, `policy.now` pinned before it | `CredentialExpired` | `False` |
@@ -154,7 +154,7 @@ All notable changes to **openvc** are documented here. The format follows
 
   The coerced-`exp` cases assert only agreement with the default policy, so
   they hold whether those values are read as dates or refused as malformed. The
-  shared helpers' `bool` is pinned too. 25 of the new tests fail on 1.28.1.
+  shared helpers' `bool` is pinned too. 27 of the new tests fail on 1.28.2.
 
 ## [1.28.2] — 2026-10-12
 
