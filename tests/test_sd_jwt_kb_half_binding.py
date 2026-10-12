@@ -210,6 +210,59 @@ def test_verify_vp_token_lane_passes_both_and_is_unaffected(parties):
     assert presentation.raw.key_bound is True
 
 
+def _strip_kb(presentation):
+    return presentation[:presentation.rindex("~") + 1]
+
+
+@pytest.mark.parametrize("given", [{"audience": ME}, {"nonce": MY_NONCE}], ids=["aud", "nonce"])
+def test_rejecting_a_half_binding_does_not_make_the_kb_jwt_required(parties, given):
+    # The raise stops a misleading key_bound=True; it is not replay protection on its
+    # own. Stripping the KB-JWT turns the same relay into an honest key_bound=False,
+    # which only require_key_binding (or reading key_bound) refuses.
+    stripped = _strip_kb(_kb(parties, OTHER_AUD, OTHER_NONCE))
+    assert _suite(parties, stripped, **given).key_bound is False
+    with pytest.raises(ClaimsInvalid, match="no KB-JWT present"):
+        _suite(parties, stripped, audience=ME, nonce=MY_NONCE, require_key_binding=True)
+
+
+# --------------------------------------------------------------------------- #
+# Fixed before merge — from this change's adversarial review
+# --------------------------------------------------------------------------- #
+
+# Both values given, but one of them binds nothing. `nonce=""` (a lost session's
+# `session.get("nonce", "")`) accepted any KB-JWT the holder signed with an empty
+# nonce for that audience — an audience-only binding in disguise, even when required.
+EMPTY_OR_NOT_A_STRING = [
+    pytest.param(ME, "", (ME, ""), id="empty-nonce"),
+    pytest.param("", MY_NONCE, ("", MY_NONCE), id="empty-aud"),
+    pytest.param("", "", ("", ""), id="both-empty"),
+    pytest.param([ME], MY_NONCE, ([ME], MY_NONCE), id="list-aud"),
+    pytest.param(ME, 1, (ME, True), id="int-nonce-vs-true"),
+]
+EMPTY = "must be non-empty strings"
+
+
+@pytest.mark.parametrize("aud,nonce,kb", EMPTY_OR_NOT_A_STRING)
+@pytest.mark.parametrize("required", [False, True], ids=["optional", "required"])
+def test_an_empty_or_non_string_binding_value_is_refused(parties, aud, nonce, kb, required):
+    with pytest.raises(ClaimsInvalid, match=EMPTY):
+        _suite(parties, _kb(parties, *kb), audience=aud, nonce=nonce,
+               require_key_binding=required)
+
+
+@pytest.mark.parametrize("aud,nonce,kb", EMPTY_OR_NOT_A_STRING[:3])
+def test_an_empty_binding_value_is_refused_on_every_lane(parties, aud, nonce, kb):
+    presentation, policy = _kb(parties, *kb), _policy(audience=aud, nonce=nonce)
+    with pytest.raises(ClaimsInvalid, match=EMPTY):
+        verify_credential(presentation, policy=policy)
+    with pytest.raises(ClaimsInvalid, match=EMPTY):
+        asyncio.run(verify_credential_async(presentation, policy=policy))
+
+
+def test_an_empty_binding_value_without_a_kb_jwt_still_verifies_unbound(parties):
+    assert _suite(parties, parties[2], audience=ME, nonce="").key_bound is False
+
+
 def test_nested_binding_replaces_a_half_configured_cascade_policy(parties):
     # The VP cascade binds a nested KB-JWT to the presentation's own (aud, nonce), both
     # of them, overriding the policy's. A cascade policy carrying `audience` alone — to

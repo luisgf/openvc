@@ -91,11 +91,11 @@ boundary is attacker-controlled until a signature verifies.
   (`:237`). ML-DSA (RFC 9964) is **opt-in only** (`allow_pq=True`, `:135`),
   never in the default allow-list.
 - **SD-JWT VC** — `src/openvc/proof/sd_jwt.py`. Allow-list before crypto for the
-  issuer JWT (`:331-332`) and KB-JWT (`:464-465`); duplicate/unreferenced
-  disclosures rejected (`:349-352,431`); claim-overwrite blocked (`:143`);
-  key-binding-required-without-`aud`/`nonce` fails closed (`:564-572`), and so
-  does a present KB-JWT checked against only one of `aud`/`nonce` (`:577-588`,
-  #191). See
+  issuer JWT (`:417-420`) and KB-JWT (`:604-606`); duplicate/unreferenced
+  disclosures rejected (`:453-456,548-549`); claim-overwrite blocked (`:173`);
+  key-binding-required-without-`aud`/`nonce` fails closed (`:567-575`), and so
+  does a present KB-JWT checked against only one of `aud`/`nonce`, or an empty
+  one (`:580-600`, #191). See
   **R1** in §9 for the recursion caveat.
 - **Data Integrity** — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (RDF-canonical),
   `eddsa-jcs-2022` / `ecdsa-jcs-2019` (JCS), and selective-disclosure

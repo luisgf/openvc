@@ -29,13 +29,26 @@ All notable changes to **openvc** are documented here. The format follows
   replay. No openvc lane was affected: `verify_vp_token` and the VP cascades
   always pass both values.
 
-  Rejecting, rather than reporting `key_bound=False`, follows 1.28.1: a caller who
-  sets `audience` and never reads `key_bound` would still accept the relay.
-  Passing **neither** value keeps its documented meaning: `key_bound=True` then
-  proves possession of the `cnf` key for some verifier, not a binding to you.
-  Changing that would change a value callers gate on, so it is out of scope for a
-  patch. The wiki (*SD-JWT VC → What `key_bound` attests*) now has a table of all
-  three cases.
+  The fix stops a misleading `key_bound=True`. It does not, by itself, stop the
+  replay: an attacker who strips the KB-JWT gets the same credential through with
+  an honest `key_bound=False`, as for a nested SD-JWT in 1.28.1. A caller who needs
+  the holder binding still has to set `require_key_binding=True` or check
+  `key_bound`. openvc raises rather than downgrade the flag because a
+  half-configured call is a caller error that a quiet `False` would hide; the error
+  points at the missing value. Passing **neither** value keeps its documented
+  meaning: `key_bound=True` then proves possession of the `cnf` key for some
+  verifier, not a binding to you. Changing that would change a value callers gate
+  on, so it is out of scope for a patch. The wiki (*SD-JWT VC → What `key_bound`
+  attests*) now has a table of every case.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **An empty `audience` or `nonce` no longer counts as a binding value.** With
+    both values passed, one of them empty (`nonce=""`, say, from a lost session),
+    the KB-JWT was checked against `""`. Any KB-JWT the holder had signed with an
+    empty nonce for that audience verified, even with `require_key_binding=True`.
+    That is an audience-only binding in disguise. A present KB-JWT is now refused
+    (`ClaimsInvalid`) unless both values are non-empty strings, matching the VP-JWT,
+    OpenID4VP and nested-binding gates, which already refused `""`.
 
 ### Fixed (docs)
 
