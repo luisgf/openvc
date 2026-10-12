@@ -31,6 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from ..proof._verify_common import is_numeric_date
 from ..proof._jws import sign_compact, verify_compact
 from ..proof.vc_jwt import SigningKey
 from .bitstring import StatusListError, encode_bitstring
@@ -186,14 +187,21 @@ def verify_status_list_token(
     if expected_uri is not None and claims.get("sub") != expected_uri:
         raise StatusListError(
             f"status list token sub {claims.get('sub')!r} != expected {expected_uri!r}")
-    exp = claims.get("exp")
-    if exp is not None:
+    # exp/nbf/iat are NumericDates (RFC 7519 §2): a present one, null included, that is
+    # not a finite JSON number fails closed. Only exp is compared — a `now` pin re-checks
+    # an archived credential, and a list fetched today is legitimately newer than it.
+    for name in ("nbf", "iat"):
+        if name in claims and not is_numeric_date(claims[name]):
+            raise StatusListError(
+                f"status list token {name} must be a finite numeric timestamp")
+    if "exp" in claims:
+        exp = claims["exp"]
         # exp is a NumericDate (RFC 7519); a present-but-non-numeric exp fails
         # CLOSED — skipping it would let a stale/superseded list be accepted (the
         # same fail-open bug openvc.proof._verify_common is written to avoid).
-        if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        if not is_numeric_date(exp):        # NaN/Infinity/1e400 would never go stale
             raise StatusListError(
-                f"status list token exp must be a numeric timestamp, got {exp!r}")
+                f"status list token exp must be a finite numeric timestamp, got {exp!r}")
         instant = _epoch(now) if now is not None else int(time.time())
         if instant - max(0, leeway_s) > exp:
             raise StatusListError("status list token has expired")

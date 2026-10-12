@@ -398,6 +398,10 @@ class SdJwtVcProofSuite:
         never to a value read from the presentation itself: its own ``iat`` would make
         every KB-JWT fresh and switch the window off. The issuer JWT's ``exp``/``nbf``
         still use the current time, as on every JOSE suite.
+
+        The issuer JWT's ``exp``/``nbf``/``iat``, and any disclosed ``iat``, must each be
+        a finite JSON number when present (``null`` included). An ``iat`` more than the
+        leeway in the future is rejected. *check_temporal* waives only an expired ``exp``.
         """
         non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=SdJwtError)
         current = utc_epoch(now, error=SdJwtError)       # a naive `now` is UTC
@@ -520,8 +524,10 @@ class SdJwtVcProofSuite:
     def _check_temporal(
         self, claims: dict[str, Any], *, check_temporal: bool = True
     ) -> None:
-        # NumericDate exp/nbf, fail-closed and non-finite-safe, single-sourced across the
-        # JOSE suites (openvc.proof._verify_common.check_jwt_temporal).
+        # NumericDate exp/nbf/iat, fail-closed (null, NaN, strings and bignums rejected)
+        # and a future iat bounded, single-sourced across the JOSE suites
+        # (openvc.proof._verify_common.check_jwt_temporal). Runs on the issuer-JWT body
+        # and again on the unpacked claims, where a disclosed iat first appears.
         check_jwt_temporal(
             claims, leeway_s=self._leeway, subject="token",
             check_temporal=check_temporal)

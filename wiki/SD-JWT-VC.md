@@ -62,8 +62,19 @@ openvc. To re-verify an archived presentation, pin `now` to the **receipt time y
 system recorded**, and do not widen the window. Never pin it to a value read from the
 presentation itself: its own `iat` would make every KB-JWT fresh and switch the window
 off. The window also covers SD-JWT VCs nested inside `jwt_vc_json` and `ldp_vc`
-presentations. (The issuer JWT's `exp`/`nbf` still use the current time, as on every
-JOSE suite.)
+presentations. (The issuer JWT's `exp`/`nbf`/`iat` still use the current time, as on
+every JOSE suite.)
+
+**Issuer JWT dates.** The issuer JWT's `exp`, `nbf` and `iat` must each be a finite
+JSON number (RFC 7519 NumericDate) when present. `null`, a string, a bool,
+`NaN`/`Infinity`, a container or an integer too large for a float is a
+`ClaimsInvalid`. An `iat` more than the leeway in the future is rejected. The same
+rule covers the processed payload, so an `iat` the issuer made selectively
+disclosable is checked once it is disclosed. `require_not_expired=False` waives only
+an expired `exp`, never a malformed date, a future `nbf` or a future `iat`. Before
+1.28.3 this lane read `"exp": null` / `"nbf": null` as absent and never looked at
+`iat`. The issuer JWT's `aud` is not checked: in SD-JWT VC the audience binding lives
+in the KB-JWT (see [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)).
 
 `aka_vcts` (draft-18) is an optional array of *additional* types the issuer asserts
 the credential also is. When present it must be a non-empty list of non-empty

@@ -49,8 +49,62 @@ All notable changes to **openvc** are documented here. The format follows
   a float. PyJWT `int()`-cast the first two, and the third never expires.
   RFC 7519 §2 defines a NumericDate as a JSON number. On the ML-DSA lane,
   `null` is now rejected rather than read as absent, and the shape of `iat` is
-  checked for the first time. That lane still does not reject a future `iat`,
-  which the classic lane does.
+  checked for the first time. (The entry below brings the other JOSE lanes into
+  line.)
+
+- **Every JOSE lane now applies one rule to `exp`, `nbf` and `iat`, and a VC-JWT's
+  `aud` is enforced** (RFC 7519 §2 and §4.1.3;
+  [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)). The adversarial
+  review of #195 found the lanes disagreeing, all reproduced on v1.28.2:
+  - **Status-list token, a fail-open.** `verify_status_list_token` accepted an
+    `exp` of `NaN`, `Infinity` or `1e400`. Every comparison against those is
+    false, so the status list never went stale, although the code comment said it
+    failed closed. It now uses `is_numeric_date`, and also shape-checks `nbf` and
+    `iat` (`StatusListError`). Only `exp` is compared with the clock, so a `now`
+    pin older than the list still verifies.
+  - **SD-JWT VC issuer JWT.** `iat` was never shape-checked: `null`, `[]`,
+    `"abc"`, `"1999999999"`, `true`, `NaN`, `1e400` and a bignum all verified,
+    under the default policy and the expiry waiver. They are now `ClaimsInvalid`,
+    and so is a malformed `iat` the issuer made selectively disclosable.
+  - **VP-JWT.** The presentation's `iat` was never read, so an `iat` of `[]`,
+    `NaN` or `1e400` verified. It is now checked like the other dates.
+  - **VC-JWT, ML-DSA lane.** It accepted a future `iat` and a non-string
+    `sub`/`jti`. PyJWT rejects all three on the classic lane, and now this lane
+    does too.
+  - **VC-JWT `aud`.** Neither lane checked `aud` when the caller passed no
+    audience (`verify_aud=False`), so a VC-JWT addressed to
+    `https://other-rp` verified for anyone who held it. RFC 7519 §4.1.3 says the
+    token MUST then be rejected. Both lanes now run `check_jwt_audience` after
+    the signature verifies.
+
+  `check_jwt_temporal` now single-sources the rule for the SD-JWT VC, VP-JWT,
+  VC-JWT ML-DSA and OpenID4VCI key-proof lanes. A present date must be a finite
+  JSON number, `null` included. `exp` is compared with the clock, and that is
+  the only comparison `require_not_expired=False` switches off. A future `nbf`
+  is rejected, and so is an `iat` more than the leeway in the future.
+
+### Changed
+
+- **Behaviour change: tokens that used to verify are now rejected**
+  ([ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)). Each case fails
+  closed with a typed error, and in `verify_many` it fails only its own item.
+  - `"exp": null`, `"nbf": null` or `"iat": null` on an SD-JWT VC issuer JWT, a
+    VP-JWT, a status-list token, and `exp`/`nbf: null` on an OpenID4VCI key proof
+    (which already required `iat`). These lanes used to read `null` as absent, or
+    never read the claim. RFC 7519 §2 defines a NumericDate as a JSON number,
+    and VC-JWT already rejects `null` (#195). An issuer that serialises an unset
+    date as `null` must leave the claim out instead.
+  - An `iat` more than the leeway (60 s by default) in the future, on an SD-JWT
+    VC issuer JWT, a VP-JWT or an ML-DSA VC-JWT. The expiry waiver does not
+    cover it.
+  - A VC-JWT that carries `aud` when no audience is passed. Pass `audience=` to
+    `VcJwtProofSuite.verify`, or `VerificationPolicy(audience=...)` to the
+    pipeline, with a value from its `aud`. A VC-JWT without `aud` still
+    verifies with no audience. A VC-JWT nested in a presentation is checked
+    against `policy.audience`, so `verify_vp_token` rejects one that carries
+    `aud`. VCDM's JWT encoding defines `aud` only for presentations, and none of
+    the third-party VC-JWT or SD-JWT VC vectors in the test fixtures carries one.
+  - An `aud` that is not a string or an array of strings, on either VC-JWT lane.
 
 ## [1.28.2] — 2026-10-12
 

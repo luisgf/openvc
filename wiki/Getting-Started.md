@@ -86,7 +86,7 @@ else.
 
 | Set to `False` | Waives | Still enforced |
 |---|---|---|
-| `require_not_expired` | the JWT `exp` (VC-JWT, SD-JWT VC), the credential's `validUntil` / `expirationDate`, and a Data Integrity proof's `expires` | signature and the alg allow-list, issuer key resolution and binding, holder binding (KB-JWT signature, `aud` / `nonce`, `iat` window), `nbf` / `validFrom` / `issuanceDate`, malformed timestamps, `x5c` chain validity, every status check |
+| `require_not_expired` | the JWT `exp` (VC-JWT, SD-JWT VC), the credential's `validUntil` / `expirationDate`, and a Data Integrity proof's `expires` | signature and the alg allow-list, issuer key resolution and binding, holder binding (KB-JWT signature, `aud` / `nonce`, `iat` window), `nbf` / `validFrom` / `issuanceDate`, a future JWT `iat`, malformed timestamps (a `null` JWT date included), a VC-JWT's `aud` (RFC 7519 §4.1.3), `x5c` chain validity, every status check |
 | `require_not_revoked` | a set `revocation` bit, W3C Bitstring or IETF Token Status List | all of the above, expiry included; fetching and verifying the status list; failing closed without a resolver (`require_status`); and **suspension**, which still raises `CredentialSuspended` |
 
 What the result tells you:

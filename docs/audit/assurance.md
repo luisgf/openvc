@@ -73,10 +73,17 @@ Example-based, but broad. Representative anchors:
   batch-isolation of a hostile item (`test_hostile_input.py:51-85`); malformed
   `exp`/`nbf`/`iat` (`null`, containers, strings, bools, non-finite) typed and
   batch-isolated on every entry point, with and without the expiry waiver
-  (`test_vc_jwt_numeric_dates.py`).
+  (`test_vc_jwt_numeric_dates.py`); a future `iat` and a non-string `sub`/`jti` on
+  both the classic and the ML-DSA lane (`test_jose_temporal_claims.py`); an `aud`
+  that does not name the caller's audience, or any `aud` when none is given (RFC 7519
+  §4.1.3), on both lanes (`test_vc_jwt_audience.py`).
 - **SD-JWT** — unreferenced/forged/duplicate disclosure, wrong key, expired,
   `vct` mismatch, KB `aud`/`nonce`/`sd_hash` tamper, non-numeric `exp`/`nbf`
-  (`test_sd_jwt.py:118-333`).
+  (`test_sd_jwt.py:118-333`); malformed issuer-JWT `exp`/`nbf`/`iat` (`null`
+  included) and a future or malformed disclosed `iat`, on every entry point with and
+  without the expiry waiver (`test_jose_temporal_claims.py`).
+- **VP-JWT** — malformed `exp`/`nbf`/`iat` (`null` included) and a future `iat` on
+  the presentation itself, under any `policy` (`test_jose_temporal_claims.py`).
 - **Data Integrity** — published W3C eddsa/ecdsa vectors are tamper-evident,
   cross-curve/wrong-key/wrong-cryptosuite fail-closed, RFC 8785 non-finite
   rejection, canonicalize depth guard (`test_di_jcs.py:190-426`).
@@ -90,7 +97,10 @@ Example-based, but broad. Representative anchors:
 - **JWE** — tampered ciphertext, non-ECDH-ES alg, disallowed `enc`, `zip`/`crit`
   rejected, bad `epk`/IV, oversize (`test_jwe.py:167-294`).
 - **Status** — bad encoded list, hostile `type`, value overflow, compression
-  bombs at the cap boundary (`test_status*`, `test_status_decompress.py`).
+  bombs at the cap boundary (`test_status*`, `test_status_decompress.py`); a
+  status-list token `exp`/`nbf`/`iat` that is not a finite number (`NaN`,
+  `Infinity`, `1e400`, `null`), and a `now` pin older than the list
+  (`test_jose_temporal_claims.py`).
 - **Trust / XML** — wrong cert, tampered body, DTD/DOCTYPE entity bomb, external-
   entity XXE, oversize, forged national TL (`test_trustlist*`).
 - **OpenID4VCI key proofs** — a KB-JWT / VP-JWT / status-list token replayed as a

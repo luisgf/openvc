@@ -56,6 +56,23 @@ credential, check that one is there. `verify_vp_token` does this for you. A
 `verifiableCredential` that is neither a credential nor an array (a number, a
 bool, `null`) is rejected with `ClaimsInvalid`.
 
+The VP-JWT's own `exp`, `nbf` and `iat` must each be a finite JSON number when
+present (`null` included), and an `iat` more than the leeway in the future is
+rejected, as on every JOSE lane. These have no waiver: a `policy` passed to
+`verify` reaches only the embedded credentials, so `require_not_expired=False`
+leaves the presentation's dates enforced. `aud` and `nonce` are always required.
+
+A VC-JWT nested in the presentation is checked against `policy.audience`, not the
+presentation's `audience`. If it carries its own `aud`, pass
+`policy=VerificationPolicy(audience=...)` with a value from that `aud`, or it is
+rejected (RFC 7519 §4.1.3, see
+[ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)).
+Setting `policy.audience` makes every nested VC-JWT need that `aud`, so one
+presentation that mixes VC-JWTs with and without `aud` does not verify in a single
+call. `verify_vp_token` passes no `policy.audience`, so it rejects a nested VC-JWT
+that carries `aud`. Most VC-JWTs carry none: VCDM's JWT encoding defines `aud` only
+for presentations.
+
 ## OpenID4VP 1.0: `verify_vp_token`
 
 For an [OpenID4VP](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html)

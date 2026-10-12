@@ -47,6 +47,7 @@ from .errors import (  # noqa: F401
     UnsupportedAlgorithm,
 )
 from ._verify_common import (
+    check_jwt_audience,
     check_jwt_temporal,
     check_numeric_dates,
     check_validity_window,
@@ -270,6 +271,10 @@ class VcJwtProofSuite:
                 # peek_claims, so a payload can pass our parse and overflow PyJWT's.
                 raise ClaimsInvalid(str(exc)) from exc
 
+        # RFC 7519 §4.1.3 on both lanes (ADR-0008): a token restricted to an audience
+        # verifies only for a caller that names one in it. After crypto, on signed claims.
+        check_jwt_audience(claims, audience)
+
         credential = claims.get("vc")
         if not isinstance(credential, dict):
             raise ClaimsInvalid("no embedded `vc` object in token")
@@ -371,18 +376,18 @@ class VcJwtProofSuite:
         self, claims: dict[str, Any], audience: str | None, *,
         check_temporal: bool = True,
     ) -> None:
-        # Mirror the PyJWT gate for the ML-DSA path: require iss, enforce exp/nbf with the
-        # suite leeway (shared non-finite-safe helper), check aud when expected.
+        # Mirror the PyJWT gate for the ML-DSA path: require iss; exp/nbf/iat with the
+        # suite leeway, a future iat included (PyJWT's verify_iat); a present sub/jti
+        # must be a string (PyJWT's verify_sub/verify_jti). aud runs in verify() for
+        # both lanes.
         if not isinstance(claims.get("iss"), str):
             raise ClaimsInvalid("the 'iss' claim is required")
         check_jwt_temporal(
             claims, leeway_s=self._leeway, subject="token",
             check_temporal=check_temporal)
-        if audience is not None:
-            aud = claims.get("aud")
-            auds = aud if isinstance(aud, list) else [aud]
-            if audience not in auds:
-                raise ClaimsInvalid("audience mismatch")
+        for name in ("sub", "jti"):
+            if name in claims and not isinstance(claims[name], str):
+                raise ClaimsInvalid(f"token {name} must be a string")
 
     @staticmethod
     def _jwk_to_key(jwk: dict[str, Any], alg: str) -> Any:
