@@ -109,7 +109,8 @@ def test_pinned_key_still_decides_the_signature():
 
 
 def test_unresolvable_issuer_fails_typed():
-    # the cascade's failure is an OpenvcError, so batch callers never abort
+    # an issuer the defaulted resolver cannot resolve fails typed, not with the
+    # AttributeError the None resolver used to raise
     hk = _holder()
     stray = P256SigningKey.generate(kid="did:example:issuer#k")
     vp = _present([_vc(stray, "did:example:issuer")], hk)

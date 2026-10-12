@@ -213,8 +213,6 @@ class VpJwtProofSuite:
     # -- internals --------------------------------------------------------- #
 
     def _resolve_holder_key(self, vp_jwt: str, resolver: Any) -> dict[str, Any]:
-        if resolver is None:
-            raise ClaimsInvalid("VP-JWT verify needs a holder_key_jwk or a resolver")
         holder, kid = self.peek_holder(vp_jwt)
         if not holder:
             raise MalformedToken("VP-JWT has no holder (iss / vp.holder) to resolve")
