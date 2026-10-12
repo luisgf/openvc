@@ -122,7 +122,18 @@ class VpJwtProofSuite:
         is signer-supplied, so *expected_holder* must be given to bind and to trust
         the returned holder. *expected_holder*, if set, requires ``iss`` to equal
         it. *audience* and *nonce* are required and must be non-empty — VP-JWT has
-        no unbound mode."""
+        no unbound mode.
+
+        **Nested SD-JWT VCs.** An embedded SD-JWT VC (bare, or inside an
+        ``EnvelopedVerifiableCredential``) that carries a Key Binding JWT has it
+        verified against **this** presentation's *audience* and *nonce* — whatever
+        ``audience``/``nonce`` a passed ``policy`` holds — so its result's
+        ``key_bound=True`` means bound to this exchange. A KB-JWT made for another
+        verifier or nonce fails the whole presentation (``ClaimsInvalid``). One with no
+        KB-JWT reports ``key_bound=False``: the VP signature authenticates the presenter,
+        never the credential's ``cnf`` key. If you need that, pass
+        ``policy=VerificationPolicy(require_key_binding=True)``, or use
+        *require_holder_binding*."""
         if not audience or not nonce:
             raise ClaimsInvalid("VP-JWT verify requires a non-empty audience and nonce")
 
@@ -170,6 +181,10 @@ class VpJwtProofSuite:
         # status list once). The cascade stays fail-fast — a VP is valid only if *every*
         # credential is — so the first failure still propagates.
         cascade_kwargs = dict(credential_verify_kwargs)
+        # A nested SD-JWT VC's KB-JWT, if any, must be bound to THIS presentation's
+        # aud + nonce — else key_bound=True would vouch for a holder proof made for
+        # another verifier. Set after the copy, so no passed kwarg can widen it.
+        cascade_kwargs["_kb_binding"] = (audience, nonce)
         shared = batch_resolvers(
             resolver,
             resolve_status_list=cascade_kwargs.pop("resolve_status_list", None),
