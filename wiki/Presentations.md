@@ -50,6 +50,12 @@ result = VpJwtProofSuite().verify(
 print(result.holder, len(result.credentials), result.credentials[0].subject)
 ```
 
+A VP-JWT with no `verifiableCredential` is valid VCDM (DID Auth, for example):
+`verify` accepts it and returns an empty `credentials` tuple, so if you need a
+credential, check that one is there. `verify_vp_token` does this for you. A
+`verifiableCredential` that is neither a credential nor an array (a number, a
+bool, `null`) is rejected with `ClaimsInvalid`.
+
 ## OpenID4VP 1.0: `verify_vp_token`
 
 For an [OpenID4VP](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html)
@@ -170,17 +176,20 @@ cascade-verified through `verify_credential`. All four whole-document
 cryptosuites are accepted — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (need the
 `[data-integrity]` extra) and `eddsa-jcs-2022` / `ecdsa-jcs-2019` (pyld-free).
 A bare string or a bare credential (no VP wrapper) under an `ldp_vc` query is
-rejected: the holder binding lives only on a presentation proof. `mso_mdoc` is
+rejected: the holder binding lives only on a presentation proof. A W3C
+presentation under an `ldp_vc` or `jwt_vc_json` query must also embed at least
+one credential, or it is rejected with `VpTokenMalformed`. That only guarantees
+a credential was presented and verified. For these two formats openvc does not
+match the DCQL `meta.type_values`, and it never judges the issuer: any `did:key`
+can issue a credential that verifies. Check each result's `issuer` and `type`
+against what you trust. `mso_mdoc` is
 verified over the Digital Credentials API flow — see [ISO mdoc](#iso-mdoc-mso_mdoc) below.
 
 The reported `holder` is the **authenticated** identity — the DID that controls
 the `verificationMethod` that signed the proof, not a self-asserted `holder`
-field (a `holder` that disagrees with the signer is rejected). So to check the
-presenter actually owns a credential, compare its subject to `p.holder`, or pass
-`require_holder_binding=True` to `verify_vp_token` — which enforces, for the W3C
-VP formats (`ldp_vc`, `jwt_vc_json`), that every embedded credential was issued to
-the authenticated holder. It is off by default because a holder may legitimately
-present a third party's credential.
+field (a `holder` that disagrees with the signer is rejected). Every credential the
+presentation carries must also be bound to that holder, unless the query opts out — see
+[Holder binding on the W3C formats](#holder-binding-on-the-w3c-formats).
 
 ## ISO mdoc (`mso_mdoc`)
 
@@ -230,6 +239,66 @@ engagement, NFC/BLE/QR proximity, issuance/provisioning, and any COSE *signing* 
 — openvc consumes and verifies. The redirect / `direct_post` mdoc handover is not yet
 wired; use the Digital Credentials API flow.
 
+## Holder binding on the W3C formats
+
+A `jwt_vc_json` VP-JWT or an `ldp_vc` presentation proves that *someone* signed for
+this exchange: its `aud` / `domain` and `nonce` / `challenge` are yours. On its own it
+says nothing about the credentials inside. A verifier that once received your
+credential could wrap it in its own presentation, correctly bound to another verifier,
+and present it there. OpenID4VP calls the missing link **Cryptographic Holder Binding**:
+the holder proves control of the key the credential was bound to at issuance (§2). A
+Credential Query requires it unless it sets `require_cryptographic_holder_binding` to
+`false`; the default is `true` (§6.1, §B.1).
+
+`verify_vp_token` enforces it on every credential a W3C presentation embeds. If any
+credential fails, the whole response is rejected (`ClaimsInvalid`):
+
+| Embedded credential | Bound to the holder when… |
+|---|---|
+| VC-JWT, Data Integrity VC | its subject (`sub` / `credentialSubject.id`) is the **authenticated** VP signer: the VP-JWT `iss` whose DID document holds the signing key, or the controller of the Data Integrity `verificationMethod` |
+| SD-JWT VC, bare or enveloped | it carries a Key Binding JWT bound to this exchange (`key_bound=True`), signed by its `cnf` key; see the [next section](#sd-jwt-vcs-nested-in-a-w3c-presentation) |
+
+So these are all rejected under a default query:
+- another party's credential;
+- a bearer credential with no subject id;
+- a credential whose `credentialSubject` is an array, even when the presenter is one of
+  its subjects or the issuer signed a `sub` naming them;
+- an SD-JWT VC with its KB-JWT stripped, or with no `cnf` at all.
+
+Subject and signer are compared as DID strings, never by key. A VP signed as
+`did:jwk:<key>` does not bind a credential issued to `did:key:<same key>`; issue to the
+DID the wallet presents with.
+
+The VP signer never stands in for an SD-JWT's `cnf` key, even when it is the same key:
+SD-JWT key binding is the KB-JWT (RFC 9901), which also covers the disclosures you
+received (`sd_hash`) and the KB-JWT's freshness (`iat`). Conversely, a nested SD-JWT
+with a KB-JWT bound here is accepted whoever signed the outer presentation. That is the
+same guarantee the `dc+sd-jwt` format gives.
+
+When the presenter legitimately is not the subject, opt that query out. Examples are a
+bearer ticket, a parent presenting a child's credential, or a credential bound by
+claims rather than by a key (§5.3). OpenID4VP §14.1.1 spells out what you accept then:
+"the Holder may not be the subject of the Credential".
+
+<!-- docs: no-run -->
+```python
+dcql_query = {"credentials": [
+    {"id": "ticket", "format": "jwt_vc_json",
+     "require_cryptographic_holder_binding": False}]}
+```
+
+The flag must be a JSON boolean; anything else is `VpTokenMalformed`, so a `null` or a
+`0` cannot switch the binding off by accident. Note that §B.1 tells a conformant wallet
+to answer such a query with a bare credential and no presentation. The W3C formats
+still require a presentation, so today an opted-out query accepts a VP whose
+credentials are not bound to its signer, but not a bare credential.
+
+`require_holder_binding=True` is the stricter, caller-side switch, and it ignores the
+query. Every embedded credential's subject must be the authenticated holder, *including*
+an SD-JWT VC's `sub`. `VpJwtProofSuite.verify` knows nothing of DCQL. There, use
+`require_holder_binding` for the subject rule and
+`policy=VerificationPolicy(require_key_binding=True)` for nested SD-JWTs.
+
 ## SD-JWT VCs nested in a W3C presentation
 
 A `jwt_vc_json` VP-JWT or an `ldp_vc` presentation can embed an SD-JWT VC — bare in
@@ -242,7 +311,7 @@ JWT, separate from the presentation's proof, and the rule for it is:
 
 | The nested SD-JWT VC… | Result |
 |---|---|
-| has no KB-JWT | verifies, `key_bound=False` — the presentation's proof authenticates the presenter, never the credential's `cnf` key |
+| has no KB-JWT | **rejected** under a query that requires holder binding (the default). With `require_cryptographic_holder_binding: false` it verifies, `key_bound=False` — the presentation's proof authenticates the presenter, never the credential's `cnf` key |
 | has a KB-JWT bound to this exchange — same `aud` and `nonce` as the presentation | verifies, `key_bound=True` |
 | has a KB-JWT bound anywhere else — another verifier, another nonce, the bare host | **the whole response is rejected** (`ClaimsInvalid`) |
 
@@ -287,21 +356,23 @@ That flag vouched for a holder proof made for someone else. Downgrading the resu
 Refusing nested SD-JWTs altogether would break legitimate VCDM 2.0 enveloped
 credentials, whose specification examples carry no KB-JWT.
 
-**A stripped KB-JWT is not an error.** Without a KB-JWT, the nested credential reports
-`key_bound=False` and the response still verifies. The presentation's proof
-authenticates whoever presented, but nothing then proves that they hold the credential's
-`cnf` key. Anyone who cannot satisfy the binding can simply drop the KB-JWT.
-So decide whether you need the nested credential's *own* key binding before you look
-at what arrived (RFC 9901 §9.5), and if you do, require `key_bound is True`. With
-`VpJwtProofSuite.verify`, `policy=VerificationPolicy(require_key_binding=True)`
-enforces that for every nested SD-JWT.
+**A stripped KB-JWT is rejected by default.** Without a KB-JWT, nothing proves that the
+presenter holds the credential's `cnf` key, and anyone who cannot satisfy the binding
+can simply drop the KB-JWT. So the decision is the query's, made before anything
+arrives (RFC 9901 §9.5): under the default `require_cryptographic_holder_binding`, a
+nested SD-JWT with no KB-JWT fails the response, exactly as a bare `dc+sd-jwt` one
+does. Only a query that opts out accepts it, with `key_bound=False`. Earlier releases
+accepted it under every query (see the [CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md),
+1.29.0). With `VpJwtProofSuite.verify`, which takes no query,
+`policy=VerificationPolicy(require_key_binding=True)` enforces the same for every
+nested SD-JWT.
 
 This holds only for credentials nested in a presentation, where you have no way to
 pass the binding yourself. At the top level — `verify_credential`, or
 `SdJwtVcProofSuite.verify` — the KB-JWT's `aud` / `nonce` are checked against the
 values *you* pass (see [SD-JWT VC](SD-JWT-VC)). A nested `key_bound=True` also does
 not mean that the presentation's signer controls the credential's `cnf` key. To
-require that a credential was issued to the presenter, use `require_holder_binding`.
+require that the presenter is also the credential's `sub`, use `require_holder_binding`.
 
 ## Replay: what the bindings buy you
 

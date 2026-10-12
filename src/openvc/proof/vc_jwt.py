@@ -450,6 +450,8 @@ class VcJwtProofSuite:
         types = vc.get("type", [])
         if isinstance(types, str):
             types = [types]
+        elif not isinstance(types, (list, tuple)):   # null/number/bool/object (whose keys
+            types = []                                 # must not pass): no expected types
         missing = [t for t in expected if t not in types]
         if missing:
             raise ClaimsInvalid(f"credential missing required type(s): {missing}")

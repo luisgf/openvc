@@ -12,9 +12,9 @@ made for someone else.
 
 The semantics pinned here: a nested KB-JWT, when present, must be bound to the **same**
 audience + nonce as the enclosing presentation, or the whole presentation fails closed;
-a nested SD-JWT with no KB-JWT stays valid with ``key_bound=False`` (the VP proof is the
-holder binding). The binding is scoped to the KB-JWT — a nested VC-JWT's own ``aud`` is
-never pinned to the verifier.
+a nested SD-JWT with no KB-JWT verifies with ``key_bound=False`` only when the query opts
+out of cryptographic holder binding (#196). The binding is scoped to the KB-JWT — a
+nested VC-JWT's own ``aud`` is never pinned to the verifier.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from openvc.keys import Ed25519SigningKey, P256SigningKey
 from openvc.multibase import encode_multibase
 from openvc.openid4vp import verify_vp_token
-from openvc.proof.di_jcs import EddsaJcsProofSuite
+from openvc.proof.di_jcs import EcdsaJcsProofSuite, EddsaJcsProofSuite
 from openvc.proof.errors import ClaimsInvalid
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
 from openvc.proof.vc_jwt import VcJwtProofSuite
@@ -39,6 +39,11 @@ OTHER_NONCE = "other-nonce"
 VCT = "https://credentials.example.com/identity_credential"
 JWT_VC_DCQL = {"credentials": [{"id": "q", "format": "jwt_vc_json"}]}
 LDP_VC_DCQL = {"credentials": [{"id": "q", "format": "ldp_vc"}]}
+# The same queries opted out of cryptographic holder binding (#196): a nested SD-JWT with
+# no KB-JWT is accepted only then.
+UNBOUND = {"require_cryptographic_holder_binding": False}
+JWT_VC_UNBOUND_DCQL = {"credentials": [{"id": "q", "format": "jwt_vc_json", **UNBOUND}]}
+LDP_VC_UNBOUND_DCQL = {"credentials": [{"id": "q", "format": "ldp_vc", **UNBOUND}]}
 
 # (KB-JWT aud, KB-JWT nonce) pairs that are NOT this exchange's binding.
 BOUND_ELSEWHERE = [
@@ -105,22 +110,25 @@ def _vp_jwt(holder, entries, *, audience=CLIENT_ID, nonce=NONCE):
         list(entries), holder_key=holder[0], audience=audience, nonce=nonce)
 
 
-def _ldp_vp(entries, *, domain=CLIENT_ID, challenge=NONCE):
-    vp_key, vp_did = _did_key_ed25519()
+def _ldp_vp(entries, *, domain=CLIENT_ID, challenge=NONCE, signer=None):
+    """An eddsa-jcs-2022 VP from a throwaway presenter, or ecdsa-jcs-2019 from *signer*
+    (a P-256 party) when the presenter must be the credentials' subject."""
+    vp_key, vp_did = signer or _did_key_ed25519()
+    suite = EcdsaJcsProofSuite() if signer else EddsaJcsProofSuite()
     vp = {"@context": [V2], "type": ["VerifiablePresentation"], "holder": vp_did,
           "verifiableCredential": list(entries)}
-    return EddsaJcsProofSuite().add_proof(
+    return suite.add_proof(
         vp, signing_key=vp_key, verification_method=vp_key.kid,
         proof_purpose="authentication", challenge=challenge, domain=domain)
 
 
-def _jwt_vc_json(vp, **kw):
-    return verify_vp_token({"q": [vp]}, dcql_query=JWT_VC_DCQL, nonce=NONCE,
+def _jwt_vc_json(vp, dcql=JWT_VC_DCQL, **kw):
+    return verify_vp_token({"q": [vp]}, dcql_query=dcql, nonce=NONCE,
                            client_id=CLIENT_ID, **kw).for_query("q")[0]
 
 
-def _ldp_vc(vp):
-    return verify_vp_token({"q": [vp]}, dcql_query=LDP_VC_DCQL, nonce=NONCE,
+def _ldp_vc(vp, dcql=LDP_VC_DCQL):
+    return verify_vp_token({"q": [vp]}, dcql_query=dcql, nonce=NONCE,
                            client_id=CLIENT_ID).for_query("q")[0]
 
 
@@ -153,10 +161,11 @@ def test_jwt_vc_json_nested_kb_bound_here_is_key_bound(issuer, holder):
 
 
 def test_jwt_vc_json_nested_sd_jwt_without_kb_is_not_key_bound(issuer, holder):
-    # No KB-JWT is legitimate inside a VP — the VP signature is the holder binding —
-    # and is reported honestly as not key-bound.
+    # No KB-JWT is accepted only when the query opted out of holder binding (#196 —
+    # tests/test_openid4vp_w3c_holder_binding.py pins the default rejection), and is
+    # then reported honestly as not key-bound.
     vp = _vp_jwt(holder, [_sd_jwt(issuer, holder)])
-    (cred,) = _jwt_vc_json(vp).credentials
+    (cred,) = _jwt_vc_json(vp, JWT_VC_UNBOUND_DCQL).credentials
     assert cred.key_bound is False
 
 
@@ -217,12 +226,14 @@ def test_ldp_vc_nested_kb_bound_here_is_key_bound(issuer, holder, envelope):
 
 
 def test_ldp_vc_nested_sd_jwt_without_kb_is_not_key_bound(issuer, holder):
-    (cred,) = _ldp_vc(_ldp_vp([_sd_jwt(issuer, holder)])).credentials
+    (cred,) = _ldp_vc(_ldp_vp([_sd_jwt(issuer, holder)]), LDP_VC_UNBOUND_DCQL).credentials
     assert cred.key_bound is False
 
 
 def test_ldp_vc_binding_does_not_pin_a_nested_vc_jwt_aud(issuer, holder):
-    vp = _ldp_vp([_vc_jwt(issuer, holder), _sd_jwt(issuer, holder, kb=(CLIENT_ID, NONCE))])
+    # The VC-JWT is issued to the holder, who must sign the VP (#196).
+    vp = _ldp_vp([_vc_jwt(issuer, holder), _sd_jwt(issuer, holder, kb=(CLIENT_ID, NONCE))],
+                 signer=holder)
     vc, sd = _ldp_vc(vp).credentials
     assert vc.key_bound is None and sd.key_bound is True
 

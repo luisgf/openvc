@@ -6,6 +6,49 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.29.0] — unreleased
 
+### Security
+
+- **`verify_vp_token` now enforces a DCQL query's `require_cryptographic_holder_binding`
+  on the W3C presentation formats** (`jwt_vc_json`, `ldp_vc`)
+  ([#196](https://github.com/luisgf/openvc/issues/196)). The flag defaults to
+  `true` (OpenID4VP 1.0 §6.1), but only the `dc+sd-jwt` lane read it. A VP proved
+  that *someone* signed for this exchange, and nothing tied that signer to the
+  credentials inside. A verifier that had once received a victim's credential could
+  wrap it in its own VP, correctly bound to another verifier, and present it there.
+  The response verified, with `holder` = the attacker. This worked with a VC-JWT, a
+  Data Integrity VC, or an SD-JWT VC with its KB-JWT stripped (`key_bound=False`),
+  bare or enveloped. It held with the flag left at its default and with it set
+  explicitly to `true`; only the opt-in `require_holder_binding=True` blocked it.
+
+  When the query requires holder binding, every credential a W3C presentation embeds
+  must now be bound to the authenticated holder, or the whole response is rejected
+  (`ClaimsInvalid`). OpenID4VP §2 defines that binding as control of the key the
+  credential was bound to, and §B.1 requires it for a presentation of a W3C VC.
+  - A **VC-JWT** or **Data Integrity** VC must name the authenticated VP signer as
+    its subject (`sub` / `credentialSubject.id`). The signer is the VP-JWT `iss`
+    whose DID document holds the signing key, or the controller of the Data
+    Integrity `verificationMethod`.
+  - A nested **SD-JWT VC** must carry a KB-JWT bound to this exchange
+    (`key_bound=True`). That is the `dc+sd-jwt` rule, and RFC 9901 §9.5 says the
+    need for key binding is policy, never whether a KB-JWT arrived. One without a
+    KB-JWT, or without `cnf`, is rejected. The VP signer never stands in for the
+    `cnf` key, even when it is the same key.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **A VC-JWT with a `credentialSubject` array no longer passes the subject rule on
+    its `sub`.** `VcJwtProofSuite` reports the JWT `sub` as the subject whenever it
+    is a string, and reconciles it only with a `credentialSubject` *object*. An
+    array, even one naming someone else, slipped through when `sub` was the
+    holder. Holder binding now needs a single subject; any array fails closed. The
+    `sub` is issuer-signed, so this was not attacker-forgeable.
+  - The review's other two findings had already shipped in 1.28.2
+    ([#194](https://github.com/luisgf/openvc/pull/194)). An empty `jwt_vc_json` VP
+    would otherwise meet the new binding vacuously; a junk
+    `vp.verifiableCredential` raised a bare `TypeError`.
+- **A non-boolean `require_cryptographic_holder_binding` is `VpTokenMalformed`** on
+  every Credential Query, `dc+sd-jwt` included. The `dc+sd-jwt` lane coerced it with
+  `bool()`, so a `null` or a `0` silently opted the query out of holder binding.
+
 ### Added
 
 - **The proof suites report the expiry they waived.** `VerifiedCredential`,
@@ -26,6 +69,30 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Changed
 
+- **Under a default DCQL query, `jwt_vc_json` / `ldp_vc` responses that used to verify
+  are now rejected.** These are responses whose credentials are not bound to the
+  presenter:
+  - another party's credential;
+  - a bearer credential with no subject id;
+  - a credential whose `credentialSubject` is an array;
+  - a credential issued to the same key under another DID method (subjects and
+    signers are compared as DID strings);
+  - a nested SD-JWT VC with no KB-JWT.
+
+  The `verify_vp_token` docstring described subject binding as "off by default". That
+  was true of `require_holder_binding`, but it ignored the query's own default. This
+  ships as a security fix in a minor release: no parameter default changes, and the
+  query has always asked for holder binding. To keep accepting such credentials, set
+  `"require_cryptographic_holder_binding": false` in that Credential Query.
+  OpenID4VP §14.1.1 describes the risk you then accept. Two limits remain:
+  - §B.1 tells a conformant wallet to answer an opted-out query with a bare
+    credential, and the W3C lanes still require a presentation (a separate gap).
+  - `require_holder_binding=True` keeps its stricter meaning, whatever the query
+    says: every embedded credential's subject, an SD-JWT VC's `sub` included, must
+    be the holder.
+
+  `VpJwtProofSuite.verify` takes no DCQL query and is unchanged. The semantics are
+  written up in the wiki under *Presentations → Holder binding on the W3C formats*.
 - **An expired or revoked `JsonSchemaCredential` now fails under every
   policy.** The schema VC's inner verification copied `require_not_expired` /
   `require_not_revoked` from the outer policy, and kept only the credential from
@@ -74,18 +141,6 @@ All notable changes to **openvc** are documented here. The format follows
   have rejected the credential for its own expiry. Found by the adversarial
   review of [#188](https://github.com/luisgf/openvc/pull/188).
 
-### Fixed (docs)
-
-- **The expiry and revocation waivers have a wiki home.**
-  `VerificationPolicy.require_not_expired` / `require_not_revoked` and
-  `VerificationResult.expired` shipped in 1.27.0 with only a passing mention in
-  the manual. Getting Started now has a *Waiving expiry or revocation* section.
-  It covers what each knob waives and what still runs, and how to read the
-  result (`expired`, `status.revoked`). It also notes that the sync and async
-  pipelines compute `expired` identically since 1.28.0
-  ([#188](https://github.com/luisgf/openvc/pull/188)), and carries a runnable
-  offline example. The SD-JWT VC and Status lists pages link to it.
-
 ### Tests
 
 - `tests/test_expired_flag_parity.py` gains a case per row above, all run
@@ -100,6 +155,75 @@ All notable changes to **openvc** are documented here. The format follows
   The coerced-`exp` cases assert only agreement with the default policy, so
   they hold whether those values are read as dates or refused as malformed. The
   shared helpers' `bool` is pinned too. 25 of the new tests fail on 1.28.1.
+
+## [1.28.2] — 2026-10-12
+
+### Security
+
+- **A `jwt_vc_json` presentation must embed at least one credential**
+  ([#193](https://github.com/luisgf/openvc/issues/193)). Found by the
+  adversarial review of [#190](https://github.com/luisgf/openvc/pull/190),
+  together with the typed-error fixes below. `verify_vp_token` accepted a VP-JWT
+  whose `vp.verifiableCredential` was `[]` or missing and returned a verified
+  presentation with zero credentials. The Credential Query counted as answered
+  with nothing presented, and `require_holder_binding=True` held vacuously. That
+  lane now raises `VpTokenMalformed`, as the `ldp_vc` lane already did.
+
+  This guarantees that a credential was presented and verified, nothing more.
+  For `jwt_vc_json` and `ldp_vc`, openvc does not match the DCQL
+  `meta.type_values` and never judges the issuer: a credential the holder minted
+  from their own `did:key` still answers the query. Check each result's `issuer`
+  and `type` against what you trust. `VpJwtProofSuite.verify` still accepts a
+  credential-less VP, which VCDM allows (DID Auth, for example). It returns an
+  empty `credentials` tuple; a caller that needs a credential must check for one.
+
+### Fixed
+
+- **A dict credential whose `type` is not a string or an array is
+  `UnknownCredentialFormat`, not a bare `TypeError`.** `detect_format` ran
+  `"EnvelopedVerifiableCredential" in types` on a `type` of `null`, a number or a
+  bool. This was reachable at the top level, inside an
+  `EnvelopedVerifiableCredential`, and nested in `jwt_vc_json` and `ldp_vc`
+  presentations. The exception escaped `OpenvcError`, so one such item aborted a
+  whole `verify_many` / `verify_many_async` batch instead of becoming that item's
+  `error`. A `type` that is a JSON object is rejected the same way. A missing
+  `type` still classifies by the proof.
+- **A signed VC-JWT whose `vc.type` is not a string or an array fails
+  `expected_types` with a typed error.** The same membership test in
+  `_check_types` crashed once `policy.expected_types` was set. The pipeline now
+  raises `TypeMismatch`, and `VcJwtProofSuite.verify(expected_types=…)` raises
+  `ClaimsInvalid`. Any `did:key` can issue, so the issuer signature does not make
+  this shape trusted.
+- **A VP-JWT `vp.verifiableCredential` of `5`, `null`, `true` or `1.5` is
+  `ClaimsInvalid`, not a bare `TypeError`.** `VpJwtProofSuite.verify` ran
+  `list(raw)` on any value that was not a string or an object. An explicit `null`
+  counts as malformed, not as absent.
+
+Fixed before merge, from this change's own adversarial review:
+- **A `type` that is a JSON object no longer satisfies `expected_types` through
+  its keys.** `{"UniversityDegreeCredential": true}` passed a check for
+  `UniversityDegreeCredential`, on the VC-JWT and Data Integrity paths alike. It
+  now fails (`TypeMismatch`, or `UnknownCredentialFormat` at detection). The
+  issuer could have signed that type as an array, so this grants nothing an
+  issuer could not already claim, but the shape is malformed.
+- **A deeply nested `proof.cryptosuite` is `UnknownCredentialFormat`, not a bare
+  `RecursionError`.** `detect_format` put the value's `repr()` in its error
+  message. On Python 3.14 `json.loads` accepts nesting deep enough to overflow
+  `repr()`. A non-string cryptosuite is now named by its type.
+- A `tuple` `type`, from a Python caller that built the credential in-process,
+  is still accepted as an array.
+
+### Fixed (docs)
+
+- **The expiry and revocation waivers have a wiki home.**
+  `VerificationPolicy.require_not_expired` / `require_not_revoked` and
+  `VerificationResult.expired` shipped in 1.27.0 with only a passing mention in
+  the manual. Getting Started now has a *Waiving expiry or revocation* section.
+  It covers what each knob waives and what still runs, and how to read the
+  result (`expired`, `status.revoked`). It also notes that the sync and async
+  pipelines compute `expired` identically since 1.28.0
+  ([#188](https://github.com/luisgf/openvc/pull/188)), and carries a runnable
+  offline example. The SD-JWT VC and Status lists pages link to it.
 
 ## [1.28.1] — 2026-10-12
 
@@ -2073,6 +2197,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.28.2]: https://github.com/luisgf/openvc/releases/tag/v1.28.2
 [1.28.1]: https://github.com/luisgf/openvc/releases/tag/v1.28.1
 [1.28.0]: https://github.com/luisgf/openvc/releases/tag/v1.28.0
 [1.27.1]: https://github.com/luisgf/openvc/releases/tag/v1.27.1
