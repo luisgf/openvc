@@ -369,7 +369,8 @@ def check_proof_purpose(proof: dict[str, Any], expected: str | None) -> None:
         return
     actual = proof.get("proofPurpose")
     if actual != expected:
-        raise ProofPurposeMismatch(f"proofPurpose {actual!r} != expected {expected!r}")
+        raise ProofPurposeMismatch(
+            f"proofPurpose {safe_repr(actual)} != expected {expected!r}")
 
 
 def check_presentation_binding(
@@ -417,6 +418,12 @@ def resolve_verification_key(
     """
     if not isinstance(verification_method, str) or not verification_method:
         raise KeyResolutionError("proof has no verificationMethod to resolve")
+    if proof_purpose is not None and not isinstance(proof_purpose, str):
+        # read from the proof before its signature is checked: an array/object is
+        # unhashable in the relationship lookup and would raise a bare TypeError.
+        # Checked before resolving, so a junk purpose never triggers a DID fetch.
+        raise ProofMalformed(
+            f"proofPurpose must be a string, not {type(proof_purpose).__name__}")
 
     from ..did.base import DidResolutionError, UnsupportedDidMethod
 

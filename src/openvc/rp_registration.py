@@ -449,7 +449,9 @@ def _check_typ(typ: Any, expected: str) -> None:
             f"token typ {_BMI_TYP!r} is the German BMI Architekturkonzept registration "
             f"certificate, a different profile with different claim names — not the "
             f"ETSI TS 119 475 WRPRC ({expected!r}) this module parses")
-    raise RpRegistrationError(f"WRPRC typ must be {expected!r}, got {typ!r}")
+    from .proof._verify_common import safe_repr
+
+    raise RpRegistrationError(f"WRPRC typ must be {expected!r}, got {safe_repr(typ)}")
 
 
 def _jwt_envelope(token: str) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes]:
