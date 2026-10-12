@@ -23,9 +23,10 @@ All notable changes to **openvc** are documented here. The format follows
   verification now raises `ClaimsInvalid` before any KB-JWT parsing or crypto
   runs. The same call with **no** KB-JWT still verifies, with `key_bound=False`,
   because `VerificationPolicy.audience` also pins a VC-JWT's `aud` and a policy
-  carrying `audience` alone must keep working for those. Passing both values, or
-  `require_key_binding=True` (which already refused a missing value), is
-  unchanged. The KB-JWT `iat` window from 1.28.0 limited this to near-real-time
+  carrying `audience` alone must keep working for those. Passing both values as
+  non-empty strings, or neither, is unchanged, as is `require_key_binding=True`
+  with a missing value (already refused); the one empty-value change is below.
+  The KB-JWT `iat` window from 1.28.0 limited this to near-real-time
   replay. No openvc lane was affected: `verify_vp_token` and the VP cascades
   always pass both values.
 
@@ -46,9 +47,10 @@ All notable changes to **openvc** are documented here. The format follows
     both values passed, one of them empty (`nonce=""`, say, from a lost session),
     the KB-JWT was checked against `""`. Any KB-JWT the holder had signed with an
     empty nonce for that audience verified, even with `require_key_binding=True`.
-    That is an audience-only binding in disguise. A present KB-JWT is now refused
-    (`ClaimsInvalid`) unless both values are non-empty strings, matching the VP-JWT,
-    OpenID4VP and nested-binding gates, which already refused `""`.
+    That is an audience-only binding in disguise. When either value is passed, a
+    present KB-JWT is now refused (`ClaimsInvalid`) unless both are non-empty
+    strings, matching the VP-JWT, OpenID4VP and nested-binding gates, which already
+    refused `""`.
 
 ### Fixed (docs)
 
