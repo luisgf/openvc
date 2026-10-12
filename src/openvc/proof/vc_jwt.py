@@ -46,7 +46,12 @@ from .errors import (  # noqa: F401
     SignatureInvalid,
     UnsupportedAlgorithm,
 )
-from ._verify_common import check_jwt_temporal, check_validity_window, reject_unknown_crit
+from ._verify_common import (
+    check_jwt_temporal,
+    check_numeric_dates,
+    check_validity_window,
+    reject_unknown_crit,
+)
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -218,6 +223,13 @@ class VcJwtProofSuite:
             raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
         reject_unknown_crit(header)
         _reject_sd_jwt_typ(header)
+        # NumericDate shapes before either lane reads them. PyJWT int()-casts exp/nbf/iat
+        # and catches only ValueError, so a signed `"nbf": null` raised a bare TypeError
+        # that escaped OpenvcError and aborted verify_many; and verify_exp=False (the
+        # expiry waiver) skipped exp entirely, accepting NaN/Infinity/"abc". This reads
+        # the untrusted payload but can only reject: the signature still gates everything
+        # accepted, and peek_claims is the same parse peek_issuer already runs pre-crypto.
+        check_numeric_dates(self.peek_claims(token), "exp", "nbf", "iat")
 
         if alg in ALLOWED_ALGS_PQ:
             # ML-DSA is not a PyJWT algorithm — verify the signature through the
@@ -243,7 +255,10 @@ class VcJwtProofSuite:
                 )
             except pyjwt.InvalidSignatureError as exc:
                 raise SignatureInvalid(str(exc)) from exc
-            except (pyjwt.PyJWTError, OverflowError) as exc:  # +Inf exp -> OverflowError in PyJWT
+            except (pyjwt.PyJWTError, OverflowError, TypeError, ValueError) as exc:
+                # Backstop for PyJWT's int() casts on attacker claims: the shape gate
+                # above should stop every such value, but if a future PyJWT cast raised
+                # anyway, the error would still be typed.
                 raise ClaimsInvalid(str(exc)) from exc
 
         credential = claims.get("vc")

@@ -4,6 +4,41 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.2] — unreleased
+
+### Security
+
+- **A VC-JWT with a malformed `exp`, `nbf` or `iat` no longer aborts a whole
+  `verify_many` batch.** openvc handed these claims to PyJWT, which casts them
+  with `int()` and catches only `ValueError`. Under the default policy, a signed
+  `"nbf": null`, `"iat": []` or `"exp": {}` raised a bare `TypeError` from
+  `verify_credential`, `verify_credential_async` and `VcJwtProofSuite.verify`.
+  `TypeError` is not an `OpenvcError`. `verify_many` and `verify_many_async`
+  catch only `OpenvcError` per item, so the error escaped and took every other
+  result in the batch with it. That broke the typed-error boundary of
+  [#99](https://github.com/luisgf/openvc/issues/99). Anyone could mint such a
+  token: a self-issued `did:jwk` is enough. Under `require_not_expired=False`,
+  PyJWT skipped `exp` altogether, so an `exp` of `NaN`, `±Infinity`, `"abc"`,
+  `1e400`, `null`, `[]` or `{}` verified. The SD-JWT VC and ML-DSA lanes
+  already rejected all of these except `null`.
+
+  The VC-JWT suite now checks the shape of `exp`, `nbf` and `iat` before PyJWT
+  reads them. It uses `is_numeric_date`, the helper the SD-JWT lane already
+  uses. A present value that is not a finite JSON number is a `ClaimsInvalid` on
+  both the classic and the ML-DSA lane, whatever the expiry policy, and
+  `verify_many` reports it as that item's error while the rest still verify. As
+  a backstop, a `TypeError` or `ValueError` from PyJWT is also caught as
+  `ClaimsInvalid`. The check runs on the payload before the signature, so a
+  token that is both forged and malformed now reports `ClaimsInvalid` rather
+  than `SignatureInvalid`. Either way it is rejected.
+
+  Some tokens that used to verify are now rejected: a numeric string
+  (`"exp": "1999999999"`), a bool (`"nbf": true`) and an integer too large for
+  a float. PyJWT `int()`-cast the first two, and the third never expires.
+  RFC 7519 §2 defines a NumericDate as a JSON number, and the SD-JWT VC lane
+  already refused all three. On the ML-DSA lane, `null` is now rejected rather
+  than read as absent, and `iat` is checked for the first time.
+
 ## [1.28.1] — 2026-10-12
 
 ### Security
