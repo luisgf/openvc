@@ -55,6 +55,8 @@ All notable changes to **openvc** are documented here. The format follows
     `[["VerifiableCredential", …]]`, used to pass because nothing was checked.
     It now fails: write the IRIs.
 
+## [1.29.1] — 2026-10-13
+
 ### Fixed
 
 - **An unhashable `alg`, `typ`, `_sd_alg` or `cryptosuite` is a typed error, not a
@@ -2198,6 +2200,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.29.1]: https://github.com/luisgf/openvc/releases/tag/v1.29.1
 [1.29.0]: https://github.com/luisgf/openvc/releases/tag/v1.29.0
 [1.28.2]: https://github.com/luisgf/openvc/releases/tag/v1.28.2
 [1.28.1]: https://github.com/luisgf/openvc/releases/tag/v1.28.1
