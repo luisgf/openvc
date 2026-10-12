@@ -170,6 +170,21 @@ def _deep_json_array(depth: int = 100_000) -> str:
     return "[" * depth + "]" * depth
 
 
+def _json_accepts_deep_array() -> bool:
+    try:
+        json.loads(_deep_json_array())
+    except RecursionError:
+        return False
+    return True
+
+
+# json.loads accepts ~116k levels on Python 3.14, and repr() of the result overflows,
+# so there the message itself is what is under test. On 3.10-3.13 json.loads gives up
+# first and the parse error is the typed outcome. Either way, never a bare
+# RecursionError; each deep test expects the one class this interpreter must raise.
+JSON_ACCEPTS_DEEP = _json_accepts_deep_array()
+
+
 def _deep_header_token(header_prefix: str, *, rest: str = "") -> str:
     """A compact JWS whose header is ``{<header_prefix>"alg": <deep array>}``."""
     header = "{" + header_prefix + '"alg":' + _deep_json_array() + "}"
@@ -198,11 +213,9 @@ def test_vc_jwt_unhashable_alg_message_names_the_type(issuer):
 
 
 def test_vc_jwt_deeply_nested_alg_is_typed():
-    # json.loads accepts ~116k levels on Python 3.14 and then repr() of the value
-    # overflows, so the message must not repr() it. On 3.10-3.13 json.loads itself
-    # gives up first (MalformedToken). Either way: typed, never a bare RecursionError.
     token = _deep_header_token('"kid":"did:example:i#k",')
-    with pytest.raises((UnsupportedAlgorithm, MalformedToken)):
+    expected = UnsupportedAlgorithm if JSON_ACCEPTS_DEEP else MalformedToken
+    with pytest.raises(expected):
         VcJwtProofSuite().verify(token, public_key_jwk={})
 
 
@@ -400,17 +413,20 @@ def test_openid4vci_unhashable_proof_typ_is_typed(holder, typ):
 def test_jwe_deeply_nested_alg_is_typed():
     header = '{"enc":"A128GCM","alg":' + _deep_json_array() + "}"
     token = f"{_b64url(header.encode())}.." + "AAAA." * 2 + "AAAA"
-    with pytest.raises((UnsupportedJweAlgorithm, JweMalformed)):
+    expected = UnsupportedJweAlgorithm if JSON_ACCEPTS_DEEP else JweMalformed
+    with pytest.raises(expected):
         decrypt_compact(token, key=P256KeyAgreementKey.generate(kid="k"))
 
 
 def test_wrprc_deeply_nested_alg_is_typed():
-    with pytest.raises(RpRegistrationError):
+    with pytest.raises(RpRegistrationError, match="alg list" if JSON_ACCEPTS_DEEP
+                       else "not a valid compact JWS"):
         parse_rp_registration_certificate(_deep_header_token('"typ":"rc-wrp+jwt",'))
 
 
 def test_lote_deeply_nested_alg_is_typed():
-    with pytest.raises((TrustListSignatureError, TrustListParseError)):
+    expected = TrustListSignatureError if JSON_ACCEPTS_DEEP else TrustListParseError
+    with pytest.raises(expected):
         consume_lote(_deep_header_token(""), expected_signer_certs=[])
 
 
