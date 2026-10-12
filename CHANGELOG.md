@@ -4,6 +4,22 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.3] — unreleased
+
+### Fixed
+
+- **`VpJwtProofSuite.verify` with a pinned `holder_key_jwk` and no `resolver`
+  works again** ([#200](https://github.com/luisgf/openvc/issues/200)). It raised
+  a bare `AttributeError` instead, even for a VP with no credentials, so the
+  failure escaped `OpenvcError` and aborted batch callers. The resolver was
+  defaulted only when the holder key was not pinned. Since 1.6.0
+  ([#24](https://github.com/luisgf/openvc/issues/24)) the cascade passes it to
+  `batch_resolvers`, which cannot take `None`. The resolver now defaults to
+  `default_resolver()` whenever none is given, as in `verify_credential` and as
+  before 1.6.0. A pinned key still decides the VP signature and is never
+  resolved. The resolver serves only the embedded credentials' issuers. This
+  failed closed: nothing verified that should not.
+
 ## [1.28.2] — 2026-10-12
 
 ### Security
@@ -27,17 +43,6 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Fixed
 
-- **`VpJwtProofSuite.verify` with a pinned `holder_key_jwk` and no `resolver`
-  works again** ([#200](https://github.com/luisgf/openvc/issues/200)). It raised
-  a bare `AttributeError` instead, even for a VP with no credentials, so the
-  failure escaped `OpenvcError` and aborted batch callers. The resolver was
-  defaulted only when the holder key was not pinned. Since 1.6.0
-  ([#24](https://github.com/luisgf/openvc/issues/24)) the cascade passes it to
-  `batch_resolvers`, which cannot take `None`. The resolver now defaults to
-  `default_resolver()` whenever none is given, as in `verify_credential` and as
-  before 1.6.0. A pinned key still decides the VP signature and is never
-  resolved. The resolver serves only the embedded credentials' issuers. This
-  failed closed: nothing verified that should not.
 - **A dict credential whose `type` is not a string or an array is
   `UnknownCredentialFormat`, not a bare `TypeError`.** `detect_format` ran
   `"EnvelopedVerifiableCredential" in types` on a `type` of `null`, a number or a
