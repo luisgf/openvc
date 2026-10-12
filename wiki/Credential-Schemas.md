@@ -39,7 +39,10 @@ registry is wired), so a hostile `$ref` cannot turn schema validation into an SS
   re-fetched, so a hostile chain of schema-VCs cannot loop; the inner VC must actually
   carry the `JsonSchemaCredential` type, so a signature-valid but wrong-typed VC cannot
   stand in as the schema authority; and any inner-proof failure surfaces as a typed
-  `SchemaResolutionError`.
+  `SchemaResolutionError`. The schema VC does **not** inherit the policy's
+  `require_not_expired=False` / `require_not_revoked=False` waivers: those concern the
+  credential you verify, and the schema VC is a trust input it depends on — like a
+  status-list credential — so an expired or revoked one fails under every policy.
 
 ## Pinning the schema (`digestSRI`)
 

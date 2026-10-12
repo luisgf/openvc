@@ -208,6 +208,9 @@ class VerifiedSdJwt:
     vct: str | None                # verifiable credential type
     key_bound: bool                # a valid KB-JWT was present and verified
     confirmation: dict[str, Any] | None   # the ``cnf`` claim, if any
+    # check_temporal=False only: the issuer JWT's ``exp`` (in the payload or disclosed)
+    # has passed, i.e. the expiry check that was skipped would have failed.
+    expired: bool = False
 
 
 def _check_aka_vcts(payload: Mapping[str, Any]) -> None:
@@ -432,9 +435,9 @@ class SdJwtVcProofSuite:
                 kb_jwt, issuer_jwt, disclosures, claims.get("cnf"),
                 hash_name=hash_name, audience=audience, nonce=nonce,
                 required=True, current=current, max_age_s=kb_max_age_s)
-            self._check_temporal(claims, check_temporal=check_temporal)
+            expired = self._check_temporal(claims, check_temporal=check_temporal)
         else:
-            self._check_temporal(claims, check_temporal=check_temporal)
+            expired = self._check_temporal(claims, check_temporal=check_temporal)
             iss, hash_name = _iss_and_hash()
             key_bound = False
 
@@ -450,7 +453,7 @@ class SdJwtVcProofSuite:
         # RFC 9901 §7.1 step 6: nbf/exp are checked on the *processed* payload
         # if present. The issuer-JWT body was already checked above; if
         # `exp`/`nbf` were selectively disclosed they only appear after `_unpack`.
-        self._check_temporal(unpacked, check_temporal=check_temporal)
+        expired = self._check_temporal(unpacked, check_temporal=check_temporal) or expired
 
         vct = unpacked.get("vct")
         if expected_vct is not None and vct != expected_vct:
@@ -465,7 +468,7 @@ class SdJwtVcProofSuite:
 
         return VerifiedSdJwt(
             claims=unpacked, issuer=iss, vct=vct if isinstance(vct, str) else None,
-            key_bound=key_bound, confirmation=claims.get("cnf"))
+            key_bound=key_bound, confirmation=claims.get("cnf"), expired=expired)
 
     # -- internals --------------------------------------------------------- #
 
@@ -519,10 +522,11 @@ class SdJwtVcProofSuite:
 
     def _check_temporal(
         self, claims: dict[str, Any], *, check_temporal: bool = True
-    ) -> None:
+    ) -> bool:
         # NumericDate exp/nbf, fail-closed and non-finite-safe, single-sourced across the
-        # JOSE suites (openvc.proof._verify_common.check_jwt_temporal).
-        check_jwt_temporal(
+        # JOSE suites (openvc.proof._verify_common.check_jwt_temporal). True when a
+        # waived exp has passed.
+        return check_jwt_temporal(
             claims, leeway_s=self._leeway, subject="token",
             check_temporal=check_temporal)
 

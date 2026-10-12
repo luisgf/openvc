@@ -102,6 +102,9 @@ class VerifiedCredential:
     issuer: str                    # reconciled issuer DID
     subject: str | None            # credentialSubject.id, if present
     claims: dict[str, Any]         # full JWT claim set (iss, exp, jti, ...)
+    # check_temporal=False only: the JWT `exp` or the body's validUntil/expirationDate
+    # has passed, i.e. the expiry check that was skipped would have failed.
+    expired: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -204,7 +207,11 @@ class VcJwtProofSuite:
         audience: str | None = None,
         check_temporal: bool = True,
     ) -> VerifiedCredential:
-        """Verify signature + temporal claims + VC-JWT reconciliation."""
+        """Verify signature + temporal claims + VC-JWT reconciliation.
+
+        *check_temporal* False waives only the expiry checks (JWT ``exp``, and the
+        body's ``validUntil`` / ``expirationDate``); the result's ``expired`` then
+        reports whether one of them would have failed."""
         header_b64, _, _ = _split(token)
         try:
             header = json.loads(_b64url_decode(header_b64))
@@ -222,29 +229,22 @@ class VcJwtProofSuite:
         if alg in ALLOWED_ALGS_PQ:
             # ML-DSA is not a PyJWT algorithm — verify the signature through the
             # dependency-light primitive and validate the JWT claims ourselves.
-            claims = self._verify_mldsa(
+            claims, jwt_expired = self._verify_mldsa(
                 token, alg, public_key_jwk, audience, check_temporal=check_temporal)
         else:
             key = self._jwk_to_key(public_key_jwk, alg)
+            jwt_expired = False
+            # PyJWT judges `exp` in both modes, so a waived expiry is exactly the one the
+            # default policy rejects: its clock, its leeway, its coercion of the value.
+            # Only once it says "expired" does the waiver decode again without that one
+            # check, so every other claim check still runs.
             try:
-                claims = _JWT.decode(                      # PyJWT instance that knows "Ed25519"
-                    token,
-                    key=key,
-                    algorithms=[alg],                     # pinned, single alg
-                    leeway=self._leeway,
-                    audience=audience,
-                    options={
-                        "require": ["iss"],
-                        "verify_signature": True,
-                        "verify_exp": check_temporal,
-                        "verify_nbf": True,
-                        "verify_aud": audience is not None,
-                    },
-                )
-            except pyjwt.InvalidSignatureError as exc:
-                raise SignatureInvalid(str(exc)) from exc
-            except (pyjwt.PyJWTError, OverflowError) as exc:  # +Inf exp -> OverflowError in PyJWT
-                raise ClaimsInvalid(str(exc)) from exc
+                claims = self._decode(token, key, alg, audience, verify_exp=True)
+            except pyjwt.ExpiredSignatureError as exc:
+                if check_temporal:
+                    raise ClaimsInvalid(str(exc)) from exc
+                claims = self._decode(token, key, alg, audience, verify_exp=False)
+                jwt_expired = True
 
         credential = claims.get("vc")
         if not isinstance(credential, dict):
@@ -256,7 +256,7 @@ class VcJwtProofSuite:
         # VCDM 2.0 envelopes among them — may encode expiry ONLY in the credential body;
         # without this an expired such credential would still verify. Same leeway; there
         # is no Data-Integrity proof object on the JOSE path, so pass an empty one.
-        check_validity_window(
+        body_expired = check_validity_window(
             credential, {}, now=None, leeway_s=self._leeway,
             check_temporal=check_temporal)
 
@@ -266,7 +266,39 @@ class VcJwtProofSuite:
 
         return VerifiedCredential(
             credential=credential, issuer=issuer, subject=subject, claims=claims,
+            expired=jwt_expired or body_expired,
         )
+
+    def _decode(
+        self, token: str, key: Any, alg: str, audience: str | None, *, verify_exp: bool,
+    ) -> dict[str, Any]:
+        """PyJWT decode with openvc's pinned options. Errors become typed
+        ``ProofError``\\s, except ``ExpiredSignatureError``, which is left to
+        :meth:`verify` to enforce or waive."""
+        try:
+            claims: dict[str, Any] = _JWT.decode(   # PyJWT instance that knows "Ed25519"
+                token,
+                key=key,
+                algorithms=[alg],                     # pinned, single alg
+                leeway=self._leeway,
+                audience=audience,
+                options={
+                    "require": ["iss"],
+                    "verify_signature": True,
+                    "verify_exp": verify_exp,
+                    "verify_nbf": True,
+                    "verify_aud": audience is not None,
+                },
+            )
+        except pyjwt.ExpiredSignatureError:
+            raise
+        except pyjwt.InvalidSignatureError as exc:
+            raise SignatureInvalid(str(exc)) from exc
+        # +Inf exp -> OverflowError; a non-scalar exp/nbf/iat (`{}`, `[]`, null) ->
+        # TypeError from PyJWT's int() coercion. Both are claim-shape failures.
+        except (pyjwt.PyJWTError, OverflowError, TypeError) as exc:
+            raise ClaimsInvalid(str(exc)) from exc
+        return claims
 
     # -- signing (issuance) ----------------------------------------------- #
 
@@ -312,9 +344,10 @@ class VcJwtProofSuite:
     def _verify_mldsa(
         self, token: str, alg: str, public_key_jwk: dict[str, Any], audience: str | None,
         *, check_temporal: bool = True,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], bool]:
         """Verify an ML-DSA VC-JWT: signature via the dependency-light primitive (PyJWT
-        has no ML-DSA), then the JWT claims validated here."""
+        has no ML-DSA), then the JWT claims validated here. Returns the claims and
+        whether a waived ``exp`` has passed."""
         from ..keys import KeyBackendError, verify_signature
         try:
             header_b64, payload_b64, sig_b64 = token.split(".")
@@ -340,18 +373,19 @@ class VcJwtProofSuite:
             raise MalformedToken("payload is not valid JSON") from exc
         if not isinstance(claims, dict):
             raise ClaimsInvalid("JWT payload must be a JSON object")
-        self._check_jwt_claims(claims, audience, check_temporal=check_temporal)
-        return claims
+        expired = self._check_jwt_claims(claims, audience, check_temporal=check_temporal)
+        return claims, expired
 
     def _check_jwt_claims(
         self, claims: dict[str, Any], audience: str | None, *,
         check_temporal: bool = True,
-    ) -> None:
+    ) -> bool:
         # Mirror the PyJWT gate for the ML-DSA path: require iss, enforce exp/nbf with the
-        # suite leeway (shared non-finite-safe helper), check aud when expected.
+        # suite leeway (shared non-finite-safe helper), check aud when expected. Returns
+        # whether a waived exp has passed.
         if not isinstance(claims.get("iss"), str):
             raise ClaimsInvalid("the 'iss' claim is required")
-        check_jwt_temporal(
+        expired = check_jwt_temporal(
             claims, leeway_s=self._leeway, subject="token",
             check_temporal=check_temporal)
         if audience is not None:
@@ -359,6 +393,7 @@ class VcJwtProofSuite:
             auds = aud if isinstance(aud, list) else [aud]
             if audience not in auds:
                 raise ClaimsInvalid("audience mismatch")
+        return expired
 
     @staticmethod
     def _jwk_to_key(jwk: dict[str, Any], alg: str) -> Any:

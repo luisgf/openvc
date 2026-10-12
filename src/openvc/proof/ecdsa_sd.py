@@ -439,6 +439,9 @@ class VerifiedSdCredential:
     issuer: str | None
     subject: str | None
     proof: dict[str, Any]
+    # check_temporal=False only: the disclosed validUntil/expirationDate or the
+    # proof's own ``expires`` has passed (the skipped expiry check would have failed).
+    expired: bool = False
 
 
 def _proof_config_hash(proof: dict[str, Any], context: Any, loader: Any) -> bytes:
@@ -663,7 +666,7 @@ class EcdsaSdProofSuite:
                 raise SignatureInvalid("a disclosed statement signature does not verify")
 
         check_proof_purpose(proof, expected_proof_purpose)
-        check_validity_window(
+        expired = check_validity_window(
             unsecured, proof, now=now, leeway_s=self._leeway,
             check_temporal=check_temporal)
 
@@ -672,7 +675,8 @@ class EcdsaSdProofSuite:
         subj = unsecured.get("credentialSubject")
         subject = subj.get("id") if isinstance(subj, dict) else None
         return VerifiedSdCredential(
-            credential=derived, issuer=issuer, subject=subject, proof=proof)
+            credential=derived, issuer=issuer, subject=subject, proof=proof,
+            expired=expired)
 
 
 # --------------------------------------------------------------------------- #
