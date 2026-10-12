@@ -146,8 +146,9 @@ def test_ldp_vp_rejects_self_asserted_holder_spoof():
 
 
 def test_ldp_vp_require_holder_binding_enforces_subject():
-    # A holder legitimately presents a credential issued to SOMEONE ELSE. Allowed by
-    # default; rejected when the caller demands subject == holder.
+    # A holder presents a credential issued to SOMEONE ELSE. The query's
+    # require_cryptographic_holder_binding (default true) rejects it (#196); opting out
+    # accepts it, and the caller's require_holder_binding=True still rejects it then.
     suite, key_factory, mc = _suite("eddsa-jcs-2022")
     ik = key_factory.generate(kid="_")
     idid, ikid = _did_key(ik, mc)
@@ -166,13 +167,18 @@ def test_ldp_vp_require_holder_binding_enforces_subject():
     svp = suite.add_proof(vp, signing_key=hk, verification_method=hkid,
                           proof_purpose="authentication", challenge=NONCE, domain=CLIENT_ID)
 
-    # default: a holder may present another party's credential
-    (p,) = verify_vp_token({"c1": [svp]}, dcql_query=DCQL, nonce=NONCE,
+    # default: the query requires cryptographic holder binding
+    with pytest.raises(ProofError, match="is not the authenticated holder"):
+        verify_vp_token({"c1": [svp]}, dcql_query=DCQL, nonce=NONCE, client_id=CLIENT_ID)
+    # opted out: a holder may present another party's credential
+    unbound = {"credentials": [{"id": "c1", "format": "ldp_vc",
+                                "require_cryptographic_holder_binding": False}]}
+    (p,) = verify_vp_token({"c1": [svp]}, dcql_query=unbound, nonce=NONCE,
                            client_id=CLIENT_ID).presentations
     assert p.holder == hdid and p.credentials[0].subject == other_subject
-    # require_holder_binding: subject must be the authenticated holder
+    # require_holder_binding: subject must be the authenticated holder, whatever the query
     with pytest.raises(ProofError):
-        verify_vp_token({"c1": [svp]}, dcql_query=DCQL, nonce=NONCE, client_id=CLIENT_ID,
+        verify_vp_token({"c1": [svp]}, dcql_query=unbound, nonce=NONCE, client_id=CLIENT_ID,
                         require_holder_binding=True)
 
 
@@ -276,13 +282,13 @@ def test_ldp_vp_embeds_a_vc_jwt_string():
     issuer = Ed25519SigningKey.generate(kid="_")
     idid, ikid = _did_key(issuer, bytes([0xED, 0x01]))
     issuer = Ed25519SigningKey(issuer._sk, kid=ikid)
-    vc_jwt = VcJwtProofSuite().sign(
-        {"@context": [V2], "type": ["VerifiableCredential"], "issuer": idid,
-         "credentialSubject": {"id": "did:example:alice"}}, signing_key=issuer)
-
     hk = Ed25519SigningKey.generate(kid="_")
     hdid, hkid = _did_key(hk, bytes([0xED, 0x01]))
     hk = Ed25519SigningKey(hk._sk, kid=hkid)
+    vc_jwt = VcJwtProofSuite().sign(
+        {"@context": [V2], "type": ["VerifiableCredential"], "issuer": idid,
+         "credentialSubject": {"id": hdid}}, signing_key=issuer)
+
     vp = {"@context": [V2], "type": ["VerifiablePresentation"], "holder": hdid,
           "verifiableCredential": [vc_jwt]}
     signed = suite.add_proof(vp, signing_key=hk, verification_method=hkid,

@@ -105,13 +105,14 @@ def _enveloped_json(doc):
             "id": f"data:application/vc+ld+json;base64,{b64}"}
 
 
-def _vc_jwt(issuer, *, vc_type=("VerifiableCredential",)):
-    """A VC-JWT signed by *issuer*; *vc_type* is written verbatim into ``vc.type``."""
+def _vc_jwt(issuer, *, vc_type=("VerifiableCredential",), subject="did:example:s"):
+    """A VC-JWT signed by *issuer* about *subject*; *vc_type* is written verbatim into
+    ``vc.type``."""
     issuer_key, issuer_did = issuer
     now = int(time.time())
     vc = {"@context": [V2], "type": list(vc_type) if isinstance(vc_type, tuple) else vc_type,
-          "issuer": issuer_did, "credentialSubject": {"id": "did:example:s"}}
-    claims = {"iss": issuer_did, "sub": "did:example:s", "nbf": now, "iat": now, "vc": vc}
+          "issuer": issuer_did, "credentialSubject": {"id": subject}}
+    claims = {"iss": issuer_did, "sub": subject, "nbf": now, "iat": now, "vc": vc}
     header = {"alg": issuer_key.alg, "typ": "JWT", "kid": issuer_key.kid}
     return sign_compact(header, claims, signing_key=issuer_key)
 
@@ -313,6 +314,8 @@ def test_ldp_vc_rejects_a_credential_less_vp_too(vcs):
 
 
 def test_jwt_vc_json_with_a_credential_still_verifies(issuer, holder):
-    # The control: the new emptiness check does not reject a normal presentation.
-    (pres,) = _vp_token(_vp_jwt(holder, [_vc_jwt(issuer)]), JWT_VC_DCQL).for_query("q")
+    # The control: the new emptiness check does not reject a normal presentation — one
+    # whose credential is issued to the presenter, as the default query requires (#196).
+    vc = _vc_jwt(issuer, subject=holder[1])
+    (pres,) = _vp_token(_vp_jwt(holder, [vc]), JWT_VC_DCQL).for_query("q")
     assert len(pres.credentials) == 1 and pres.holder == holder[1]
