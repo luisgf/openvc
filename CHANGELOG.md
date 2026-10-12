@@ -15,9 +15,9 @@ All notable changes to **openvc** are documented here. The format follows
   let a VCDM credential secured with SD-JWT (VC-JOSE-COSE `vc+sd-jwt`), whose only
   expiry was a past `validUntil`, verify under the default policy, bare or inside
   an `EnvelopedVerifiableCredential`. VC-JOSE-COSE §3.2.1 makes that credential
-  the SD-JWT's claim set itself, and §3.1.3 says its `exp` dates the signature,
-  not the data. `SdJwtVcProofSuite.verify` now applies the same VCDM window check
-  as the VC-JWT lane:
+  the SD-JWT's claim set itself. §3.1.3 says, for the JOSE encoding SD-JWT builds
+  on, that `exp` dates the signature, not the data. `SdJwtVcProofSuite.verify` now
+  applies the same VCDM window check as the VC-JWT lane:
   - `validFrom` / `validUntil`, or the VCDM 1.1 `issuanceDate` /
     `expirationDate`, are checked on the processed payload, so a disclosed
     `validUntil` counts.
@@ -28,7 +28,8 @@ All notable changes to **openvc** are documented here. The format follows
 
   The payload counts as a VCDM credential when its `@context` names a VCDM base
   context, or when its `typ` is `vc+sd-jwt` and it has no `vct`. Both signals are
-  issuer-signed; the media type of an enveloping `data:` URL is not consulted.
+  read from the issuer-signed SD-JWT; the media type of an enveloping `data:` URL
+  is not consulted.
   **IETF SD-JWT VCs are unaffected:** a `dc+sd-jwt` one, or one with the
   pre-draft-06 `vc+sd-jwt` typ and a `vct`, that merely has a claim named
   `validUntil` still verifies, because that name is not a validity bound in its

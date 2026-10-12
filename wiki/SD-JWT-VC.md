@@ -161,7 +161,8 @@ The same suite verifies a W3C VCDM credential secured with SD-JWT, as defined by
 [VC-JOSE-COSE](https://www.w3.org/TR/vc-jose-cose/) §3.2, either bare or inside an
 `EnvelopedVerifiableCredential` (`data:application/vc+sd-jwt,…`). Such a credential
 **is** the JWT claim set, with `@context`, `issuer`, `validFrom` and so on at the top
-level. Its `exp` dates the signature, not the data (§3.1.3). An issuer may therefore
+level. Its `exp` dates the signature, not the data: §3.1.3 says so for the JOSE
+encoding SD-JWT builds on. An issuer may therefore
 put the expiry only in `validUntil`, and openvc enforces it just as the VC-JWT lane
 does:
 
@@ -184,7 +185,7 @@ these:
 | Signal | Example |
 |---|---|
 | The payload's `@context` names a VCDM base context, as a string or anywhere in the array | `"@context": ["https://www.w3.org/ns/credentials/v2", …]` (or `…/2018/credentials/v1`) |
-| The `typ` is `vc+sd-jwt` and the payload has no `vct` | a W3C issuer that omitted `@context`, or made it disclosable and the holder withheld it |
+| The `typ` is `vc+sd-jwt` and the payload has no `vct` (a non-empty string) | a W3C issuer that omitted `@context`, or made it disclosable and the holder withheld it |
 
 An **IETF SD-JWT VC is not affected**: a `dc+sd-jwt` one, or one with the legacy
 `vc+sd-jwt` typ and a `vct`. Its claims are the issuer's own vocabulary, so a claim
@@ -208,5 +209,7 @@ status only works for claims the holder cannot withhold — the same applies to
 would verify. The same holds for a W3C credential's `validUntil` / `validFrom` and
 its `@context`. VC-JOSE-COSE §3.2.1 says properties needed for validation SHOULD
 NOT be selectively disclosable. A holder can withhold a disclosable `validUntil`.
-Withholding a disclosable `@context` can also hide what the credential is, unless
-the `vc+sd-jwt` typ still identifies it.
+A holder can also withhold a disclosable `@context`, including a VCDM entry that is
+itself an array-element disclosure. The credential then counts as VCDM only if it is
+typed `vc+sd-jwt` and has no `vct`. If it is `dc+sd-jwt`, or carries a `vct`, its
+window is no longer read.

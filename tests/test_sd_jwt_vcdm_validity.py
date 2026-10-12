@@ -3,8 +3,9 @@ tests/test_sd_jwt_vcdm_validity.py — a W3C VCDM credential secured as SD-JWT i
 to its own validity window; an IETF SD-JWT VC's claims are not.
 
 W3C VC-JOSE-COSE §3.2.1 secures a VCDM credential as the SD-JWT's claim set itself
-(``typ: vc+sd-jwt``), and §3.1.3 says its ``exp`` dates the *signature*, unlike
-``validFrom`` / ``validUntil``, which date the data. Through v1.28.1 the SD-JWT lane
+(``typ: vc+sd-jwt``), and §3.1.3 (the JOSE encoding it builds on) says ``exp`` dates
+the *signature*, unlike ``validFrom`` / ``validUntil``, which date the data. Through
+v1.28.1 the SD-JWT lane
 read only ``exp`` / ``nbf``, so such a credential whose only expiry was a past
 ``validUntil`` verified under the default policy. The VC-JWT lane already enforced the
 VCDM window; this pins the SD-JWT lane to the same rule, on both pipelines, bare and
@@ -213,6 +214,7 @@ def test_valid_until_inside_the_leeway_verifies(run):
     pytest.param("vc+sd-jwt", V2, {}, id="context-as-a-string"),
     pytest.param("vc+sd-jwt", ["https://example.org/ctx", V2], {}, id="v2-not-first"),
     pytest.param("vc+sd-jwt", None, {}, id="w3c-typ-no-context-no-vct"),
+    pytest.param("vc+sd-jwt", None, {"vct": ""}, id="w3c-typ-empty-vct"),
     pytest.param("dc+sd-jwt", [V2], {}, id="ietf-typ-but-vcdm-context"),
     pytest.param("dc+sd-jwt", [V2], {"vct": "urn:x"}, id="vcdm-context-wins-over-vct"),
 ])
@@ -330,6 +332,10 @@ def test_envelope_media_type_does_not_turn_ietf_claims_into_vcdm(run):
     ("dc+sd-jwt", {"@context": [V1]}, True),
     ("vc+sd-jwt", {}, True),
     ("vc+sd-jwt", {"vct": None}, True),
+    ("vc+sd-jwt", {"vct": ""}, True),           # not a vct: an IETF vct is a non-empty string
+    ("vc+sd-jwt", {"vct": 0}, True),
+    ("vc+sd-jwt", {"vct": []}, True),
+    ("vc+sd-jwt", {"vct": {"id": "urn:x"}}, True),
     ("vc+sd-jwt", {"vct": "urn:x"}, False),
     ("dc+sd-jwt", {}, False),
     ("dc+sd-jwt", {"@context": ["https://www.w3.org/ns/credentials/v2/"]}, False),

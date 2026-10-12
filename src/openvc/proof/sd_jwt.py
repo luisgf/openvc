@@ -246,7 +246,8 @@ def _declares_vcdm(typ: Any, claims: Mapping[str, Any]) -> bool:
 
     * its ``@context`` names a VCDM base context (as a string or anywhere in an array); or
     * the ``typ`` is ``vc+sd-jwt`` and it has no ``vct``. The typ alone is ambiguous: an
-      IETF SD-JWT VC from before draft-06 carries it too, but always with a ``vct``.
+      IETF SD-JWT VC from before draft-06 carries it too, but always with a ``vct`` — a
+      non-empty string, so ``""``, ``0`` or ``[]`` do not count as one.
 
     An IETF SD-JWT VC that merely has a claim *named* ``validUntil`` is neither: the name
     means nothing in its vocabulary, so it is not read as a validity bound."""
@@ -254,7 +255,8 @@ def _declares_vcdm(typ: Any, claims: Mapping[str, Any]) -> bool:
     entries = context if isinstance(context, list) else [context]
     if any(isinstance(entry, str) and entry in _VCDM_CONTEXTS for entry in entries):
         return True
-    return typ == _W3C_TYP and claims.get("vct") is None
+    vct = claims.get("vct")
+    return typ == _W3C_TYP and not (isinstance(vct, str) and vct)
 
 
 # --------------------------------------------------------------------------- #
@@ -485,9 +487,9 @@ class SdJwtVcProofSuite:
         self._check_temporal(unpacked, check_temporal=check_temporal)
 
         # A W3C credential secured as SD-JWT *is* this claim set (VC-JOSE-COSE §3.2.1), and
-        # its `exp` dates the signature, not the data (§3.1.3): an issuer may put the expiry
-        # only in `validUntil`. Enforce the VCDM window as the VC-JWT lane does — on the
-        # processed payload, same leeway, wall clock like `exp`.
+        # its `exp` dates the signature, not the data (§3.1.3, JOSE): an issuer may put the
+        # expiry only in `validUntil`. Enforce the VCDM window as the VC-JWT lane does — on
+        # the processed payload, same leeway, wall clock like `exp`.
         if _declares_vcdm(header.get("typ"), unpacked):
             check_validity_window(
                 unpacked, {}, now=None, leeway_s=self._leeway,
