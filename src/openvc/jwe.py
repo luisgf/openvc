@@ -115,15 +115,18 @@ def decrypt_compact(token: str, *, key: KeyAgreementKey) -> bytes:
     if not isinstance(header, dict):
         raise JweMalformed("JWE protected header must be a JSON object")
 
+    from .proof._verify_common import safe_repr
+
     alg = header.get("alg")
     enc = header.get("enc")
     # isinstance guards keep an unhashable alg/enc (a JSON list/object) from raising a
     # bare TypeError out of the `in frozenset/dict` test — fail closed and typed.
     if not isinstance(alg, str) or alg not in ALLOWED_ALG:
-        raise UnsupportedJweAlgorithm(f"JWE alg {alg!r} is not permitted (only ECDH-ES)")
+        raise UnsupportedJweAlgorithm(
+            f"JWE alg {safe_repr(alg)} is not permitted (only ECDH-ES)")
     if not isinstance(enc, str) or enc not in ALLOWED_ENC:
         raise UnsupportedJweAlgorithm(
-            f"JWE enc {enc!r} is not permitted (only A128GCM / A256GCM)")
+            f"JWE enc {safe_repr(enc)} is not permitted (only A128GCM / A256GCM)")
     if header.get("zip") is not None:                  # no decompression -> no zip bombs
         raise UnsupportedJweAlgorithm("JWE compression ('zip') is not supported")
     if "crit" in header:                               # unknown critical extensions -> reject
