@@ -299,7 +299,8 @@ enforces that for every nested SD-JWT.
 This holds only for credentials nested in a presentation, where you have no way to
 pass the binding yourself. At the top level — `verify_credential`, or
 `SdJwtVcProofSuite.verify` — the KB-JWT's `aud` / `nonce` are checked against the
-values *you* pass (see [SD-JWT VC](SD-JWT-VC)). A nested `key_bound=True` also does
+values *you* pass, and passing only one of them is rejected (see
+[SD-JWT VC](SD-JWT-VC)). A nested `key_bound=True` also does
 not mean that the presentation's signer controls the credential's `cnf` key. To
 require that a credential was issued to the presenter, use `require_holder_binding`.
 

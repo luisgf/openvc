@@ -4,6 +4,39 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.2] — unreleased
+
+### Security
+
+- **A Key Binding JWT checked against only `audience` or only `nonce` is now
+  rejected** ([#191](https://github.com/luisgf/openvc/issues/191)). At the top
+  level (`verify_credential`, `verify_credential_async` and
+  `SdJwtVcProofSuite.verify`), the KB-JWT's `aud` was checked only when an
+  `audience` was passed and its `nonce` only when a `nonce` was passed, each
+  independently. A caller that passed one of the two got `key_bound=True` for a
+  KB-JWT that was never bound to it. With `audience` alone, a KB-JWT from another
+  of the verifier's own sessions verified. With `nonce` alone, one made for
+  another verifier verified. RFC 9901 §7.3 step 5.6 binds a KB-JWT by validating
+  `nonce` **and** `aud`, and one of them is not a binding.
+
+  When a KB-JWT is present and exactly one of `audience` / `nonce` is given,
+  verification now raises `ClaimsInvalid` before any KB-JWT parsing or crypto
+  runs. The same call with **no** KB-JWT still verifies, with `key_bound=False`,
+  because `VerificationPolicy.audience` also pins a VC-JWT's `aud` and a policy
+  carrying `audience` alone must keep working for those. Passing both values, or
+  `require_key_binding=True` (which already refused a missing value), is
+  unchanged. The KB-JWT `iat` window from 1.28.0 limited this to near-real-time
+  replay. No openvc lane was affected: `verify_vp_token` and the VP cascades
+  always pass both values.
+
+  Rejecting, rather than reporting `key_bound=False`, follows 1.28.1: a caller who
+  sets `audience` and never reads `key_bound` would still accept the relay.
+  Passing **neither** value keeps its documented meaning: `key_bound=True` then
+  proves possession of the `cnf` key for some verifier, not a binding to you.
+  Changing that would change a value callers gate on, so it is out of scope for a
+  patch. The wiki (*SD-JWT VC → What `key_bound` attests*) now has a table of all
+  three cases.
+
 ## [1.28.1] — 2026-10-12
 
 ### Security

@@ -80,10 +80,21 @@ issuer key from `iss` (see
 **What `key_bound` attests.** `key_bound=True` means a KB-JWT was present,
 verified against the credential's `cnf` key over the disclosures you received, and
 within the freshness window above. Its `aud` and `nonce` are checked against the
-values **you pass**, and only then.
-Without `audience` + `nonce`, the flag proves possession of the key for some
-verifier, not a binding to you. Pass both, or set `require_key_binding=True`, which
-refuses to run without them. An SD-JWT VC nested in a `jwt_vc_json` / `ldp_vc`
+values **you pass**, and they bind it only **together** (RFC 9901 §7.3 step 5.6):
+
+| you pass | a KB-JWT is present | no KB-JWT |
+|---|---|---|
+| `audience` **and** `nonce` | both must match, else `ClaimsInvalid`; `key_bound=True` means bound to you | verifies, `key_bound=False` |
+| only one of them | **`ClaimsInvalid`**, before any KB-JWT crypto runs | verifies, `key_bound=False` |
+| neither | `key_bound=True`, but that is **possession only**: the key signed for *some* verifier, not a binding to you | verifies, `key_bound=False` |
+
+A single value is not a binding. `aud` alone accepts a KB-JWT from another of
+your own sessions, and `nonce` alone accepts one made for another verifier, so openvc
+refuses rather than report a half-checked `key_bound=True`. A KB-JWT is never
+checked against just one of the two values. With no KB-JWT, `audience` alone stays a
+valid policy, which matters because `VerificationPolicy.audience` also pins a VC-JWT's
+`aud`. Pass both, or set `require_key_binding=True`, which refuses to run without
+them. An SD-JWT VC nested in a `jwt_vc_json` / `ldp_vc`
 presentation gets its `aud` / `nonce` from that presentation. A KB-JWT bound
 anywhere else rejects the whole response — see
 [SD-JWT VCs nested in a W3C presentation](Presentations#sd-jwt-vcs-nested-in-a-w3c-presentation).

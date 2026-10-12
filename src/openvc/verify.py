@@ -144,7 +144,9 @@ class VerificationPolicy:
     one. ``now`` pins the evaluation instant for Data Integrity temporal checks and
     for the SD-JWT Key Binding JWT freshness window (the JOSE suites' ``exp``/``nbf``
     use the current time). ``kb_max_age_s`` bounds how old a KB-JWT's ``iat`` may be
-    (RFC 9901 §7.3 step 5.5)."""
+    (RFC 9901 §7.3 step 5.5). ``audience`` and ``nonce`` bind an SD-JWT KB-JWT
+    together (step 5.6): a KB-JWT checked against only one of them is rejected
+    (``ClaimsInvalid``), while ``audience`` alone still pins a VC-JWT's ``aud``."""
     leeway_s: int = DEFAULT_LEEWAY_S
     expected_types: Sequence[str] | None = None
     expected_vct: str | None = None

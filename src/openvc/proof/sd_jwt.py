@@ -383,6 +383,12 @@ class SdJwtVcProofSuite:
         against the holder key in ``cnf`` and checks ``aud`` / ``nonce`` /
         ``sd_hash``.
 
+        *audience* and *nonce* bind a KB-JWT **together** (RFC 9901 §7.3 step 5.6):
+        pass both. A present KB-JWT verified with only one of them raises
+        ``ClaimsInvalid`` rather than report a half-checked binding. With neither,
+        ``key_bound=True`` proves possession of the ``cnf`` key over these disclosures
+        for *some* verifier, not a binding to you.
+
         When *require_key_binding* is True the KB-JWT is verified **before**
         ``exp``/``nbf``: an expired (or not-yet-valid) issuer JWT still has its
         holder binding checked, so a temporal failure means the presentation was
@@ -568,6 +574,18 @@ class SdJwtVcProofSuite:
             if required:
                 raise ClaimsInvalid("key binding required but no KB-JWT present")
             return False
+        if (audience is None) != (nonce is None):
+            # RFC 9901 §7.3 step 5.6 binds a KB-JWT by aud AND nonce: aud alone lets a
+            # KB-JWT from another of this verifier's sessions replay, nonce alone lets one
+            # made for another verifier relay. Checking only the value given would report
+            # key_bound=True for a binding that never happened, so a half-configured
+            # caller fails closed here, before any KB-JWT crypto. Only with a KB-JWT
+            # present: `audience` alone is a valid VC-JWT policy, and an SD-JWT without a
+            # KB-JWT honestly reports key_bound=False.
+            given = "audience" if nonce is None else "nonce"
+            raise ClaimsInvalid(
+                f"a KB-JWT is present but only {given} was given to bind it against; "
+                "aud and nonce bind it together (RFC 9901 §7.3 step 5.6), so pass both")
         header, claims, signing_input, signature = self._decode_jws(kb_jwt)
         if header.get("typ") != _KB_TYP:
             raise SdJwtError(f"KB-JWT typ must be {_KB_TYP!r}")

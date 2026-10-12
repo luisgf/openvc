@@ -93,7 +93,9 @@ boundary is attacker-controlled until a signature verifies.
 - **SD-JWT VC** — `src/openvc/proof/sd_jwt.py`. Allow-list before crypto for the
   issuer JWT (`:331-332`) and KB-JWT (`:464-465`); duplicate/unreferenced
   disclosures rejected (`:349-352,431`); claim-overwrite blocked (`:143`);
-  key-binding-required-without-`aud`/`nonce` fails closed (`:447-455`). See
+  key-binding-required-without-`aud`/`nonce` fails closed (`:564-572`), and so
+  does a present KB-JWT checked against only one of `aud`/`nonce` (`:577-588`,
+  #191). See
   **R1** in §9 for the recursion caveat.
 - **Data Integrity** — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (RDF-canonical),
   `eddsa-jcs-2022` / `ecdsa-jcs-2019` (JCS), and selective-disclosure
