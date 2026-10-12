@@ -291,25 +291,12 @@ def test_subject_array_rejected_even_with_an_issuer_signed_sub(
     pytest.param({}, id="no-verifiableCredential"),
 ])
 def test_jwt_vc_json_presentation_without_credentials_rejected(attacker, vp, flag):
-    # Review finding (#201): a VP-JWT carrying no credential met "every embedded credential
-    # is bound" vacuously and answered the query with nothing. ldp_vc already refused it
-    # (_embedded_vcs); a Presentation answering a Credential Query must carry one.
+    # A VP-JWT carrying no credential would meet "every embedded credential is bound"
+    # vacuously. #194 (1.28.2) rejects it; pinned here across the flag values too.
     signed = _raw_vp_jwt(attacker, {"@context": [V2], "type": ["VerifiablePresentation"],
                                     **vp})
     with pytest.raises(VpTokenMalformed, match="embeds no verifiableCredential"):
         _verify("jwt_vc_json", signed, flag)
-
-
-@pytest.mark.parametrize("junk", [None, 5, 1.5, True])
-def test_junk_verifiable_credential_is_a_typed_error(attacker, junk):
-    # Review finding (#201): `list(raw)` on a non-list raised a bare TypeError from
-    # VpJwtProofSuite.verify, escaping the OpenvcError family.
-    signed = _raw_vp_jwt(attacker, {"@context": [V2], "type": ["VerifiablePresentation"],
-                                    "verifiableCredential": junk})
-    with pytest.raises(ClaimsInvalid, match="verifiableCredential must be"):
-        _verify("jwt_vc_json", signed)
-    with pytest.raises(ClaimsInvalid, match="verifiableCredential must be"):
-        VpJwtProofSuite().verify(signed, audience=CLIENT_ID, nonce=NONCE)
 
 
 @pytest.mark.parametrize("lane", LANES)

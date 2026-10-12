@@ -50,6 +50,12 @@ result = VpJwtProofSuite().verify(
 print(result.holder, len(result.credentials), result.credentials[0].subject)
 ```
 
+A VP-JWT with no `verifiableCredential` is valid VCDM (DID Auth, for example):
+`verify` accepts it and returns an empty `credentials` tuple, so if you need a
+credential, check that one is there. `verify_vp_token` does this for you. A
+`verifiableCredential` that is neither a credential nor an array (a number, a
+bool, `null`) is rejected with `ClaimsInvalid`.
+
 ## OpenID4VP 1.0: `verify_vp_token`
 
 For an [OpenID4VP](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html)
@@ -170,7 +176,13 @@ cascade-verified through `verify_credential`. All four whole-document
 cryptosuites are accepted — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (need the
 `[data-integrity]` extra) and `eddsa-jcs-2022` / `ecdsa-jcs-2019` (pyld-free).
 A bare string or a bare credential (no VP wrapper) under an `ldp_vc` query is
-rejected: the holder binding lives only on a presentation proof. `mso_mdoc` is
+rejected: the holder binding lives only on a presentation proof. A W3C
+presentation under an `ldp_vc` or `jwt_vc_json` query must also embed at least
+one credential, or it is rejected with `VpTokenMalformed`. That only guarantees
+a credential was presented and verified. For these two formats openvc does not
+match the DCQL `meta.type_values`, and it never judges the issuer: any `did:key`
+can issue a credential that verifies. Check each result's `issuer` and `type`
+against what you trust. `mso_mdoc` is
 verified over the Digital Credentials API flow — see [ISO mdoc](#iso-mdoc-mso_mdoc) below.
 
 The reported `holder` is the **authenticated** identity — the DID that controls
@@ -255,8 +267,7 @@ So these are all rejected under a default query:
 
 Subject and signer are compared as DID strings, never by key. A VP signed as
 `did:jwk:<key>` does not bind a credential issued to `did:key:<same key>`; issue to the
-DID the wallet presents with. A `jwt_vc_json` presentation must also embed at least one
-credential, under any query, as an `ldp_vc` one always had to.
+DID the wallet presents with.
 
 The VP signer never stands in for an SD-JWT's `cnf` key, even when it is the same key:
 SD-JWT key binding is the KB-JWT (RFC 9901), which also covers the disclosures you

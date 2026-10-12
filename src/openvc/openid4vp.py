@@ -266,8 +266,8 @@ def verify_vp_token(
       rejected. Subject and holder are compared as strings, so the same key under two DID
       methods is two different holders.
 
-    A ``jwt_vc_json`` presentation must embed at least one credential, as an ``ldp_vc``
-    one already had to, whatever the flag.
+    A ``jwt_vc_json`` or ``ldp_vc`` presentation must embed at least one credential,
+    whatever the flag.
 
     To accept a credential the presenter is not bound to — §14.1.1's "the Holder may not
     be the subject of the Credential" — set the flag to ``false`` in that query.
@@ -728,8 +728,10 @@ def _verify_jwt_vp(
         x5c_trust_anchors=x5c_trust_anchors,
         resolve_status_list=resolve_status_list,
         resolve_status_list_token=resolve_status_list_token)
-    # A Presentation answering a Credential Query must carry a credential, as ldp_vc's
-    # _embedded_vcs requires; an empty one would meet the holder binding vacuously.
+    # A presentation answering a Credential Query must carry at least one credential
+    # (as the ldp_vc lane's _embedded_vcs requires). The suite accepts a credential-less
+    # VP — VCDM allows one, e.g. DID Auth — so the OpenID4VP rule is enforced here; an
+    # empty one would also meet the holder binding below vacuously.
     if not verified.credentials:
         raise VpTokenMalformed(
             f"the {FORMAT_JWT_VC} Presentation for {query_id!r} embeds no "
