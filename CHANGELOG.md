@@ -41,6 +41,37 @@ All notable changes to **openvc** are documented here. The format follows
   it now also refuses an `idx` past the cap. Error messages never `repr()` a
   container or an integer wider than 64 bits.
 
+Fixed before merge, from this change's own adversarial review. Each item below
+was also a bare exception that aborted a whole `verify_many` batch. The
+"deeply nested" ones need Python 3.14: its `json.loads` accepts arrays nested
+deeper than `str()` / `repr()` can render, so they raise `RecursionError`.
+Older Pythons refuse such JSON up front with a typed `MalformedToken`.
+- **A status entry's `statusListCredential` or `status_list.uri` must be a
+  string.** Both were passed through `str()`, so a deeply nested array raised
+  `RecursionError`. This reached `verify_credential` and the batch under
+  `require_status=False`, with a self-issued `did:jwk`. A number or an object
+  used to become a garbage URL; it is now a `StatusListError` too.
+- **A W3C entry's `statusPurpose` must be a string.** An explicit `null` used to
+  match no purpose, so a set bit was ignored when the list declared no purpose.
+- **A corrupt `encodedList` is a `StatusListError`, not a bare `zlib.error`.**
+  `decode_bitstring` caught `OSError` but not the `zlib.error` that `GzipFile`
+  raises on a valid gzip header followed by bad DEFLATE data. An 18-byte list
+  served by the credential's own issuer was enough, even with
+  `require_status_issuer_binding=True`. The IETF decoder already caught it.
+- **The status messages no longer `repr()` attacker values.** That covered:
+  - a W3C list's `statusPurpose`, and its non-string `encodedList`;
+  - an IETF list's `bits`;
+  - a status-list token's `typ`, `sub` and `exp`, in `verify_status_list_token`
+    (which the default token resolver runs);
+  - the credential `id` in "credential … is revoked/suspended", in `verify`,
+    `aio` and `openvc_ebsi`. A self-issued credential controls both that `id`
+    and its own list's bit.
+- **A resolver that returns something other than an object is a
+  `StatusListError`**, not a bare `AttributeError`.
+- **A status-list token's `exp` must be a finite number.** `NaN`, `±Infinity`
+  and a bignum used to pass, and every comparison against them reads "not
+  expired". This now follows the same rule as `check_jwt_temporal`.
+
 ## [1.29.0] — 2026-10-12
 
 ### Security

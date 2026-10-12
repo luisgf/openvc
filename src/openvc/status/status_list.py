@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable
 
 from ..errors import OpenvcError
 from ..observability import logger, span
-from ._index import status_index
+from ._index import brief, status_index
 from .bitstring import decode_bitstring, get_status_bit
 
 # Fetch+verify a status-list credential URL -> the status-list VC as a dict.
@@ -96,12 +96,20 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
         if not url or index is None:
             raise StatusListError(
                 "status entry needs statusListCredential and statusListIndex")
+        # Never str() a hostile value: a deeply nested array overflows the stack with a
+        # bare RecursionError, and an int or object would become a garbage URL.
+        if not isinstance(url, str):
+            raise StatusListError(
+                f"statusListCredential must be a URL string, got {brief(url)}")
+        purpose = raw.get("statusPurpose", PURPOSE_REVOCATION)
+        if not isinstance(purpose, str):   # an explicit null would match no purpose
+            raise StatusListError(f"statusPurpose must be a string, got {brief(purpose)}")
         entries.append(StatusEntry(
-            status_list_credential=str(url),
+            status_list_credential=url,
             # the spec encodes the index as a base-10 string; a JSON integer is
             # tolerated, a float / bool / signed or non-ASCII string is not
             index=status_index(index, field="statusListIndex", allow_string=True),
-            purpose=raw.get("statusPurpose", PURPOSE_REVOCATION),
+            purpose=purpose,
             entry_type=next(iter(matched)),
         ))
     return entries
@@ -109,6 +117,9 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
 
 def _encoded_list(status_vc: dict[str, Any], entry: StatusEntry) -> str:
     from .bitstring import StatusListError
+    if not isinstance(status_vc, dict):     # a caller's resolver returned something else
+        raise StatusListError(
+            f"resolved status-list credential must be an object, got {brief(status_vc)}")
     subject = status_vc.get("credentialSubject")
     if not isinstance(subject, dict):
         raise StatusListError("status-list credential has no credentialSubject")
@@ -116,11 +127,11 @@ def _encoded_list(status_vc: dict[str, Any], entry: StatusEntry) -> str:
     list_purpose = subject.get("statusPurpose")
     if list_purpose and list_purpose != entry.purpose:
         raise StatusListError(
-            f"status-list purpose {list_purpose!r} != entry purpose {entry.purpose!r}")
+            f"status-list purpose {brief(list_purpose)} != entry purpose {brief(entry.purpose)}")
     encoded = subject.get("encodedList")
-    if not encoded:
-        raise StatusListError("status-list credentialSubject has no encodedList")
-    return str(encoded)
+    if not isinstance(encoded, str) or not encoded:
+        raise StatusListError("status-list credentialSubject has no encodedList string")
+    return encoded
 
 
 def _read_status_bit(status_vc: dict[str, Any], entry: StatusEntry) -> StatusEntryResult:

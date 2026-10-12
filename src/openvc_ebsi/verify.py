@@ -179,8 +179,9 @@ def verify_ebsi_badge(
         status = check_credential_status(
             verified.credential, resolve_status_list=resolve_status_list)
         if status.revoked:
+            cred_id = verified.credential.get("id")    # never repr() a hostile shape
             raise CredentialRevoked(
-                f"credential {verified.credential.get('id')!r} is revoked")
+                f"credential {cred_id if isinstance(cred_id, str) else None!r} is revoked")
 
     return VerifiedEbsiBadge(
         credential=verified.credential,

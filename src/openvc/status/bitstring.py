@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import zlib
 
 from ..errors import OpenvcError
 from ._decompress import DecompressionBomb, gunzip_bounded
@@ -54,7 +55,8 @@ def decode_bitstring(encoded_list: str) -> bytes:
         raise StatusListError(f"encodedList is not valid base64url: {exc}") from exc
     try:
         return gunzip_bounded(compressed)
-    except (OSError, EOFError) as exc:
+    # a valid gzip header over corrupt DEFLATE data raises zlib.error, not OSError
+    except (OSError, EOFError, zlib.error) as exc:
         raise StatusListError(f"encodedList is not valid gzip: {exc}") from exc
     except DecompressionBomb as exc:
         raise StatusListError(f"encodedList decompresses too large: {exc}") from exc

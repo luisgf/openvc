@@ -36,8 +36,8 @@ MAX_STATUS_INDEX = MAX_DECOMPRESSED_BYTES * 8
 _MAX_DIGITS = len(str(MAX_STATUS_INDEX))
 
 
-def _brief(value: Any) -> str:
-    """A short, safe rendering of a hostile index for an error message. Never calls
+def brief(value: Any) -> str:
+    """A short, safe rendering of a hostile status value for an error message. Never calls
     ``repr()`` on a container (deep nesting overflows it) or on a huge int (past
     ``sys.get_int_max_str_digits`` it raises a bare ``ValueError``)."""
     if isinstance(value, str):
@@ -60,20 +60,20 @@ def status_index(value: Any, *, field: str, allow_string: bool) -> int:
     if isinstance(value, str) and allow_string:
         if not (value.isascii() and value.isdigit()):
             raise StatusListError(
-                f"{field} must be a base-10 string of ASCII digits, got {_brief(value)}")
+                f"{field} must be a base-10 string of ASCII digits, got {brief(value)}")
         digits = value.lstrip("0") or "0"
         if len(digits) > _MAX_DIGITS:          # bound the length before int() parses it
             raise StatusListError(
-                f"{field} {_brief(value)} is past the largest list openvc decodes "
+                f"{field} {brief(value)} is past the largest list openvc decodes "
                 f"({MAX_STATUS_INDEX} statuses)")
         value = int(digits)
     elif not isinstance(value, int) or isinstance(value, bool):
         kind = "an integer or a base-10 string" if allow_string else "an integer"
-        raise StatusListError(f"{field} must be {kind}, got {_brief(value)}")
+        raise StatusListError(f"{field} must be {kind}, got {brief(value)}")
     if value < 0:
-        raise StatusListError(f"{field} must be non-negative, got {_brief(value)}")
+        raise StatusListError(f"{field} must be non-negative, got {brief(value)}")
     if value >= MAX_STATUS_INDEX:
         raise StatusListError(
-            f"{field} {_brief(value)} is past the largest list openvc decodes "
+            f"{field} {brief(value)} is past the largest list openvc decodes "
             f"({MAX_STATUS_INDEX} statuses)")
     return value

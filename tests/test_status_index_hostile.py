@@ -35,10 +35,12 @@ from openvc import (
     verify_many,
     verify_many_async,
 )
+from openvc.errors import OpenvcError
 from openvc.keys import P256SigningKey
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
 from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.status import (
+    CredentialRevoked,
     StatusListError,
     encode_bitstring,
     parse_status_entries,
@@ -375,3 +377,262 @@ def test_error_message_truncates_a_long_string_index():
     with pytest.raises(StatusListError) as info:
         parse_status_entries(_w3c_entry("9" * 100_000))
     assert len(str(info.value)) < 200
+
+
+# --------------------------------------------------------------------------- #
+# the rest of the status path — found by this change's adversarial review
+# --------------------------------------------------------------------------- #
+# The same parsers still str()'d or repr()'d other attacker values. On Python 3.14,
+# json.loads accepts arrays nested deeper than str()/repr() can render (~70k-115k
+# levels), so a deep array there was a bare RecursionError: the same batch abort.
+# Older Pythons refuse that JSON up front (a typed MalformedToken), so the end-to-end
+# tests assert "typed, neighbours fine" and the parser-level tests pin the rule itself
+# with a Python-built deep list, on every version.
+
+DEEP_JSON = "[" * 90_000 + "]" * 90_000
+
+
+def _deep_list(depth: int = 100_000) -> list:
+    deep: list = []
+    for _ in range(depth):
+        deep = [deep]
+    return deep
+
+
+def _signed_jwt(header: dict, payload: dict, literals: dict[str, str]) -> str:
+    """Sign *payload* with KEY after swapping each quoted sentinel key of *literals* in
+    its JSON text for the raw JSON text it maps to."""
+    text = json.dumps(payload, separators=(",", ":"))
+    for sentinel, literal in literals.items():
+        assert f'"{sentinel}"' in text
+        text = text.replace(f'"{sentinel}"', literal)
+    signing_input = (f"{_b64url(json.dumps(header).encode())}."
+                     f"{_b64url(text.encode('utf-8'))}")
+    return f"{signing_input}.{_b64url(KEY.sign(signing_input.encode('ascii')))}"
+
+
+def _vc_jwt_payload(credential_status=None, status=None, vc_id=None) -> dict:
+    vc: dict = {"@context": ["https://www.w3.org/ns/credentials/v2"],
+                "type": ["VerifiableCredential"], "issuer": DID,
+                "credentialSubject": {"id": "did:example:alice"}}
+    if vc_id is not None:
+        vc["id"] = vc_id                  # no jti: PyJWT would type-check that first
+    if credential_status is not None:
+        vc["credentialStatus"] = credential_status
+    payload: dict = {"iss": DID, "iat": 1_700_000_000, "vc": vc}
+    if status is not None:
+        payload["status"] = status
+    return payload
+
+
+VC_JWT_HEADER = {"alg": "ES256", "typ": "JWT", "kid": f"{DID}#0"}
+
+
+def _assert_only_the_middle_item_failed_typed(results) -> None:
+    assert [r.ok for r in results] == [True, False, True]
+    assert isinstance(results[1].error, OpenvcError)
+
+
+@pytest.mark.parametrize("credential_status, status", [
+    ({"type": "BitstringStatusListEntry", "statusPurpose": "revocation",
+      "statusListIndex": "3", "statusListCredential": "S"}, None),
+    (None, {"status_list": {"idx": 3, "uri": "S"}}),
+], ids=["w3c-statusListCredential", "ietf-uri"])
+@pytest.mark.parametrize("require_status", [True, False], ids=["require", "opt-out"])
+def test_deep_status_url_never_aborts_the_batch(credential_status, status, require_status):
+    bad = _signed_jwt(VC_JWT_HEADER, _vc_jwt_payload(credential_status, status),
+                      {"S": DEEP_JSON})
+    good = _w3c_vc_jwt(None)
+    fetches = _Fetches()
+    _assert_only_the_middle_item_failed_typed(
+        verify_many([good, bad, good], **_kwargs(fetches, require_status, is_async=False)))
+    _assert_only_the_middle_item_failed_typed(asyncio.run(verify_many_async(
+        [good, bad, good], **_kwargs(fetches, require_status, is_async=True))))
+
+
+def test_revoked_credential_with_a_deep_id_never_aborts_the_batch():
+    """The pipeline's "credential … is revoked" message repr()'d ``vc.id``; the issuer
+    of a self-issued credential controls both that id and its own list's bit."""
+    revoked_list = {
+        "type": ["VerifiableCredential", "BitstringStatusListCredential"],
+        "credentialSubject": {"statusPurpose": "revocation",
+                              "encodedList": encode_bitstring(b"\x04" + bytes(31))},
+    }                                                     # bit 5 set, bit 3 clear
+    bad = _signed_jwt(VC_JWT_HEADER, _vc_jwt_payload(
+        {"type": "BitstringStatusListEntry", "statusPurpose": "revocation",
+         "statusListIndex": "5", "statusListCredential": LIST_URL}, vc_id="ID"),
+        {"ID": DEEP_JSON})
+    good = _w3c_vc_jwt(None)
+
+    async def resolve_async(url):
+        return revoked_list
+
+    _assert_only_the_middle_item_failed_typed(verify_many(
+        [good, bad, good], resolve_status_list=lambda url: revoked_list))
+    _assert_only_the_middle_item_failed_typed(asyncio.run(verify_many_async(
+        [good, bad, good], resolve_status_list=resolve_async)))
+
+
+def test_revoked_message_does_not_repr_a_container_id():
+    revoked_list = {"credentialSubject": {"encodedList": encode_bitstring(b"\x04" + bytes(31))}}
+    bad = _signed_jwt(VC_JWT_HEADER, _vc_jwt_payload(
+        {"type": "BitstringStatusListEntry", "statusListIndex": "5",
+         "statusListCredential": LIST_URL}, vc_id="ID"), {"ID": '{"nested": [1]}'})
+    with pytest.raises(CredentialRevoked, match="credential None is revoked"):
+        verify_credential(bad, resolve_status_list=lambda url: revoked_list)
+
+
+@pytest.mark.parametrize("field, value", [
+    ("statusListCredential", "deep"),
+    ("statusListCredential", 5),
+    ("statusListCredential", {"id": LIST_URL}),
+    ("statusListCredential", [LIST_URL]),
+    ("statusPurpose", "deep"),
+    ("statusPurpose", None),             # an explicit null matched no purpose: bit ignored
+    ("statusPurpose", 5),
+    ("statusPurpose", ["revocation"]),
+])
+def test_w3c_entry_rejects_non_string_url_and_purpose(field, value):
+    raw = _w3c_entry("3")
+    raw["credentialStatus"][field] = _deep_list() if value == "deep" else value
+    with pytest.raises(StatusListError, match=f"{field} must be"):
+        parse_status_entries(raw)
+
+
+@pytest.mark.parametrize("value", ["deep", 5, {"href": TOKEN_URI}, [TOKEN_URI]])
+def test_ietf_ref_rejects_a_non_string_uri(value):
+    ref = _ietf_ref(3)
+    ref["status"]["status_list"]["uri"] = _deep_list() if value == "deep" else value
+    with pytest.raises(StatusListError, match="uri must be a URL string"):
+        parse_token_status_ref(ref)
+
+
+def _corrupt_deflate_list() -> str:
+    """A valid gzip header over an invalid DEFLATE block: GzipFile raises zlib.error."""
+    body = bytes.fromhex("1f8b0800000000000000ff") + b"\xff" * 8
+    return "u" + _b64url(body)
+
+
+@pytest.mark.parametrize("resolved", [
+    None, [], "a string", "deep",
+    {"credentialSubject": {"statusPurpose": "deep", "encodedList": "x"}},
+    {"credentialSubject": {"encodedList": "deep"}},
+    {"credentialSubject": {"encodedList": 5}},
+    {"credentialSubject": {"encodedList": "corrupt-deflate"}},
+], ids=["none", "list", "str", "deep", "deep-purpose", "deep-encodedList",
+        "int-encodedList", "corrupt-deflate"])
+def test_w3c_resolved_list_shapes_fail_typed(resolved):
+    from openvc.status import check_credential_status
+
+    if resolved == "deep":
+        resolved = _deep_list()
+    elif isinstance(resolved, dict):
+        subject = dict(resolved["credentialSubject"])
+        for key, value in subject.items():
+            if value == "deep":
+                subject[key] = _deep_list()
+            elif value == "corrupt-deflate":
+                subject[key] = _corrupt_deflate_list()
+        resolved = {"credentialSubject": subject}
+    with pytest.raises(StatusListError):
+        check_credential_status(_w3c_entry("3"), resolve_status_list=lambda url: resolved)
+
+
+def test_corrupt_deflate_list_never_aborts_the_batch():
+    """The issuer serves its own list; verify_many fetches each list URL once."""
+    corrupt_url = "https://status.example/w3c/corrupt"
+    corrupt = {"credentialSubject": {"statusPurpose": "revocation",
+                                     "encodedList": _corrupt_deflate_list()}}
+    bad = _signed_jwt(VC_JWT_HEADER, _vc_jwt_payload(
+        {"type": "BitstringStatusListEntry", "statusPurpose": "revocation",
+         "statusListIndex": "3", "statusListCredential": corrupt_url}), {})
+    good = _w3c_vc_jwt(None)
+
+    def resolve(url):
+        return corrupt if url == corrupt_url else W3C_LIST
+
+    async def resolve_async(url):
+        return resolve(url)
+
+    assert _outcomes(verify_many([good, bad, good], resolve_status_list=resolve)) == [
+        "ok", "StatusListError", "ok"]
+    assert _outcomes(asyncio.run(verify_many_async(
+        [good, bad, good], resolve_status_list=resolve_async))) == [
+        "ok", "StatusListError", "ok"]
+
+
+@pytest.mark.parametrize("resolved", [
+    None, [], "a string", "deep",
+    {"status_list": {"bits": "deep", "lst": encode_status_list(bytes(4))}},
+    {"status_list": {"bits": 1.0, "lst": encode_status_list(bytes(4))}},
+    {"status_list": {"bits": 1, "lst": "deep"}},
+], ids=["none", "list", "str", "deep", "deep-bits", "float-bits", "deep-lst"])
+def test_ietf_resolved_token_shapes_fail_typed(resolved):
+    from openvc.status import check_token_status
+
+    if resolved == "deep":
+        resolved = _deep_list()
+    elif isinstance(resolved, dict):
+        sl = {k: (_deep_list() if v == "deep" else v)
+              for k, v in resolved["status_list"].items()}
+        resolved = {"status_list": sl}
+    with pytest.raises(StatusListError):
+        check_token_status(_ietf_ref(3), resolve_status_list_token=lambda uri: resolved)
+
+
+# -- verify_status_list_token (what the blessed IETF resolver runs) ----------- #
+
+STATUS_TOKEN_HEADER = {"typ": "statuslist+jwt", "alg": "ES256", "kid": f"{DID}#0"}
+
+
+def _status_list_token(literals: dict[str, str], **claims) -> str:
+    payload = {"sub": TOKEN_URI, "iat": 1_700_000_000,
+               "status_list": {"bits": 1, "lst": encode_status_list(bytes(4))}}
+    payload.update(claims)
+    return _signed_jwt(STATUS_TOKEN_HEADER, payload, literals)
+
+
+def _verify_status_token(token: str) -> dict:
+    from openvc.status.issue import verify_status_list_token
+    return verify_status_list_token(
+        token, public_key_jwk=KEY.public_jwk(), expected_uri=TOKEN_URI)
+
+
+def test_status_list_token_control_verifies():
+    assert _verify_status_token(_status_list_token({}))["sub"] == TOKEN_URI
+
+
+@pytest.mark.parametrize("literal", [
+    "NaN", "Infinity", "-Infinity", "1e400", "true", '"2030-01-01"', BIGNUM, "[1]",
+    DEEP_JSON,
+], ids=["NaN", "Infinity", "-Infinity", "1e400", "true", "string", "bignum", "array",
+        "deep"])
+def test_status_list_token_exp_must_be_a_finite_number(literal):
+    """NaN / ±Infinity compare False against every clock: the list would never expire."""
+    with pytest.raises(OpenvcError):
+        _verify_status_token(_status_list_token({"EXP": literal}, exp="EXP"))
+
+
+def test_status_list_token_with_a_deep_sub_fails_typed():
+    with pytest.raises(OpenvcError):
+        _verify_status_token(_status_list_token({"SUB": DEEP_JSON}, sub="SUB"))
+
+
+def test_status_list_token_messages_do_not_repr_containers():
+    """Python-built shapes pin the message rule on every version (no JSON depth cap)."""
+    from openvc.status.issue import verify_status_list_token
+    import openvc.status.issue as issue_mod
+
+    deep = _deep_list()
+    for header, claims, match in [
+        ({"typ": deep}, {}, "unexpected token typ a list"),
+        ({"typ": "statuslist+jwt"}, {"sub": deep}, "sub a list"),
+        ({"typ": "statuslist+jwt"}, {"sub": TOKEN_URI, "exp": deep}, "got a list"),
+    ]:
+        original = issue_mod.verify_compact
+        issue_mod.verify_compact = lambda token, public_key_jwk, h=header, c=claims: (h, c)
+        try:
+            with pytest.raises(StatusListError, match=match):
+                verify_status_list_token("x.y.z", public_key_jwk={}, expected_uri=TOKEN_URI)
+        finally:
+            issue_mod.verify_compact = original
