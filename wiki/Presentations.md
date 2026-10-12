@@ -178,12 +178,14 @@ cryptosuites are accepted — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (need the
 A bare string or a bare credential (no VP wrapper) under an `ldp_vc` query is
 rejected: the holder binding lives only on a presentation proof. A W3C
 presentation under an `ldp_vc` or `jwt_vc_json` query must also embed at least
-one credential, or it is rejected with `VpTokenMalformed`. That only guarantees
-a credential was presented and verified. For these two formats openvc does not
-match the DCQL `meta.type_values`, and it never judges the issuer: any `did:key`
-can issue a credential that verifies. Check each result's `issuer` and `type`
-against what you trust. `mso_mdoc` is
-verified over the Digital Credentials API flow — see [ISO mdoc](#iso-mdoc-mso_mdoc) below.
+one credential, or it is rejected with `VpTokenMalformed`. When the query
+carries `meta.type_values`, every embedded credential must also have the
+requested type; see
+[Matching the credential type](#matching-the-credential-type-metatype_values)
+below. openvc never judges the issuer: any `did:key` can issue a credential
+that verifies, so check each result's `issuer` against the issuers you trust.
+`mso_mdoc` is verified over the Digital Credentials API flow — see
+[ISO mdoc](#iso-mdoc-mso_mdoc) below.
 
 The reported `holder` is the **authenticated** identity — the DID that controls
 the `verificationMethod` that signed the proof, not a self-asserted `holder`
@@ -193,6 +195,102 @@ presenter actually owns a credential, compare its subject to `p.holder`, or pass
 VP formats (`ldp_vc`, `jwt_vc_json`), that every embedded credential was issued to
 the authenticated holder. It is off by default because a holder may legitimately
 present a third party's credential.
+
+### Matching the credential type: `meta.type_values`
+
+A DCQL query for `jwt_vc_json` or `ldp_vc` lists the credential types it
+accepts in `meta.type_values` (OpenID4VP 1.0 §B.1.1). The value is an array of
+alternatives, and each alternative is an array of type IRIs. A credential
+matches when its types contain every IRI of one alternative; order does not
+matter and extra types are allowed. `verify_vp_token` checks **every**
+credential the presentation embeds. If any of them matches no alternative, the
+whole response is rejected with `ClaimsInvalid`. This is the W3C counterpart of
+`vct_values` for `dc+sd-jwt` and `doctype_value` for `mso_mdoc`.
+
+The comparison uses the credential's **fully expanded** types, not the strings
+written in its `type`. openvc expands each credential's `type` with JSON-LD,
+using that credential's own `@context`:
+
+- **A term the context defines becomes its IRI.** Under VCDM 1.1 and 2.0,
+  `VerifiableCredential` expands to
+  `https://www.w3.org/2018/credentials#VerifiableCredential`. A query that asks
+  for the bare `"VerifiableCredential"` therefore matches no VCDM credential.
+- **A term no context defines stays as written.** The VCDM 2.0 context has no
+  `@vocab`, so an undefined `UniversityDegreeCredential` matches the query
+  value `"UniversityDegreeCredential"`.
+- **A term the issuer maps in its own context** (for example
+  `{"UniversityDegreeCredential": "https://example.org/examples#UniversityDegreeCredential"}`)
+  matches that IRI and nothing else.
+
+Expanding needs the `[data-integrity]` extra (pyld), plus every context the
+credential cites. openvc bundles only the VCDM 2.0 context and never fetches
+one. Pass any other context through `extra_contexts`, including the VCDM 1.1
+context (`https://www.w3.org/2018/credentials/v1`) that most `jwt_vc_json`
+credentials use. Failures are typed and fail closed:
+
+- An unknown context raises `DocumentLoaderError`.
+- A credential whose types cannot be expanded raises `ClaimsInvalid`.
+- An SD-JWT nested in the presentation never matches.
+- Without pyld, a query that carries `type_values` raises `OpenID4VPError`
+  before anything is verified.
+- A malformed constraint raises `VpTokenMalformed`: a `type_values` that is not
+  a non-empty array of non-empty string arrays (a flat list included), or a
+  `meta` that is not an object.
+
+A query without `type_values` puts no constraint on the type.
+
+The check selects the right **type** of credential, not a trusted issuer.
+Anyone can issue a credential of any type from a `did:key`, so still check each
+result's `issuer` against the issuers you trust.
+
+<!-- docs: needs=pyld -->
+```python
+from cryptography.hazmat.primitives.asymmetric import ec
+
+from openvc import verify_vp_token
+from openvc.keys import P256SigningKey
+from openvc.multibase import encode_multibase
+from openvc.proof.errors import ClaimsInvalid
+from openvc.proof.vc_jwt import VcJwtProofSuite
+from openvc.proof.vp_jwt import VpJwtProofSuite
+
+NONCE, CLIENT_ID = "n-0S6_WzA2Mj", "x509_san_dns:verifier.example"
+V2 = "https://www.w3.org/ns/credentials/v2"
+
+priv = ec.generate_private_key(ec.SECP256R1())
+raw = P256SigningKey(priv, kid="_").public_key_raw(compressed=True)
+mb = encode_multibase(bytes([0x80, 0x24]) + raw)               # did:key, P-256
+key, did = P256SigningKey(priv, kid=f"did:key:{mb}#{mb}"), f"did:key:{mb}"
+
+
+def present(types):
+    """A holder presenting a credential they issued themselves, typed *types*."""
+    vc = VcJwtProofSuite().sign(
+        {"@context": [V2], "type": types, "issuer": did,
+         "credentialSubject": {"id": did}}, signing_key=key)
+    return VpJwtProofSuite().sign([vc], holder_key=key, audience=CLIENT_ID, nonce=NONCE)
+
+
+dcql_query = {"credentials": [{
+    "id": "degree", "format": "jwt_vc_json",
+    "meta": {"type_values": [[
+        "https://www.w3.org/2018/credentials#VerifiableCredential",   # defined: an IRI
+        "UniversityDegreeCredential",                                 # undefined: as-is
+    ]]}}]}
+
+ok = verify_vp_token({"degree": [present(["VerifiableCredential",
+                                          "UniversityDegreeCredential"])]},
+                     dcql_query=dcql_query, nonce=NONCE, client_id=CLIENT_ID)
+assert len(ok.for_query("degree")[0].credentials) == 1
+
+try:                                       # the right holder, the wrong credential
+    verify_vp_token({"degree": [present(["VerifiableCredential"])]},
+                    dcql_query=dcql_query, nonce=NONCE, client_id=CLIENT_ID)
+except ClaimsInvalid as exc:
+    print("rejected:", exc)
+else:
+    raise AssertionError("an unrelated credential answered the query")
+```
 
 ## ISO mdoc (`mso_mdoc`)
 

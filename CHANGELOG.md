@@ -4,9 +4,56 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.28.2] — unreleased
+## [1.29.0] — unreleased
 
 ### Security
+
+- **DCQL `meta.type_values` is now enforced for `jwt_vc_json` and `ldp_vc`**
+  ([#205](https://github.com/luisgf/openvc/issues/205)). Found by the
+  adversarial review of [#194](https://github.com/luisgf/openvc/pull/194).
+  `verify_vp_token` never read the constraint on these two formats, so a
+  Credential Query for a `UniversityDegreeCredential` was answered by any
+  credential that verified. That included one the holder minted from their own
+  `did:key`, even with `require_holder_binding=True`. A VP could also carry an
+  unrelated credential next to the requested one. The other formats already
+  enforced their equivalent constraint: `vct_values` for `dc+sd-jwt` and
+  `doctype_value` for `mso_mdoc`.
+
+  The check follows OpenID4VP 1.0 §B.1.1. **Every** embedded credential must
+  have, among its fully expanded types, all the IRIs of at least one
+  alternative, or the response is rejected with `ClaimsInvalid`. openvc expands
+  each credential's `type` with JSON-LD against the credential's own
+  `@context`. A term the context defines becomes its IRI, and a term no context
+  defines stays as written.
+
+  The comparison is on IRIs, not short names. `VerifiableCredential` expands to
+  `https://www.w3.org/2018/credentials#VerifiableCredential`, so a query for the
+  bare `"VerifiableCredential"` matches no VCDM credential. Under the VCDM 2.0
+  context, which has no `@vocab`, an undefined `UniversityDegreeCredential` still
+  matches as written.
+
+  The check fails closed:
+  - A malformed constraint is `VpTokenMalformed`, raised before anything is
+    verified. That covers a non-object `meta`, an explicit `null`, an empty or
+    flat `type_values`, and an empty or non-string type.
+  - An unbundled context raises `DocumentLoaderError`.
+  - A credential whose types cannot be expanded raises `ClaimsInvalid`.
+  - An SD-JWT nested in the presentation never matches: its holder could
+    reshape a `type` by withholding disclosures.
+  - A query without `type_values` still puts no constraint on the type.
+
+  Like `vct_values`, the check selects the right credential type, not a
+  trusted issuer.
+
+  **Upgrading:**
+  - Matching needs the `[data-integrity]` extra (pyld) once a query carries
+    `type_values`. Without it, `verify_vp_token` raises `OpenID4VPError`.
+  - Matching also needs every context the credential cites. Only VCDM 2.0 is
+    bundled. Pass the VCDM 1.1 context, and any others, through
+    `extra_contexts`, which now reaches the `jwt_vc_json` lane too.
+  - A query that names types by short name, such as
+    `[["VerifiableCredential", …]]`, used to pass because nothing was checked.
+    It now fails: write the IRIs.
 
 - **A `jwt_vc_json` presentation must embed at least one credential**
   ([#193](https://github.com/luisgf/openvc/issues/193)). Found by the
@@ -17,11 +64,11 @@ All notable changes to **openvc** are documented here. The format follows
   with nothing presented, and `require_holder_binding=True` held vacuously. That
   lane now raises `VpTokenMalformed`, as the `ldp_vc` lane already did.
 
-  This guarantees that a credential was presented and verified, nothing more.
-  For `jwt_vc_json` and `ldp_vc`, openvc does not match the DCQL
-  `meta.type_values` and never judges the issuer: a credential the holder minted
-  from their own `did:key` still answers the query. Check each result's `issuer`
-  and `type` against what you trust. `VpJwtProofSuite.verify` still accepts a
+  On its own, this guarantees only that a credential was presented and verified.
+  The `meta.type_values` check above adds the type. openvc never judges the
+  issuer: a credential the holder minted from their own `did:key` still
+  verifies, so check each result's `issuer` against what you trust.
+  `VpJwtProofSuite.verify` still accepts a
   credential-less VP, which VCDM allows (DID Auth, for example). It returns an
   empty `credentials` tuple; a caller that needs a credential must check for one.
 

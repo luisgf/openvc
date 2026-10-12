@@ -236,9 +236,24 @@ def verify_vp_token(
     :class:`openvc.mdoc.MdocError` if an mdoc fails to verify or bind, and the suite's own
     typed error (``SignatureInvalid`` /
     ``ClaimsInvalid`` / …) if any Presentation fails to verify or bind — a single
-    failure rejects the whole response (fail closed). *extra_contexts* is passed to
-    the Data Integrity path for ``ldp_vc`` presentations that reference JSON-LD
-    contexts beyond the bundled ones (RDF cryptosuites only).
+    failure rejects the whole response (fail closed). *extra_contexts* supplies JSON-LD
+    contexts beyond the bundled ones (``url -> document``; nothing is fetched): the Data
+    Integrity path uses them for ``ldp_vc`` presentations (RDF cryptosuites), and the
+    ``meta.type_values`` match below uses them for both W3C formats.
+
+    A Credential Query's DCQL constraint on the credential type is enforced per format:
+    ``meta.vct_values`` (``dc+sd-jwt``), ``meta.doctype_value`` (``mso_mdoc``) and
+    ``meta.type_values`` (``jwt_vc_json`` / ``ldp_vc``). For ``type_values`` **every**
+    credential the presentation embeds must have, among its fully expanded types, all the
+    IRIs of at least one alternative (OpenID4VP 1.0 §B.1.1), else ``ClaimsInvalid``. The
+    types are expanded with JSON-LD against the credential's own ``@context``, so the
+    query names IRIs: ``VerifiableCredential`` expands to
+    ``https://www.w3.org/2018/credentials#VerifiableCredential``, while a term no context
+    defines stays as written. Expanding needs the ``[data-integrity]`` extra (``pyld``)
+    and every context the credential cites — only the VCDM 2.0 context is bundled. A
+    nested SD-JWT never matches. A malformed constraint is :class:`VpTokenMalformed`.
+    Like ``vct_values``, the check selects the right credential type, not a trusted
+    issuer: check each result's ``issuer`` yourself.
 
     Every Presentation is cryptographically holder-bound (the KB-JWT for
     ``dc+sd-jwt``, the holder signature for ``jwt_vc_json`` and ``ldp_vc``). For the W3C
@@ -493,6 +508,10 @@ def _verify_one(
             query_id, query, presentation, nonce=nonce, expected_origins=expected_origins,
             trust_anchors=trust_anchors, now=now, leeway_s=leeway_s,
             jwk_thumbprint=mdoc_jwk_thumbprint)
+    # DCQL meta.type_values (the W3C formats) is parsed before anything is verified, so a
+    # malformed constraint fails the same way whatever was presented.
+    type_values = (_type_values(query_id, query)
+                   if fmt in (FORMAT_JWT_VC, FORMAT_LDP_VC) else None)
     # The audience is the client_id (redirect flow) or the DC-API calling origin.
     aud = _effective_audience(fmt, presentation, client_id, accepted_auds)
     if fmt == FORMAT_SD_JWT_VC:
@@ -509,7 +528,8 @@ def _verify_one(
         return _verify_jwt_vp(
             query_id, presentation,
             nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
-            kb_max_age_s=kb_max_age_s,
+            kb_max_age_s=kb_max_age_s, type_values=type_values,
+            extra_contexts=extra_contexts,
             require_holder_binding=require_holder_binding,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             x5c_trust_anchors=x5c_trust_anchors,
@@ -520,7 +540,7 @@ def _verify_one(
         return _verify_ldp_vp(
             query_id, presentation, nonce=nonce, client_id=aud, resolver=resolver,
             now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
-            kb_max_age_s=kb_max_age_s,
+            kb_max_age_s=kb_max_age_s, type_values=type_values,
             require_holder_binding=require_holder_binding,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             x5c_trust_anchors=x5c_trust_anchors,
@@ -679,6 +699,8 @@ def _verify_jwt_vp(
     resolve_status_list_token: Any = None,
     require_status: bool = False,
     kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
+    type_values: list[list[str]] | None = None,
+    extra_contexts: Mapping[str, dict] | None = None,
 ) -> VerifiedPresentation:
     from .proof.vp_jwt import VpJwtProofSuite
     from .verify import VerificationPolicy
@@ -706,6 +728,7 @@ def _verify_jwt_vp(
         raise VpTokenMalformed(
             f"the {FORMAT_JWT_VC} Presentation for {query_id!r} embeds no "
             f"verifiableCredential")
+    _check_type_values(query_id, type_values, verified.credentials, extra_contexts)
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_JWT_VC, holder=verified.holder,
         credentials=tuple(verified.credentials), raw=verified)
@@ -721,6 +744,7 @@ def _verify_ldp_vp(
     resolve_status_list_token: Any = None,
     require_status: bool = False,
     kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
+    type_values: list[list[str]] | None = None,
 ) -> VerifiedPresentation:
     from .verify import VerificationPolicy, verify_credential
 
@@ -801,6 +825,7 @@ def _verify_ldp_vp(
                     f"credential subject {result.subject!r} is not the authenticated "
                     f"holder {holder!r} (require_holder_binding)")
 
+    _check_type_values(query_id, type_values, credentials, extra_contexts)
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_LDP_VC, holder=holder,
         credentials=credentials, raw=verified_vp)
@@ -875,3 +900,114 @@ def _check_vct(query_id: str, query: Mapping[str, Any], vct: str | None) -> None
         raise ClaimsInvalid(
             f"Credential Query {query_id!r}: vct {vct!r} is not one of the requested "
             f"vct_values")
+
+
+def _type_values(query_id: str, query: Mapping[str, Any]) -> list[list[str]] | None:
+    # DCQL meta.type_values constrains the acceptable W3C VC types (OpenID4VP 1.0 §B.1.1):
+    # a non-empty array of alternatives, each a non-empty array of fully expanded type
+    # IRIs. Absent means no constraint, as for vct_values. Anything else that is not that
+    # shape (a non-object meta, an explicit null, an empty alternative) fails safe
+    # (VpTokenMalformed) rather than silently widening to "any type".
+    if "meta" not in query:
+        return None
+    meta = query["meta"]
+    if not isinstance(meta, Mapping):
+        raise VpTokenMalformed(f"Credential Query {query_id!r}: meta must be a JSON object")
+    if "type_values" not in meta:
+        return None
+    type_values = meta["type_values"]
+    if (not isinstance(type_values, list) or not type_values
+            or not all(isinstance(alt, list) and alt
+                       and all(isinstance(t, str) and t for t in alt)
+                       for alt in type_values)):
+        raise VpTokenMalformed(
+            f"Credential Query {query_id!r}: meta.type_values must be a non-empty array of "
+            f"non-empty arrays of type IRIs")
+    # The match runs on JSON-LD expanded types; without a processor it cannot be decided,
+    # so say so before verifying rather than accept an unchecked constraint.
+    try:
+        from pyld import jsonld  # noqa: F401
+    except ImportError as exc:
+        raise OpenID4VPError(
+            f"Credential Query {query_id!r}: matching meta.type_values expands each "
+            f"credential's types with JSON-LD, which needs pyld: "
+            f"pip install 'openvc-core[data-integrity]'") from exc
+    return type_values
+
+
+def _check_type_values(
+    query_id: str, type_values: list[list[str]] | None,
+    credentials: Sequence[Any], extra_contexts: Mapping[str, dict] | None,
+) -> None:
+    # Every embedded credential must answer the query: its expanded types contain all the
+    # IRIs of at least one alternative (any order, extra types allowed). Checking each one
+    # stops an unrelated credential riding along in a VP that also carries the right one.
+    if type_values is None:
+        return
+    from .proof.contexts import document_loader
+
+    loader = document_loader(extra_contexts)
+    for index, result in enumerate(credentials):
+        expanded = _expanded_types(query_id, index, result, loader)
+        if not any(all(t in expanded for t in alt) for alt in type_values):
+            raise ClaimsInvalid(
+                f"Credential Query {query_id!r}: embedded credential #{index} has none of "
+                f"the requested type_values")
+
+
+def _expanded_types(query_id: str, index: int, result: Any, loader: Any) -> frozenset[str]:
+    """The fully expanded IRIs of a verified W3C credential's ``type``, as JSON-LD gives
+    them after applying the credential's own ``@context`` (OpenID4VP 1.0 §B.1.1).
+
+    Only a credential whose ``@context`` and ``type`` the issuer's proof covers whole
+    counts: a VC-JWT or a Data Integrity credential. An SD-JWT has no W3C ``type`` to
+    match, and its holder could reshape one by withholding disclosures, so it yields none.
+    Only ``@context`` and ``type`` are expanded: the credential is a top-level node, so
+    nothing else in it changes how its types expand. ``base`` is ``None`` so a term no
+    context defines stays a relative IRI, as the spec requires (pyld otherwise resolves it
+    against a placeholder base)."""
+    from pyld import jsonld
+
+    from .proof.contexts import DocumentLoaderError
+    from .verify import (
+        FORMAT_DI_ECDSA_JCS,
+        FORMAT_DI_ECDSA_RDFC,
+        FORMAT_DI_ECDSA_SD,
+        FORMAT_DI_EDDSA,
+        FORMAT_DI_EDDSA_JCS,
+        FORMAT_VC_JWT,
+    )
+
+    credential = getattr(result, "credential", None)
+    if (getattr(result, "format", None) not in (
+            FORMAT_VC_JWT, FORMAT_DI_EDDSA, FORMAT_DI_ECDSA_SD, FORMAT_DI_EDDSA_JCS,
+            FORMAT_DI_ECDSA_JCS, FORMAT_DI_ECDSA_RDFC)
+            or not isinstance(credential, Mapping)):
+        return frozenset()
+    document = {key: credential[key] for key in ("@context", "type") if key in credential}
+    try:
+        expanded = jsonld.expand(document, {"documentLoader": loader, "base": None})
+    except Exception as exc:
+        # pyld wraps a loader refusal in its own JsonLdError: surface the actionable
+        # "unbundled context" error if it caused this (as Data Integrity does). Anything
+        # else is a credential whose types cannot be expanded, so it cannot match. The
+        # message names the pyld error code only: its details hold the hostile document.
+        cause: BaseException | None = exc
+        for _ in range(8):
+            if isinstance(cause, DocumentLoaderError):
+                raise cause
+            if cause is None:
+                break
+            cause = cause.__cause__ or cause.__context__
+        code = getattr(exc, "code", None)
+        raise ClaimsInvalid(
+            f"Credential Query {query_id!r}: cannot expand the types of embedded "
+            f"credential #{index} to match type_values "
+            f"({code if isinstance(code, str) else type(exc).__name__})") from exc
+    types: set[str] = set()
+    for node in expanded if isinstance(expanded, list) else ():
+        values = node.get("@type") if isinstance(node, Mapping) else None
+        for value in values if isinstance(values, list) else [values]:
+            if isinstance(value, str):
+                types.add(value)
+    return frozenset(types)
