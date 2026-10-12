@@ -4,6 +4,64 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] — unreleased
+
+### Security
+
+- **`verify_vp_token` now enforces a DCQL query's `require_cryptographic_holder_binding`
+  on the W3C presentation formats** (`jwt_vc_json`, `ldp_vc`)
+  ([#196](https://github.com/luisgf/openvc/issues/196)). The flag defaults to
+  `true` (OpenID4VP 1.0 §6.1), but only the `dc+sd-jwt` lane read it. A VP proved
+  that *someone* signed for this exchange, and nothing tied that signer to the
+  credentials inside. A verifier that had once received a victim's credential could
+  wrap it in its own VP, correctly bound to another verifier, and present it there.
+  The response verified, with `holder` = the attacker. This worked with a VC-JWT, a
+  Data Integrity VC, or an SD-JWT VC with its KB-JWT stripped (`key_bound=False`),
+  bare or enveloped. It held with the flag left at its default and with it set
+  explicitly to `true`; only the opt-in `require_holder_binding=True` blocked it.
+
+  When the query requires holder binding, every credential a W3C presentation embeds
+  must now be bound to the authenticated holder, or the whole response is rejected
+  (`ClaimsInvalid`). OpenID4VP §2 defines that binding as control of the key the
+  credential was bound to, and §B.1 requires it for a presentation of a W3C VC.
+  - A **VC-JWT** or **Data Integrity** VC must name the authenticated VP signer as
+    its subject (`sub` / `credentialSubject.id`). The signer is the VP-JWT `iss`
+    whose DID document holds the signing key, or the controller of the Data
+    Integrity `verificationMethod`.
+  - A nested **SD-JWT VC** must carry a KB-JWT bound to this exchange
+    (`key_bound=True`). That is the `dc+sd-jwt` rule, and RFC 9901 §9.5 says the
+    need for key binding is policy, never whether a KB-JWT arrived. One without a
+    KB-JWT, or without `cnf`, is rejected. The VP signer never stands in for the
+    `cnf` key, even when it is the same key.
+- **A non-boolean `require_cryptographic_holder_binding` is `VpTokenMalformed`** on
+  every Credential Query, `dc+sd-jwt` included. The `dc+sd-jwt` lane coerced it with
+  `bool()`, so a `null` or a `0` silently opted the query out of holder binding.
+
+### Changed
+
+- **Under a default DCQL query, `jwt_vc_json` / `ldp_vc` responses that used to verify
+  are now rejected.** These are responses whose credentials are not bound to the
+  presenter:
+  - another party's credential;
+  - a bearer credential with no subject id;
+  - a multi-subject credential;
+  - a nested SD-JWT VC with no KB-JWT.
+
+  The `verify_vp_token` docstring described subject binding as "off by default". That
+  was true of `require_holder_binding`, but it ignored the query's own default. This
+  ships as a security fix in a minor release: no parameter default changes, and the
+  query has always asked for holder binding. To keep accepting such credentials, set
+  `"require_cryptographic_holder_binding": false` in that Credential Query.
+  OpenID4VP §14.1.1 describes the risk you then accept. Two limits remain:
+  - §B.1 tells a conformant wallet to answer an opted-out query with a bare
+    credential, and the W3C lanes still require a presentation (a separate gap).
+  - `require_holder_binding=True` keeps its stricter meaning, whatever the query
+    says: every embedded credential's subject, an SD-JWT VC's `sub` included, must
+    be the holder.
+
+  `VpJwtProofSuite.verify` takes no DCQL query and is unchanged. The semantics are
+  written up in the wiki under *Presentations → Holder binding on the W3C formats*.
+
 ## [1.28.1] — 2026-10-12
 
 ### Security
