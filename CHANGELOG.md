@@ -6,16 +6,14 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.28.2] — unreleased
 
-Two older findings from the adversarial review of
-[#190](https://github.com/luisgf/openvc/pull/190), plus a sibling of the first
-([#193](https://github.com/luisgf/openvc/issues/193)).
-
 ### Security
 
 - **A `jwt_vc_json` presentation that embeds no credential no longer answers a
-  Credential Query.** `verify_vp_token` accepted a VP-JWT whose
-  `vp.verifiableCredential` was `[]` or missing and returned a verified
-  presentation with zero credentials. The lane does no DCQL claim matching, so
+  Credential Query** ([#193](https://github.com/luisgf/openvc/issues/193)). Found
+  by the adversarial review of [#190](https://github.com/luisgf/openvc/pull/190),
+  together with the three typed-error fixes below. `verify_vp_token` accepted a
+  VP-JWT whose `vp.verifiableCredential` was `[]` or missing and returned a
+  verified presentation with zero credentials. The lane does no DCQL claim matching, so
   the query counted as answered by a VP that proved only the holder's key, and
   `require_holder_binding=True` held vacuously. That lane now raises
   `VpTokenMalformed`, as the `ldp_vc` lane already did. `VpJwtProofSuite.verify`
@@ -44,6 +42,18 @@ Two older findings from the adversarial review of
   `ClaimsInvalid`, not a bare `TypeError`.** `VpJwtProofSuite.verify` ran
   `list(raw)` on any value that was not a string or an object. An explicit `null`
   counts as malformed, not as absent.
+
+### Fixed (docs)
+
+- **The expiry and revocation waivers have a wiki home.**
+  `VerificationPolicy.require_not_expired` / `require_not_revoked` and
+  `VerificationResult.expired` shipped in 1.27.0 with only a passing mention in
+  the manual. Getting Started now has a *Waiving expiry or revocation* section.
+  It covers what each knob waives and what still runs, and how to read the
+  result (`expired`, `status.revoked`). It also notes that the sync and async
+  pipelines compute `expired` identically since 1.28.0
+  ([#188](https://github.com/luisgf/openvc/pull/188)), and carries a runnable
+  offline example. The SD-JWT VC and Status lists pages link to it.
 
 ## [1.28.1] — 2026-10-12
 
