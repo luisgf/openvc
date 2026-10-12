@@ -20,7 +20,7 @@ import base64
 import json
 from typing import Any
 
-from ._verify_common import reject_unknown_crit
+from ._verify_common import reject_unknown_crit, safe_repr
 from .errors import MalformedToken, SignatureInvalid, UnsupportedAlgorithm
 from .vc_jwt import ALLOWED_ALGS, SigningKey
 
@@ -83,8 +83,10 @@ def verify_compact(
     includes rejecting unknown ``crit`` extensions, RFC 7515 §4.1.11)."""
     header, payload, signing_input, signature = parse_compact(token)
     alg = header.get("alg")
-    if alg not in allowed_algs:
-        raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
+    # a JSON array/object `alg` is unhashable: `in frozenset` would raise a bare
+    # TypeError past OpenvcError, so type-check first (fail closed and typed)
+    if not isinstance(alg, str) or alg not in allowed_algs:
+        raise UnsupportedAlgorithm(f"algorithm {safe_repr(alg)} is not permitted")
     reject_unknown_crit(header)
     from ..keys import KeyBackendError, verify_signature
     try:

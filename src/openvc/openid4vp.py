@@ -59,6 +59,7 @@ from .proof._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
     DEFAULT_LEEWAY_S,
     non_negative_seconds,
+    safe_repr,
 )
 from .proof.errors import ClaimsInvalid
 
@@ -786,10 +787,11 @@ def _verify_ldp_vp(
             f"the {FORMAT_LDP_VC} Presentation for {query_id!r} has no Data Integrity "
             f"holder proof")
     cryptosuite = proof.get("cryptosuite")
-    if cryptosuite not in _LDP_VP_CRYPTOSUITES:
+    # a JSON array/object cryptosuite is unhashable: type-check before `in frozenset`
+    if not isinstance(cryptosuite, str) or cryptosuite not in _LDP_VP_CRYPTOSUITES:
         raise UnsupportedPresentationFormat(
             f"the {FORMAT_LDP_VC} Presentation for {query_id!r} uses an unsupported "
-            f"Data Integrity cryptosuite {cryptosuite!r}")
+            f"Data Integrity cryptosuite {safe_repr(cryptosuite)}")
 
     # Verify the holder's authentication proof, bound to the request: challenge = the
     # transaction nonce, domain = the full prefixed client_id. The holder key is
