@@ -74,9 +74,9 @@ All notable changes to **openvc** are documented here. The format follows
     format's own typed parse error (`MalformedToken`, `SdJwtError`, `JweMalformed`,
     `VpTokenMalformed`, ...);
   - objects openvc receives already parsed are held to the same bound: a credential or
-    `vp_token` dict, a Data Integrity suite's input, PyJWT's own claim set, a DID
-    document or JWT VC Issuer metadata from an injected fetch, and a relying party's DCQL
-    query in `check_request_within_registration`;
+    `vp_token` dict, a Data Integrity suite's input, a DID document or JWT VC Issuer
+    metadata from an injected fetch, and a relying party's DCQL query in
+    `check_request_within_registration`;
   - `verify_credential`, `verify_credential_async` and `verify_vp_token` map any
     `RecursionError` that still reaches them to `UnknownCredentialFormat` /
     `VpTokenMalformed`, as a backstop.

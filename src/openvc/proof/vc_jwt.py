@@ -267,10 +267,6 @@ class VcJwtProofSuite:
                     raise ClaimsInvalid(str(exc)) from exc
                 claims = self._decode(token, key, alg, audience, verify_exp=False)
                 jwt_expired = True
-            # PyJWT parses the payload itself, past openvc's bounded loader
-            if _json.nesting_exceeds(claims):
-                raise MalformedToken(
-                    f"JWT payload is nested deeper than {_json.MAX_DEPTH} levels")
 
         credential = claims.get("vc")
         if not isinstance(credential, dict):

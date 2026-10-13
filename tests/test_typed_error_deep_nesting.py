@@ -201,22 +201,21 @@ def test_vc_jwt_deep_claim_is_typed(issuer, depth, extra):
         VcJwtProofSuite().peek_issuer(token)
 
 
-def test_vc_jwt_suite_holds_pyjwt_claims_to_the_bound(issuer):
-    # PyJWT parses the payload itself, past openvc's loader. A depth every interpreter's
-    # json.loads accepts, so the post-decode check is what is under test.
+def test_vc_jwt_suite_bounds_the_payload_before_pyjwt(issuer):
+    # PyJWT parses the payload itself, but the suite's pre-PyJWT shape gate (#195) reads
+    # it through the bounded loader first. A depth every interpreter's json.loads accepts.
     token = _vc_jwt(issuer, deep_at="DEEP", depth=MAX + 20, extra={"x": "DEEP"})
-    with pytest.raises(MalformedToken, match="nested deeper than"):
+    with pytest.raises(MalformedToken):
         VcJwtProofSuite().verify(token, public_key_jwk=issuer[0].public_jwk())
 
 
 def test_vc_jwt_suite_payload_too_deep_to_parse_is_typed(issuer):
-    # At the PyJWT 2.13 floor PyJWT's json.loads handler catches only ValueError, so
-    # the RecursionError used to escape bare; openvc maps it to MalformedToken. A newer
-    # PyJWT maps it to DecodeError itself, which openvc reports as ClaimsInvalid.
+    # Deeper than any json.loads parses: the bounded pre-PyJWT read refuses it, so PyJWT
+    # (whose own json.loads catches only ValueError at the 2.13 floor) never sees it.
     key, did = issuer
     token = _sign(key, {"alg": key.alg, "typ": "JWT"},
                   '{"iss":"%s","x":%s}' % (did, _deep_json(600_000)))
-    with pytest.raises((MalformedToken, ClaimsInvalid)):
+    with pytest.raises(MalformedToken):
         VcJwtProofSuite().verify(token, public_key_jwk=key.public_jwk())
 
 

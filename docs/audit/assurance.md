@@ -120,7 +120,7 @@ recent first (`git log`, short hashes).
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
-- `#213` — untrusted JSON is depth-bounded (100) where it enters: on 3.14 a value `json.loads` accepts overflowed `repr()` / `==` into a bare `RecursionError` at 40+ sites (messages, status, DID/JWK, issuer metadata), found by a per-position fuzz and two adversarial reviews; one bounded loader, a depth check on pre-parsed input and a pipeline backstop close the class (v1.29.3)
+- `#213` — untrusted JSON is depth-bounded (100) where it enters: on 3.14 a value `json.loads` accepts overflowed `repr()` / `==` into a bare `RecursionError` at 40+ sites (messages, status, DID/JWK, issuer metadata), found by a per-position fuzz and two adversarial reviews; one bounded loader, a depth check on pre-parsed input and a pipeline backstop close the class (v1.30.0)
 - `#117` — fail closed on hostile deeply-nested JSON pipeline-wide: SD-JWT `_unpack` depth bound + `RecursionError` mapped typed at every attacker-facing `json.loads` (v1.20.1); closes audit R1
 - `291f79d` — library-wide `OpenvcError` root (one catchable root)
 - `b4e335e` — unify proof error taxonomy + rename ecdsa_sd codecs
