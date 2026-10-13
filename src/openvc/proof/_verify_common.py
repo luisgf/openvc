@@ -12,9 +12,10 @@ crypto (you cannot verify without first choosing an authorized key), and the
 VC-JWT NumericDate shape gate (:func:`check_numeric_dates`), which must run before
 PyJWT reads those claims and can only reject.
 
-The VC-JWT / SD-JWT suites do their own temporal check via the JWT ``exp``/``nbf``
-claims; this module is the Data Integrity equivalent, so a proof embedded in the
-credential's JSON is held to the same temporal and purpose rules.
+The VC-JWT and SD-JWT suites check the JWT ``exp``/``nbf`` (:func:`check_jwt_temporal`)
+and, for a W3C VCDM payload, the same validity window (:func:`check_validity_window`)
+the Data Integrity suites use, so a credential is held to the same temporal rules
+whichever way it is secured.
 
 Every error here subclasses :class:`~openvc.proof.errors.ProofError`, so a caller
 can catch the whole verification-failure family with one ``except``.
