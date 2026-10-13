@@ -41,9 +41,13 @@ and the holder binding is the ``DeviceAuth`` over the origin-bound ``SessionTran
 this module builds. It ships **experimental** (ADR-0005) until interop-tested against the
 EUDI reference wallet; the redirect / ``direct_post`` mdoc handover is not yet wired.
 
-Credential-level revocation (status list) is out of scope for this layer: it verifies
-the presentation binding and each credential's proof + validity window. Apply status
-policy separately with :func:`openvc.verify_credential` on the returned credentials.
+Credential status (revocation / suspension) is checked when the caller passes
+*resolve_status_list* / *resolve_status_list_token*: every ``dc+sd-jwt``,
+``jwt_vc_json`` and ``ldp_vc`` credential, nested ones included, goes through
+:func:`openvc.verify_credential`'s status check. Without a resolver a declared status
+is skipped unless *require_status* is set, which defaults to ``False`` here (unlike
+:class:`~openvc.VerificationPolicy`, which fails closed by default). An ``mso_mdoc``'s
+status is not checked by this layer.
 """
 from __future__ import annotations
 
@@ -86,7 +90,7 @@ __all__ = [
 FORMAT_SD_JWT_VC = "dc+sd-jwt"      # SD-JWT VC + KB-JWT               (verified)
 FORMAT_JWT_VC = "jwt_vc_json"       # W3C VC as a JWT -> a VP-JWT      (verified)
 FORMAT_LDP_VC = "ldp_vc"            # W3C VC with Data Integrity -> LDP-VP (verified)
-FORMAT_MSO_MDOC = "mso_mdoc"        # ISO 18013-5 mdoc                (unsupported)
+FORMAT_MSO_MDOC = "mso_mdoc"        # ISO 18013-5 mdoc  (verified, experimental; DC API)
 
 _SUPPORTED_FORMATS = frozenset({FORMAT_SD_JWT_VC, FORMAT_JWT_VC, FORMAT_LDP_VC})
 
@@ -110,7 +114,9 @@ class VpTokenMalformed(OpenID4VPError):
 
 
 class UnsupportedPresentationFormat(OpenID4VPError):
-    """A DCQL ``format`` this verifier does not implement (``ldp_vc`` / ``mso_mdoc``)."""
+    """A DCQL ``format``, flow or proof this verifier does not implement: an unknown
+    ``format``, an ``ldp_vc`` presentation with an unsupported cryptosuite or several
+    proofs, or an ``mso_mdoc`` outside the Digital Credentials API flow."""
 
 
 # --------------------------------------------------------------------------- #
