@@ -28,7 +28,6 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 from typing import Any, Sequence
-from urllib.parse import urlparse
 
 from .errors import OpenvcError
 from .proof._verify_common import utc_instant
@@ -69,9 +68,12 @@ def _check_issuer_binding(leaf: Any, iss: str) -> None:
         raise X5cError("x5c leaf certificate has no Subject Alternative Name to bind the issuer")
     if iss in san.get_values_for_type(UniformResourceIdentifier):
         return
+    # A dNSName binds only a clean https issuer: with userinfo or a backslash, Python
+    # and a browser read different hosts out of the same iss.
+    from .jwt_vc_issuer import JwtVcIssuerError, _parse_https_issuer
     try:
-        host = urlparse(iss).hostname
-    except ValueError:                  # an unbalanced bracket or NFKC delimiter in iss
+        host = _parse_https_issuer(iss).hostname
+    except JwtVcIssuerError:
         host = None
     if host and host in san.get_values_for_type(DNSName):
         return

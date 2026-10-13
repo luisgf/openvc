@@ -4,6 +4,33 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.2] — unreleased
+
+### Security
+
+- **An https `iss` with userinfo or a backslash no longer fetches keys from, or
+  binds a certificate of, a host other than the one a browser reads**
+  ([#236](https://github.com/luisgf/openvc/issues/236)). Found by the
+  adversarial review of [#209](https://github.com/luisgf/openvc/pull/209).
+  `jwt_vc_issuer_metadata_url` kept the raw netloc, and the x5c binding matched
+  a `dNSName` against `urlparse(iss).hostname`.
+  `https://trusted.example\@attacker.example` names `attacker.example` to
+  Python and `trusted.example` to a WHATWG parser such as a browser or a JS
+  front-end. With `jwt_vc_issuer_fetch`, `verify_many` fetched the metadata and
+  JWKS from `attacker.example` and returned ok. The x5c lane bound a leaf for
+  `attacker.example`. A consumer that showed or trusted the issuer's host read
+  `trusted.example`. An exact-string allow-list of issuers was safe.
+
+  An https `iss` must now be free of anything two parsers can read differently:
+  userinfo, a backslash, a control character or whitespace (`urlparse` silently
+  drops `\t\r\n`), params, a query and a fragment. The metadata URL silently
+  dropped the last three. `jwt_vc_issuer_metadata_url` raises
+  `JwtVcIssuerError` (`KeyResolutionFailed` in the pipeline). The x5c lane binds
+  a `dNSName` only to such a clean https `iss`; an `http://` one no longer
+  binds that way. A `uniformResourceIdentifier` SAN still binds when it equals
+  the `iss` exactly. These are the rules `openid4vci` already applies to a
+  `credential_issuer`.
+
 ## [1.31.1] — 2026-10-13
 
 Tests only: no library code changes.

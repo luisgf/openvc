@@ -105,6 +105,15 @@ are `OpenvcError`s, so in `verify_many` a hostile issuer becomes that credential
   leaf's SAN to the `iss` value, so a valid-but-unrelated certificate cannot
   vouch for an arbitrary issuer. Where those anchors come from (including EU
   Trusted Lists) is the [Trust](Trust) page.
+
+Both lanes derive a host from an https `iss`, so they refuse an `iss` that two
+URL parsers could read differently. Userinfo, a backslash, a control character
+or whitespace, params, a query and a fragment are all refused. For example,
+`https://trusted.example\@attacker.example` names `attacker.example` to Python
+but `trusted.example` to a browser. The metadata lane raises `JwtVcIssuerError`
+(`KeyResolutionFailed` in the pipeline). The x5c lane binds a `dNSName` only to a
+clean https `iss`; a `uniformResourceIdentifier` still has to equal the `iss`
+exactly.
 - **`did:ebsi`** — via the read-only plugin; see [Trust](Trust).
 
 ## Plugging in your own
