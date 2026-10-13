@@ -4,9 +4,73 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.28.2] — unreleased
+## [1.29.2] — unreleased
 
 ### Security
+
+- **A hostile status-list index is a typed `StatusListError`, not a bare
+  `OverflowError` that aborts a whole batch.** `parse_status_entries` read
+  `credentialStatus.statusListIndex` with `int()` and caught `TypeError` /
+  `ValueError` but not `OverflowError`. A signed VC-JWT whose index was
+  `Infinity`, `-Infinity`, `1e400` or `-1e400` (`json.loads` reads the last two
+  as infinities) raised `OverflowError: cannot convert float infinity to
+  integer`. That escaped `OpenvcError`, so it aborted `verify_many` /
+  `verify_many_async` for every item, not just the bad one, and escaped
+  `verify_credential` / `verify_credential_async` too. A self-issued `did:jwk`
+  could mint one. `require_status=False` did not help: the entries are parsed
+  before the resolver check. Both `BitstringStatusListEntry` and
+  `StatusList2021Entry` were affected.
+
+  The W3C `statusListIndex` and the IETF Token Status List `status.status_list.idx`
+  (SD-JWT VC, or a VC-JWT's JWT payload) now share one index rule. A
+  non-negative integer is accepted, and for the W3C index so is a string of ASCII
+  digits, which is the form the REC requires. The rule now also rejects inputs
+  that `int()` silently coerced into a different bit:
+  - a `bool` (`true` was read as index 1);
+  - any `float`, including `NaN` and an integral `5.0` (`3.7` was read as 3);
+  - a sign, whitespace, an underscore or a non-ASCII digit in the string
+    (`"+5"`, `" 5"`, `"5_0"` and `"٥"` were read as 5, 5, 50 and 5);
+  - a negative index, or one at or past 2^27, the most statuses any list openvc
+    decodes can hold (the 16 MiB decompression cap at one bit per status).
+    Neither can address a bit. Both used to pass parsing and failed only once a
+    list was fetched, so they passed outright under `require_status=False`.
+
+  A W3C index that `int()` refused (`"abc"`) already failed this way, even under
+  `require_status=False`. These shapes now do too, and in a batch they fail only
+  their own item. The IETF parser already refused floats, bools and negatives;
+  it now also refuses an `idx` past the cap. Error messages never `repr()` a
+  container or an integer wider than 64 bits.
+
+Fixed before merge, from this change's own adversarial review. Each item below
+was also a bare exception that aborted a whole `verify_many` batch. The
+"deeply nested" ones need Python 3.14: its `json.loads` accepts arrays nested
+deeper than `str()` / `repr()` can render, so they raise `RecursionError`.
+Older Pythons refuse such JSON up front with a typed `MalformedToken`.
+- **A status entry's `statusListCredential` or `status_list.uri` must be a
+  string.** Both were passed through `str()`, so a deeply nested array raised
+  `RecursionError`. This reached `verify_credential` and the batch under
+  `require_status=False`, with a self-issued `did:jwk`. A number or an object
+  used to become a garbage URL; it is now a `StatusListError` too.
+- **A W3C entry's `statusPurpose` must be a string.** An explicit `null` used to
+  match no purpose, so a set bit was ignored when the list declared no purpose.
+- **A corrupt `encodedList` is a `StatusListError`, not a bare `zlib.error`.**
+  `decode_bitstring` caught `OSError` but not the `zlib.error` that `GzipFile`
+  raises on a valid gzip header followed by bad DEFLATE data. An 18-byte list
+  served by the credential's own issuer was enough, even with
+  `require_status_issuer_binding=True`. The IETF decoder already caught it.
+- **The status messages no longer `repr()` attacker values.** That covered:
+  - a W3C list's `statusPurpose`, and its non-string `encodedList`;
+  - an IETF list's `bits`;
+  - a status-list token's `typ`, `sub` and `exp`, in `verify_status_list_token`
+    (which the default token resolver runs);
+  - the credential `id` in "credential … is revoked/suspended", in `verify`,
+    `aio` and `openvc_ebsi`. A self-issued credential controls both that `id`
+    and its own list's bit.
+- **A resolver that returns something other than an object is a
+  `StatusListError`**, not a bare `AttributeError`.
+- **A status-list token's `exp` must be a finite number.** `NaN`, `±Infinity`
+  and a bignum used to pass, and every comparison against them reads "not
+  expired". This now follows the same rule as `check_jwt_temporal`.
 
 - **A Key Binding JWT checked against only `audience` or only `nonce` is now
   rejected** ([#191](https://github.com/luisgf/openvc/issues/191)). At the top
@@ -32,9 +96,8 @@ All notable changes to **openvc** are documented here. The format follows
 
   The fix stops a misleading `key_bound=True`. It does not, by itself, stop the
   replay: an attacker who strips the KB-JWT gets the same credential through with
-  an honest `key_bound=False`, as for a nested SD-JWT in 1.28.1. A caller who needs
-  the holder binding still has to set `require_key_binding=True` or check
-  `key_bound`. openvc raises rather than downgrade the flag because a
+  an honest `key_bound=False`. A caller who needs the holder binding still has to
+  set `require_key_binding=True` or check `key_bound`. openvc raises rather than downgrade the flag because a
   half-configured call is a caller error that a quiet `False` would hide; the error
   points at the missing value. Passing **neither** value keeps its documented
   meaning: `key_bound=True` then proves possession of the `cnf` key for some
@@ -51,6 +114,167 @@ All notable changes to **openvc** are documented here. The format follows
     present KB-JWT is now refused (`ClaimsInvalid`) unless both are non-empty
     strings, matching the VP-JWT, OpenID4VP and nested-binding gates, which already
     refused `""`.
+
+## [1.29.1] — 2026-10-13
+
+### Fixed
+
+- **An unhashable `alg`, `typ`, `_sd_alg` or `cryptosuite` is a typed error, not a
+  bare `TypeError`** ([#211](https://github.com/luisgf/openvc/issues/211)). Found
+  by the adversarial review of [#194](https://github.com/luisgf/openvc/pull/194).
+  Eight allow-list checks ran `value not in <set>` on a value read from the token
+  without first checking that it was a string. A JSON array or object is
+  unhashable, so the test raised a bare `TypeError` that escaped `OpenvcError`, and
+  one such item aborted a whole `verify_many` / `verify_many_async` batch. None of
+  them needs a trusted key. Most run before any signature check, and the rest need
+  only a signature that any `did:key` can make:
+  - the `alg` of a VC-JWT, and of every token verified through the shared
+    compact-JWS layer: a VP-JWT (a `jwt_vc_json` presentation, or a VC-JWT nested in
+    one), the IETF status-list token and the OpenID4VCI key proof;
+  - the SD-JWT issuer JWT's `alg` and `typ`, and the Key Binding JWT's `alg`;
+  - the SD-JWT `_sd_alg`;
+  - the OpenID4VP `ldp_vc` holder proof's `cryptosuite`;
+  - the OpenID4VCI key proof's `typ`.
+
+  Each now raises the class that a well-formed but disallowed value already got:
+  `UnsupportedAlgorithm` for an `alg`, `SdJwtError` for the SD-JWT `typ` and
+  `_sd_alg`, `UnsupportedPresentationFormat` for the cryptosuite, and
+  `ClaimsInvalid` for the key-proof `typ`.
+- **The allow-list error messages name a rejected container by its type.** On
+  Python 3.14 `json.loads` accepts an array nested deeply enough that `repr()` of it
+  raises a bare `RecursionError`. A message that quoted the value with `repr()` then
+  escaped `OpenvcError` from the very `raise` meant to report it. This covers the
+  sites above, plus the JWE `alg` / `enc`, WRPRC `alg` and LoTE `alg` checks. Those
+  already type-checked the value but still quoted it.
+
+## [1.29.0] — 2026-10-12
+
+### Security
+
+- **`verify_vp_token` now enforces a DCQL query's `require_cryptographic_holder_binding`
+  on the W3C presentation formats** (`jwt_vc_json`, `ldp_vc`)
+  ([#196](https://github.com/luisgf/openvc/issues/196)). The flag defaults to
+  `true` (OpenID4VP 1.0 §6.1), but only the `dc+sd-jwt` lane read it. A VP proved
+  that *someone* signed for this exchange, and nothing tied that signer to the
+  credentials inside. A verifier that had once received a victim's credential could
+  wrap it in its own VP, correctly bound to another verifier, and present it there.
+  The response verified, with `holder` = the attacker. This worked with a VC-JWT, a
+  Data Integrity VC, or an SD-JWT VC with its KB-JWT stripped (`key_bound=False`),
+  bare or enveloped. It held with the flag left at its default and with it set
+  explicitly to `true`; only the opt-in `require_holder_binding=True` blocked it.
+
+  When the query requires holder binding, every credential a W3C presentation embeds
+  must now be bound to the authenticated holder, or the whole response is rejected
+  (`ClaimsInvalid`). OpenID4VP §2 defines that binding as control of the key the
+  credential was bound to, and §B.1 requires it for a presentation of a W3C VC.
+  - A **VC-JWT** or **Data Integrity** VC must name the authenticated VP signer as
+    its subject (`sub` / `credentialSubject.id`). The signer is the VP-JWT `iss`
+    whose DID document holds the signing key, or the controller of the Data
+    Integrity `verificationMethod`.
+  - A nested **SD-JWT VC** must carry a KB-JWT bound to this exchange
+    (`key_bound=True`). That is the `dc+sd-jwt` rule, and RFC 9901 §9.5 says the
+    need for key binding is policy, never whether a KB-JWT arrived. One without a
+    KB-JWT, or without `cnf`, is rejected. The VP signer never stands in for the
+    `cnf` key, even when it is the same key.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **A VC-JWT with a `credentialSubject` array no longer passes the subject rule on
+    its `sub`.** `VcJwtProofSuite` reports the JWT `sub` as the subject whenever it
+    is a string, and reconciles it only with a `credentialSubject` *object*. An
+    array, even one naming someone else, slipped through when `sub` was the
+    holder. Holder binding now needs a single subject; any array fails closed. The
+    `sub` is issuer-signed, so this was not attacker-forgeable.
+  - The review's other two findings had already shipped in 1.28.2
+    ([#194](https://github.com/luisgf/openvc/pull/194)). An empty `jwt_vc_json` VP
+    would otherwise meet the new binding vacuously; a junk
+    `vp.verifiableCredential` raised a bare `TypeError`.
+- **A non-boolean `require_cryptographic_holder_binding` is `VpTokenMalformed`** on
+  every Credential Query, `dc+sd-jwt` included. The `dc+sd-jwt` lane coerced it with
+  `bool()`, so a `null` or a `0` silently opted the query out of holder binding.
+
+### Changed
+
+- **Under a default DCQL query, `jwt_vc_json` / `ldp_vc` responses that used to verify
+  are now rejected.** These are responses whose credentials are not bound to the
+  presenter:
+  - another party's credential;
+  - a bearer credential with no subject id;
+  - a credential whose `credentialSubject` is an array;
+  - a credential issued to the same key under another DID method (subjects and
+    signers are compared as DID strings);
+  - a nested SD-JWT VC with no KB-JWT.
+
+  The `verify_vp_token` docstring described subject binding as "off by default". That
+  was true of `require_holder_binding`, but it ignored the query's own default. This
+  ships as a security fix in a minor release: no parameter default changes, and the
+  query has always asked for holder binding. To keep accepting such credentials, set
+  `"require_cryptographic_holder_binding": false` in that Credential Query.
+  OpenID4VP §14.1.1 describes the risk you then accept. Two limits remain:
+  - §B.1 tells a conformant wallet to answer an opted-out query with a bare
+    credential, and the W3C lanes still require a presentation (a separate gap).
+  - `require_holder_binding=True` keeps its stricter meaning, whatever the query
+    says: every embedded credential's subject, an SD-JWT VC's `sub` included, must
+    be the holder.
+
+  `VpJwtProofSuite.verify` takes no DCQL query and is unchanged. The semantics are
+  written up in the wiki under *Presentations → Holder binding on the W3C formats*.
+
+## [1.28.2] — 2026-10-12
+
+### Security
+
+- **A `jwt_vc_json` presentation must embed at least one credential**
+  ([#193](https://github.com/luisgf/openvc/issues/193)). Found by the
+  adversarial review of [#190](https://github.com/luisgf/openvc/pull/190),
+  together with the typed-error fixes below. `verify_vp_token` accepted a VP-JWT
+  whose `vp.verifiableCredential` was `[]` or missing and returned a verified
+  presentation with zero credentials. The Credential Query counted as answered
+  with nothing presented, and `require_holder_binding=True` held vacuously. That
+  lane now raises `VpTokenMalformed`, as the `ldp_vc` lane already did.
+
+  This guarantees that a credential was presented and verified, nothing more.
+  For `jwt_vc_json` and `ldp_vc`, openvc does not match the DCQL
+  `meta.type_values` and never judges the issuer: a credential the holder minted
+  from their own `did:key` still answers the query. Check each result's `issuer`
+  and `type` against what you trust. `VpJwtProofSuite.verify` still accepts a
+  credential-less VP, which VCDM allows (DID Auth, for example). It returns an
+  empty `credentials` tuple; a caller that needs a credential must check for one.
+
+### Fixed
+
+- **A dict credential whose `type` is not a string or an array is
+  `UnknownCredentialFormat`, not a bare `TypeError`.** `detect_format` ran
+  `"EnvelopedVerifiableCredential" in types` on a `type` of `null`, a number or a
+  bool. This was reachable at the top level, inside an
+  `EnvelopedVerifiableCredential`, and nested in `jwt_vc_json` and `ldp_vc`
+  presentations. The exception escaped `OpenvcError`, so one such item aborted a
+  whole `verify_many` / `verify_many_async` batch instead of becoming that item's
+  `error`. A `type` that is a JSON object is rejected the same way. A missing
+  `type` still classifies by the proof.
+- **A signed VC-JWT whose `vc.type` is not a string or an array fails
+  `expected_types` with a typed error.** The same membership test in
+  `_check_types` crashed once `policy.expected_types` was set. The pipeline now
+  raises `TypeMismatch`, and `VcJwtProofSuite.verify(expected_types=…)` raises
+  `ClaimsInvalid`. Any `did:key` can issue, so the issuer signature does not make
+  this shape trusted.
+- **A VP-JWT `vp.verifiableCredential` of `5`, `null`, `true` or `1.5` is
+  `ClaimsInvalid`, not a bare `TypeError`.** `VpJwtProofSuite.verify` ran
+  `list(raw)` on any value that was not a string or an object. An explicit `null`
+  counts as malformed, not as absent.
+
+Fixed before merge, from this change's own adversarial review:
+- **A `type` that is a JSON object no longer satisfies `expected_types` through
+  its keys.** `{"UniversityDegreeCredential": true}` passed a check for
+  `UniversityDegreeCredential`, on the VC-JWT and Data Integrity paths alike. It
+  now fails (`TypeMismatch`, or `UnknownCredentialFormat` at detection). The
+  issuer could have signed that type as an array, so this grants nothing an
+  issuer could not already claim, but the shape is malformed.
+- **A deeply nested `proof.cryptosuite` is `UnknownCredentialFormat`, not a bare
+  `RecursionError`.** `detect_format` put the value's `repr()` in its error
+  message. On Python 3.14 `json.loads` accepts nesting deep enough to overflow
+  `repr()`. A non-string cryptosuite is now named by its type.
+- A `tuple` `type`, from a Python caller that built the credential in-process,
+  is still accepted as an array.
 
 ### Fixed (docs)
 
@@ -2036,6 +2260,9 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.29.1]: https://github.com/luisgf/openvc/releases/tag/v1.29.1
+[1.29.0]: https://github.com/luisgf/openvc/releases/tag/v1.29.0
+[1.28.2]: https://github.com/luisgf/openvc/releases/tag/v1.28.2
 [1.28.1]: https://github.com/luisgf/openvc/releases/tag/v1.28.1
 [1.28.0]: https://github.com/luisgf/openvc/releases/tag/v1.28.0
 [1.27.1]: https://github.com/luisgf/openvc/releases/tag/v1.27.1

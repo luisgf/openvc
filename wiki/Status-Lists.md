@@ -93,6 +93,13 @@ and read `result.status.revoked`; suspension still rejects. See
 - **Decompression bomb cap**: lists decompress incrementally with a hard
   output bound, so a tiny malicious payload cannot OOM the verifier
   (fail-closed `StatusListError`).
+- **Strict index parsing**: a credential's `statusListIndex` must be a base-10
+  string of ASCII digits (a JSON integer is tolerated); the IETF `idx` must be a
+  JSON integer. A `bool`, any `float` (`NaN`, `Infinity`, `1e400`, `3.7`), a sign,
+  whitespace, an underscore, a non-ASCII digit, or an index past the largest list
+  openvc decodes (2^27 statuses) is a typed `StatusListError` — even under
+  `require_status=False`: a malformed entry of a recognised type is never
+  skipped. In `verify_many` it fails only that item.
 - **Issuer binding (opt-in)**: by default a status list is authenticated but its
   issuer is unconstrained — delegation of status hosting is spec-legal. If your
   issuers self-host their status lists, set
