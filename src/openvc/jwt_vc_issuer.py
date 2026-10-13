@@ -19,7 +19,7 @@ opt-in HTTPS-issuer counterpart to DID-based key resolution in the pipeline.
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import ParseResult, urlparse, urlunparse
 
 from . import _json
 from .errors import OpenvcError
@@ -37,18 +37,86 @@ class JwtVcIssuerError(OpenvcError):
     """The issuer metadata could not be resolved, did not match, or has no key."""
 
 
-def jwt_vc_issuer_metadata_url(iss: str) -> str:
-    """The JWT VC Issuer Metadata URL for an https *iss* — the well-known segment
-    inserted between the host and the issuer's path."""
+# Path segments a WHATWG parser resolves away and urlparse keeps as they are.
+_DOT_SEGMENTS = frozenset({".", "..", "%2e", ".%2e", "%2e.", "%2e%2e"})
+
+# Python's ``urlparse`` and a WHATWG parser (a browser, a JS front-end) read some
+# https URLs as different hosts, ports or paths. The two checks below refuse those
+# forms, and the https issuer lanes (``jwt_vc_issuer``, ``x5c``, ``openid4vci``)
+# share them so they refuse the same ones:
+#
+# * a non-ASCII URL: the host is IDNA2003 to Python and UTS 46 to a browser
+#   (``faß.de`` is ``fass.de`` to one and ``xn--fa-hia.de`` to the other), and
+#   ``urlparse`` NFKC-normalizes it, which is quadratic on CPython <= 3.12;
+# * a backslash, which WHATWG reads as ``/``;
+# * ``;``, ``?`` and ``#``, even empty: an issuer identifier carries no params,
+#   query or fragment, and the metadata URL would silently drop them;
+# * a percent-encoded host, which WHATWG decodes;
+# * port 0, which WHATWG keeps and the guarded fetch reads as 443;
+# * a ``.`` or ``..`` segment, which WHATWG resolves away.
+
+
+def _raw_url_disagreement(value: str) -> str | None:
+    """Why the parsers could disagree on *value*, checked before ``urlparse`` runs."""
+    if not value.isascii():
+        return "is not ASCII; write an IDN host as its xn-- A-label"
+    if "\\" in value:
+        return "contains a backslash"
+    if any(char in value for char in ";?#"):
+        return "must not carry params, a query or a fragment"
+    return None
+
+
+def _parsed_url_disagreement(parsed: ParseResult) -> str | None:
+    """Why the parsers could disagree on an already-parsed URL."""
+    if "%" in parsed.netloc:
+        return "has a percent-encoded host"
+    if parsed.port == 0:
+        return "has port 0"
+    if any(segment.lower() in _DOT_SEGMENTS for segment in parsed.path.split("/")):
+        return "has a . or .. path segment"
+    return None
+
+
+def _parse_https_issuer(iss: Any) -> ParseResult:
+    """Parse an https issuer identifier, or raise :class:`JwtVcIssuerError`.
+
+    Beyond the scheme, this refuses every form that lets two URL parsers name
+    different hosts or paths. A control character or whitespace is refused before
+    parsing, because ``urlparse`` drops ``\\t\\r\\n``. Userinfo is refused:
+    ``https://trusted.example\\@attacker.example`` names ``attacker.example`` to
+    Python and ``trusted.example`` to a browser. The rest is the shared list above,
+    with its non-ASCII check run before ``urlparse``.
+    """
+    if not isinstance(iss, str):
+        raise JwtVcIssuerError(f"issuer must be a string, not {type(iss).__name__}")
+    if any(ord(char) < 0x21 or ord(char) == 0x7F for char in iss):
+        raise JwtVcIssuerError(
+            f"issuer {safe_repr(iss)} contains control characters or whitespace")
+    reason = _raw_url_disagreement(iss)
+    if reason is not None:
+        raise JwtVcIssuerError(f"issuer {safe_repr(iss)} {reason}")
     try:
         parsed = urlparse(iss)
         _ = parsed.hostname, parsed.port    # lazy: force a bad port or bracket to raise here
     except ValueError as exc:
-        raise JwtVcIssuerError(f"issuer {iss!r} is not a valid URL: {exc}") from exc
+        raise JwtVcIssuerError(f"issuer {safe_repr(iss)} is not a valid URL: {exc}") from exc
     if parsed.scheme != "https":
-        raise JwtVcIssuerError(f"issuer {iss!r} is not an https URL")
-    if not parsed.netloc:
-        raise JwtVcIssuerError(f"issuer {iss!r} has no host")
+        raise JwtVcIssuerError(f"issuer {safe_repr(iss)} is not an https URL")
+    if not parsed.hostname or not parsed.hostname.strip("."):
+        raise JwtVcIssuerError(f"issuer {safe_repr(iss)} has no host")
+    if parsed.username is not None or parsed.password is not None:
+        raise JwtVcIssuerError(f"issuer {safe_repr(iss)} must not carry userinfo")
+    reason = _parsed_url_disagreement(parsed)
+    if reason is not None:
+        raise JwtVcIssuerError(f"issuer {safe_repr(iss)} {reason}")
+    return parsed
+
+
+def jwt_vc_issuer_metadata_url(iss: str) -> str:
+    """The JWT VC Issuer Metadata URL for an https *iss* — the well-known segment
+    inserted between the host and the issuer's path."""
+    parsed = _parse_https_issuer(iss)
     path = parsed.path if parsed.path and parsed.path != "/" else ""
     return urlunparse(("https", parsed.netloc, _WELL_KNOWN + path, "", "", ""))
 

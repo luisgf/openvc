@@ -664,7 +664,7 @@ def _require_https_url(
     proof's ``aud`` comparison and the metadata is fetched under it, so a non-https
     value here would smuggle a downgrade into every check that trusts the identifier.
 
-    Three rejections beyond the scheme, each because this string *is* an identifier
+    Four rejections beyond the scheme, each because this string *is* an identifier
     that later compares byte-for-byte against a signed ``aud``:
 
     * **control characters / whitespace** — ``urlparse`` silently strips ``\\t\\r\\n``,
@@ -672,6 +672,9 @@ def _require_https_url(
     * **userinfo, query, fragment, params** — meaningless in an issuer identifier, a
       visual-spoofing primitive (``https://legit@evil``), and credentials would leak
       into logs through error messages;
+    * **anything a browser would read as another host or path** — a non-ASCII host
+      (IDNA2003 vs UTS 46), a backslash, a percent-encoded host, port 0 or a dot
+      segment (the checks shared with the issuer lanes in ``jwt_vc_issuer``);
     * **a netloc that is not a host** — ``hostname``/``port`` raise lazily, so
       accepting ``https://issuer.example:notaport`` here would hand the caller a raw
       :class:`ValueError` later, outside this module's error taxonomy.
@@ -680,6 +683,12 @@ def _require_https_url(
         raise error(f"{name} must be a non-empty https URL string")
     if any(ord(char) < 0x21 or ord(char) == 0x7F for char in value):
         raise error(f"{name} contains control characters or whitespace: {value!r}")
+    # The forms the https issuer lanes refuse too. The non-ASCII check runs before
+    # urlparse, whose NFKC pass over a non-ASCII netloc is quadratic on CPython <= 3.12.
+    from .jwt_vc_issuer import _parsed_url_disagreement, _raw_url_disagreement
+    reason = _raw_url_disagreement(value)
+    if reason is not None:
+        raise error(f"{name} {reason}: {value!r}")
     try:
         parsed = urlparse(value)
         # Force the lazy accessors: a bad port or bracketed literal raises here,
@@ -695,6 +704,9 @@ def _require_https_url(
         raise error(f"{name} must not carry userinfo: {value!r}")
     if parsed.params or parsed.query or parsed.fragment:
         raise error(f"{name} must not carry params, a query or a fragment: {value!r}")
+    reason = _parsed_url_disagreement(parsed)
+    if reason is not None:
+        raise error(f"{name} {reason}: {value!r}")
     return value
 
 

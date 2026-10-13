@@ -115,6 +115,25 @@ different domain.
   Trusted Lists) is the [Trust](Trust) page.
 - **`did:ebsi`** — via the read-only plugin; see [Trust](Trust).
 
+The well-known and `x5c` lanes derive a host from an https `iss`, so they refuse
+any `iss` that lets Python and a browser name different hosts or paths. These are
+refused:
+
+- userinfo and a backslash;
+- a control character or whitespace;
+- params, a query or a fragment;
+- a non-ASCII character (write an IDN host as its `xn--` A-label);
+- a percent-encoded host;
+- port 0;
+- a `.` or `..` segment.
+
+For example, `https://trusted.example\@attacker.example` names `attacker.example`
+to Python but `trusted.example` to a browser, and `https://faß.de` is `fass.de` to
+one and `xn--fa-hia.de` to the other. The metadata lane raises `JwtVcIssuerError`
+(`KeyResolutionFailed` in the pipeline). The x5c lane binds a `dNSName` only to a
+clean https `iss`; a `uniformResourceIdentifier` still has to equal the `iss`
+exactly.
+
 ## Plugging in your own
 
 Any object with `resolve(did)` / `supports(did)` works as a resolver; register
