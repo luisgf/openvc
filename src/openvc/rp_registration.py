@@ -71,6 +71,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from . import _json
 from .errors import OpenvcError
+from .proof._verify_common import utc_window
 
 __all__ = [
     "ENTITLEMENT_URI_PREFIX",
@@ -449,7 +450,9 @@ def _check_typ(typ: Any, expected: str) -> None:
             f"token typ {_BMI_TYP!r} is the German BMI Architekturkonzept registration "
             f"certificate, a different profile with different claim names — not the "
             f"ETSI TS 119 475 WRPRC ({expected!r}) this module parses")
-    raise RpRegistrationError(f"WRPRC typ must be {expected!r}, got {typ!r}")
+    from .proof._verify_common import safe_repr
+
+    raise RpRegistrationError(f"WRPRC typ must be {expected!r}, got {safe_repr(typ)}")
 
 
 def _jwt_envelope(token: str) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes]:
@@ -595,23 +598,17 @@ def _check_temporal(
     reg: RelyingPartyRegistrationCertificate, *, now: datetime | None, leeway_s: int,
     max_validity: timedelta | None, require_expiry: bool,
 ) -> None:
-    if now is None:
-        instant = datetime.now(timezone.utc)
-    elif now.tzinfo is None:                        # a naive now is taken as UTC, not
-        instant = now.replace(tzinfo=timezone.utc)  # silently as the host's local time
-    else:
-        instant = now.astimezone(timezone.utc)
-    leeway = timedelta(seconds=max(0, leeway_s))
+    instant, leeway = utc_window(now, leeway_s, error=RpRegistrationError)
 
     if reg.expires_at is None and require_expiry:
         raise RpRegistrationError(
             "WRPRC has no 'exp' (conformant per TS 119 475 Table 10, but this call "
             "required one) — check the 'status' claim for revocation instead")
-    if reg.expires_at is not None and instant - leeway > reg.expires_at:
+    if reg.expires_at is not None and instant - reg.expires_at > leeway:
         raise RpRegistrationError(f"WRPRC expired at {reg.expires_at.isoformat()}")
 
     not_before = _numeric_date(reg.claims.get("nbf"), field="nbf") or reg.issued_at
-    if not_before is not None and instant + leeway < not_before:
+    if not_before is not None and not_before - instant > leeway:
         raise RpRegistrationError(f"WRPRC is not valid before {not_before.isoformat()}")
 
     # GEN-5.2.4-08 — binds only when `exp` is present.

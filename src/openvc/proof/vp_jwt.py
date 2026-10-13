@@ -15,7 +15,8 @@ through the generic pipeline** (:func:`openvc.verify.verify_credential`) — so 
 is only accepted when the holder is authentic *and* every credential in it is.
 
 The holder key is resolved from the untrusted ``iss``/``kid`` via an injected
-``resolver`` (as in the pipeline), or pinned with ``holder_key_jwk``.
+``resolver`` (as in the pipeline, defaulting to its ``default_resolver``), or pinned
+with ``holder_key_jwk``. The resolver also serves the embedded credentials' issuers.
 """
 from __future__ import annotations
 
@@ -110,7 +111,10 @@ class VpJwtProofSuite:
         *credential_verify_kwargs*, e.g. ``policy=`` / ``resolve_status_list=``).
 
         The holder key is *holder_key_jwk* if given, else resolved from the peeked
-        ``iss``/``kid`` through *resolver*.
+        ``iss``/``kid`` through *resolver*. *resolver* defaults to
+        :func:`openvc.verify.default_resolver`, as in ``verify_credential``. A pinned
+        holder key never goes through it, but the embedded credentials' issuers
+        still do.
 
         **Holder binding.** By default (``require_holder_binding=False``) this proves
         the *holder* signed the presentation and each credential is *valid*, but does
@@ -146,9 +150,10 @@ class VpJwtProofSuite:
         if not audience or not nonce:
             raise ClaimsInvalid("VP-JWT verify requires a non-empty audience and nonce")
 
-        # the resolver serves both the holder key and the cascade; default it (like
-        # verify_credential) unless the holder key is pinned
-        if holder_key_jwk is None and resolver is None:
+        # the resolver serves the holder key (unless pinned) and the cascade, which
+        # resolves every embedded credential's issuer even when the holder key IS
+        # pinned: default it like verify_credential does (batch_resolvers needs one)
+        if resolver is None:
             from ..verify import default_resolver
             resolver = default_resolver()
 
@@ -227,8 +232,6 @@ class VpJwtProofSuite:
     # -- internals --------------------------------------------------------- #
 
     def _resolve_holder_key(self, vp_jwt: str, resolver: Any) -> dict[str, Any]:
-        if resolver is None:
-            raise ClaimsInvalid("VP-JWT verify needs a holder_key_jwk or a resolver")
         holder, kid = self.peek_holder(vp_jwt)
         if not holder:
             raise MalformedToken("VP-JWT has no holder (iss / vp.holder) to resolve")
@@ -239,7 +242,9 @@ class VpJwtProofSuite:
             raise ClaimsInvalid(f"could not resolve holder key: {exc}") from exc
 
     def _check_temporal(self, claims: dict[str, Any]) -> None:
-        # single-sourced with the other JOSE suites; non-finite exp/nbf fails closed
+        # single-sourced with the other JOSE suites: a present exp/nbf/iat must be a
+        # finite number (null included), and a future iat is rejected. No waiver here —
+        # policy.require_not_expired reaches only the embedded credentials.
         check_jwt_temporal(claims, leeway_s=self._leeway, subject="presentation")
 
     @staticmethod

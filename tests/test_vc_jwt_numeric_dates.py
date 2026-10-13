@@ -1,6 +1,6 @@
 """VC-JWT ``exp`` / ``nbf`` / ``iat`` must be NumericDates, whatever the expiry policy.
 
-Through v1.29.1 the VC-JWT lane handed these claims to PyJWT, which casts them with
+Through v1.29.2 the VC-JWT lane handed these claims to PyJWT, which casts them with
 ``int()`` and catches only ``ValueError``. A signed ``"nbf": null``, ``"iat": []`` or
 ``"exp": {}`` therefore escaped as a bare ``TypeError``. That is outside the typed
 ``OpenvcError`` family, so ``verify_many`` / ``verify_many_async``, which catch only
