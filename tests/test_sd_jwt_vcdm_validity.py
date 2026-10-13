@@ -58,9 +58,9 @@ def _b64(data: bytes) -> str:
 
 
 def _issuer():
-    key = P256SigningKey.generate(kid="k")
-    did = "did:jwk:" + _b64(json.dumps(key.public_jwk()).encode())
-    return key, did
+    sk = ec.generate_private_key(ec.SECP256R1())
+    did = "did:jwk:" + _b64(json.dumps(P256SigningKey(sk, kid="-").public_jwk()).encode())
+    return P256SigningKey(sk, kid=f"{did}#0"), did
 
 
 KEY, DID = _issuer()
@@ -298,10 +298,9 @@ def test_ietf_sd_jwt_vc_claims_are_not_a_validity_window(run, form, claims, typ)
 
 def test_ietf_credential_from_the_suites_own_issuer_keeps_verifying(run, form):
     # The everyday IETF path: SdJwtVcProofSuite.issue, a past `validUntil` claim, disclosed.
-    sk = ec.generate_private_key(ec.SECP256R1())
-    did = "did:jwk:" + _b64(json.dumps(P256SigningKey(sk, kid="-").public_jwk()).encode())
+    key, did = _issuer()
     sd_jwt = SdJwtVcProofSuite().issue(
-        {"iss": did, "validUntil": PAST}, signing_key=P256SigningKey(sk, kid=f"{did}#0"),
+        {"iss": did, "validUntil": PAST}, signing_key=key,
         vct="https://credentials.example/membership", disclosable=["validUntil"])
     result = run(form(sd_jwt), None)
     assert result.credential["validUntil"] == PAST
@@ -348,3 +347,49 @@ def test_envelope_media_type_does_not_turn_ietf_claims_into_vcdm(run):
 ])
 def test_declares_vcdm(typ, claims, expected):
     assert _declares_vcdm(typ, claims) is expected
+
+
+# --------------------------------------------------------------------------- #
+# adversarial-review regressions
+# --------------------------------------------------------------------------- #
+
+def test_policy_now_does_not_move_the_jose_window(run):
+    # The SD-JWT VCDM window is judged at the current time, like VC-JWT's and every JOSE
+    # `exp`; `policy.now` pins Data Integrity and the KB-JWT window only. The waiver's flag
+    # comes from that same check, so strict and waived agree even with `now` pinned.
+    lapsed = _mint(_vcdm(validUntil="2025-06-01T00:00:00Z"))
+    before = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    with pytest.raises(CredentialExpired):
+        run(lapsed, VerificationPolicy(now=before))
+    assert run(lapsed, VerificationPolicy(now=before, require_not_expired=False)).expired
+
+    current = _mint(_vcdm(validUntil=FUTURE))
+    after = datetime(2100, 1, 1, tzinfo=timezone.utc)
+    assert run(current, VerificationPolicy(now=after)).expired is False
+    waived = run(current, VerificationPolicy(now=after, require_not_expired=False))
+    assert waived.expired is False
+
+
+@pytest.mark.parametrize("leeway", [10**12, 10**14, 10**30])
+def test_huge_leeway_is_honoured_not_a_crash(run, leeway):
+    # `instant ± leeway` used to overflow datetime: a bare OverflowError, not an OpenvcError.
+    result = run(_mint(_vcdm(validUntil=PAST)), VerificationPolicy(leeway_s=leeway))
+    assert result.expired is False
+
+
+def test_huge_leeway_does_not_abort_verify_many():
+    from openvc import verify_many, verify_many_async
+    batch = [_mint(_vcdm(validUntil=PAST)), _mint(_vcdm(validFrom=FUTURE))]
+    policy = VerificationPolicy(leeway_s=10**14)
+    for results in (verify_many(batch, policy=policy),
+                    asyncio.run(verify_many_async(batch, policy=policy))):
+        assert [r.ok for r in results] == [True, True]   # the leeway covers both bounds
+
+
+def test_huge_leeway_on_the_vc_jwt_window(run):
+    # The window helper is shared: the VC-JWT lane overflowed the same way.
+    from openvc.proof.vc_jwt import VcJwtProofSuite
+    token = VcJwtProofSuite().sign(_vcdm(validUntil=PAST), signing_key=KEY)
+    with pytest.raises(CredentialExpired):
+        run(token, None)
+    assert run(token, VerificationPolicy(leeway_s=10**14)).expired is False

@@ -81,10 +81,31 @@ issuer key from `iss` (see
 **What `key_bound` attests.** `key_bound=True` means a KB-JWT was present,
 verified against the credential's `cnf` key over the disclosures you received, and
 within the freshness window above. Its `aud` and `nonce` are checked against the
-values **you pass**, and only then.
-Without `audience` + `nonce`, the flag proves possession of the key for some
-verifier, not a binding to you. Pass both, or set `require_key_binding=True`, which
-refuses to run without them. An SD-JWT VC nested in a `jwt_vc_json` / `ldp_vc`
+values **you pass**, and they bind it only **together** (RFC 9901 §7.3 step 5.6).
+With the default `require_key_binding=False`:
+
+| you pass | a KB-JWT is present | no KB-JWT |
+|---|---|---|
+| `audience` **and** `nonce` (non-empty strings) | both must match, else `ClaimsInvalid`; `key_bound=True` means bound to you | verifies, `key_bound=False` |
+| only one of them, or an empty one | **`ClaimsInvalid`**, before any KB-JWT crypto runs | verifies, `key_bound=False` |
+| neither | `key_bound=True`, but that is **possession only**: the key signed for *some* verifier, not a binding to you | verifies, `key_bound=False` |
+
+With `require_key_binding=True`, every cell except the first one fails with
+`ClaimsInvalid`: it refuses to run without both values, and it refuses a presentation
+with no KB-JWT.
+
+A single value is not a binding. `aud` alone accepts a KB-JWT from another of
+your own sessions, and `nonce` alone accepts one made for another verifier. An empty
+value binds nothing either: `nonce=""` would accept any KB-JWT the holder signed with
+an empty nonce. So openvc refuses rather than report a half-checked `key_bound=True`,
+and a KB-JWT is never checked against just one of the two values. With no KB-JWT,
+`audience` alone stays a valid policy, which matters because
+`VerificationPolicy.audience` also pins a VC-JWT's `aud`.
+
+That refusal stops a misleading flag; it does not make the KB-JWT **required**. A
+presentation with its KB-JWT stripped still verifies with `key_bound=False`, whatever
+you passed. If you need the holder binding, set `require_key_binding=True` (with both
+values) or check `key_bound is True`. An SD-JWT VC nested in a `jwt_vc_json` / `ldp_vc`
 presentation gets its `aud` / `nonce` from that presentation. A KB-JWT bound
 anywhere else rejects the whole response — see
 [SD-JWT VCs nested in a W3C presentation](Presentations#sd-jwt-vcs-nested-in-a-w3c-presentation).

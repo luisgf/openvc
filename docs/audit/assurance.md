@@ -70,7 +70,10 @@ when its recursion/nesting harness landed alongside the **R1** fix.)
 Example-based, but broad. Representative anchors:
 
 - **VC-JWT / hostile input** — non-object header/payload, non-string `iss`,
-  batch-isolation of a hostile item (`test_hostile_input.py:51-85`).
+  batch-isolation of a hostile item (`test_hostile_input.py:51-85`); malformed
+  `exp`/`nbf`/`iat` (`null`, containers, strings, bools, non-finite) typed and
+  batch-isolated on every entry point, with and without the expiry waiver
+  (`test_vc_jwt_numeric_dates.py`).
 - **SD-JWT** — unreferenced/forged/duplicate disclosure, wrong key, expired,
   `vct` mismatch, KB `aud`/`nonce`/`sd_hash` tamper, non-numeric `exp`/`nbf`
   (`test_sd_jwt.py:118-333`).
@@ -190,6 +193,16 @@ lanes verify through openvc's own JWS code, not PyJWT. Advisory by advisory:
 | GHSA-w7vc-732c-9m39 / CVE-2026-48525 | DoS via unbounded b64 decode of the unused segment of a `b64=false` detached JWS | **Marginally, pre-2.13** — a hostile token reaches `jwt.decode` on the VC-JWT lane (cost ∝ input size; no wrong-accept). Closed by the floor. On the hand-rolled lanes `b64` is an inert unknown parameter — verification always runs over `b64url(header).b64url(payload)`, so detached-payload confusion is impossible; and a *conformant* `b64=false` token must list `b64` in `crit` (RFC 7797 §6), which every lane now rejects |
 
 Outcome: floor raised to `pyjwt>=2.13` (defense in depth even where structurally
-unreachable) plus the lane-uniform `crit` rejection. `cryptography` 49.0.0
+unreachable) plus the lane-uniform `crit` rejection.
+
+Not an advisory, but the same surface (found 2026-10-12, fixed in 1.29.2): PyJWT
+casts `exp`/`nbf`/`iat` with `int()` and catches only `ValueError`, so a signed
+`"nbf": null` raised a bare `TypeError` out of `_JWT.decode`, outside `OpenvcError`.
+`vc_jwt` now checks those shapes itself before the decode (`check_numeric_dates`).
+The fix's adversarial review found two more untyped exits from the decode. One is
+a `RecursionError` from PyJWT's own `json.loads` on Python ≤ 3.11, where the depth
+limit depends on stack depth. The other is a `UnicodeEncodeError` from a non-ASCII
+signature segment. Non-ASCII tokens are now refused before decoding, and any
+`TypeError`/`ValueError`/`RecursionError` from the decode maps to `ClaimsInvalid`. `cryptography` 49.0.0
 (2026-06-12, stricter X.509 parsing) confirmed compatible: full suite green, and CI
 resolves the newest `cryptography` on every run.

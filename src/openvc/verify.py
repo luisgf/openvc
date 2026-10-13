@@ -59,13 +59,8 @@ if TYPE_CHECKING:
 from .cache import batch_resolvers
 from .errors import OpenvcError
 from .observability import logger, span
-from .proof._verify_common import (
-    DEFAULT_KB_MAX_AGE_S,
-    DEFAULT_LEEWAY_S,
-    check_jwt_temporal,
-    check_validity_window,
-)
-from .proof.errors import ClaimsInvalid, CredentialExpired, ProofError
+from .proof._verify_common import DEFAULT_KB_MAX_AGE_S, DEFAULT_LEEWAY_S
+from .proof.errors import ClaimsInvalid
 from .schema import (
     SchemaUnavailable,
     SchemaValidationResult,
@@ -145,7 +140,10 @@ class VerificationPolicy:
     for the SD-JWT Key Binding JWT freshness window (the JOSE suites' ``exp``/``nbf``,
     and the VCDM ``validFrom``/``validUntil`` they enforce, use the current time).
     ``kb_max_age_s`` bounds how old a KB-JWT's ``iat`` may be (RFC 9901 §7.3 step
-    5.5)."""
+    5.5). ``audience`` and ``nonce`` bind an SD-JWT KB-JWT together (step 5.6): a
+    KB-JWT checked against only one of them, or an empty one, is rejected
+    (``ClaimsInvalid``), while ``audience`` alone still pins a VC-JWT's ``aud``. That
+    does not make the KB-JWT required — ``require_key_binding`` does."""
     leeway_s: int = DEFAULT_LEEWAY_S
     expected_types: Sequence[str] | None = None
     expected_vct: str | None = None
@@ -185,39 +183,33 @@ class VerificationResult:
     status: Union[StatusResult, TokenStatusResult, None] = None
     schema: SchemaValidationResult | None = None  # credentialSchema validation, if run
     raw: Any = None                            # the underlying suite result
-    # True when temporal checks ran and the credential is past validUntil/exp
-    # but ``require_not_expired`` waived the failure. Default False so existing
-    # constructions stay valid (add-only).
+    # True when ``require_not_expired`` waived an expiry the default policy would
+    # have rejected: the proof suite reports the check it skipped (``raw.expired``),
+    # with the same clock and fields it enforces. Always False when the policy
+    # enforces expiry. Default False so existing constructions stay valid (add-only).
     expired: bool = False
 
 
-def _expired_flag(
-    policy: VerificationPolicy,
-    credential: dict[str, Any] | None,
-    claims: dict[str, Any] | None,
-) -> bool:
-    """True when expiry was waived and the credential is past its validity window.
+def _schema_inner_policy(policy: VerificationPolicy) -> VerificationPolicy:
+    """The policy a ``JsonSchemaCredential`` (the schema wrapped in its own signed VC)
+    is verified under — shared by the sync and async pipelines.
 
-    The flag only observes: the suite already enforced not-yet-valid and malformed
-    dates, so those never fail the call from here — the waiver must not reject what
-    the default policy accepts. The SD-JWT lane passes its claims as *credential* only
-    when they are a VCDM credential, the one case its suite enforces that window."""
-    if policy.require_not_expired:
-        return False
-    if isinstance(credential, dict):
-        try:
-            check_validity_window(
-                credential, {}, now=policy.now, leeway_s=policy.leeway_s)
-        except CredentialExpired:
-            return True
-        except ProofError:
-            pass
-    if claims:
-        try:
-            check_jwt_temporal(claims, leeway_s=policy.leeway_s)
-        except ClaimsInvalid as exc:
-            return "expired" in str(exc).lower()
-    return False
+    It keeps the leeway, the evaluation instant and the status knobs, but not the
+    outer ``expected_types`` / ``expected_vct`` / ``audience`` / ``nonce``, which
+    constrain the outer credential. Nor does it inherit ``require_not_expired`` /
+    ``require_not_revoked``: those waive the *verified credential's* own disposition,
+    and the schema VC is a trust input it depends on — like a status-list credential
+    (verified by the blessed resolvers under the default policy) or an ``x5c`` chain.
+    An expired or revoked schema VC fails under every policy; nothing on the result
+    could otherwise tell the caller the schema came from a lapsed authority."""
+    return VerificationPolicy(
+        leeway_s=policy.leeway_s,
+        require_status=policy.require_status,
+        now=policy.now,
+        require_status_issuer_binding=policy.require_status_issuer_binding,
+        status_issuer_allowlist=policy.status_issuer_allowlist,
+        kb_max_age_s=policy.kb_max_age_s,
+    )
 
 
 @dataclass(frozen=True)
@@ -270,6 +262,10 @@ def detect_format(credential: Any) -> str:
     if isinstance(credential, dict):
         types = credential.get("type", [])
         types = [types] if isinstance(types, str) else types
+        if not isinstance(types, (list, tuple)):         # VCDM: a string or an array; a
+            raise UnknownCredentialFormat(               # null/number/bool/object is malformed
+                f"credential `type` must be a string or an array, "
+                f"not {type(types).__name__}")
         if "EnvelopedVerifiableCredential" in types:
             return FORMAT_ENVELOPED
         proof = credential.get("proof")
@@ -277,8 +273,12 @@ def detect_format(credential: Any) -> str:
             cryptosuite = proof.get("cryptosuite")
             fmt = _CRYPTOSUITE_FORMAT.get(cryptosuite) if isinstance(cryptosuite, str) else None
             if fmt is None:
+                # name a non-str by its type: repr() of a deeply nested one raises a
+                # bare RecursionError
+                shown = (repr(cryptosuite) if isinstance(cryptosuite, str)
+                         else type(cryptosuite).__name__)
                 raise UnknownCredentialFormat(
-                    f"unsupported Data Integrity cryptosuite {cryptosuite!r}")
+                    f"unsupported Data Integrity cryptosuite {shown}")
             return fmt
         raise UnknownCredentialFormat(
             "dict has no `proof` and is not an EnvelopedVerifiableCredential")
@@ -436,23 +436,13 @@ def _make_schema_verifier(
     an inner VC that declares a status but has no resolver still fails). Schema
     validation is **off** on that inner pass (``resolve_credential_schema=None``):
     the VC's own ``credentialSchema`` — the meta-schema — is not re-fetched, which
-    bounds recursion so a hostile chain of schema-VCs cannot loop. The outer
-    ``expected_types`` / ``expected_vct`` / ``audience`` / ``nonce`` constrain the
-    *outer* credential, not this one, so the inner policy carries only the leeway,
-    the evaluation instant, and the fail-closed-status knob."""
+    bounds recursion so a hostile chain of schema-VCs cannot loop. The inner policy
+    is :func:`_schema_inner_policy` — no outer constraints, and no expiry or
+    revocation waiver."""
     def verify_inner(raw: bytes) -> dict[str, Any]:
-        inner_policy = VerificationPolicy(
-            leeway_s=policy.leeway_s,
-            require_status=policy.require_status,
-            now=policy.now,
-            require_not_expired=policy.require_not_expired,
-            require_not_revoked=policy.require_not_revoked,
-            require_status_issuer_binding=policy.require_status_issuer_binding,
-            status_issuer_allowlist=policy.status_issuer_allowlist,
-            kb_max_age_s=policy.kb_max_age_s,
-        )
         return verify_credential(
-            _bytes_to_credential(raw), policy=inner_policy, resolver=resolver,
+            _bytes_to_credential(raw), policy=_schema_inner_policy(policy),
+            resolver=resolver,
             resolve_status_list=resolve_status_list,
             resolve_status_list_token=resolve_status_list_token,
             resolve_credential_schema=None,          # bound recursion (see docstring)
@@ -558,7 +548,7 @@ def _verify_vc_jwt(token: str, policy: VerificationPolicy, resolver: Any,
         format=FORMAT_VC_JWT, credential=verified.credential, claims=verified.claims,
         issuer=verified.issuer, subject=verified.subject, status=status,
         schema=schema, raw=verified,
-        expired=_expired_flag(policy, verified.credential, verified.claims))
+        expired=verified.expired)
 
 
 def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
@@ -566,7 +556,7 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
                    resolve_credential_schema: Any, jwt_vc_issuer_fetch: Any,
                    x5c_trust_anchors: Any, verify_inner: Any,
                    kb_binding: tuple[str, str] | None = None) -> VerificationResult:
-    from .proof.sd_jwt import SdJwtVcProofSuite, _vcdm_credential
+    from .proof.sd_jwt import SdJwtVcProofSuite
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
     iss, kid = suite.peek_issuer(sd_jwt)
@@ -602,9 +592,7 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
         format=FORMAT_SD_JWT_VC, credential=verified.claims, claims=verified.claims,
         issuer=verified.issuer, subject=_as_str(verified.claims.get("sub")),
         key_bound=verified.key_bound, status=status, schema=schema, raw=verified,
-        # an IETF SD-JWT VC's claim merely named validUntil is not a validity bound
-        expired=_expired_flag(
-            policy, _vcdm_credential(sd_jwt, verified.claims), verified.claims))
+        expired=verified.expired)
 
 
 def _verify_data_integrity(
@@ -651,7 +639,7 @@ def _verify_data_integrity(
     return VerificationResult(
         format=fmt, credential=verified.credential, issuer=verified.issuer,
         subject=verified.subject, status=status, schema=schema, raw=verified,
-        expired=_expired_flag(policy, verified.credential, None))
+        expired=verified.expired)
 
 
 # -- shared helpers --------------------------------------------------------- #
@@ -730,7 +718,11 @@ def _check_types(credential: dict[str, Any], expected: Sequence[str] | None) -> 
     if not expected:
         return
     types = credential.get("type", [])
-    types = [types] if isinstance(types, str) else types
+    # a VC-JWT's `vc.type` is issuer-signed but still attacker-shaped: a non-array
+    # carries none of the expected types (a typed TypeMismatch, never a bare TypeError,
+    # and never an object whose KEYS would pass the membership test)
+    types = ([types] if isinstance(types, str)
+             else types if isinstance(types, (list, tuple)) else [])
     missing = [t for t in expected if t not in types]
     if missing:
         raise TypeMismatch(f"credential is missing required type(s): {missing}")
@@ -799,9 +791,11 @@ def _check_status(
         else:
             w3c = check_credential_status(w3c_source, resolve_status_list=resolve_status_list)
             if w3c.revoked and policy.require_not_revoked:
-                raise CredentialRevoked(f"credential {w3c_source.get('id')!r} is revoked")
+                raise CredentialRevoked(
+                    f"credential {_as_str(w3c_source.get('id'))!r} is revoked")
             if w3c.suspended:
-                raise CredentialSuspended(f"credential {w3c_source.get('id')!r} is suspended")
+                raise CredentialSuspended(
+                    f"credential {_as_str(w3c_source.get('id'))!r} is suspended")
             result = w3c
     elif w3c_source.get("credentialStatus") and policy.require_status:
         # a credentialStatus is declared but of an entry type we cannot check

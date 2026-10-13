@@ -51,6 +51,7 @@ from ._verify_common import (
     check_validity_window,
     non_negative_seconds,
     reject_unknown_crit,
+    safe_repr,
     utc_epoch,
 )
 from .errors import (
@@ -216,6 +217,10 @@ class VerifiedSdJwt:
     vct: str | None                # verifiable credential type
     key_bound: bool                # a valid KB-JWT was present and verified
     confirmation: dict[str, Any] | None   # the ``cnf`` claim, if any
+    # check_temporal=False only: the issuer JWT's ``exp`` has passed — or, for a W3C
+    # VCDM payload, its ``validUntil`` — i.e. the expiry check that was skipped would
+    # have failed. An IETF SD-JWT VC's claim merely named ``validUntil`` never sets it.
+    expired: bool = False
 
 
 def _check_aka_vcts(payload: Mapping[str, Any]) -> None:
@@ -411,6 +416,15 @@ class SdJwtVcProofSuite:
         against the holder key in ``cnf`` and checks ``aud`` / ``nonce`` /
         ``sd_hash``.
 
+        *audience* and *nonce* bind a KB-JWT **together** (RFC 9901 §7.3 step 5.6):
+        pass both, as non-empty strings. A present KB-JWT verified with only one of
+        them, or with an empty one, raises ``ClaimsInvalid`` rather than report a
+        half-checked binding. With neither, ``key_bound=True`` proves possession of the
+        ``cnf`` key over these disclosures for *some* verifier, not a binding to you.
+        Rejecting a half-bound KB-JWT does not make it *required*: a presentation with
+        the KB-JWT stripped still verifies with ``key_bound=False``, so set
+        *require_key_binding* (or check ``key_bound``) when you need the binding.
+
         When *require_key_binding* is True the KB-JWT is verified **before**
         ``exp``/``nbf``: an expired (or not-yet-valid) issuer JWT still has its
         holder binding checked, so a temporal failure means the presentation was
@@ -438,11 +452,14 @@ class SdJwtVcProofSuite:
         issuer_jwt, disclosures, kb_jwt = self._split(presentation)
         header, claims, signing_input, signature = self._decode_jws(issuer_jwt)
 
+        # allow-list BEFORE crypto. A JSON array/object `alg` / `typ` is unhashable:
+        # type-check it first, or `in frozenset` raises a bare TypeError
         alg = header.get("alg")
-        if alg not in self._algs:                     # allow-list BEFORE crypto
-            raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
-        if header.get("typ") not in _ACCEPTED_ISSUER_TYP:
-            raise SdJwtError(f"unexpected issuer JWT typ {header.get('typ')!r}")
+        if not isinstance(alg, str) or alg not in self._algs:
+            raise UnsupportedAlgorithm(f"algorithm {safe_repr(alg)} is not permitted")
+        typ = header.get("typ")
+        if not isinstance(typ, str) or typ not in _ACCEPTED_ISSUER_TYP:
+            raise SdJwtError(f"unexpected issuer JWT typ {safe_repr(typ)}")
         reject_unknown_crit(header)
         self._verify_signature(alg, public_key_jwk, signing_input, signature,
                                what="issuer JWT")
@@ -452,8 +469,8 @@ class SdJwtVcProofSuite:
             if not isinstance(iss_claim, str):
                 raise ClaimsInvalid("iss claim is missing or not a string")
             alg_name = claims.get("_sd_alg", _DEFAULT_HASH)
-            if alg_name not in _HASHES:
-                raise SdJwtError(f"unsupported _sd_alg {alg_name!r}")
+            if not isinstance(alg_name, str) or alg_name not in _HASHES:
+                raise SdJwtError(f"unsupported _sd_alg {safe_repr(alg_name)}")
             return iss_claim, alg_name
 
         # Presentation path: prove holder binding even when the issuer JWT is
@@ -466,9 +483,9 @@ class SdJwtVcProofSuite:
                 kb_jwt, issuer_jwt, disclosures, claims.get("cnf"),
                 hash_name=hash_name, audience=audience, nonce=nonce,
                 required=True, current=current, max_age_s=kb_max_age_s)
-            self._check_temporal(claims, check_temporal=check_temporal)
+            expired = self._check_temporal(claims, check_temporal=check_temporal)
         else:
-            self._check_temporal(claims, check_temporal=check_temporal)
+            expired = self._check_temporal(claims, check_temporal=check_temporal)
             iss, hash_name = _iss_and_hash()
             key_bound = False
 
@@ -484,16 +501,16 @@ class SdJwtVcProofSuite:
         # RFC 9901 §7.1 step 6: nbf/exp are checked on the *processed* payload
         # if present. The issuer-JWT body was already checked above; if
         # `exp`/`nbf` were selectively disclosed they only appear after `_unpack`.
-        self._check_temporal(unpacked, check_temporal=check_temporal)
+        expired = self._check_temporal(unpacked, check_temporal=check_temporal) or expired
 
         # A W3C credential secured as SD-JWT *is* this claim set (VC-JOSE-COSE §3.2.1), and
         # its `exp` dates the signature, not the data (§3.1.3, JOSE): an issuer may put the
         # expiry only in `validUntil`. Enforce the VCDM window as the VC-JWT lane does — on
         # the processed payload, same leeway, wall clock like `exp`.
         if _declares_vcdm(header.get("typ"), unpacked):
-            check_validity_window(
+            expired = check_validity_window(
                 unpacked, {}, now=None, leeway_s=self._leeway,
-                check_temporal=check_temporal)
+                check_temporal=check_temporal) or expired
 
         vct = unpacked.get("vct")
         if expected_vct is not None and vct != expected_vct:
@@ -508,7 +525,7 @@ class SdJwtVcProofSuite:
 
         return VerifiedSdJwt(
             claims=unpacked, issuer=iss, vct=vct if isinstance(vct, str) else None,
-            key_bound=key_bound, confirmation=claims.get("cnf"))
+            key_bound=key_bound, confirmation=claims.get("cnf"), expired=expired)
 
     # -- internals --------------------------------------------------------- #
 
@@ -562,10 +579,11 @@ class SdJwtVcProofSuite:
 
     def _check_temporal(
         self, claims: dict[str, Any], *, check_temporal: bool = True
-    ) -> None:
+    ) -> bool:
         # NumericDate exp/nbf, fail-closed and non-finite-safe, single-sourced across the
-        # JOSE suites (openvc.proof._verify_common.check_jwt_temporal).
-        check_jwt_temporal(
+        # JOSE suites (openvc.proof._verify_common.check_jwt_temporal). True when a
+        # waived exp has passed.
+        return check_jwt_temporal(
             claims, leeway_s=self._leeway, subject="token",
             check_temporal=check_temporal)
 
@@ -611,12 +629,34 @@ class SdJwtVcProofSuite:
             if required:
                 raise ClaimsInvalid("key binding required but no KB-JWT present")
             return False
+        if audience is not None or nonce is not None:
+            # RFC 9901 §7.3 step 5.6 binds a KB-JWT by aud AND nonce: aud alone lets a
+            # KB-JWT from another of this verifier's sessions replay, nonce alone lets one
+            # made for another verifier relay. Checking only the value given would report
+            # key_bound=True for a binding that never happened, so a half-configured
+            # caller fails closed here, before any KB-JWT crypto. Only with a KB-JWT
+            # present: `audience` alone is a valid VC-JWT policy, and an SD-JWT without a
+            # KB-JWT honestly reports key_bound=False.
+            if audience is None or nonce is None:
+                given = "audience" if nonce is None else "nonce"
+                raise ClaimsInvalid(
+                    f"a KB-JWT is present but only {given} was given to bind it against; "
+                    "aud and nonce bind it together (RFC 9901 §7.3 step 5.6), so pass both")
+            # An empty (or non-string) value binds nothing: `nonce=""` from a lost session
+            # would accept any KB-JWT the holder signed with an empty nonce. Every other
+            # binding gate (VP-JWT, OpenID4VP, the nested _kb_binding) refuses it too.
+            if not (isinstance(audience, str) and audience
+                    and isinstance(nonce, str) and nonce):
+                raise ClaimsInvalid(
+                    "the audience and nonce a KB-JWT is bound against must be non-empty "
+                    "strings")
         header, claims, signing_input, signature = self._decode_jws(kb_jwt)
         if header.get("typ") != _KB_TYP:
             raise SdJwtError(f"KB-JWT typ must be {_KB_TYP!r}")
         alg = header.get("alg")
-        if alg not in self._algs:
-            raise UnsupportedAlgorithm(f"KB-JWT algorithm {alg!r} is not permitted")
+        if not isinstance(alg, str) or alg not in self._algs:     # unhashable-safe
+            raise UnsupportedAlgorithm(
+                f"KB-JWT algorithm {safe_repr(alg)} is not permitted")
         reject_unknown_crit(header)
         if not isinstance(cnf, dict) or not isinstance(cnf.get("jwk"), dict):
             raise ClaimsInvalid("no cnf.jwk in the issuer JWT for key binding")
@@ -637,15 +677,6 @@ class SdJwtVcProofSuite:
         if claims.get("sd_hash") != expected:
             raise ClaimsInvalid("KB-JWT sd_hash does not match the presented disclosures")
         return True
-
-
-def _vcdm_credential(presentation: str, claims: dict[str, Any]) -> dict[str, Any] | None:
-    """*claims* when the verified *presentation* is a W3C VCDM credential (see
-    :func:`_declares_vcdm`), else ``None``: the document the pipeline's observe-only
-    ``expired`` flag may read a VCDM validity window from. Call only after ``verify``
-    accepted *presentation* — it re-reads the issuer JWT's ``typ`` unverified."""
-    header = SdJwtVcProofSuite._decode_jws(presentation.split("~", 1)[0])[0]
-    return claims if _declares_vcdm(header.get("typ"), claims) else None
 
 
 __all__ = [

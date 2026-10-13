@@ -91,14 +91,17 @@ else.
 
 What the result tells you:
 
-- **`result.expired`** is `True` when the expiry waiver is on and the credential
-  has expired: a VC-JWT's `exp` or body `validUntil` / `expirationDate`, an
-  SD-JWT VC's `exp` (plus `validUntil` / `expirationDate` when it is a W3C
-  credential secured as SD-JWT, see
+- **`result.expired`** is `True` when the expiry waiver is on and the default
+  policy would have rejected the credential for its own expiry: a VC-JWT's `exp`
+  or body `validUntil` / `expirationDate`, an SD-JWT VC's `exp` (plus `validUntil`
+  / `expirationDate` when it is a W3C credential secured as SD-JWT, see
   [SD-JWT VC](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt-vcsd-jwt)), or a Data
-  Integrity credential's `validUntil` / `expirationDate`. With the default policy it is always `False`, because an
-  expired credential raises instead (`CredentialExpired`, or `ClaimsInvalid` for
-  a JWT `exp`).
+  Integrity credential's `validUntil` / `expirationDate` and the proof's own
+  `expires`. The proof suite that skipped the check reports it, on the clock it
+  enforces with: the current time for the JOSE formats, `policy.now` for Data
+  Integrity. With the default policy it is always `False`, because an expired
+  credential raises instead (`CredentialExpired`, or `ClaimsInvalid` for a JWT
+  `exp`).
 - **Revocation has no result flag.** A waived revocation verifies, and
   `result.status.revoked` is `True`. `status` is the resolved status; the W3C
   entry wins when a credential declares both conventions.
@@ -111,7 +114,8 @@ What the result tells you:
 - **The knobs live on `VerificationPolicy`**, so they apply to
   `verify_credential`, `verify_many` and their async twins. `verify_vp_token`
   builds its own policy, so the waivers never reach a presentation verified
-  there.
+  there. They concern the credential you verify, not a schema VC it points at
+  ([Credential schemas](Credential-Schemas#the-two-schema-types)).
 
 ```python
 import asyncio

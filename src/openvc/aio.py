@@ -74,8 +74,8 @@ from .verify import (
     _bytes_to_credential,
     _check_types,
     _enforce_status_issuer,
-    _expired_flag,
     _fail_closed,
+    _schema_inner_policy,
     _unwrap_enveloped,
     detect_format,
 )
@@ -247,7 +247,7 @@ async def _verify_vc_jwt_async(
         format=FORMAT_VC_JWT, credential=verified.credential, claims=verified.claims,
         issuer=verified.issuer, subject=verified.subject, status=status,
         schema=schema, raw=verified,
-        expired=_expired_flag(policy, verified.credential, verified.claims))
+        expired=verified.expired)
 
 
 async def _verify_sd_jwt_async(
@@ -255,7 +255,7 @@ async def _verify_sd_jwt_async(
     resolve_status_list_token: Any, resolve_credential_schema: Any,
     jwt_vc_issuer_fetch: Any, x5c_trust_anchors: Any, verify_inner: Any,
 ) -> VerificationResult:
-    from .proof.sd_jwt import SdJwtVcProofSuite, _vcdm_credential
+    from .proof.sd_jwt import SdJwtVcProofSuite
 
     suite = SdJwtVcProofSuite(leeway_s=policy.leeway_s)
     iss, kid = suite.peek_issuer(sd_jwt)
@@ -277,9 +277,7 @@ async def _verify_sd_jwt_async(
         format=FORMAT_SD_JWT_VC, credential=verified.claims, claims=verified.claims,
         issuer=verified.issuer, subject=_as_str(verified.claims.get("sub")),
         key_bound=verified.key_bound, status=status, schema=schema, raw=verified,
-        # an IETF SD-JWT VC's claim merely named validUntil is not a validity bound
-        expired=_expired_flag(
-            policy, _vcdm_credential(sd_jwt, verified.claims), verified.claims))
+        expired=verified.expired)
 
 
 async def _verify_data_integrity_async(
@@ -325,7 +323,7 @@ async def _verify_data_integrity_async(
     return VerificationResult(
         format=fmt, credential=verified.credential, issuer=verified.issuer,
         subject=verified.subject, status=status, schema=schema, raw=verified,
-        expired=_expired_flag(policy, verified.credential, None))
+        expired=verified.expired)
 
 
 # -- async key resolution --------------------------------------------------- #
@@ -471,9 +469,11 @@ async def _check_status_async(
             w3c = await check_credential_status_async(
                 w3c_source, resolve_status_list=resolve_status_list)
             if w3c.revoked and policy.require_not_revoked:
-                raise CredentialRevoked(f"credential {w3c_source.get('id')!r} is revoked")
+                raise CredentialRevoked(
+                    f"credential {_as_str(w3c_source.get('id'))!r} is revoked")
             if w3c.suspended:
-                raise CredentialSuspended(f"credential {w3c_source.get('id')!r} is suspended")
+                raise CredentialSuspended(
+                    f"credential {_as_str(w3c_source.get('id'))!r} is suspended")
             result = w3c
     elif w3c_source.get("credentialStatus") and policy.require_status:
         raise StatusUnavailable(
@@ -531,21 +531,12 @@ def _make_schema_verifier_async(
 ) -> Any:
     """Async twin of ``openvc.verify._make_schema_verifier``: build the async
     ``verify_inner`` a ``JsonSchemaCredential`` uses, running the inner VC through
-    ``verify_credential_async`` with schema OFF (bounded recursion) and the outer
-    audience/type constraints dropped."""
+    ``verify_credential_async`` with schema OFF (bounded recursion) under the same
+    ``_schema_inner_policy`` (outer constraints dropped, no expiry/revocation waiver)."""
     async def verify_inner(raw: bytes) -> dict[str, Any]:
-        inner_policy = VerificationPolicy(
-            leeway_s=policy.leeway_s,
-            require_status=policy.require_status,
-            now=policy.now,
-            require_not_expired=policy.require_not_expired,
-            require_not_revoked=policy.require_not_revoked,
-            require_status_issuer_binding=policy.require_status_issuer_binding,
-            status_issuer_allowlist=policy.status_issuer_allowlist,
-            kb_max_age_s=policy.kb_max_age_s,
-        )
         result = await verify_credential_async(
-            _bytes_to_credential(raw), policy=inner_policy, resolver=resolver,
+            _bytes_to_credential(raw), policy=_schema_inner_policy(policy),
+            resolver=resolver,
             resolve_status_list=resolve_status_list,
             resolve_status_list_token=resolve_status_list_token,
             resolve_credential_schema=None,          # bound recursion

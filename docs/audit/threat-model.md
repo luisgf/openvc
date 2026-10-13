@@ -91,9 +91,11 @@ boundary is attacker-controlled until a signature verifies.
   (`:237`). ML-DSA (RFC 9964) is **opt-in only** (`allow_pq=True`, `:135`),
   never in the default allow-list.
 - **SD-JWT VC** — `src/openvc/proof/sd_jwt.py`. Allow-list before crypto for the
-  issuer JWT (`:331-332`) and KB-JWT (`:464-465`); duplicate/unreferenced
-  disclosures rejected (`:349-352,431`); claim-overwrite blocked (`:143`);
-  key-binding-required-without-`aud`/`nonce` fails closed (`:447-455`). See
+  issuer JWT (`:419-424`) and KB-JWT (`:608-611`); duplicate/unreferenced
+  disclosures rejected (`:457-460,552-553`); claim-overwrite blocked (`:174`);
+  key-binding-required-without-`aud`/`nonce` fails closed (`:571-579`), and so
+  does a present KB-JWT checked against only one of `aud`/`nonce`, or an empty
+  one (`:584-604`, #191). See
   **R1** in §9 for the recursion caveat.
 - **Data Integrity** — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (RDF-canonical),
   `eddsa-jcs-2022` / `ecdsa-jcs-2019` (JCS), and selective-disclosure
@@ -129,7 +131,8 @@ finite input", with no explicit constant.
 | JCS canonicalizer (RFC 8785) | JCS DI unsecured doc + proofConfig | Depth **100**; IEEE-754 range enforced; NaN/Inf rejected | `JcsError` — **not** an `OpenvcError` (R2) | `src/openvc/proof/_jcs.py:18,27,148-149` |
 | SD-JWT `_unpack` / JWS decode | Holder presentation | Depth **100**; `RecursionError` mapped to typed (v1.20.1, was R1) | `SdJwtError`/`MalformedToken` (typed) | `src/openvc/proof/sd_jwt.py:66,121,397` |
 | ecdsa-sd proofValue | DI selective-disclosure proof | Reuses CBOR (depth 64) + strict 5-element subset gate | `ProofValueMalformed` (typed) | `src/openvc/proof/ecdsa_sd.py:45,103-121,139-141` |
-| Bitstring status | Resolved status VC `encodedList` | Delegates 16 MiB decompress cap; index bounds-checked | `StatusListError` (typed) | `src/openvc/status/bitstring.py:38,43-50` |
+| Bitstring status | Resolved status VC `encodedList` | Delegates 16 MiB decompress cap; index bounds-checked; corrupt DEFLATE (`zlib.error`) re-wrapped since v1.29.2 | `StatusListError` (typed) | `src/openvc/status/bitstring.py` |
+| Status index | Credential's `statusListIndex` / `status.status_list.idx` | One shared rule: non-negative `int` (never `bool`/`float`) or ASCII-digit string (W3C only), below 2^27 (the decompress cap at 1 bit/status); the entry's URL / `statusPurpose` must be strings (never `str()`'d); error text never `repr()`s a container or a >64-bit int | `StatusListError` (typed) — was a bare `OverflowError` on `Infinity`/`1e400` before v1.29.2 | `src/openvc/status/_index.py` |
 | Decompress (gzip/zlib) | Issuer status bytes (**not** covered by the 1 MiB fetch cap) | **16 MiB**, incremental | `DecompressionBomb` — **not** an `OpenvcError`, re-wrapped at call sites (R2) | `src/openvc/status/_decompress.py:23,28,38-66` |
 | LOTL/TL XML | EU trusted-list bytes (pre-signature) | **DOCTYPE refused** (blocks XXE + expansion); 16 MiB + 500k elements | `TrustListParseError` (typed) | `src/openvc/trustlist/parse.py:22,108-120,100-117` |
 | XAdES signature XML | Signed trusted-list | 16 MiB; XAdES-BASELINE-B alg profile; XSW subtree guard | `XadesError` family; hardened lxml on the reparse (R6) | `src/openvc/trustlist/xades.py:71-81,97-98,115-127` |

@@ -80,8 +80,12 @@ def _did_webvh_url(did: str) -> str:
     scid, _, rest = msi.partition(":")
     if not scid or not rest:
         raise DidWebvhError("did:webvh must be did:webvh:{scid}:{domain}[:path...]")
-    # Reuse did:web's mapping on the post-SCID remainder, then swap the filename.
-    web_url = _did_web_url("did:web:" + rest)
+    # Reuse did:web's mapping (and its host check) on the post-SCID remainder, then
+    # swap the filename.
+    try:
+        web_url = _did_web_url("did:web:" + rest)
+    except DidResolutionError as exc:
+        raise DidWebvhError(f"did:webvh {did!r}: {exc}") from exc
     return web_url[: -len("did.json")] + "did.jsonl"
 
 

@@ -8,7 +8,9 @@ a credential's validity window, the meaning of ``proofPurpose``, and the DID
 verification-relationship binding do not depend on how the proof was signed. They
 run **after** the signature verifies (the fields they read are integrity-protected
 by that signature), except the key-selection binding, which necessarily precedes
-crypto (you cannot verify without first choosing an authorized key).
+crypto (you cannot verify without first choosing an authorized key), and the
+VC-JWT NumericDate shape gate (:func:`check_numeric_dates`), which must run before
+PyJWT reads those claims and can only reject.
 
 The VC-JWT / SD-JWT suites do their own temporal check via the JWT ``exp``/``nbf``
 claims; this module is the Data Integrity equivalent, so a proof embedded in the
@@ -50,6 +52,18 @@ def reject_unknown_crit(header: dict[str, Any]) -> None:
     (``openvc.cose``) and JWE (``openvc.jwe``) paths already take."""
     if "crit" in header:
         raise MalformedToken("JWS 'crit' extensions are not supported")
+
+
+def safe_repr(value: Any) -> str:
+    """*value* for an error message, when it is attacker-shaped JSON.
+
+    A scalar is shown as ``repr``; a container is named by its type. ``json.loads``
+    on Python 3.14 accepts an array nested deeply enough that ``repr()`` of it raises
+    a bare ``RecursionError``, which would escape ``OpenvcError`` from the very
+    ``raise`` meant to report the bad value."""
+    if value is None or isinstance(value, (str, int, float)):
+        return repr(value)
+    return type(value).__name__
 
 
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
@@ -114,7 +128,7 @@ def check_validity_window(
     now: datetime | None,
     leeway_s: int,
     check_temporal: bool = True,
-) -> None:
+) -> bool:
     """Enforce the credential's validity window and the proof's own expiry.
 
     Honours both VCDM 2.0 (``validFrom`` / ``validUntil``) and VCDM 1.1
@@ -123,6 +137,11 @@ def check_validity_window(
     UTC time); pinning it lets a conformance vector or an "as of" audit verify
     deterministically regardless of wall-clock. An absent bound is not a
     violation, but a present-but-unparseable one fails closed (see :func:`_bound`).
+
+    *check_temporal* False skips only the two expiry checks; the return value says
+    whether one of them would have failed (always False when they ran). Suites
+    report it as their ``expired`` field, so a waived expiry is judged by the
+    same code, clock and fields as an enforced one.
     """
     if now is None:
         instant = datetime.now(timezone.utc)
@@ -130,20 +149,31 @@ def check_validity_window(
         instant = now.replace(tzinfo=timezone.utc)  # silently as system-local time
     else:
         instant = now.astimezone(timezone.utc)
-    leeway = timedelta(seconds=max(0, leeway_s))
+    try:
+        leeway = timedelta(seconds=max(0, leeway_s))
+    except OverflowError:               # wider than timedelta holds: the widest one, not a
+        leeway = timedelta.max          # bare error that would abort verify_many
+    # Compare differences, never `instant ± leeway`: a huge leeway would push that past
+    # datetime's range (a bare OverflowError); two datetimes always subtract cleanly.
 
     not_before = _bound(document, "validFrom", "issuanceDate")
-    if not_before is not None and instant + leeway < not_before:
+    if not_before is not None and not_before - instant > leeway:
         raise CredentialNotYetValid(
             f"credential is not valid before {not_before.isoformat()}")
 
+    expired = False
     not_after = _bound(document, "validUntil", "expirationDate")
-    if check_temporal and not_after is not None and instant - leeway > not_after:
-        raise CredentialExpired(f"credential expired at {not_after.isoformat()}")
+    if not_after is not None and instant - not_after > leeway:
+        if check_temporal:
+            raise CredentialExpired(f"credential expired at {not_after.isoformat()}")
+        expired = True
 
     proof_expires = _bound(proof, "expires", "expirationDate")
-    if check_temporal and proof_expires is not None and instant - leeway > proof_expires:
-        raise CredentialExpired(f"proof expired at {proof_expires.isoformat()}")
+    if proof_expires is not None and instant - proof_expires > leeway:
+        if check_temporal:
+            raise CredentialExpired(f"proof expired at {proof_expires.isoformat()}")
+        expired = True
+    return expired
 
 
 def prepare_di_proof(
@@ -197,11 +227,30 @@ def is_numeric_date(value: Any) -> bool:
         return False
 
 
+def check_numeric_dates(
+    claims: dict[str, Any], *names: str, subject: str = "token",
+) -> None:
+    """Reject each of *names* that is **present** in *claims* but not a NumericDate (per
+    :func:`is_numeric_date`), raising a typed :class:`~openvc.proof.errors.ClaimsInvalid`.
+
+    This checks shape only and compares nothing against a clock, so an expiry waiver
+    cannot switch it off. Presence means the key exists: JSON ``null`` is rejected too,
+    because RFC 7519 §2 defines a NumericDate as a JSON number. (:func:`check_jwt_temporal`
+    reads ``null`` as absent.) The VC-JWT lane runs this before PyJWT sees the token.
+    PyJWT casts ``exp``/``nbf``/``iat`` with ``int()`` and catches only ``ValueError``,
+    so a signed ``"nbf": null`` used to escape as a bare ``TypeError``. A string such as
+    ``"1"`` or a bool cast silently instead of failing.
+    """
+    for name in names:
+        if name in claims and not is_numeric_date(claims[name]):
+            raise ClaimsInvalid(f"{subject} {name} must be a finite numeric timestamp")
+
+
 def check_jwt_temporal(
     claims: dict[str, Any], *, leeway_s: int, subject: str = "token",
     now: int | None = None,
     check_temporal: bool = True,
-) -> None:
+) -> bool:
     """Enforce a JWT's ``exp``/``nbf`` NumericDate claims, fail-closed.
 
     Single-sources the JOSE temporal rule for the SD-JWT VC, VP-JWT and VC-JWT (ML-DSA)
@@ -210,20 +259,28 @@ def check_jwt_temporal(
     which would make every comparison ``False``, i.e. *never expire*) is rejected; skipping
     that would be a fail-open expiry bypass. *now* pins the instant (epoch seconds) for
     deterministic tests; ``None`` uses the current time.
+
+    *check_temporal* False skips only the ``exp`` comparison (its shape is still
+    checked); the return value says whether it would have failed — always False when
+    it ran. See :func:`check_validity_window`.
     """
     current = int(time.time()) if now is None else now
+    expired = False
     exp = claims.get("exp")
     if exp is not None:
         if not is_numeric_date(exp):
             raise ClaimsInvalid(f"{subject} exp must be a finite numeric timestamp")
-        if check_temporal and current > exp + leeway_s:
-            raise ClaimsInvalid(f"{subject} has expired")
+        if current > exp + leeway_s:
+            if check_temporal:
+                raise ClaimsInvalid(f"{subject} has expired")
+            expired = True
     nbf = claims.get("nbf")
     if nbf is not None:
         if not is_numeric_date(nbf):
             raise ClaimsInvalid(f"{subject} nbf must be a finite numeric timestamp")
         if current + leeway_s < nbf:
             raise ClaimsInvalid(f"{subject} is not yet valid")
+    return expired
 
 
 def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
@@ -426,5 +483,6 @@ __all__ = [
     "non_negative_seconds",
     "reject_unknown_crit",
     "resolve_verification_key",
+    "safe_repr",
     "utc_epoch",
 ]

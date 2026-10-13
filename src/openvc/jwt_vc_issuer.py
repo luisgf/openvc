@@ -38,7 +38,11 @@ class JwtVcIssuerError(OpenvcError):
 def jwt_vc_issuer_metadata_url(iss: str) -> str:
     """The JWT VC Issuer Metadata URL for an https *iss* — the well-known segment
     inserted between the host and the issuer's path."""
-    parsed = urlparse(iss)
+    try:
+        parsed = urlparse(iss)
+        _ = parsed.hostname, parsed.port    # lazy: force a bad port or bracket to raise here
+    except ValueError as exc:
+        raise JwtVcIssuerError(f"issuer {iss!r} is not a valid URL: {exc}") from exc
     if parsed.scheme != "https":
         raise JwtVcIssuerError(f"issuer {iss!r} is not an https URL")
     if not parsed.netloc:
