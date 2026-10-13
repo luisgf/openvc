@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import time
 
 import pytest
 from cryptography import x509
@@ -31,7 +32,7 @@ from cryptography.x509.oid import NameOID
 from openvc import fetch
 from openvc.aio import verify_credential_async, verify_many_async
 from openvc.did.base import DidResolutionError
-from openvc.did.did_web import DidWebResolver, _did_web_url
+from openvc.did.did_web import AsyncDidWebResolver, DidWebResolver, _did_web_url
 from openvc.did.did_webvh import DidWebvhError, _did_webvh_url
 from openvc.errors import OpenvcError
 from openvc.fetch import (
@@ -79,6 +80,20 @@ HOSTILE_DID_WEB = [
     "did:web:%5B2001%3Adb8%3A%3A1%5D",          # an IP literal (the spec forbids IPs)
     "did:web:" + ".".join(["a" * 63] * 4),      # 255 characters, over the 253 limit
     "did:web:ex%FFample.com",                   # invalid UTF-8 decodes to U+FFFD
+    # A Unicode host, even a valid IDN: it must be written as its xn-- A-label (#235).
+    # Python's IDNA2003 codec would map each to another domain than IDNA2008 does.
+    "did:web:m%C3%BCnchen.de",                  # IDNA2008: xn--mnchen-3ya.de
+    "did:web:fa%C3%9F.de",                      # IDNA2003 folds to fass.de
+    "did:web:%CE%B1%CF%82.gr",                  # final sigma folds to sigma
+    "did:web:%E1%BA%9Eexample.com",             # capital sharp s: lower() gives ss
+    "did:web:example.com%EF%B8%93443",          # U+FE13: urlparse NFKC reads a colon
+    # An IP address in any form WHATWG reads as one (the last label is a number).
+    "did:web:127.0.0.1",
+    "did:web:8.8.8.8%3A443",
+    "did:web:2130706433",                       # 127.0.0.1 as one decimal number
+    "did:web:0x7f.1",                           # hex, shorthand
+    "did:web:0177.0.0.1",                       # octal
+    "did:web:example.0x",
 ]
 
 
@@ -140,10 +155,9 @@ def test_did_web_resolver_never_calls_the_fetch(did):
     ("did:web:example.com%3A65535:a:b", "https://example.com:65535/a/b/did.json"),
     ("did:web:localhost%3A8443", "https://localhost:8443/.well-known/did.json"),
     ("did:web:Sub-1.EXAMPLE.com", "https://Sub-1.EXAMPLE.com/.well-known/did.json"),
+    ("did:web:123.example.com", "https://123.example.com/.well-known/did.json"),
+    ("did:web:example.x0", "https://example.x0/.well-known/did.json"),
     ("did:web:xn--mnchen-3ya.de", "https://xn--mnchen-3ya.de/.well-known/did.json"),
-    # A Unicode host is checked in IDNA form but passed through unchanged, so a DID
-    # that resolved before still maps to the same URL.
-    ("did:web:m%C3%BCnchen.de", "https://münchen.de/.well-known/did.json"),
     ("did:web:" + ".".join(["a" * 63] * 3 + ["a" * 61]),
      "https://" + ".".join(["a" * 63] * 3 + ["a" * 61]) + "/.well-known/did.json"),
 ])
@@ -173,11 +187,76 @@ def test_did_webvh_url_rejects_hostile_host_as_webvh_error(did):
     "https://ex℀mple.com/did.json",        # NFKC normalizes into a delimiter
     "https://8.8.8.8\x00.x/did.json",           # NUL: getaddrinfo would truncate it
     "https://exa mple.com/did.json",            # whitespace
+    "https://faß.de/did.json",             # Unicode host: IDNA2003 would fetch fass.de
+    "https://münchen.de/did.json",         # even a valid IDN: send the xn-- A-label
+    "https://" + "a" * 254 + "/did.json",       # over 253 characters
+    "https://\u212aexample.com/did.json",       # KELVIN SIGN: lower() makes it ASCII "k"
+    "https://example.com/\u00fc/did.json",      # a non-ASCII path cannot be sent either
 ])
 @pytest.mark.parametrize("fetcher", [https_json_fetch, https_text_fetch, https_bytes_fetch])
 def test_fetch_rejects_malformed_url_before_dns(no_network, fetcher, url):
     with pytest.raises(UnsafeUrlError):
         fetcher(url)
+
+
+# --------------------------------------------------------------------------- #
+# Bounded work: a huge host is rejected in linear time (#235)
+# --------------------------------------------------------------------------- #
+
+# CPython's punycode encoder is quadratic: 50,000 CJK characters took about a minute
+# to IDNA-encode, on the event-loop thread for the async resolver. Rejecting on length
+# and ASCII first makes it milliseconds; the bound is generous so CI never flakes.
+HUGE_HOST = "".join(chr(0x4E00 + i % 20000) for i in range(50_000)) + ".com"
+
+
+def _assert_fast(call, error):
+    start = time.perf_counter()
+    with pytest.raises(error):
+        call()
+    assert time.perf_counter() - start < 2.0
+
+
+def test_did_web_rejects_a_huge_unicode_host_fast():
+    _assert_fast(lambda: _did_web_url("did:web:" + HUGE_HOST), DidResolutionError)
+
+
+def test_async_did_web_resolver_rejects_a_huge_unicode_host_fast():
+    async def _fetch(url):
+        raise AssertionError(f"fetch called with {url!r}")
+    resolver = AsyncDidWebResolver(_fetch)
+    _assert_fast(lambda: asyncio.run(resolver.resolve("did:web:" + HUGE_HOST)),
+                 DidResolutionError)
+
+
+def test_fetch_rejects_combining_marks_fast(no_network):
+    # Out-of-order combining marks: CPython <= 3.12 NFKC-sorts them with an insertion
+    # sort inside urlparse. 0.5 MB took 25 s there, before any host check ran.
+    host = "a" + "\u0301" * 64_000 + "\u0316" * 64_000 + ".com"
+    _assert_fast(lambda: https_json_fetch(f"https://{host}/did.json"), UnsafeUrlError)
+
+
+def test_error_message_is_bounded_for_a_huge_did():
+    # The message names the DID through safe_repr, not repr(): a 2 MB DID of control
+    # characters used to make a 16 MB error string.
+    with pytest.raises(DidResolutionError) as info:
+        _did_web_url("did:web:" + "\x01" * 2_000_000)
+    assert len(str(info.value)) < 4_000
+    with pytest.raises(DidWebvhError) as info:
+        _did_webvh_url("did:webvh:Qm:" + "\x01" * 2_000_000)
+    assert len(str(info.value)) < 4_000
+
+
+def test_fetch_rejects_a_huge_unicode_host_fast(no_network):
+    _assert_fast(lambda: https_json_fetch(f"https://{HUGE_HOST}/did.json"), UnsafeUrlError)
+
+
+def test_verify_many_async_isolates_a_huge_unicode_host_fast(no_network):
+    batch = [_good_vc_jwt(), _vc_jwt("did:web:" + HUGE_HOST)]
+    start = time.perf_counter()
+    good, bad = asyncio.run(verify_many_async(batch))
+    assert time.perf_counter() - start < 2.0
+    assert good.ok is True
+    assert isinstance(bad.error, KeyResolutionFailed)
 
 
 def test_async_fetch_rejects_malformed_url_before_dns(no_network):
@@ -186,22 +265,19 @@ def test_async_fetch_rejects_malformed_url_before_dns(no_network):
 
 
 def test_fetch_types_an_idna_label_too_long():
-    # The IDNA codec raises UnicodeError inside getaddrinfo, before any DNS query.
-    with pytest.raises(UnsafeUrlError, match="cannot resolve"):
+    # The real getaddrinfo: it IDNA-encodes a str host before the C lookup, and the
+    # codec rejects a label over 63 characters, so no DNS query is sent.
+    with pytest.raises(UnsafeUrlError, match="cannot resolve") as info:
         https_json_fetch("https://" + "a" * 64 + ".com/did.json")
+    assert isinstance(info.value.__cause__, UnicodeError)
 
 
-def test_fetch_types_a_non_ascii_request_target(monkeypatch):
-    # A valid host with a non-ASCII path resolves, then http.client fails to encode
-    # the request line (UnicodeEncodeError), before the TCP connection.
-    monkeypatch.setattr(fetch.socket, "getaddrinfo",
-                        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))])
-
-    def _tcp(address, *a, **k):
-        raise AssertionError(f"TCP connection attempted to {address!r}")
-    monkeypatch.setattr(fetch.socket, "create_connection", _tcp)
+def test_https_get_types_a_non_ascii_request_target(no_network):
+    # The guarded fetch refuses a non-ASCII URL up front; _https_get still types one:
+    # http.client fails to encode the request line, before the TCP connection.
     with pytest.raises(DidResolutionError, match="fetch failed") as info:
-        https_json_fetch("https://example.com/ü/did.json")
+        fetch._https_get("example.com", "93.184.216.34", 443, "/\u00fc/did.json",
+                         timeout=1.0, max_bytes=10)
     assert isinstance(info.value.__cause__, UnicodeEncodeError)
 
 

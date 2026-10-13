@@ -8,6 +8,60 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
+- **A did:web host or a fetched URL can no longer stall the event loop, and a
+  Unicode host no longer resolves at another domain**
+  ([#235](https://github.com/luisgf/openvc/issues/235)). Found by the
+  adversarial review of [#209](https://github.com/luisgf/openvc/pull/209), run
+  after it merged; this change's own review found the `urlparse` cost.
+
+  The did:web host check that #209 added IDNA-encoded the host before bounding
+  its length. CPython's punycode encoder is quadratic: 10,000 CJK characters took
+  about 6.6 s, and 50,000 about a minute. `AsyncDidWebResolver` runs the check on
+  the event-loop thread, so one credential stalled `verify_many_async` for that
+  long. It needed no valid signature, since key resolution runs before the
+  signature check. Before #209 the encode ran inside `getaddrinfo` on a worker
+  thread. The sync path with the default fetch had the same cost already, and so
+  did https-issuer and status-list hosts.
+
+  The guarded fetch had a second cost that did not depend on #209. On CPython
+  3.12 and earlier, `urlparse` NFKC-normalizes a non-ASCII netloc, and
+  out-of-order combining marks make that quadratic: a 256 KB host took about
+  6.7 s and 0.5 MB about 25 s. `normalize` holds the GIL, so running the fetch on
+  a worker thread still froze the event loop. A status-list or schema URL in a
+  self-signed credential was enough to trigger it.
+
+  A Unicode host also went to another registrable domain than other
+  implementations use. Python's IDNA codec is IDNA2003, so `did:web:fa%C3%9F.de`
+  was looked up, and its TLS name checked, as `fass.de`. IDNA2008, UTS 46 and
+  browsers give `xn--fa-hia.de`. Whoever held `fass.de` controlled `faß.de` in
+  openvc. `ς`, ZWJ and ZWNJ fold the same way. The same pass-through checked one
+  host and connected to another for some capitals (`ẞexample.com` connected to
+  `ssexample.com`). It also let U+FE13 through, which hands a caller's own fetch
+  a URL that `urlparse` rejects with a bare `ValueError`.
+
+  A did:web or did:webvh host must now be ASCII, at most 253 characters, checked
+  before any per-character work. An internationalized host is written as its
+  A-label (`did:web:xn--mnchen-3ya.de`). The did:web spec defines the host by
+  RFC 1035/1123, which are ASCII, and forbids IP addresses. The host is now also
+  refused when its last label is a number, the way WHATWG spots an IPv4 address
+  (`127.0.0.1`, `2130706433`, `0x7f.1`); before, only a bracketed IPv6 literal
+  was. The SSRF-guarded fetch refuses a non-ASCII URL before `urlparse` reads
+  it, which also closes U+212A, the one character whose lower case is ASCII. It
+  then refuses a host over 253 characters before DNS, raising `UnsafeUrlError`.
+  A did:web error message names the DID through `safe_repr`: a 2 MB DID used to
+  make a 16 MB message.
+
+  These are now rejected:
+
+  - a did:web with a Unicode host (`did:web:m%C3%BCnchen.de`; use its A-label);
+  - a did:web whose host is an IPv4 address in any form;
+  - an https URL with any non-ASCII character, in the host or the path, sent to
+    the guarded fetch. A non-ASCII path already failed when the request was
+    sent.
+
+  Those DIDs already resolved differently in openvc than in other
+  implementations, or broke the did:web spec.
+
 - **An https `iss` names the same host to openvc as to a browser**
   ([#236](https://github.com/luisgf/openvc/issues/236)). Found by the
   adversarial review of [#209](https://github.com/luisgf/openvc/pull/209), with
