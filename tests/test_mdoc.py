@@ -166,7 +166,9 @@ def _issuer_item_bytes(digest_id, element_id, value):
 
 
 def _tdate(when):
-    return cbor.CborTag(0, when.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    # isoformat, not strftime: glibc's %Y renders year 1 as "1", not "0001"
+    utc = when.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return cbor.CborTag(0, utc.isoformat(timespec="seconds") + "Z")
 
 
 def _build_online(
