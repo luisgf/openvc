@@ -4,6 +4,28 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.1] — unreleased
+
+Tests only: no library code changes.
+
+### Tests
+
+- **A third-party OpenID4VP `vp_token`, vendored byte for byte**
+  ([#121](https://github.com/luisgf/openvc/issues/121)). Until now openvc's
+  `vp_token` vectors were self-recorded: openvc verifying the presentation it had
+  built. This one was presented by another wallet, eudi-dev v2.3.7, to another
+  verifier, polaris-oid4vp, and captured with full provenance by
+  [@EgorKhaklin](https://github.com/EgorKhaklin) (polaris-id), who contributed it
+  under Apache-2.0 — thank you. It pins the presentation layer itself: the DCQL
+  response shape, the KB-JWT and the encrypted `direct_post.jwt` response.
+  - Both the plain `vp_token` and the posted JWE verify, with `now` pinned to the
+    verifier's recorded capture instant.
+  - Every file is SHA-256-pinned, and its `PROVENANCE.md` is kept beside it,
+    unmodified.
+  - The negatives: the author's "an hour later" control (which found #186), an
+    expired issuer leaf, an unrelated anchor, both signatures tampered, a wrong
+    `nonce`, and a `client_id` missing its `x509_hash:` prefix.
+
 ## [1.31.0] — 2026-10-13
 
 ### Security

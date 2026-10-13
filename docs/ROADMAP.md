@@ -5,9 +5,9 @@ landed through its own pull request. Browse it by milestone:
 
 - **[Q3–Q4 2026 — eIDAS deadline & ecosystem refresh](https://github.com/luisgf/openvc/milestone/12)** —
   the 2026-07 standards-review wave, anchored on CIR (EU) 2025/848 applying
-  2026-12-24: the third-party `vp_token` capture and the draft→RFC cite swaps
-  (Token Status List, SD-JWT VC) remain; the WRPRC parser against the final ETSI
-  TS 119 475, the pyld 3.x / PyJWT 2.13 dependency refresh, Python 3.15 in CI,
+  2026-12-24: the draft→RFC cite swaps (Token Status List, SD-JWT VC) remain;
+  the third-party `vp_token` capture (an eudi-dev presentation, contributed by
+  polaris-id), the WRPRC parser against the final ETSI TS 119 475, the pyld 3.x / PyJWT 2.13 dependency refresh, Python 3.15 in CI,
   the documentation truth pass, the OID4VCI offer/metadata parsers, the
   JVM-wallet key-proof fixture, `require_key_attestation`, and the SD-JWT VC
   draft-18 pin have shipped.
