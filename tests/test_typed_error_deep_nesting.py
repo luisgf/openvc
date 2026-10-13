@@ -276,7 +276,8 @@ def test_jwe_deep_protected_header_is_typed(depth):
 def test_enveloped_deep_payload_is_typed(depth):
     env = {"@context": [V2], "type": ["EnvelopedVerifiableCredential"],
            "id": "data:application/vc+ld+json," + '{"a":' + _deep_json(depth) + "}"}
-    with pytest.raises(UnknownCredentialFormat, match="nested deeper than"):
+    # "nested deeper than 100", or "too deeply to parse" where json.loads gives up first
+    with pytest.raises(UnknownCredentialFormat, match="nested"):
         verify_credential(env)
 
 
@@ -553,7 +554,7 @@ def test_jws_parse_compact_deep_header_is_typed(depth):
 def test_type_metadata_resolver_bytes_are_held_to_the_bound():
     from openvc.type_metadata import TypeMetadataResolutionError, validate_type_metadata
     body = ('{"vct":' + _deep_json(100_000) + "}").encode()
-    with pytest.raises(TypeMetadataResolutionError, match="nested deeper than"):
+    with pytest.raises(TypeMetadataResolutionError, match="nested"):   # either loader message
         validate_type_metadata({}, vct="urn:example:vct", resolve=lambda vct: body)
 
 
