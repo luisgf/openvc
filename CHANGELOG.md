@@ -6,6 +6,51 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.30.0] — unreleased
 
+### Security
+
+- **A Key Binding JWT checked against only `audience` or only `nonce` is now
+  rejected** ([#191](https://github.com/luisgf/openvc/issues/191)). At the top
+  level (`verify_credential`, `verify_credential_async` and
+  `SdJwtVcProofSuite.verify`), the KB-JWT's `aud` was checked only when an
+  `audience` was passed and its `nonce` only when a `nonce` was passed, each
+  independently. A caller that passed one of the two got `key_bound=True` for a
+  KB-JWT that was never bound to it. With `audience` alone, a KB-JWT from another
+  of the verifier's own sessions verified. With `nonce` alone, one made for
+  another verifier verified. RFC 9901 §7.3 step 5.6 binds a KB-JWT by validating
+  `nonce` **and** `aud`, and one of them is not a binding.
+
+  When a KB-JWT is present and exactly one of `audience` / `nonce` is given,
+  verification now raises `ClaimsInvalid` before any KB-JWT parsing or crypto
+  runs. The same call with **no** KB-JWT still verifies, with `key_bound=False`,
+  because `VerificationPolicy.audience` also pins a VC-JWT's `aud` and a policy
+  carrying `audience` alone must keep working for those. Passing both values as
+  non-empty strings, or neither, is unchanged, as is `require_key_binding=True`
+  with a missing value (already refused); the one empty-value change is below.
+  The KB-JWT `iat` window from 1.28.0 limited this to near-real-time
+  replay. No openvc lane was affected: `verify_vp_token` and the VP cascades
+  always pass both values.
+
+  The fix stops a misleading `key_bound=True`. It does not, by itself, stop the
+  replay: an attacker who strips the KB-JWT gets the same credential through with
+  an honest `key_bound=False`. A caller who needs the holder binding still has to
+  set `require_key_binding=True` or check `key_bound`. openvc raises rather than downgrade the flag because a
+  half-configured call is a caller error that a quiet `False` would hide; the error
+  points at the missing value. Passing **neither** value keeps its documented
+  meaning: `key_bound=True` then proves possession of the `cnf` key for some
+  verifier, not a binding to you. Changing that would change a value callers gate
+  on, so it is out of scope for a patch. The wiki (*SD-JWT VC → What `key_bound`
+  attests*) now has a table of every case.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **An empty `audience` or `nonce` no longer counts as a binding value.** With
+    both values passed, one of them empty (`nonce=""`, say, from a lost session),
+    the KB-JWT was checked against `""`. Any KB-JWT the holder had signed with an
+    empty nonce for that audience verified, even with `require_key_binding=True`.
+    That is an audience-only binding in disguise. When either value is passed, a
+    present KB-JWT is now refused (`ClaimsInvalid`) unless both are non-empty
+    strings, matching the VP-JWT, OpenID4VP and nested-binding gates, which already
+    refused `""`.
+
 ### Added
 
 - **The proof suites report the expiry they waived.** `VerifiedCredential`,
@@ -36,14 +81,13 @@ All notable changes to **openvc** are documented here. The format follows
   like a status-list credential (which the blessed resolvers verify under the
   default policy) or an `x5c` chain, so it no longer inherits them. One helper
   now builds the inner policy for both pipelines.
-- **The VC-JWT waiver no longer skips the `exp` shape check.** Under
-  `require_not_expired=False` the suite switched PyJWT's `exp` check off
-  entirely, so an `exp` of `"soon"`, `{}`, `[]`, `null` or `NaN` verified there
-  and not under the default policy. PyJWT now judges `exp` under both policies.
-  Only after it reports an expiry does the waiver decode again without that
-  check, so every other claim check still runs. A `TypeError` from PyJWT's
-  `int()` coercion of a non-scalar `exp` / `nbf` / `iat` is typed as
-  `ClaimsInvalid` on this path.
+- **Under the waiver, PyJWT still judges a VC-JWT's `exp`.** The suite used to
+  switch PyJWT's `exp` check off when expiry was waived. It now decodes with the
+  check on, and decodes again without it only after PyJWT reports an expiry, so
+  every other claim check still runs and a waived `exp` is judged exactly as the
+  default policy judges it. Malformed `exp` / `nbf` / `iat` shapes are refused
+  before PyJWT under both policies
+  ([#195](https://github.com/luisgf/openvc/pull/195)).
 - `openvc.verify` no longer imports `CredentialExpired`, `ProofError`,
   `check_validity_window` or `check_jwt_temporal`. The removed helper had
   pulled them in since 1.27.0; they were never in its `__all__`. Import them
@@ -156,6 +200,50 @@ Older Pythons refuse such JSON up front with a typed `MalformedToken`.
 - **A status-list token's `exp` must be a finite number.** `NaN`, `±Infinity`
   and a bignum used to pass, and every comparison against them reads "not
   expired". This now follows the same rule as `check_jwt_temporal`.
+
+- **A VC-JWT with a malformed `exp`, `nbf` or `iat` no longer aborts a whole
+  `verify_many` batch** ([#195](https://github.com/luisgf/openvc/pull/195)).
+  openvc handed these claims to PyJWT, which casts them with `int()` and
+  catches only `ValueError`. Under the default policy, a signed
+  `"nbf": null`, `"iat": []` or `"exp": {}` raised a bare `TypeError` from
+  `verify_credential`, `verify_credential_async` and `VcJwtProofSuite.verify`.
+  `TypeError` is not an `OpenvcError`. `verify_many` and `verify_many_async`
+  catch only `OpenvcError` per item, so the error escaped and took every other
+  result in the batch with it. That broke the typed-error boundary of
+  [#99](https://github.com/luisgf/openvc/issues/99). Anyone could mint such a
+  token: a self-issued `did:jwk` is enough. Under `require_not_expired=False`,
+  PyJWT skipped `exp` altogether, so an `exp` of `NaN`, `±Infinity`, `"abc"`,
+  `1e400`, `null`, `[]` or `{}` verified. The SD-JWT VC and ML-DSA lanes
+  already rejected these `exp` values, apart from `null`.
+
+  The VC-JWT suite now checks the shape of `exp`, `nbf` and `iat` before PyJWT
+  reads them. It uses `is_numeric_date`, the helper the SD-JWT lane already
+  uses for `exp` / `nbf`. A present value that is not a finite JSON number is a
+  `ClaimsInvalid` on both the classic and the ML-DSA lane, whatever the expiry
+  policy, and `verify_many` reports it as that item's error while the rest
+  still verify. The check runs on the payload before the signature, so a token
+  that is both forged and malformed now reports `ClaimsInvalid` rather than
+  `SignatureInvalid`. Either way it is rejected.
+
+  The adversarial review of this fix found two more ways a signed VC-JWT could
+  escape PyJWT untyped, both closed here. On Python 3.10 and 3.11 the JSON
+  depth limit shrinks as the stack grows, and PyJWT parses the payload a few
+  frames deeper than openvc does. A narrow band of nesting depths therefore
+  passed openvc's parse and raised a bare `RecursionError` inside PyJWT. One
+  batch carrying a ladder of depths always hit it, and `verify_vp_token` was
+  exposed the same way. Separately, a lone surrogate in the signature segment
+  raised a bare `UnicodeEncodeError`. A non-ASCII token is now a
+  `MalformedToken` before anything is decoded. As a backstop, a `TypeError`,
+  `ValueError` or `RecursionError` from PyJWT is now caught as
+  `ClaimsInvalid`.
+
+  Some tokens that used to verify are now rejected: a numeric string
+  (`"exp": "1999999999"`), a bool (`"nbf": true`) and an integer too large for
+  a float. PyJWT `int()`-cast the first two, and the third never expires.
+  RFC 7519 §2 defines a NumericDate as a JSON number. On the ML-DSA lane,
+  `null` is now rejected rather than read as absent, and the shape of `iat` is
+  checked for the first time. That lane still does not reject a future `iat`,
+  which the classic lane does.
 
 ## [1.29.1] — 2026-10-13
 
@@ -317,6 +405,37 @@ Fixed before merge, from this change's own adversarial review:
   `repr()`. A non-string cryptosuite is now named by its type.
 - A `tuple` `type`, from a Python caller that built the credential in-process,
   is still accepted as an array.
+
+- **A hostile `did:web`, `did:webvh` or https issuer host is a typed error, not a
+  bare `ValueError`** ([#207](https://github.com/luisgf/openvc/issues/207)).
+  Found by the adversarial review of
+  [#202](https://github.com/luisgf/openvc/pull/202), which did not cause it. The
+  host reached `urlparse`, `getaddrinfo` and `http.client` unchecked. A port out
+  of range or not an integer, an unbalanced `[`, a host that NFKC-normalizes into
+  a delimiter (`ex℀mple.com`), an IDNA label over 63 characters and a NUL each
+  raised its own bare exception (`ValueError`, `UnicodeError`,
+  `http.client.InvalidURL`). None is an `OpenvcError`, so one such credential
+  aborted a whole `verify_many` / `verify_many_async` batch. This reached
+  `verify_credential`, `VpJwtProofSuite.verify` (the holder key and the
+  cascade), `verify_vp_token` (`jwt_vc_json` before the signature check, and the
+  `ldp_vc` cascade), the async twins, and the opt-in `jwt_vc_issuer_fetch` lane.
+  It failed closed before any TCP connection, so it was not an SSRF.
+
+  Two layers now type it. `did:web` and `did:webvh` check the host before any
+  fetch, the caller's own fetch included. It must be a domain name of RFC 1123
+  labels with an optional port from 1 to 65535, or they raise
+  `DidResolutionError` (`DidWebvhError` for did:webvh). A Unicode host is checked
+  in its IDNA form and passed through unchanged. The SSRF-guarded fetch raises
+  `UnsafeUrlError` for a URL it cannot parse or a host with a control character,
+  before DNS, and `DidResolutionError` when the request line cannot be encoded
+  (a non-ASCII path). That covers status-list, schema and well-known URLs too.
+  `jwt_vc_issuer_metadata_url` raises `JwtVcIssuerError`, and an unparseable
+  https `iss` is unbound in the x5c SAN check (`X5cError`).
+
+  A did:web host that is not a domain name now fails before the fetch: a
+  bracketed IP literal (the did:web spec forbids IP addresses), an empty port or
+  port `0`, a trailing root dot, or an `@`, `/` or `#` decoded from the host.
+  `did:web:evil.com%40example.com` used to fetch from `example.com`.
 
 ### Fixed (docs)
 

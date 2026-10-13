@@ -48,6 +48,7 @@ from .errors import (  # noqa: F401
 )
 from ._verify_common import (
     check_jwt_temporal,
+    check_numeric_dates,
     check_validity_window,
     reject_unknown_crit,
     safe_repr,
@@ -122,6 +123,12 @@ def _b64url_decode(segment: str) -> bytes:
 
 
 def _split(token: str) -> tuple[str, str, str]:
+    # A compact JWS is base64url and dots, all ASCII. Reject anything else up front:
+    # PyJWT encodes the token to UTF-8 before decoding it, so a lone surrogate in the
+    # signature segment (the one segment openvc never parses itself) raised a bare
+    # UnicodeEncodeError out of the decode.
+    if not token.isascii():
+        raise MalformedToken("token is not a compact JWS (non-ASCII characters)")
     try:
         header_b64, payload_b64, sig_b64 = token.split(".")
     except ValueError as exc:
@@ -232,6 +239,13 @@ class VcJwtProofSuite:
             raise UnsupportedAlgorithm(f"algorithm {safe_repr(alg)} is not permitted")
         reject_unknown_crit(header)
         _reject_sd_jwt_typ(header)
+        # NumericDate shapes before either lane reads them. PyJWT int()-casts exp/nbf/iat
+        # and catches only ValueError, so a signed `"nbf": null` raised a bare TypeError
+        # that escaped OpenvcError and aborted verify_many; and verify_exp=False (the
+        # expiry waiver) skipped exp entirely, accepting NaN/Infinity/"abc". This reads
+        # the untrusted payload but can only reject: the signature still gates everything
+        # accepted, and peek_claims is the same parse peek_issuer already runs pre-crypto.
+        check_numeric_dates(self.peek_claims(token), "exp", "nbf", "iat")
 
         if alg in ALLOWED_ALGS_PQ:
             # ML-DSA is not a PyJWT algorithm — verify the signature through the
@@ -301,9 +315,13 @@ class VcJwtProofSuite:
             raise
         except pyjwt.InvalidSignatureError as exc:
             raise SignatureInvalid(str(exc)) from exc
-        # +Inf exp -> OverflowError; a non-scalar exp/nbf/iat (`{}`, `[]`, null) ->
-        # TypeError from PyJWT's int() coercion. Both are claim-shape failures.
-        except (pyjwt.PyJWTError, OverflowError, TypeError) as exc:
+        except (pyjwt.PyJWTError, OverflowError, TypeError, ValueError,
+                RecursionError) as exc:
+            # Backstop for PyJWT on attacker bytes. Its int() casts are stopped by
+            # the shape gate in verify(). RecursionError comes from its own json.loads,
+            # which catches only ValueError. On Python <= 3.11 the json depth limit
+            # shrinks with stack depth, and PyJWT parses a few frames deeper than
+            # peek_claims, so a payload can pass our parse and overflow PyJWT's.
             raise ClaimsInvalid(str(exc)) from exc
         return claims
 
