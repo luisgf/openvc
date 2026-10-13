@@ -4,6 +4,74 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.2] — unreleased
+
+### Security
+
+- **A hostile status-list index is a typed `StatusListError`, not a bare
+  `OverflowError` that aborts a whole batch.** `parse_status_entries` read
+  `credentialStatus.statusListIndex` with `int()` and caught `TypeError` /
+  `ValueError` but not `OverflowError`. A signed VC-JWT whose index was
+  `Infinity`, `-Infinity`, `1e400` or `-1e400` (`json.loads` reads the last two
+  as infinities) raised `OverflowError: cannot convert float infinity to
+  integer`. That escaped `OpenvcError`, so it aborted `verify_many` /
+  `verify_many_async` for every item, not just the bad one, and escaped
+  `verify_credential` / `verify_credential_async` too. A self-issued `did:jwk`
+  could mint one. `require_status=False` did not help: the entries are parsed
+  before the resolver check. Both `BitstringStatusListEntry` and
+  `StatusList2021Entry` were affected.
+
+  The W3C `statusListIndex` and the IETF Token Status List `status.status_list.idx`
+  (SD-JWT VC, or a VC-JWT's JWT payload) now share one index rule. A
+  non-negative integer is accepted, and for the W3C index so is a string of ASCII
+  digits, which is the form the REC requires. The rule now also rejects inputs
+  that `int()` silently coerced into a different bit:
+  - a `bool` (`true` was read as index 1);
+  - any `float`, including `NaN` and an integral `5.0` (`3.7` was read as 3);
+  - a sign, whitespace, an underscore or a non-ASCII digit in the string
+    (`"+5"`, `" 5"`, `"5_0"` and `"٥"` were read as 5, 5, 50 and 5);
+  - a negative index, or one at or past 2^27, the most statuses any list openvc
+    decodes can hold (the 16 MiB decompression cap at one bit per status).
+    Neither can address a bit. Both used to pass parsing and failed only once a
+    list was fetched, so they passed outright under `require_status=False`.
+
+  A W3C index that `int()` refused (`"abc"`) already failed this way, even under
+  `require_status=False`. These shapes now do too, and in a batch they fail only
+  their own item. The IETF parser already refused floats, bools and negatives;
+  it now also refuses an `idx` past the cap. Error messages never `repr()` a
+  container or an integer wider than 64 bits.
+
+Fixed before merge, from this change's own adversarial review. Each item below
+was also a bare exception that aborted a whole `verify_many` batch. The
+"deeply nested" ones need Python 3.14: its `json.loads` accepts arrays nested
+deeper than `str()` / `repr()` can render, so they raise `RecursionError`.
+Older Pythons refuse such JSON up front with a typed `MalformedToken`.
+- **A status entry's `statusListCredential` or `status_list.uri` must be a
+  string.** Both were passed through `str()`, so a deeply nested array raised
+  `RecursionError`. This reached `verify_credential` and the batch under
+  `require_status=False`, with a self-issued `did:jwk`. A number or an object
+  used to become a garbage URL; it is now a `StatusListError` too.
+- **A W3C entry's `statusPurpose` must be a string.** An explicit `null` used to
+  match no purpose, so a set bit was ignored when the list declared no purpose.
+- **A corrupt `encodedList` is a `StatusListError`, not a bare `zlib.error`.**
+  `decode_bitstring` caught `OSError` but not the `zlib.error` that `GzipFile`
+  raises on a valid gzip header followed by bad DEFLATE data. An 18-byte list
+  served by the credential's own issuer was enough, even with
+  `require_status_issuer_binding=True`. The IETF decoder already caught it.
+- **The status messages no longer `repr()` attacker values.** That covered:
+  - a W3C list's `statusPurpose`, and its non-string `encodedList`;
+  - an IETF list's `bits`;
+  - a status-list token's `typ`, `sub` and `exp`, in `verify_status_list_token`
+    (which the default token resolver runs);
+  - the credential `id` in "credential … is revoked/suspended", in `verify`,
+    `aio` and `openvc_ebsi`. A self-issued credential controls both that `id`
+    and its own list's bit.
+- **A resolver that returns something other than an object is a
+  `StatusListError`**, not a bare `AttributeError`.
+- **A status-list token's `exp` must be a finite number.** `NaN`, `±Infinity`
+  and a bignum used to pass, and every comparison against them reads "not
+  expired". This now follows the same rule as `check_jwt_temporal`.
+
 ## [1.29.1] — 2026-10-13
 
 ### Fixed
