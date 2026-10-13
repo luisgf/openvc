@@ -91,18 +91,16 @@ All notable changes to **openvc** are documented here. The format follows
   `proof.type` / `cryptosuite` (including `ecdsa-sd-2023`), the validity dates, the
   `challenge` / `domain` binding, the DC API audience, a VP-JWT `aud`, a VC-JWT's
   `vc.issuer` / `credentialSubject.id` / `vc.id`, a JWT VC Issuer's metadata `issuer`
-  and `kid`, and the `kid` and issuer DID in key-resolution errors, sync and async. A
-  multi-megabyte `did:jwk` used to be quoted in full.
+  and `kid`, the `kid` and issuer DID in key-resolution errors (sync and async), and
+  the `kty` / `crv` of a key that caller code supplies (a pinned JWK, a custom resolver,
+  an OpenID4VCI `resolve_proof_key`). A multi-megabyte `did:jwk` used to be quoted in
+  full.
 - **`VpJwtProofSuite.peek_holder` rejects a non-string `kid` with `MalformedToken`**, as
   `VcJwtProofSuite.peek_issuer` already did.
 - **The ML-DSA VC-JWT lane rejects a non-string `sub` or `jti`, as the PyJWT lane
   does**, so `_reconcile` never compares two attacker containers with `!=`. The lane is
   experimental and opt-in (`VcJwtProofSuite(allow_pq=True)`); the pipeline never
   enables it.
-- **`VcJwtProofSuite.verify` raises a typed error for a payload too deep to parse.** At
-  the PyJWT 2.13 floor, PyJWT's `json.loads` handler catches only `ValueError`, so the
-  `RecursionError` escaped bare. openvc now maps it to `MalformedToken`; a newer PyJWT
-  maps it to `DecodeError` itself, reported as `ClaimsInvalid`.
 
 ### Added
 
@@ -145,6 +143,17 @@ All notable changes to **openvc** are documented here. The format follows
   `check_validity_window` or `check_jwt_temporal`. The removed helper had
   pulled them in since 1.27.0; they were never in its `__all__`. Import them
   from `openvc.proof.errors` and `openvc.proof._verify_common`.
+- **A deeply nested input now fails with its format's parse-time error class.** On
+  Python 3.14 a few deep inputs used to parse and fail at a later check, so a caller that
+  matches on the class sees it change:
+  - a deep dict passed to `verify_credential` now raises `UnknownCredentialFormat` (a
+    `VerificationError`), where the Data Integrity suite used to raise a `ProofError`;
+  - a deep LDP-VP raises `VpTokenMalformed`, not `UnsupportedPresentationFormat`;
+  - a deep JWE header raises `JweMalformed`, not `UnsupportedJweAlgorithm`;
+  - a deep LoTE header raises `TrustListParseError`, not `TrustListSignatureError`.
+
+  All of them are still `OpenvcError`, and all still fail closed. JSON nested deeper than
+  100 levels is rejected wherever openvc parses it.
 
 ### Fixed
 

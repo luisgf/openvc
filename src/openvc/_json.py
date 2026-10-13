@@ -20,6 +20,7 @@ It imports only the standard library, so any module can use it without an import
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 # The deepest container nesting openvc accepts from untrusted input: [[...]] counts one
@@ -28,14 +29,14 @@ MAX_DEPTH = 100
 
 
 def nesting_exceeds(value: Any, limit: int = MAX_DEPTH) -> bool:
-    """True when *value* nests lists / tuples / dicts deeper than *limit*.
+    """True when *value* nests lists / tuples / mappings deeper than *limit*.
 
     Iterative, so it never recurses. A self-referencing container built in process
     reads as too deep instead of looping."""
     stack: list[tuple[Any, int]] = [(value, 1)]
     while stack:
         node, depth = stack.pop()
-        if isinstance(node, dict):
+        if isinstance(node, Mapping):
             children: Any = node.values()
         elif isinstance(node, (list, tuple)):
             children = node
@@ -44,7 +45,7 @@ def nesting_exceeds(value: Any, limit: int = MAX_DEPTH) -> bool:
         if depth > limit:
             return True
         stack.extend((child, depth + 1) for child in children
-                     if isinstance(child, (dict, list, tuple)))
+                     if isinstance(child, (Mapping, list, tuple)))
     return False
 
 
@@ -59,5 +60,8 @@ def loads(data: str | bytes | bytearray) -> Any:
     except RecursionError as exc:              # deeper than the interpreter can parse
         raise ValueError("JSON is nested too deeply to parse") from exc
     if nesting_exceeds(value):
+        # drop the tree first: the traceback keeps this frame alive, so a rejected
+        # item would otherwise pin its whole parsed value for as long as the error lives
+        del value
         raise ValueError(f"JSON is nested deeper than {MAX_DEPTH} levels")
     return value

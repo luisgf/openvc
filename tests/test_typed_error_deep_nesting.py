@@ -506,3 +506,104 @@ def test_mldsa_lane_rejects_a_non_string_sub_or_jti_like_pyjwt(issuer, claim, me
     es = _sign(issuer[0], {"alg": issuer[0].alg, "typ": "JWT"}, json.dumps(claims))
     with pytest.raises(ClaimsInvalid, match=message):
         VcJwtProofSuite().verify(es, public_key_jwk=issuer[0].public_jwk())
+
+
+# --------------------------------------------------------------------------- #
+# 7. pins from the second adversarial review: the bound itself, and every
+#    boundary whose removal would let a deep value through
+# --------------------------------------------------------------------------- #
+
+def test_the_bound_is_100_levels():
+    # The tests above are written relative to MAX; pin the value itself, so raising it
+    # past what repr() / == survive (~43k on 3.14) cannot pass unnoticed.
+    assert _json.MAX_DEPTH == 100
+
+
+def test_loads_does_not_pin_the_rejected_tree():
+    # The traceback keeps the loader's frame alive; the parsed value must not be in it,
+    # or every rejected item in a batch holds its whole expansion in memory.
+    try:
+        _json.loads(_deep_json(MAX + 1))
+    except ValueError as exc:
+        tb = exc.__traceback__
+        while tb.tb_next is not None:
+            tb = tb.tb_next
+        assert "value" not in tb.tb_frame.f_locals
+    else:
+        pytest.fail("the loader accepted JSON past the bound")
+
+
+def test_nesting_exceeds_walks_any_mapping():
+    from types import MappingProxyType
+    deep: object = 0
+    for _ in range(MAX + 1):
+        deep = MappingProxyType({"a": deep})
+    assert _json.nesting_exceeds(deep)
+
+
+@pytest.mark.parametrize("depth", DEPTHS)
+def test_jws_parse_compact_deep_header_is_typed(depth):
+    from openvc.proof._jws import parse_compact
+    header = _b64u(('{"typ":' + _deep_json(depth) + "}").encode())
+    token = f"{header}.e30.AAAA"
+    with pytest.raises(MalformedToken):
+        parse_compact(token)
+
+
+def test_type_metadata_resolver_bytes_are_held_to_the_bound():
+    from openvc.type_metadata import TypeMetadataResolutionError, validate_type_metadata
+    body = ('{"vct":' + _deep_json(100_000) + "}").encode()
+    with pytest.raises(TypeMetadataResolutionError, match="nested deeper than"):
+        validate_type_metadata({}, vct="urn:example:vct", resolve=lambda vct: body)
+
+
+def test_relying_party_dcql_query_is_held_to_the_bound():
+    # Wallet side: the relying party's DCQL query is untrusted. The depth check runs
+    # before the registration is read, so a stand-in registration suffices.
+    from types import SimpleNamespace
+
+    from openvc.rp_registration import RpRegistrationError, check_request_within_registration
+    dcql = {"credentials": [{"id": "q", "format": "dc+sd-jwt",
+                             "meta": {"vct_values": _deep(100_000)}}]}
+    with pytest.raises(RpRegistrationError, match="nested deeper than"):
+        check_request_within_registration(SimpleNamespace(intended_use_id=None), dcql)
+
+
+def test_issuer_jwks_fetched_from_jwks_uri_is_held_to_the_bound():
+    def fetch(url):
+        if url.endswith("/jwks"):
+            return {"keys": [{"kid": _deep(100_000)}]}
+        return {"issuer": "https://issuer.example", "jwks_uri": "https://issuer.example/jwks"}
+    with pytest.raises(JwtVcIssuerError, match="JWKS is nested deeper than"):
+        resolve_jwt_vc_issuer_key("https://issuer.example", "k", fetch=fetch)
+
+
+def test_caller_supplied_key_material_is_named_by_type(issuer):
+    # A pinned or resolver-built JWK is caller code's, not parsed by openvc: its
+    # messages must not repr() it either.
+    from openvc.proof._verify_common import ALG_PROFILE, match_alg
+    from openvc.proof.errors import ProofError
+    deep_jwk = {"kty": _deep(100_000), "crv": "P-256", "x": "AA", "y": "AA"}
+    with pytest.raises(ProofError, match="kty=list"):
+        VcJwtProofSuite().verify(_vc_jwt(issuer), public_key_jwk=deep_jwk)
+    with pytest.raises(ProofMalformed, match="kty=list"):
+        match_alg(deep_jwk, frozenset(ALG_PROFILE), cryptosuite="ecdsa-jcs-2019")
+
+
+def test_openid4vci_resolved_proof_key_is_named_by_type():
+    from openvc.openid4vci import _check_key_binds_to_alg
+    with pytest.raises(ClaimsInvalid, match="kty=list"):
+        _check_key_binds_to_alg({"kty": _deep(100_000), "crv": "P-256"}, "ES256")
+
+
+def test_ebsi_registry_body_is_held_to_the_bound():
+    httpx = pytest.importorskip("httpx")
+    from openvc_ebsi.errors import MalformedRegistryResponse
+    from openvc_ebsi.http import EbsiHttpClient
+    host = "api-pilot.ebsi.eu"
+    client = EbsiHttpClient(allowed_hosts={host})
+    body = ('{"tao":' + _deep_json(100_000) + "}").encode()
+    client._client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, content=body)))
+    with pytest.raises(MalformedRegistryResponse):
+        client.get_json(f"https://{host}/x")

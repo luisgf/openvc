@@ -473,7 +473,8 @@ def match_alg(jwk: dict[str, Any], allowed_algs: frozenset[str], *, cryptosuite:
         p_kty, p_crv, _ = ALG_PROFILE[alg]
         if kty == p_kty and crv == p_crv:
             return alg
-    raise ProofMalformed(f"{cryptosuite} does not accept a kty={kty!r} crv={crv!r} key")
+    raise ProofMalformed(
+        f"{cryptosuite} does not accept a kty={safe_repr(kty)} crv={safe_repr(crv)} key")
 
 
 __all__ = [

@@ -1146,7 +1146,7 @@ def _check_key_binds_to_alg(jwk: Mapping[str, Any], alg: str) -> None:
         if jwk.get("kty") != kty or jwk.get("crv") != crv:
             raise ClaimsInvalid(
                 f"key proof alg {alg} needs a kty={kty} crv={crv} key, got "
-                f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
+                f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
         return
     if alg in MLDSA_ALGS:                    # only reachable via a widened allowed_algs
         if jwk.get("kty") != "AKP" or jwk.get("alg") != alg:

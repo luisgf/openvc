@@ -442,14 +442,14 @@ class VcJwtProofSuite:
         if alg in ("EdDSA", "Ed25519") and (
                 jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519"):
             raise ProofError(f"{alg} requires an OKP Ed25519 key, got "
-                             f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
+                             f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
         # Pin the EC curve to the alg too, so ES256 cannot verify against a P-384 key (PyJWT's
         # ECAlgorithm would load whatever curve the JWK declares and hash by the alg) — matching
         # the curve-pinned openvc.keys.verify_signature used on the SD-JWT / VP / status paths.
         _EC_CRV = {"ES256": "P-256", "ES384": "P-384"}
         if alg in _EC_CRV and (jwk.get("kty") != "EC" or jwk.get("crv") != _EC_CRV[alg]):
             raise ProofError(f"{alg} requires an EC {_EC_CRV[alg]} key, got "
-                             f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
+                             f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
         try:
             if alg in ("ES256", "ES384"):
                 return ECAlgorithm.from_jwk(json.dumps(jwk))
