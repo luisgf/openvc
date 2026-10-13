@@ -101,6 +101,17 @@ _FRACTION = re.compile(r"\.(\d+)")
 # home); imported above and re-exported here (and by the suites) for back-compat.
 
 
+def issuer_identifiers(issuer: Any) -> list[Any]:
+    """Every identifier a credential's ``issuer`` carries: the value itself, or each
+    of an object's ``id`` / ``@id`` that is present (``id`` aliases ``@id`` in JSON-LD).
+    An object with neither identifies no one, like an absent ``issuer``: empty list.
+    Shared by the JOSE reconciliation and the status-list issuer check, so both read an
+    issuer the same way."""
+    if isinstance(issuer, dict):
+        return [issuer[key] for key in ("id", "@id") if key in issuer]
+    return [issuer]
+
+
 def _parse_ts(value: Any) -> datetime | None:
     """Parse an XSD/ISO-8601 dateTime into an aware UTC datetime, or None if the
     value is absent or unparseable. Normalises the two forms Python's pre-3.11

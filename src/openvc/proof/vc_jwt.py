@@ -53,6 +53,7 @@ from ._verify_common import (
     check_jwt_temporal,
     check_numeric_dates,
     check_validity_window,
+    issuer_identifiers,
     reject_unknown_crit,
     safe_repr,
 )
@@ -458,14 +459,21 @@ class VcJwtProofSuite:
 
     @staticmethod
     def _reconcile(claims: dict[str, Any], vc: dict[str, Any]) -> tuple[str, str | None]:
-        """Enforce W3C VC-JWT envelope/credential consistency (defence in depth)."""
+        """Enforce W3C VC-JWT envelope/credential consistency (defence in depth).
+
+        Also the SD-JWT suite's rule for a VCDM payload, called with the processed claim
+        set as both arguments (VC-JOSE-COSE §4.1.2 / §3.1.3)."""
         iss = claims.get("iss")
         if not isinstance(iss, str):        # decode() required "iss"; be explicit
             raise ClaimsInvalid("iss claim is missing or not a string")
-        vc_issuer = vc.get("issuer")
-        vc_issuer = vc_issuer.get("id") if isinstance(vc_issuer, dict) else vc_issuer
-        if vc_issuer and vc_issuer != iss:
-            raise ClaimsInvalid(f"iss {iss!r} != vc.issuer {safe_repr(vc_issuer)}")
+        if "issuer" in vc:
+            # A present issuer identifies no one but the verified iss, whatever its shape:
+            # `@id` (what `id` aliases in JSON-LD) counts, and so does a null / "" / non-str
+            # value a looser check would skip. An object with no id names no one, like an
+            # absent issuer (the VCDM 1.1 JWT encoding moves the id to `iss`).
+            vc_issuer = vc["issuer"]
+            if any(name != iss for name in issuer_identifiers(vc_issuer)):
+                raise ClaimsInvalid(f"iss {iss!r} != issuer {safe_repr(vc_issuer)}")
 
         sub = claims.get("sub")
         cs = vc.get("credentialSubject")
@@ -483,6 +491,8 @@ class VcJwtProofSuite:
 
     @staticmethod
     def _check_types(vc: dict[str, Any], expected: list[str]) -> None:
+        if isinstance(expected, str):                 # one type, not its characters
+            expected = [expected]
         types = vc.get("type", [])
         if isinstance(types, str):
             types = [types]

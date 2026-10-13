@@ -63,7 +63,7 @@ from .errors import (
     SignatureInvalid,
     UnsupportedAlgorithm,
 )
-from .vc_jwt import ALLOWED_ALGS, ALLOWED_ALGS_PQ, SigningKey
+from .vc_jwt import ALLOWED_ALGS, ALLOWED_ALGS_PQ, SigningKey, VcJwtProofSuite
 
 DEFAULT_LEEWAY_S = 60
 _HASHES = {"sha-256": hashlib.sha256, "sha-384": hashlib.sha384, "sha-512": hashlib.sha512}
@@ -223,6 +223,9 @@ class VerifiedSdJwt:
     # VCDM payload, its ``validUntil`` — i.e. the expiry check that was skipped would
     # have failed. An IETF SD-JWT VC's claim merely named ``validUntil`` never sets it.
     expired: bool = False
+    # the payload is a W3C VCDM credential (``vc+sd-jwt``, see ``_declares_vcdm``), whose
+    # validity window and issuer / id / subject consistency the suite enforced
+    vcdm: bool = False
 
 
 def _check_aka_vcts(payload: Mapping[str, Any]) -> None:
@@ -446,8 +449,10 @@ class SdJwtVcProofSuite:
         When the payload is a W3C VCDM credential (``vc+sd-jwt`` per VC-JOSE-COSE: a
         VCDM ``@context``, or the ``vc+sd-jwt`` typ with no ``vct``), its ``validFrom`` /
         ``validUntil`` are enforced too, like the VC-JWT suite does (current time, same
-        leeway; ``check_temporal=False`` waives only the expiry). An IETF SD-JWT VC's
-        claims are never read as a VCDM validity window.
+        leeway; ``check_temporal=False`` waives only the expiry). Its ``iss`` / ``jti`` /
+        ``sub`` must not conflict with ``issuer`` / ``id`` / ``credentialSubject.id``
+        either, as on the VC-JWT suite (``ClaimsInvalid``). An IETF SD-JWT VC's claims
+        are never read as a VCDM validity window or reconciled with them.
 
         The issuer JWT's ``exp``/``nbf``/``iat``, and any disclosed ``iat``, must each be
         a finite JSON number when present (``null`` included). An ``iat`` more than the
@@ -516,10 +521,15 @@ class SdJwtVcProofSuite:
         # its `exp` dates the signature, not the data (§3.1.3, JOSE): an issuer may put the
         # expiry only in `validUntil`. Enforce the VCDM window as the VC-JWT lane does — on
         # the processed payload, same leeway, wall clock like `exp`.
-        if _declares_vcdm(header.get("typ"), unpacked):
+        vcdm = _declares_vcdm(header.get("typ"), unpacked)
+        if vcdm:
             expired = check_validity_window(
                 unpacked, {}, now=None, leeway_s=self._leeway,
                 check_temporal=check_temporal) or expired
+            # §4.1.2: `iss`, if present, MUST match `issuer` (or `issuer.id`); §3.1.3 (non-
+            # normative) advises the same for `jti`/`id` and `sub`/`credentialSubject.id`.
+            # The VC-JWT lane's reconciliation: a present `issuer` names the verified iss.
+            VcJwtProofSuite._reconcile(unpacked, unpacked)
 
         vct = unpacked.get("vct")
         if expected_vct is not None and vct != expected_vct:
@@ -534,7 +544,8 @@ class SdJwtVcProofSuite:
 
         return VerifiedSdJwt(
             claims=unpacked, issuer=iss, vct=vct if isinstance(vct, str) else None,
-            key_bound=key_bound, confirmation=claims.get("cnf"), expired=expired)
+            key_bound=key_bound, confirmation=claims.get("cnf"), expired=expired,
+            vcdm=vcdm)
 
     # -- internals --------------------------------------------------------- #
 

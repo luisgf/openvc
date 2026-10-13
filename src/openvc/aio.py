@@ -73,6 +73,7 @@ from .verify import (
     _as_str,
     _bind_issuer_to_verification_method,
     _bytes_to_credential,
+    _check_sd_jwt_types,
     _check_types,
     _enforce_status_issuer,
     _fail_closed,
@@ -275,6 +276,7 @@ async def _verify_sd_jwt_async(
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct,
         check_temporal=policy.require_not_expired,
         kb_max_age_s=policy.kb_max_age_s, now=policy.now)
+    _check_sd_jwt_types(verified, policy.expected_types)
     status = await _check_status_async(verified.claims, verified.claims, policy,
                                        resolve_status_list, resolve_status_list_token,
                                        credential_issuer=verified.issuer)
