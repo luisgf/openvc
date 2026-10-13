@@ -48,7 +48,6 @@ credential raises :class:`~openvc.status.CredentialRevoked`.
 from __future__ import annotations
 
 import base64
-import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Sequence, Union
@@ -56,10 +55,11 @@ from typing import TYPE_CHECKING, Any, Sequence, Union
 if TYPE_CHECKING:
     from .did.base import DidResolverRegistry
 
+from . import _json
 from .cache import batch_resolvers
 from .errors import OpenvcError
 from .observability import logger, span
-from .proof._verify_common import DEFAULT_KB_MAX_AGE_S, DEFAULT_LEEWAY_S
+from .proof._verify_common import DEFAULT_KB_MAX_AGE_S, DEFAULT_LEEWAY_S, safe_repr
 from .proof.errors import ClaimsInvalid
 from .schema import (
     SchemaUnavailable,
@@ -306,7 +306,7 @@ def _unwrap_enveloped(doc: dict[str, Any]) -> Any:
         if "sd-jwt" in media:
             return payload                               # an SD-JWT string
         if media in ("application/vc+ld+json", "application/vc", "application/ld+json"):
-            return json.loads(payload)                   # a JSON VC (embedded proof)
+            return _json.loads(payload)                   # a JSON VC (embedded proof)
     except (ValueError, RecursionError) as exc:          # bad base64/utf-8/JSON or hostile depth
         raise UnknownCredentialFormat(
             f"malformed enveloped payload for media {media!r}: {exc}") from exc
@@ -362,6 +362,7 @@ def verify_credential(
     policy = policy or VerificationPolicy()
     resolver = resolver if resolver is not None else default_resolver()
 
+    _reject_deep_credential(credential)
     fmt = detect_format(credential)
     logger.debug("verify: format=%s", fmt)
     with span("openvc.verify_credential", format=fmt):
@@ -377,8 +378,21 @@ def verify_credential(
         except OpenvcError as exc:              # which check failed, no secrets
             logger.info("verify failed: format=%s error=%s", fmt, type(exc).__name__)
             raise
+        except RecursionError as exc:           # backstop: a value nested past the stack
+            logger.info("verify failed: format=%s error=RecursionError", fmt)
+            raise UnknownCredentialFormat(
+                "credential is nested too deeply to verify") from exc
         logger.debug("verify ok: format=%s issuer=%s", result.format, result.issuer)
     return result
+
+
+def _reject_deep_credential(credential: Any) -> None:
+    """Hold a credential handed over already parsed to the depth bound of openvc's
+    JSON loader (:data:`openvc._json.MAX_DEPTH`) before anything formats, compares or
+    walks it. A deeper one raises :class:`UnknownCredentialFormat`."""
+    if not isinstance(credential, str) and _json.nesting_exceeds(credential):
+        raise UnknownCredentialFormat(
+            f"credential is nested deeper than {_json.MAX_DEPTH} levels")
 
 
 def _verify_by_format(
@@ -463,7 +477,7 @@ def _bytes_to_credential(raw: bytes) -> Any:
         raise UnknownCredentialFormat(
             f"JsonSchemaCredential bytes are not valid UTF-8: {exc}") from exc
     try:
-        obj = json.loads(text)
+        obj = _json.loads(text)
     except (ValueError, RecursionError):
         return text                       # not JSON / hostile depth -> a compact JWS (VC-JWT)
     return obj if isinstance(obj, dict) else text
@@ -662,7 +676,7 @@ def _resolve_jose_key_with_x5c(
                 return resolve_x5c_key(x5c, iss, trust_anchors=x5c_trust_anchors, now=now)
             except X5cError as exc:
                 raise KeyResolutionFailed(
-                    f"x5c key resolution failed for issuer {iss!r}: {exc}") from exc
+                    f"x5c key resolution failed for issuer {safe_repr(iss)}: {exc}") from exc
     return _resolve_jose_key(resolver, iss, kid, jwt_vc_issuer_fetch)
 
 
@@ -676,7 +690,7 @@ def _resolve_jose_key(
     if iss.startswith("https://"):
         if jwt_vc_issuer_fetch is None:
             raise KeyResolutionFailed(
-                f"issuer {iss!r} is an https URL; pass jwt_vc_issuer_fetch "
+                f"issuer {safe_repr(iss)} is an https URL; pass jwt_vc_issuer_fetch "
                 "(e.g. openvc.fetch.https_json_fetch) to resolve its key")
         from .jwt_vc_issuer import JwtVcIssuerError, resolve_jwt_vc_issuer_key
         try:
@@ -684,17 +698,17 @@ def _resolve_jose_key(
         # DidError covers the injected fetch's own SSRF / transport failures
         except (JwtVcIssuerError, DidError) as exc:
             raise KeyResolutionFailed(
-                f"could not resolve issuer key for {iss!r}: {exc}") from exc
+                f"could not resolve issuer key for {safe_repr(iss)}: {exc}") from exc
 
     try:
         doc = resolver.resolve(iss)
     except DidError as exc:
         raise KeyResolutionFailed(
-            f"could not resolve issuer DID {iss!r}: {exc}") from exc
+            f"could not resolve issuer DID {safe_repr(iss)}: {exc}") from exc
     vm = doc.key_by_kid(kid)
     if vm is None:
         raise KeyResolutionFailed(
-            f"no verification method for kid {kid!r} in DID {iss!r}")
+            f"no verification method for kid {safe_repr(kid)} in DID {safe_repr(iss)}")
     return vm.public_key_jwk
 
 

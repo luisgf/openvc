@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.30.0] — unreleased
+## [1.30.0] — 2026-10-13
 
 ### Security
 
@@ -50,6 +50,57 @@ All notable changes to **openvc** are documented here. The format follows
     present KB-JWT is now refused (`ClaimsInvalid`) unless both are non-empty
     strings, matching the VP-JWT, OpenID4VP and nested-binding gates, which already
     refused `""`.
+- **JSON nested deeper than 100 levels is refused where it enters openvc, so it can no
+  longer escape the typed-error boundary as a bare `RecursionError`**
+  ([#213](https://github.com/luisgf/openvc/issues/213)). Found by the adversarial
+  reviews of [#194](https://github.com/luisgf/openvc/pull/194) and of this change. On
+  Python 3.14, `json.loads` accepts about 116k levels of nesting, but `repr()` of the
+  result overflows at about 70k and `==` between two such values at about 43k. More
+  than 40 sites formatted or compared an attacker-controlled value: error messages,
+  status parsing, DID and JWK handling, issuer metadata. Each raised a bare
+  `RecursionError`, which escaped `OpenvcError` and aborted a whole `verify_many` /
+  `verify_many_async` batch. Several needed no valid signature: a `did:jwk` issuer's
+  `kty`, a JWE protected header on the `direct_post.jwt` path, a DID document served by
+  the attacker's own `did:web` host, the DC API audience peek. Others needed only a
+  self-issued `did:key` signature, such as a `credentialStatus.statusListIndex`, which
+  is parsed even with no status resolver.
+
+  Rather than make each site safe, openvc now bounds the input:
+  - every untrusted JSON parse goes through one loader that refuses nesting deeper than
+    100 levels, the same bound the JCS canonicaliser and the SD-JWT unpacker already
+    apply. That covers every JWS header and payload, SD-JWT disclosures, JWE headers,
+    `vp_token`, enveloped credentials, `did:jwk`, `did:webvh` logs, fetched JSON,
+    schemas, type metadata, LoTE lists and the EBSI registry client. The failure is the
+    format's own typed parse error (`MalformedToken`, `SdJwtError`, `JweMalformed`,
+    `VpTokenMalformed`, ...);
+  - objects openvc receives already parsed are held to the same bound: a credential or
+    `vp_token` dict, a Data Integrity suite's input, a DID document or JWT VC Issuer
+    metadata from an injected fetch, and a relying party's DCQL query in
+    `check_request_within_registration`;
+  - `verify_credential`, `verify_credential_async` and `verify_vp_token` map any
+    `RecursionError` that still reaches them to `UnknownCredentialFormat` /
+    `VpTokenMalformed`, as a backstop.
+
+  No real credential, DID document, status list or trust list nests anywhere near 100
+  levels. The bound applies on every Python version, so the typed class no longer
+  depends on the interpreter.
+- **Error messages no longer quote an untrusted container or an unbounded string.**
+  `safe_repr` (from [#212](https://github.com/luisgf/openvc/pull/212)) now cuts a
+  string past 200 characters and names an int past 64 bits by its type (`repr()` of an
+  int over 4300 digits raises `ValueError`). It is now used for a Data Integrity
+  `proof.type` / `cryptosuite` (including `ecdsa-sd-2023`), the validity dates, the
+  `challenge` / `domain` binding, the DC API audience, a VP-JWT `aud`, a VC-JWT's
+  `vc.issuer` / `credentialSubject.id` / `vc.id`, a JWT VC Issuer's metadata `issuer`
+  and `kid`, the `kid` and issuer DID in key-resolution errors (sync and async), and
+  the `kty` / `crv` of a key that caller code supplies (a pinned JWK, a custom resolver,
+  an OpenID4VCI `resolve_proof_key`). A multi-megabyte `did:jwk` used to be quoted in
+  full.
+- **`VpJwtProofSuite.peek_holder` rejects a non-string `kid` with `MalformedToken`**, as
+  `VcJwtProofSuite.peek_issuer` already did.
+- **The ML-DSA VC-JWT lane rejects a non-string `sub` or `jti`, as the PyJWT lane
+  does**, so `_reconcile` never compares two attacker containers with `!=`. The lane is
+  experimental and opt-in (`VcJwtProofSuite(allow_pq=True)`); the pipeline never
+  enables it.
 
 - **A W3C credential secured as SD-JWT is now held to its own `validFrom` /
   `validUntil`** ([#198](https://github.com/luisgf/openvc/issues/198)). Found by
@@ -131,6 +182,17 @@ All notable changes to **openvc** are documented here. The format follows
   `check_validity_window` or `check_jwt_temporal`. The removed helper had
   pulled them in since 1.27.0; they were never in its `__all__`. Import them
   from `openvc.proof.errors` and `openvc.proof._verify_common`.
+- **A deeply nested input now fails with its format's parse-time error class.** On
+  Python 3.14 a few deep inputs used to parse and fail at a later check, so a caller that
+  matches on the class sees it change:
+  - a deep dict passed to `verify_credential` now raises `UnknownCredentialFormat` (a
+    `VerificationError`), where the Data Integrity suite used to raise a `ProofError`;
+  - a deep LDP-VP raises `VpTokenMalformed`, not `UnsupportedPresentationFormat`;
+  - a deep JWE header raises `JweMalformed`, not `UnsupportedJweAlgorithm`;
+  - a deep LoTE header raises `TrustListParseError`, not `TrustListSignatureError`.
+
+  All of them are still `OpenvcError`, and all still fail closed. JSON nested deeper than
+  100 levels is rejected wherever openvc parses it.
 
 ### Fixed
 
@@ -2464,6 +2526,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.30.0]: https://github.com/luisgf/openvc/releases/tag/v1.30.0
 [1.29.2]: https://github.com/luisgf/openvc/releases/tag/v1.29.2
 [1.29.1]: https://github.com/luisgf/openvc/releases/tag/v1.29.1
 [1.29.0]: https://github.com/luisgf/openvc/releases/tag/v1.29.0

@@ -31,6 +31,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from . import _json
 from .did.base import DidResolutionError
 from .did.did_web import AsyncDidWebResolver, DidWebResolver
 from .observability import logger, span
@@ -191,7 +192,7 @@ def https_json_fetch(
     """
     raw = _https_fetch_guarded(url, timeout_s=timeout_s, max_bytes=max_bytes)
     try:
-        data = json.loads(raw)
+        data = _json.loads(raw)
     except (ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise DidResolutionError(f"response is not JSON: {exc}") from exc
     if not isinstance(data, dict):

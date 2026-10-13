@@ -52,12 +52,12 @@ from __future__ import annotations
 
 import base64
 import calendar
-import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, NoReturn, Sequence
 
+from .. import _json
 from .consume import Select
 from .errors import (
     TrustListError,
@@ -382,7 +382,7 @@ def parse_lote(
             raise TrustListParseError(
                 f"LoTE is {len(payload)} bytes, over the {max_bytes}-byte cap")
         try:
-            decoded = json.loads(payload)
+            decoded = _json.loads(payload)
         except (ValueError, RecursionError) as exc:
             raise TrustListParseError(f"LoTE is not valid JSON: {exc}") from exc
     else:

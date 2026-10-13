@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from .. import _json
 from ..cbor import CborError, CborTag
 from ..cbor import decode as _cbor_decode
 from ..cbor import encode as _cbor_encode
@@ -55,6 +56,7 @@ from ._verify_common import (
     check_proof_purpose,
     check_validity_window,
     resolve_verification_key,
+    safe_repr,
 )
 from .contexts import document_loader
 from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
@@ -610,11 +612,15 @@ class EcdsaSdProofSuite:
         credential's validity window (with the suite's leeway, evaluated at *now*)
         are enforced — a derived proof only reveals a subset, so these bounds are
         checked against whatever the holder disclosed."""
+        if _json.nesting_exceeds(derived):        # a dict handed over already parsed
+            raise ProofMalformed(
+                f"credential is nested deeper than {_json.MAX_DEPTH} levels")
         proof = derived.get("proof")
         if not isinstance(proof, dict):
             raise ProofMalformed("credential has no proof object")
         if proof.get("cryptosuite") != CRYPTOSUITE:
-            raise UnsupportedCryptosuite(f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
+            raise UnsupportedCryptosuite(
+                f"unsupported cryptosuite {safe_repr(proof.get('cryptosuite'))}")
         proof_value = proof.get("proofValue")
         if not isinstance(proof_value, str):
             raise ProofValueMalformed("proofValue is missing or not a string")

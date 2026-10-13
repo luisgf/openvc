@@ -39,6 +39,7 @@ from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
 # The proof error taxonomy lives in openvc.proof.errors; these are re-exported for
 # back-compat (old imports like `from openvc.proof.vc_jwt import SignatureInvalid`).
+from .. import _json
 from .errors import (  # noqa: F401
     ClaimsInvalid,
     MalformedToken,
@@ -174,8 +175,8 @@ class VcJwtProofSuite:
         """
         header_b64, payload_b64, _ = _split(token)
         try:
-            header = json.loads(_b64url_decode(header_b64))
-            payload = json.loads(_b64url_decode(payload_b64))
+            header = _json.loads(_b64url_decode(header_b64))
+            payload = _json.loads(_b64url_decode(payload_b64))
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("header/payload is not valid base64url JSON") from exc
         if not isinstance(header, dict) or not isinstance(payload, dict):
@@ -201,7 +202,7 @@ class VcJwtProofSuite:
         Used to read TIR accreditation bodies before the trust-chain walk."""
         _, payload_b64, _ = _split(token)
         try:
-            payload = json.loads(_b64url_decode(payload_b64))
+            payload = _json.loads(_b64url_decode(payload_b64))
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("payload is not valid base64url JSON") from exc
         if not isinstance(payload, dict):
@@ -226,7 +227,7 @@ class VcJwtProofSuite:
         reports whether one of them would have failed."""
         header_b64, _, _ = _split(token)
         try:
-            header = json.loads(_b64url_decode(header_b64))
+            header = _json.loads(_b64url_decode(header_b64))
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("invalid JWS header") from exc
         if not isinstance(header, dict):
@@ -393,7 +394,7 @@ class VcJwtProofSuite:
         if not ok:
             raise SignatureInvalid(f"{alg} signature does not verify")
         try:
-            claims = json.loads(payload)
+            claims = _json.loads(payload)
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("payload is not valid JSON") from exc
         if not isinstance(claims, dict):
@@ -410,6 +411,12 @@ class VcJwtProofSuite:
         # whether a waived exp has passed.
         if not isinstance(claims.get("iss"), str):
             raise ClaimsInvalid("the 'iss' claim is required")
+        # PyJWT rejects a non-string sub / jti; so must this lane, or _reconcile would
+        # compare two attacker containers with != (a bare RecursionError when deep)
+        if "sub" in claims and not isinstance(claims["sub"], str):
+            raise ClaimsInvalid("Subject must be a string")
+        if "jti" in claims and not isinstance(claims["jti"], str):
+            raise ClaimsInvalid("JWT ID must be a string")
         expired = check_jwt_temporal(
             claims, leeway_s=self._leeway, subject="token",
             check_temporal=check_temporal)
@@ -431,14 +438,14 @@ class VcJwtProofSuite:
         if alg in ("EdDSA", "Ed25519") and (
                 jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519"):
             raise ProofError(f"{alg} requires an OKP Ed25519 key, got "
-                             f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
+                             f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
         # Pin the EC curve to the alg too, so ES256 cannot verify against a P-384 key (PyJWT's
         # ECAlgorithm would load whatever curve the JWK declares and hash by the alg) — matching
         # the curve-pinned openvc.keys.verify_signature used on the SD-JWT / VP / status paths.
         _EC_CRV = {"ES256": "P-256", "ES384": "P-384"}
         if alg in _EC_CRV and (jwk.get("kty") != "EC" or jwk.get("crv") != _EC_CRV[alg]):
             raise ProofError(f"{alg} requires an EC {_EC_CRV[alg]} key, got "
-                             f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
+                             f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
         try:
             if alg in ("ES256", "ES384"):
                 return ECAlgorithm.from_jwk(json.dumps(jwk))
@@ -455,17 +462,18 @@ class VcJwtProofSuite:
         vc_issuer = vc.get("issuer")
         vc_issuer = vc_issuer.get("id") if isinstance(vc_issuer, dict) else vc_issuer
         if vc_issuer and vc_issuer != iss:
-            raise ClaimsInvalid(f"iss {iss!r} != vc.issuer {vc_issuer!r}")
+            raise ClaimsInvalid(f"iss {iss!r} != vc.issuer {safe_repr(vc_issuer)}")
 
         sub = claims.get("sub")
         cs = vc.get("credentialSubject")
         vc_sub = cs.get("id") if isinstance(cs, dict) else None   # may be a list of subjects
         if sub and vc_sub and sub != vc_sub:
-            raise ClaimsInvalid(f"sub {sub!r} != credentialSubject.id {vc_sub!r}")
+            raise ClaimsInvalid(
+                f"sub {safe_repr(sub)} != credentialSubject.id {safe_repr(vc_sub)}")
 
         jti = claims.get("jti")
         if jti and vc.get("id") and jti != vc["id"]:
-            raise ClaimsInvalid(f"jti {jti!r} != vc.id {vc['id']!r}")
+            raise ClaimsInvalid(f"jti {safe_repr(jti)} != vc.id {safe_repr(vc['id'])}")
 
         subject = sub if isinstance(sub, str) else (vc_sub if isinstance(vc_sub, str) else None)
         return iss, subject
