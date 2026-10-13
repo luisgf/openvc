@@ -66,13 +66,13 @@ dataclasses. Parsers, never builders, and never fetchers (ADR-0007 D7).
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
+from . import _json
 from .errors import OpenvcError
 from .keys import MLDSA_ALGS, InvalidKey, jwk_thumbprint
 from .proof._jws import parse_compact, verify_compact
@@ -499,7 +499,7 @@ def _as_mapping(value: Mapping[str, Any] | str, subject: str) -> Mapping[str, An
     if not isinstance(value, str):
         raise CredentialRequestMalformed(f"{subject} must be an object or a JSON string")
     try:
-        parsed = json.loads(value)
+        parsed = _json.loads(value)
     except (ValueError, RecursionError) as exc:      # RecursionError: hostile nesting
         raise CredentialRequestMalformed(f"{subject} is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict):

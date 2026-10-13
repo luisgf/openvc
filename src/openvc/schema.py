@@ -81,6 +81,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from . import _json
 from .errors import OpenvcError
 
 # Fetch a schema URL -> the RAW schema bytes. Bytes (not a parsed dict) so a
@@ -368,7 +369,7 @@ def _parse_schema_resource(raw: bytes, url: str) -> dict[str, Any]:
     """Parse fetched schema bytes into a JSON object, failing closed on non-JSON, a
     non-object, or a hostile depth (a ``RecursionError`` becomes a typed error)."""
     try:
-        resource = json.loads(raw)
+        resource = _json.loads(raw)
     except (ValueError, json.JSONDecodeError) as exc:
         raise SchemaResolutionError(f"schema {url!r} is not valid JSON: {exc}") from exc
     except RecursionError as exc:            # a hostile, deeply-nested schema

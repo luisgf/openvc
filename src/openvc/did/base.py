@@ -15,6 +15,7 @@ import base64
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Protocol, runtime_checkable
 
+from .. import _json
 from ..errors import OpenvcError
 from ..multibase import MultibaseError, decode_multibase, read_varint
 
@@ -184,6 +185,9 @@ def parse_did_document(raw: dict[str, Any]) -> DidDocument:
     (``verificationMethod`` / relationships), never ``@context`` — so **DID 1.1 / CID 1.0**
     documents (the ``https://www.w3.org/ns/did/v1.1`` context) resolve unchanged. The DID 1.1
     relationship-semantics diff is revisited when it reaches Proposed Recommendation."""
+    if _json.nesting_exceeds(raw):           # an injected fetch hands it over already parsed
+        raise DidResolutionError(
+            f"DID document is nested deeper than {_json.MAX_DEPTH} levels")
     doc = raw.get("didDocument", raw)
     vms = [
         VerificationMethod(

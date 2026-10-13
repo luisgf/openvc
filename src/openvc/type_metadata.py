@@ -30,10 +30,10 @@ inherits the SSRF / size / time guards. Type Metadata URLs are as untrusted as
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from . import _json
 from .errors import OpenvcError
 from .schema import SchemaResolutionError, _verify_sri
 
@@ -161,7 +161,7 @@ def _fetch_document(
                 f"type metadata for {vct!r} fails its integrity hash: {exc}") from exc
 
     try:
-        document = json.loads(raw)
+        document = _json.loads(raw)
     except (ValueError, RecursionError) as exc:
         raise TypeMetadataResolutionError(
             f"type metadata for {vct!r} is not valid JSON: {exc}") from exc

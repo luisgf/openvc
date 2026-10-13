@@ -34,11 +34,11 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from openvc import verify_credential, verify_many, verify_many_async
-from openvc.jwe import JweMalformed, UnsupportedJweAlgorithm, decrypt_compact
+from openvc.jwe import JweMalformed, decrypt_compact
 from openvc.keys import Ed25519SigningKey, P256KeyAgreementKey, P256SigningKey
 from openvc.multibase import encode_multibase
 from openvc.openid4vci import verify_credential_request_proofs
-from openvc.openid4vp import UnsupportedPresentationFormat, verify_vp_token
+from openvc.openid4vp import UnsupportedPresentationFormat, VpTokenMalformed, verify_vp_token
 from openvc.proof._jws import sign_compact
 from openvc.proof._verify_common import safe_repr
 from openvc.proof.errors import ClaimsInvalid, MalformedToken, UnsupportedAlgorithm
@@ -47,7 +47,7 @@ from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.proof.vp_jwt import VpJwtProofSuite
 from openvc.rp_registration import RpRegistrationError, parse_rp_registration_certificate
 from openvc.status import verify_status_list_token
-from openvc.trustlist.errors import TrustListParseError, TrustListSignatureError
+from openvc.trustlist.errors import TrustListParseError
 from openvc.trustlist.lote import consume_lote
 from openvc.verify import VerificationPolicy
 
@@ -170,19 +170,9 @@ def _deep_json_array(depth: int = 100_000) -> str:
     return "[" * depth + "]" * depth
 
 
-def _json_accepts_deep_array() -> bool:
-    try:
-        json.loads(_deep_json_array())
-    except RecursionError:
-        return False
-    return True
-
-
-# json.loads accepts ~116k levels on Python 3.14, and repr() of the result overflows,
-# so there the message itself is what is under test. On 3.10-3.13 json.loads gives up
-# first and the parse error is the typed outcome. Either way, never a bare
-# RecursionError; each deep test expects the one class this interpreter must raise.
-JSON_ACCEPTS_DEEP = _json_accepts_deep_array()
+# openvc's JSON loader refuses nesting past openvc._json.MAX_DEPTH (#213), so a deep
+# header fails at the parse with a typed error on every interpreter. (json.loads alone
+# accepts ~116k levels on Python 3.14, where repr() of the result overflows.)
 
 
 def _deep_header_token(header_prefix: str, *, rest: str = "") -> str:
@@ -214,8 +204,7 @@ def test_vc_jwt_unhashable_alg_message_names_the_type(issuer):
 
 def test_vc_jwt_deeply_nested_alg_is_typed():
     token = _deep_header_token('"kid":"did:example:i#k",')
-    expected = UnsupportedAlgorithm if JSON_ACCEPTS_DEEP else MalformedToken
-    with pytest.raises(expected):
+    with pytest.raises(MalformedToken):
         VcJwtProofSuite().verify(token, public_key_jwk={})
 
 
@@ -379,11 +368,11 @@ def test_ldp_vc_unhashable_cryptosuite_is_typed(cryptosuite):
 
 
 def test_ldp_vc_deeply_nested_cryptosuite_is_typed():
-    # a Python-built value (no json.loads limit), so this is exact on every version
+    # a Python-built value skips the JSON loader; the vp_token depth check holds it
     deep: list = []
     for _ in range(100_000):
         deep = [deep]
-    with pytest.raises(UnsupportedPresentationFormat, match="cryptosuite list"):
+    with pytest.raises(VpTokenMalformed, match="nested deeper than"):
         verify_vp_token({"q": [_ldp_vp_with_cryptosuite(deep)]},
                         dcql_query=LDP_VC_DCQL, nonce=NONCE, client_id=CLIENT_ID)
 
@@ -413,20 +402,17 @@ def test_openid4vci_unhashable_proof_typ_is_typed(holder, typ):
 def test_jwe_deeply_nested_alg_is_typed():
     header = '{"enc":"A128GCM","alg":' + _deep_json_array() + "}"
     token = f"{_b64url(header.encode())}.." + "AAAA." * 2 + "AAAA"
-    expected = UnsupportedJweAlgorithm if JSON_ACCEPTS_DEEP else JweMalformed
-    with pytest.raises(expected):
+    with pytest.raises(JweMalformed):
         decrypt_compact(token, key=P256KeyAgreementKey.generate(kid="k"))
 
 
 def test_wrprc_deeply_nested_alg_is_typed():
-    with pytest.raises(RpRegistrationError, match="alg list" if JSON_ACCEPTS_DEEP
-                       else "not a valid compact JWS"):
+    with pytest.raises(RpRegistrationError, match="not a valid compact JWS"):
         parse_rp_registration_certificate(_deep_header_token('"typ":"rc-wrp+jwt",'))
 
 
 def test_lote_deeply_nested_alg_is_typed():
-    expected = TrustListSignatureError if JSON_ACCEPTS_DEEP else TrustListParseError
-    with pytest.raises(expected):
+    with pytest.raises(TrustListParseError):
         consume_lote(_deep_header_token(""), expected_signer_certs=[])
 
 

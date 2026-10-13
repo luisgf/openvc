@@ -21,7 +21,9 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse, urlunparse
 
+from . import _json
 from .errors import OpenvcError
+from .proof._verify_common import safe_repr
 
 # Fetch an https URL -> its parsed JSON object (e.g. openvc.fetch.https_json_fetch).
 Fetch = Callable[[str], dict]
@@ -59,7 +61,7 @@ def _select_key(keys: list, kid: str | None) -> dict[str, Any]:
         for key in candidates:
             if key.get("kid") == kid:
                 return key
-        raise JwtVcIssuerError(f"no key with kid {kid!r} in the issuer JWKS")
+        raise JwtVcIssuerError(f"no key with kid {safe_repr(kid)} in the issuer JWKS")
     if len(candidates) == 1:
         return candidates[0]
     raise JwtVcIssuerError("issuer JWKS has multiple keys but the token has no kid")
@@ -71,9 +73,12 @@ def _inline_jwks_or_uri(metadata: Any, iss: str) -> tuple[Any, str | None]:
     (jwks ``None``). Pure — shared by the sync and async resolvers."""
     if not isinstance(metadata, dict):
         raise JwtVcIssuerError("issuer metadata is not a JSON object")
+    if _json.nesting_exceeds(metadata):       # the injected fetch hands it over parsed
+        raise JwtVcIssuerError(
+            f"issuer metadata is nested deeper than {_json.MAX_DEPTH} levels")
     if metadata.get("issuer") != iss:
         raise JwtVcIssuerError(
-            f"metadata issuer {metadata.get('issuer')!r} != token iss {iss!r}")
+            f"metadata issuer {safe_repr(metadata.get('issuer'))} != token iss {iss!r}")
     jwks = metadata.get("jwks")
     if jwks is not None:
         return jwks, None
@@ -85,6 +90,8 @@ def _inline_jwks_or_uri(metadata: Any, iss: str) -> tuple[Any, str | None]:
 
 def _key_from_jwks(jwks: Any, kid: str | None) -> dict[str, Any]:
     """Select the public JWK for *kid* from a fetched JWKS (pure — shared)."""
+    if _json.nesting_exceeds(jwks):
+        raise JwtVcIssuerError(f"issuer JWKS is nested deeper than {_json.MAX_DEPTH} levels")
     keys = jwks.get("keys") if isinstance(jwks, dict) else None
     if not isinstance(keys, list) or not keys:
         raise JwtVcIssuerError("issuer JWKS has no `keys` array")
