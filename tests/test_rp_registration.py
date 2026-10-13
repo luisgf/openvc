@@ -436,6 +436,25 @@ def test_verify_requires_at_least_one_anchor(registrar):
             jwt_wrprc(claims(), chain, key), trust_anchors=[], now=_AT)
 
 
+@pytest.mark.parametrize("leeway_s", ["60", None])
+def test_verify_types_a_leeway_that_is_not_a_number(registrar, leeway_s):
+    # read through the shared utc_window: a typed RpRegistrationError, not the bare
+    # TypeError `max(0, leeway_s)` raised
+    root, chain, key = registrar
+    token = jwt_wrprc(claims(), chain, key)
+    with pytest.raises(RpRegistrationError, match="leeway_s"):
+        verify_rp_registration_certificate(
+            token, trust_anchors=[root], now=_AT, leeway_s=leeway_s)
+
+
+def test_verify_compares_the_window_without_overflow_on_a_huge_leeway(registrar):
+    # `instant + leeway` past year 9999 raised a bare OverflowError; the window now
+    # compares differences, so a huge leeway is only very wide (#228 bounds it)
+    root, chain, key = registrar
+    token = jwt_wrprc(claims(), chain, key)
+    verify_rp_registration_certificate(token, trust_anchors=[root], now=_AT, leeway_s=10**12)
+
+
 def test_verify_rejects_mistyped_trust_params(registrar):
     root, chain, key = registrar
     token = jwt_wrprc(claims(), chain, key)
@@ -533,6 +552,21 @@ def test_verify_enforces_the_temporal_claims(registrar):
                               exp=int(_AT.timestamp()) + 90000), chain, key)
     with pytest.raises(RpRegistrationError, match="not valid before"):
         verify_rp_registration_certificate(future, trust_anchors=[root], now=_AT)
+
+
+@pytest.mark.parametrize("claim, offset, ok", [
+    ("exp", -60, True), ("exp", -61, False),      # expired exactly one leeway ago is in
+    ("nbf", 60, True), ("nbf", 61, False),        # valid one leeway from now is in
+])
+def test_verify_leeway_is_exact_at_the_window_edge(registrar, claim, offset, ok):
+    root, chain, key = registrar
+    token = jwt_wrprc(claims(**{claim: int(_AT.timestamp()) + offset}), chain, key)
+    if ok:
+        verify_rp_registration_certificate(token, trust_anchors=[root], now=_AT, leeway_s=60)
+    else:
+        with pytest.raises(RpRegistrationError, match="expired|not valid before"):
+            verify_rp_registration_certificate(
+                token, trust_anchors=[root], now=_AT, leeway_s=60)
 
 
 def test_an_absent_expiry_is_conformant_but_can_be_refused_by_policy(registrar):

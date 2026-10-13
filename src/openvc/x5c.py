@@ -26,11 +26,12 @@ store — the trust anchors are the caller's.
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Sequence
 from urllib.parse import urlparse
 
 from .errors import OpenvcError
+from .proof._verify_common import utc_instant
 
 
 class X5cError(OpenvcError):
@@ -94,14 +95,6 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _instant(now: datetime | None) -> datetime:
-    if now is None:
-        return datetime.now(timezone.utc)
-    if now.tzinfo is None:                          # a naive now is taken as UTC, not
-        return now.replace(tzinfo=timezone.utc)     # silently as the host's local time
-    return now.astimezone(timezone.utc)
-
-
 def validate_cert_chain(
     leaf: Any,
     intermediates: Sequence[Any],
@@ -131,7 +124,7 @@ def validate_cert_chain(
     # webpki CA policy keeps basicConstraints/path checks strict; permit_all on the
     # end-entity relaxes only the TLS EKU a VC / mdoc signer cert would not carry.
     builder = (
-        PolicyBuilder().store(Store(anchors)).time(_instant(now))
+        PolicyBuilder().store(Store(anchors)).time(utc_instant(now, error=X5cError))
         .extension_policies(
             ca_policy=ExtensionPolicy.webpki_defaults_ca(),
             ee_policy=ExtensionPolicy.permit_all())

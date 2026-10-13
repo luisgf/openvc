@@ -159,6 +159,22 @@ def test_verify_rejects_expired_certificate():
         verify_rp_access_certificate(leaf, trust_anchors=[ca], now=_AT)
 
 
+@pytest.mark.parametrize("window, ok", [
+    ((_AT - dt.timedelta(days=1), _AT + dt.timedelta(days=1)), True),    # pin inside, today out
+    ((_AT + dt.timedelta(days=1), _AT + dt.timedelta(days=3650)), False),  # pin before, today in
+])
+def test_verify_judges_validity_at_the_pinned_now_not_the_wall_clock(window, ok):
+    # the window brackets the pin and excludes today (or the reverse), so reading the
+    # wall clock instead of `now` flips the verdict either way
+    ca, ca_key, ca_name = _ca()
+    leaf = _wrpac(ca_key, ca_name, before=window[0], after=window[1])
+    if ok:
+        verify_rp_access_certificate(leaf, trust_anchors=[ca], now=_AT)
+    else:
+        with pytest.raises(RpCertError):
+            verify_rp_access_certificate(leaf, trust_anchors=[ca], now=_AT)
+
+
 def test_verify_enforces_required_eku():
     ca, ca_key, ca_name = _ca()
     leaf = _wrpac(ca_key, ca_name, eku=RP_EKU)
@@ -218,6 +234,16 @@ def test_verify_rejects_mistyped_trust_params_as_typed_error():
         verify_rp_access_certificate(leaf, trust_anchors=[ca], intermediates=ca, now=_AT)
     with pytest.raises(RpCertError):
         verify_rp_access_certificate(leaf, trust_anchors=[ca], now="2026-01-01")   # str now
+
+
+def test_verify_types_a_now_with_no_utc_equivalent():
+    # datetime.max at a negative offset overflows when read as UTC — a typed RpCertError,
+    # not a bare OverflowError (read through the shared utc_instant)
+    ca, ca_key, ca_name = _ca()
+    leaf = _wrpac(ca_key, ca_name)
+    late = dt.datetime.max.replace(tzinfo=dt.timezone(dt.timedelta(hours=-5)))
+    with pytest.raises(RpCertError, match="now"):
+        verify_rp_access_certificate(leaf, trust_anchors=[ca], now=late)
 
 
 def test_verify_accepts_anchors_in_any_certificate_form():

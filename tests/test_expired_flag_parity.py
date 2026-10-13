@@ -75,7 +75,9 @@ def _registry(public_jwk):
 
 def _vcdm(**extra):
     doc = {
-        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        # `score` needs a definition: RDF canonicalization would drop it unsigned
+        "@context": ["https://www.w3.org/ns/credentials/v2",
+                     {"@vocab": "https://www.w3.org/ns/credentials/examples#"}],
         "type": ["VerifiableCredential"],
         "issuer": DID,
         "validFrom": "2020-01-01T00:00:00Z",

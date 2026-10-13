@@ -49,6 +49,7 @@ from ._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
     check_iat_freshness,
     check_jwt_temporal,
+    check_numeric_dates,
     check_validity_window,
     non_negative_seconds,
     reject_unknown_crit,
@@ -442,7 +443,7 @@ class SdJwtVcProofSuite:
         the instant that window is evaluated at (a naive datetime is UTC). To re-check
         an archived presentation, pin it to the **receipt time your system recorded** —
         never to a value read from the presentation itself: its own ``iat`` would make
-        every KB-JWT fresh and switch the window off. The issuer JWT's ``exp``/``nbf``
+        every KB-JWT fresh and switch the window off. The issuer JWT's ``exp``/``nbf``/``iat``
         still use the current time, as on every JOSE suite.
 
         When the payload is a W3C VCDM credential (``vc+sd-jwt`` per VC-JOSE-COSE: a
@@ -452,9 +453,16 @@ class SdJwtVcProofSuite:
         ``sub`` must not conflict with ``issuer`` / ``id`` / ``credentialSubject.id``
         either, as on the VC-JWT suite (``ClaimsInvalid``). An IETF SD-JWT VC's claims
         are never read as a VCDM validity window or reconciled with them.
+
+        The issuer JWT's ``exp``/``nbf``/``iat``, and any disclosed ``iat``, must each be
+        a finite JSON number when present (``null`` included). An ``iat`` more than the
+        leeway in the future is rejected. *check_temporal* waives only an expired ``exp``.
         """
         non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=SdJwtError)
-        current = utc_epoch(now, error=SdJwtError)       # a naive `now` is UTC
+        # A naive `now` is UTC. Unpinned, the KB-JWT window reads the clock unrounded, as
+        # check_jwt_temporal does: truncating it would accept a fractional KB-JWT `exp` up
+        # to a second late. A pin is read to the second, as every openvc clock check is.
+        current: float = time.time() if now is None else utc_epoch(now, error=SdJwtError)
         issuer_jwt, disclosures, kb_jwt = self._split(presentation)
         header, claims, signing_input, signature = self._decode_jws(issuer_jwt)
 
@@ -592,9 +600,11 @@ class SdJwtVcProofSuite:
     def _check_temporal(
         self, claims: dict[str, Any], *, check_temporal: bool = True
     ) -> bool:
-        # NumericDate exp/nbf, fail-closed and non-finite-safe, single-sourced across the
-        # JOSE suites (openvc.proof._verify_common.check_jwt_temporal). True when a
-        # waived exp has passed.
+        # NumericDate exp/nbf/iat, fail-closed (null, NaN, strings and bignums rejected)
+        # and a future iat bounded, single-sourced across the JOSE suites
+        # (openvc.proof._verify_common.check_jwt_temporal). Runs on the issuer-JWT body
+        # and again on the unpacked claims, where a disclosed iat first appears. True
+        # when a waived exp has passed.
         return check_jwt_temporal(
             claims, leeway_s=self._leeway, subject="token",
             check_temporal=check_temporal)
@@ -625,7 +635,7 @@ class SdJwtVcProofSuite:
         audience: str | None,
         nonce: str | None,
         required: bool,
-        current: int,
+        current: float,
         max_age_s: int,
     ) -> bool:
         if required and (audience is None or nonce is None):
@@ -680,6 +690,17 @@ class SdJwtVcProofSuite:
         check_iat_freshness(
             claims.get("iat"), max_age_s=max_age_s, leeway_s=self._leeway,
             current=current, subject="KB-JWT")
+        # RFC 9901 defines no exp/nbf on a KB-JWT, but a signed one is not ignored: same
+        # shape rule as the issuer JWT, evaluated at the same `current` as the iat window.
+        # A window failure is a binding failure, phrased without "expired": callers read
+        # an `expired` ClaimsInvalid from a required-binding verify as "bound, but the
+        # issuer JWT expired" (wiki/SD-JWT-VC.md), and no waiver applies here.
+        check_numeric_dates(claims, "exp", "nbf", subject="KB-JWT")
+        try:
+            check_jwt_temporal(claims, leeway_s=self._leeway, subject="KB-JWT",
+                               now=current)
+        except ClaimsInvalid as exc:
+            raise ClaimsInvalid("KB-JWT is outside its own exp/nbf window") from exc
         if audience is not None and claims.get("aud") != audience:
             raise ClaimsInvalid("KB-JWT aud does not match")
         if nonce is not None and claims.get("nonce") != nonce:

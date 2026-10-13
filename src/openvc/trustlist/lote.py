@@ -54,10 +54,11 @@ import base64
 import calendar
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable, Mapping, NoReturn, Sequence
 
 from .. import _json
+from ..proof._verify_common import utc_instant
 from .consume import Select
 from .errors import (
     TrustListError,
@@ -657,9 +658,7 @@ def _authenticate_signer(
             "objects) — a LoTE is never trusted unverified")
     leaf_der = leaf.public_bytes(Encoding.DER)
     if any(leaf_der == c.public_bytes(Encoding.DER) for c in pinned):
-        instant = now if now is not None else datetime.now(timezone.utc)
-        if instant.tzinfo is None:
-            instant = instant.replace(tzinfo=timezone.utc)
+        instant = utc_instant(now, error=TrustListError)
         if not (leaf.not_valid_before_utc <= instant <= leaf.not_valid_after_utc):
             raise TrustListSignatureError(
                 "LoTE signing certificate matches a pinned certificate but is outside "
@@ -811,9 +810,7 @@ def walk_lote(
     if select is _DERIVED_SELECT:
         select = (Select(service_types=profile.anchor_service_types)
                   if profile is not None else None)
-    instant = now if now is not None else datetime.now(timezone.utc)
-    if instant.tzinfo is None:
-        instant = instant.replace(tzinfo=timezone.utc)
+    instant = utc_instant(now, error=TrustListError)   # naive is UTC; a bad pin is typed
     problems: list[TrustListProblem] = []
 
     try:

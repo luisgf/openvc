@@ -73,10 +73,19 @@ Example-based, but broad. Representative anchors:
   batch-isolation of a hostile item (`test_hostile_input.py:51-85`); malformed
   `exp`/`nbf`/`iat` (`null`, containers, strings, bools, non-finite) typed and
   batch-isolated on every entry point, with and without the expiry waiver
-  (`test_vc_jwt_numeric_dates.py`).
+  (`test_vc_jwt_numeric_dates.py`); a future `iat` and a non-string `sub`/`jti` on
+  both the classic and the ML-DSA lane, and the exclusive `exp` boundary
+  (`test_jose_temporal_claims.py`); an `aud` that does not name the caller's
+  audience, or any `aud` when none is given (RFC 7519 §4.1.3), and an expected
+  audience that is not a non-empty string, on both lanes (`test_vc_jwt_audience.py`).
 - **SD-JWT** — unreferenced/forged/duplicate disclosure, wrong key, expired,
   `vct` mismatch, KB `aud`/`nonce`/`sd_hash` tamper, non-numeric `exp`/`nbf`
-  (`test_sd_jwt.py:118-333`).
+  (`test_sd_jwt.py:118-333`); malformed issuer-JWT `exp`/`nbf`/`iat` (`null`
+  included) and a future or malformed disclosed `iat`, on every entry point with and
+  without the expiry waiver; a KB-JWT's own expired, future, malformed or `null`
+  `exp`/`nbf` (`test_jose_temporal_claims.py`).
+- **VP-JWT** — malformed `exp`/`nbf`/`iat` (`null` included) and a future `iat` on
+  the presentation itself, under any `policy` (`test_jose_temporal_claims.py`).
 - **Data Integrity** — published W3C eddsa/ecdsa vectors are tamper-evident,
   cross-curve/wrong-key/wrong-cryptosuite fail-closed, RFC 8785 non-finite
   rejection, canonicalize depth guard (`test_di_jcs.py:190-426`).
@@ -90,7 +99,10 @@ Example-based, but broad. Representative anchors:
 - **JWE** — tampered ciphertext, non-ECDH-ES alg, disallowed `enc`, `zip`/`crit`
   rejected, bad `epk`/IV, oversize (`test_jwe.py:167-294`).
 - **Status** — bad encoded list, hostile `type`, value overflow, compression
-  bombs at the cap boundary (`test_status*`, `test_status_decompress.py`).
+  bombs at the cap boundary (`test_status*`, `test_status_decompress.py`); a
+  status-list token `exp`/`nbf`/`iat` that is not a finite number (`NaN`,
+  `Infinity`, `1e400`, `null`), a future `nbf`/`iat`, and the window judged at a
+  pinned `now` (`test_jose_temporal_claims.py`).
 - **Trust / XML** — wrong cert, tampered body, DTD/DOCTYPE entity bomb, external-
   entity XXE, oversize, forged national TL (`test_trustlist*`).
 - **OpenID4VCI key proofs** — a KB-JWT / VP-JWT / status-list token replayed as a
@@ -156,6 +168,13 @@ recent first (`git log`, short hashes).
 - `886db1f` — challenge/domain presentation binding for Data Integrity
 - `ee1ecac` — enforce Data Integrity validity window and `proofPurpose`
 
+**JSON-LD form ↔ signed dataset (RDF Data Integrity)**
+- GHSA-vrxg-57v4-85mc (v1.30.2) — context validation (VC-DI §2.4.1) on
+  `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` / `ecdsa-sd-2023`, on both the verify and the sign
+  side: the policy reads only JSON the signature covers (threat model I20, R9). Pinned
+  by `tests/test_di_context_validation.py`. The attack tests fail on v1.30.1 and pass
+  here; the W3C golden vectors are unaffected.
+
 **X.509 / trust anchoring**
 - `82b3867` — X.509 `x5c` issuer trust for JOSE credentials
 - `b933460` — emit `x5c` header on SD-JWT VC issuance to anchor the issuer (#94)
@@ -196,7 +215,7 @@ lanes verify through openvc's own JWS code, not PyJWT. Advisory by advisory:
 Outcome: floor raised to `pyjwt>=2.13` (defense in depth even where structurally
 unreachable) plus the lane-uniform `crit` rejection.
 
-Not an advisory, but the same surface (found 2026-10-12, fixed in 1.29.2): PyJWT
+Not an advisory, but the same surface (found 2026-10-12, fixed in 1.30.0): PyJWT
 casts `exp`/`nbf`/`iat` with `int()` and catches only `ValueError`, so a signed
 `"nbf": null` raised a bare `TypeError` out of `_JWT.decode`, outside `OpenvcError`.
 `vc_jwt` now checks those shapes itself before the decode (`check_numeric_dates`).

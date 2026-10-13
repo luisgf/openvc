@@ -48,13 +48,44 @@ result = VpJwtProofSuite().verify(
     vp, audience="https://verifier.example", nonce="chal-42",
     require_holder_binding=True)
 print(result.holder, len(result.credentials), result.credentials[0].subject)
+
+# Or pin a holder key you already trust instead of resolving it from `iss`.
+pinned = VpJwtProofSuite().verify(
+    vp, audience="https://verifier.example", nonce="chal-42",
+    holder_key_jwk=holder.public_jwk(), expected_holder=holder_did,
+    require_holder_binding=True)
+assert pinned.holder == holder_did
 ```
+
+`holder_key_jwk=` pins the holder key, so it is never resolved. `resolver=`
+still resolves the embedded credentials' issuers. It defaults to the pipeline's
+`default_resolver()` (offline `did:key` / `did:jwk`, SSRF-guarded `did:web` /
+`did:webvh`), so pass one only for other DID methods. With a pinned key, `iss`
+is whatever the signer wrote. Pass `expected_holder=` before you trust
+`result.holder` or ask for `require_holder_binding`.
 
 A VP-JWT with no `verifiableCredential` is valid VCDM (DID Auth, for example):
 `verify` accepts it and returns an empty `credentials` tuple, so if you need a
 credential, check that one is there. `verify_vp_token` does this for you. A
 `verifiableCredential` that is neither a credential nor an array (a number, a
 bool, `null`) is rejected with `ClaimsInvalid`.
+
+The VP-JWT's own `exp`, `nbf` and `iat` must each be a finite JSON number when
+present (`null` included), and an `iat` more than the leeway in the future is
+rejected, as on the credential lanes. These have no waiver: a `policy` passed to
+`verify` reaches only the embedded credentials, so `require_not_expired=False`
+leaves the presentation's dates enforced. `aud` and `nonce` are always required.
+
+A VC-JWT nested in the presentation is checked against `policy.audience`, not the
+presentation's `audience`. If it carries its own `aud`, pass
+`policy=VerificationPolicy(audience=...)` with a value from that `aud`, or it is
+rejected (RFC 7519 §4.1.3, see
+[ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)).
+Setting `policy.audience` makes every nested VC-JWT need that `aud`, so one
+presentation that mixes VC-JWTs with and without `aud` does not verify in a single
+call. `verify_vp_token` passes no `policy.audience`, so it rejects a nested VC-JWT
+that carries `aud`. Most VC-JWTs carry none: VCDM's JWT encoding defines `aud` only
+for presentations.
 
 ## OpenID4VP 1.0: `verify_vp_token`
 

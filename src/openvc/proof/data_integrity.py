@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from ..multibase import encode_multibase
+from ._context_validation import validate_document
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -176,6 +177,8 @@ class DataIntegrityProofSuite:
 
         loader = document_loader(extra_contexts)
         data = _hash_data(_unsecured(credential), proof_config, loader)
+        # never sign JSON the signature would not cover (see _context_validation)
+        validate_document(_unsecured(credential), proof_config, loader)
         signature = signing_key.sign(data)           # raw 64-byte Ed25519
 
         secured = copy.deepcopy(credential)
@@ -225,6 +228,9 @@ class DataIntegrityProofSuite:
         )
         if not _verify_ed25519(jwk, data, signature):
             raise SignatureInvalid("Data Integrity proof does not verify")
+        # The signature covers the RDF dataset; the checks below read the JSON. Context
+        # validation (VC-DI §2.4.1) makes the two agree before any policy read.
+        validate_document(unsecured, proof_config, loader)
 
         check_proof_purpose(proof, expected_proof_purpose)
         check_presentation_binding(

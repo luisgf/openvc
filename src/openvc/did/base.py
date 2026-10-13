@@ -82,9 +82,11 @@ class DidDocument:
         If the document declares that relationship, the method must be referenced
         by it (returns None otherwise — the key exists but is not usable for this
         purpose). If the document does not declare the relationship at all, the
-        binding cannot be enforced and the matched key is returned as-is."""
+        binding cannot be enforced and the matched key is returned as-is. A
+        *proof_purpose* that is not a string (including None) names no relationship
+        and returns None."""
         vm = self.key_by_kid(kid)
-        if vm is None:
+        if vm is None or not isinstance(proof_purpose, str):   # unhashable -> no key
             return None
         refs = self.relationships.get(proof_purpose)
         if refs is None:                       # relationship not declared -> lenient
