@@ -4,6 +4,96 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.5] — unreleased
+
+### Security
+
+- **The JOSE credential, presentation, key-binding, status-list and key-proof
+  lanes now apply one rule to `exp`, `nbf` and `iat`, and a VC-JWT's `aud` is
+  enforced** (RFC 7519 §2, §4.1.3–§4.1.6; [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)). The adversarial
+  review of [#195](https://github.com/luisgf/openvc/pull/195) found the lanes
+  still disagreeing after it, all reproduced on v1.28.2:
+  - **SD-JWT VC issuer JWT.** `iat` was never shape-checked: `null`, `[]`,
+    `"abc"`, `"1999999999"`, `true`, `NaN`, `1e400` and a bignum all verified,
+    under the default policy and the expiry waiver, and so did a future `iat`.
+    `"exp": null` / `"nbf": null` were read as absent. All are now
+    `ClaimsInvalid`, and so is a malformed or future `iat` that the issuer made
+    selectively disclosable.
+  - **VP-JWT.** The presentation's `iat` was never read, so an `iat` of `[]`,
+    `NaN`, `1e400` or a year ahead verified, and a `null` `exp`/`nbf` read as
+    absent. They are now checked like the other dates.
+  - **VC-JWT, ML-DSA lane.** It accepted an `iat` in the future, which PyJWT
+    rejects on the classic lane. It now rejects one too.
+  - **Status-list token.** `"exp": null` was read as absent, and `nbf` and
+    `iat` were never read, so a list dated a year ahead verified. It now runs
+    the shared rule (`StatusListError`). Its window is judged at one instant,
+    the pinned `now` or the wall clock (which the resolvers always use).
+  - **VC-JWT `aud`.** Neither lane checked `aud` when the caller passed no
+    audience (`verify_aud=False`), so a VC-JWT addressed to
+    `https://other-rp` verified for anyone who held it. RFC 7519 §4.1.3 says
+    the token MUST then be rejected. Both lanes now run `check_jwt_audience`
+    after the signature verifies.
+
+  `check_jwt_temporal` single-sources the rule for the SD-JWT VC issuer JWT
+  and KB-JWT, the VP-JWT, the VC-JWT ML-DSA lane, the status-list token and
+  the OpenID4VCI key proof. A present date must be a finite JSON number,
+  `null` included. A token at or past `exp` plus the leeway has expired, and
+  that is the only comparison `require_not_expired=False` switches off (the
+  result's `expired` still reports it). A future `nbf` is rejected, and so is
+  an `iat` more than the leeway in the future. The key-attestation JWT and the
+  WRPRC keep their own date handling.
+
+  The adversarial review of this change found three more gaps, closed here:
+  - **The KB-JWT's own `exp`/`nbf` were never read.** A holder's KB-JWT with an
+    expired, `NaN`, `null` or future-dated `exp`/`nbf` still bound. They are now
+    binding failures (`KB-JWT is outside its own exp/nbf window`, or a malformed
+    date), never an `expired` verdict, and the waiver does not cover them.
+  - **The `exp` boundary was off by up to a second.** The helper truncated the
+    clock to an integer and accepted a token exactly at `exp` plus the leeway.
+    RFC 7519 §4.1.4 says the current time MUST be before `exp`, which is what
+    PyJWT checks on the classic lane. The wall clock is now read unrounded, on
+    the KB-JWT window too; a pinned `now` is still read to the second. Every
+    comparison is a difference against the leeway, so even an absurd
+    `leeway_s` stays a typed result rather than a bare `OverflowError`.
+  - **A mistyped `now` on `verify_status_list_token`** (a string, a `date`,
+    `NaN`) is a `StatusListError`. An epoch `int` is still accepted.
+  - **An empty or non-string audience split the VC-JWT lanes.** PyJWT matched a
+    list of audiences on the classic lane only, and an empty audience matched an
+    empty `aud` on the ML-DSA lane only. Both are now refused up front.
+
+### Changed
+
+- **Behaviour change: tokens that used to verify are now rejected**
+  ([ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)). Each case fails closed with a typed error, and in
+  `verify_many` it fails only its own item.
+  - `"exp": null`, `"nbf": null` or `"iat": null` on an SD-JWT VC issuer JWT, a
+    KB-JWT, a VP-JWT, a status-list token, and `exp`/`nbf: null` on an
+    OpenID4VCI key proof (the KB-JWT and the key proof already required `iat`).
+    These lanes used to read `null` as absent, or never read the claim. RFC 7519
+    §2 defines a NumericDate as a JSON number, and VC-JWT already rejects `null`
+    (#195). An issuer that serialises an unset date as `null` must leave the
+    claim out instead.
+  - An `iat` more than the leeway (60 s by default) in the future, on an SD-JWT
+    VC issuer JWT, a VP-JWT, an ML-DSA VC-JWT or a status-list token. The expiry
+    waiver does not cover it.
+  - A KB-JWT whose own `exp` has passed or whose `nbf` has not arrived.
+  - A status-list token whose `nbf` has not arrived. A pinned `now` earlier
+    than the list's `iat`/`nbf` now rejects the list: it did not exist at that
+    instant.
+  - A token exactly at `exp` plus the leeway, on every lane that uses
+    `check_jwt_temporal`. It used to verify for up to one more second.
+  - A VC-JWT that carries `aud` when no audience is passed. Pass `audience=` to
+    `VcJwtProofSuite.verify`, or `VerificationPolicy(audience=...)` to the
+    pipeline, with a value from its `aud`. A VC-JWT without `aud` still
+    verifies with no audience. A VC-JWT nested in a presentation is checked
+    against `policy.audience`, so `verify_vp_token` rejects one that carries
+    `aud`. VCDM's JWT encoding defines `aud` only for presentations, and none of
+    the third-party VC-JWT or SD-JWT VC vectors in the test fixtures carries one.
+  - An `aud` that is not a string or an array of strings, on either VC-JWT lane.
+  - An expected audience that is not `None` or a non-empty string: a list,
+    tuple or set (which the classic lane used to match through PyJWT), `""`, or
+    a number. It is now a `ClaimsInvalid` on both VC-JWT lanes.
+
 ## [1.30.4] — 2026-10-13
 
 ### Fixed

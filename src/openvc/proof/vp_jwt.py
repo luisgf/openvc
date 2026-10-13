@@ -242,7 +242,9 @@ class VpJwtProofSuite:
             raise ClaimsInvalid(f"could not resolve holder key: {exc}") from exc
 
     def _check_temporal(self, claims: dict[str, Any]) -> None:
-        # single-sourced with the other JOSE suites; non-finite exp/nbf fails closed
+        # single-sourced with the other JOSE suites: a present exp/nbf/iat must be a
+        # finite number (null included), and a future iat is rejected. No waiver here —
+        # policy.require_not_expired reaches only the embedded credentials.
         check_jwt_temporal(claims, leeway_s=self._leeway, subject="presentation")
 
     @staticmethod
