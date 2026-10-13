@@ -267,7 +267,7 @@ def check_numeric_dates(
 
 def check_jwt_temporal(
     claims: dict[str, Any], *, leeway_s: int, subject: str = "token",
-    now: int | None = None,
+    now: float | None = None,
     check_temporal: bool = True,
 ) -> bool:
     """Enforce a JWT's ``exp``/``nbf``/``iat`` NumericDate claims, fail-closed.
@@ -295,17 +295,20 @@ def check_jwt_temporal(
       exist to be fresh).
 
     *now* pins the instant (epoch seconds) for deterministic tests; ``None`` uses the
-    current time, unrounded: truncating it would accept a token up to a second past its
-    window.
+    current time, unrounded: truncating it would accept a token with a fractional ``exp``
+    up to a second past its window. (A caller that pins *now* through :func:`utc_epoch`
+    reads it to the second.) Every comparison is a difference against *leeway_s*, never
+    ``current + leeway_s``: a huge leeway would overflow a float sum into a bare
+    ``OverflowError`` and abort ``verify_many``.
     """
     check_numeric_dates(claims, "exp", "nbf", "iat", subject=subject)
     current: float = time.time() if now is None else now
     expired = False
-    if "exp" in claims and current >= claims["exp"] + leeway_s:
+    if "exp" in claims and current - claims["exp"] >= leeway_s:
         if check_temporal:
             raise ClaimsInvalid(f"{subject} has expired")
         expired = True
-    if "nbf" in claims and current + leeway_s < claims["nbf"]:
+    if "nbf" in claims and claims["nbf"] - current > leeway_s:
         raise ClaimsInvalid(f"{subject} is not yet valid")
     if "iat" in claims and claims["iat"] - current > leeway_s:
         raise ClaimsInvalid(f"{subject} iat is in the future")
@@ -399,7 +402,7 @@ def non_negative_seconds(value: Any, *, name: str, error: type[Exception] = Proo
 
 
 def check_iat_freshness(
-    iat: Any, *, max_age_s: int, leeway_s: int, current: int, subject: str,
+    iat: Any, *, max_age_s: int, leeway_s: int, current: float, subject: str,
 ) -> int:
     """Require a holder-minted proof's ``iat`` and bound it in **both** directions;
     return it as an ``int``.

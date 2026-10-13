@@ -442,3 +442,57 @@ def test_vc_jwt_lanes_require_string_sub_and_jti(lane, claim, raw, check_tempora
     token = _vc_jwt({claim: raw}, key=key, iss=iss, alg=alg)
     with pytest.raises(ClaimsInvalid):
         suite.verify(token, public_key_jwk=key.public_jwk(), check_temporal=check_temporal)
+
+
+# -- found by the adversarial review of the merge onto v1.30.4 --------------------- #
+
+HUGE_LEEWAY = 2 ** 1100                  # no float holds it
+
+
+def test_helper_huge_leeway_never_overflows():
+    # `current + leeway_s` with a float clock overflowed into a bare OverflowError,
+    # which escapes OpenvcError and aborts verify_many. Differences never overflow.
+    assert check_jwt_temporal({"exp": NOW, "nbf": NOW, "iat": NOW},
+                              leeway_s=HUGE_LEEWAY) is False
+    assert check_jwt_temporal({"exp": 1e308, "nbf": -1e308, "iat": 1e308},
+                              leeway_s=HUGE_LEEWAY, now=NOW) is False
+
+
+def test_huge_leeway_stays_typed_on_every_lane():
+    token = _status_token({"exp": str(NOW + 3600), "nbf": str(NOW), "iat": str(NOW)})
+    verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk(),
+                             leeway_s=HUGE_LEEWAY)
+    SdJwtVcProofSuite(leeway_s=HUGE_LEEWAY).verify(
+        _sd_jwt({"exp": f"{NOW + 3600}.5", "iat": str(NOW)}),
+        public_key_jwk=ISSUER.public_jwk())
+    VpJwtProofSuite(leeway_s=HUGE_LEEWAY).verify(
+        _vp({"exp": str(NOW + 300), "iat": str(NOW)}), audience=AUD, nonce=NONCE)
+
+
+def test_kb_jwt_window_reads_the_clock_unrounded(monkeypatch):
+    # The KB-JWT used the integer `utc_epoch` instant, so a fractional exp was accepted
+    # up to a second past exp + leeway while the issuer JWT, on the unrounded clock,
+    # was already rejected. Freeze the clock 0.9 s into a second.
+    monkeypatch.setattr(time, "time", lambda: NOW + 0.9)
+    token = _sd_jwt(kb={"exp": f"{NOW - LEEWAY}.5"})     # 0.4 s past exp + leeway
+    with pytest.raises(ClaimsInvalid, match="KB-JWT is outside its own exp/nbf window"):
+        verify_credential(token, policy=KB_POLICY)
+
+
+@pytest.mark.parametrize("now", ["2026-10-13", float("nan"), True,
+                                 datetime(2026, 1, 1).date()],
+                         ids=["string", "nan", "bool", "date"])
+def test_status_token_mistyped_now_is_typed(now):
+    # Main returned the claims for a token without exp; the window check now reads
+    # `now` for every token, so a wrong type must stay a StatusListError.
+    token = _status_token({"iat": str(NOW)})
+    with pytest.raises(StatusListError):
+        verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk(), now=now)
+
+
+def test_status_token_accepts_an_epoch_int_now():
+    token = _status_token({"iat": str(NOW), "exp": str(NOW + 3600)})
+    verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk(), now=NOW + 60)
+    with pytest.raises(StatusListError, match="expired"):
+        verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk(),
+                                 now=NOW + 7200)

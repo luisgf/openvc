@@ -58,8 +58,12 @@ differs per lane. It is listed in the CHANGELOG as a behaviour change.
 ### D2 — The window: `exp` exclusive, future `nbf` and `iat` rejected
 
 - `exp`: a token at or past `exp` plus the leeway has expired (RFC 7519 §4.1.4: the
-  current time MUST be before it). The clock is no longer truncated. This is the only
-  comparison the expiry waiver (`require_not_expired=False`) switches off.
+  current time MUST be before it). The wall clock is no longer truncated, on the
+  KB-JWT window either. A pinned `now`, and the OpenID4VCI key proof's instant, are
+  read to the second (`utc_epoch`), as on every openvc clock check. Each comparison
+  is a difference against the leeway, so a huge leeway cannot overflow a float sum.
+  This is the only comparison the expiry waiver (`require_not_expired=False`)
+  switches off.
 - `nbf`: before it by more than the leeway is not yet valid (§4.1.5).
 - `iat`: more than the leeway in the future is rejected. PyJWT's `verify_iat` already
   did this on the classic VC-JWT lane. Like `nbf`, the waiver leaves it on: a token

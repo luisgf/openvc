@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..proof._jws import sign_compact, verify_compact
-from ..proof._verify_common import check_jwt_temporal, is_numeric_date
+from ..proof._verify_common import check_jwt_temporal, is_numeric_date, utc_epoch
 from ..proof.errors import ClaimsInvalid
 from ..proof.vc_jwt import SigningKey
 from ._index import brief
@@ -201,7 +201,12 @@ def verify_status_list_token(
             raise StatusListError(
                 f"status list token {name} must be a finite numeric timestamp, "
                 f"got {brief(claims[name])}")
-    instant = _epoch(now) if now is not None else None
+    if now is None:
+        instant = None
+    elif isinstance(now, int) and not isinstance(now, bool):
+        instant = now                             # epoch seconds, as _epoch accepted
+    else:                                         # a datetime; anything else is typed
+        instant = utc_epoch(now, error=StatusListError)
     try:
         check_jwt_temporal(claims, leeway_s=max(0, leeway_s),
                            subject="status list token", now=instant)

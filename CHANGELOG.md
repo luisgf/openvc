@@ -51,7 +51,12 @@ All notable changes to **openvc** are documented here. The format follows
   - **The `exp` boundary was off by up to a second.** The helper truncated the
     clock to an integer and accepted a token exactly at `exp` plus the leeway.
     RFC 7519 §4.1.4 says the current time MUST be before `exp`, which is what
-    PyJWT checks on the classic lane.
+    PyJWT checks on the classic lane. The wall clock is now read unrounded, on
+    the KB-JWT window too; a pinned `now` is still read to the second. Every
+    comparison is a difference against the leeway, so even an absurd
+    `leeway_s` stays a typed result rather than a bare `OverflowError`.
+  - **A mistyped `now` on `verify_status_list_token`** (a string, a `date`,
+    `NaN`) is a `StatusListError`. An epoch `int` is still accepted.
   - **An empty or non-string audience split the VC-JWT lanes.** PyJWT matched a
     list of audiences on the classic lane only, and an empty audience matched an
     empty `aud` on the ML-DSA lane only. Both are now refused up front.

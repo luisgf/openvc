@@ -454,7 +454,10 @@ class SdJwtVcProofSuite:
         leeway in the future is rejected. *check_temporal* waives only an expired ``exp``.
         """
         non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=SdJwtError)
-        current = utc_epoch(now, error=SdJwtError)       # a naive `now` is UTC
+        # A naive `now` is UTC. Unpinned, the KB-JWT window reads the clock unrounded, as
+        # check_jwt_temporal does: truncating it would accept a fractional KB-JWT `exp` up
+        # to a second late. A pin is read to the second, as every openvc clock check is.
+        current: float = time.time() if now is None else utc_epoch(now, error=SdJwtError)
         issuer_jwt, disclosures, kb_jwt = self._split(presentation)
         header, claims, signing_input, signature = self._decode_jws(issuer_jwt)
 
@@ -621,7 +624,7 @@ class SdJwtVcProofSuite:
         audience: str | None,
         nonce: str | None,
         required: bool,
-        current: int,
+        current: float,
         max_age_s: int,
     ) -> bool:
         if required and (audience is None or nonce is None):

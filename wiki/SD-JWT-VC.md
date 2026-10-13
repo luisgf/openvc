@@ -37,11 +37,12 @@ print(result.vct, result.key_bound, result.claims["given_name"])
 
 When `require_key_binding=True`, the KB-JWT (signature, `iat` window, `aud`,
 `nonce`, `sd_hash`) is verified **even if** the issuer JWT is expired or
-not-yet-valid. A temporal failure (`ClaimsInvalid` matching `expired` / `not yet
-valid`) from that call therefore means the presentation was **bound**; a key-binding
-failure (wrong `aud`/`nonce`, a stale or future-dated KB-JWT, missing KB-JWT, or
-`SignatureInvalid` on the KB) means it was unbound — do not treat `EXPIRED` as proof
-of holder binding. The hosted path (`require_key_binding=False`) is unchanged: expiry
+not-yet-valid. A temporal failure on the issuer JWT (`ClaimsInvalid`: `token has
+expired`, `token is not yet valid` or `token iat is in the future`) from that call
+therefore means the presentation was **bound**; a key-binding failure (wrong
+`aud`/`nonce`, a stale or future-dated KB-JWT, a KB-JWT outside its own `exp`/`nbf`,
+missing KB-JWT, or `SignatureInvalid` on the KB) means it was unbound. Every KB-JWT
+failure names the KB-JWT. Do not treat `EXPIRED` as proof of holder binding. The hosted path (`require_key_binding=False`) is unchanged: expiry
 still fails before any KB check.
 
 **KB-JWT freshness.** RFC 9901 makes the KB-JWT `iat` REQUIRED (§4.3) and has the
