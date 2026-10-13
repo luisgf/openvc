@@ -8,7 +8,9 @@ a credential's validity window, the meaning of ``proofPurpose``, and the DID
 verification-relationship binding do not depend on how the proof was signed. They
 run **after** the signature verifies (the fields they read are integrity-protected
 by that signature), except the key-selection binding, which necessarily precedes
-crypto (you cannot verify without first choosing an authorized key).
+crypto (you cannot verify without first choosing an authorized key), and the
+VC-JWT NumericDate shape gate (:func:`check_numeric_dates`), which must run before
+PyJWT reads those claims and can only reject.
 
 The VC-JWT / SD-JWT suites do their own temporal check via the JWT ``exp``/``nbf``
 claims; this module is the Data Integrity equivalent, so a proof embedded in the
@@ -207,6 +209,25 @@ def is_numeric_date(value: Any) -> bool:
         return math.isfinite(value)
     except OverflowError:                   # an int no float can hold
         return False
+
+
+def check_numeric_dates(
+    claims: dict[str, Any], *names: str, subject: str = "token",
+) -> None:
+    """Reject each of *names* that is **present** in *claims* but not a NumericDate (per
+    :func:`is_numeric_date`), raising a typed :class:`~openvc.proof.errors.ClaimsInvalid`.
+
+    This checks shape only and compares nothing against a clock, so an expiry waiver
+    cannot switch it off. Presence means the key exists: JSON ``null`` is rejected too,
+    because RFC 7519 §2 defines a NumericDate as a JSON number. (:func:`check_jwt_temporal`
+    reads ``null`` as absent.) The VC-JWT lane runs this before PyJWT sees the token.
+    PyJWT casts ``exp``/``nbf``/``iat`` with ``int()`` and catches only ``ValueError``,
+    so a signed ``"nbf": null`` used to escape as a bare ``TypeError``. A string such as
+    ``"1"`` or a bool cast silently instead of failing.
+    """
+    for name in names:
+        if name in claims and not is_numeric_date(claims[name]):
+            raise ClaimsInvalid(f"{subject} {name} must be a finite numeric timestamp")
 
 
 def check_jwt_temporal(
