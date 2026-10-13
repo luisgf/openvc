@@ -4,6 +4,33 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.3] — unreleased
+
+### Security
+
+- **A Data Integrity `proofPurpose` that is not a string now fails as
+  `ProofMalformed`; a JSON array or object raised a bare `TypeError`**
+  ([#208](https://github.com/luisgf/openvc/issues/208)). Found by a sweep of
+  `src/` after the adversarial review of
+  [#197](https://github.com/luisgf/openvc/pull/197). All five suites
+  (`eddsa-rdfc-2022`, `eddsa-jcs-2022`, `ecdsa-rdfc-2019`, `ecdsa-jcs-2019`,
+  `ecdsa-sd-2023`) resolve the signing key before checking the signature, and
+  look the proof's `proofPurpose` up in the DID document's verification
+  relationships. A list or dict is unhashable, so the lookup raised `TypeError`.
+  That is outside `OpenvcError`, so it aborted `verify_many` /
+  `verify_many_async`. No key was needed. This was a crash, never a wrong accept.
+  A number or boolean, which used to reach the purpose check as
+  `ProofPurposeMismatch`, is now also `ProofMalformed`, and the check runs before
+  the DID is resolved. `DidDocument.key_for_purpose` now returns `None` for a
+  purpose that is not a string, including `None`. The JOSE header lanes with the
+  same bug were fixed in 1.29.1
+  ([#211](https://github.com/luisgf/openvc/issues/211)).
+- **The WRPRC `typ` and the Data Integrity `proofPurpose` mismatch messages name
+  an array or object by its type instead of quoting it**, like the allow-list
+  messages since 1.29.1. Since 1.30.0 refuses JSON nested past 100 levels where it
+  enters ([#213](https://github.com/luisgf/openvc/issues/213)), a value deep
+  enough to overflow `repr()` no longer reaches them; this is defence in depth.
+
 ## [1.30.2] — 2026-10-13
 
 ### Security
