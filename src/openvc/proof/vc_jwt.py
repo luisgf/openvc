@@ -48,6 +48,8 @@ from .errors import (  # noqa: F401
     UnsupportedAlgorithm,
 )
 from ._verify_common import (
+    check_expected_audience,
+    check_jwt_audience,
     check_jwt_temporal,
     check_numeric_dates,
     check_validity_window,
@@ -225,6 +227,7 @@ class VcJwtProofSuite:
         *check_temporal* False waives only the expiry checks (JWT ``exp``, and the
         body's ``validUntil`` / ``expirationDate``); the result's ``expired`` then
         reports whether one of them would have failed."""
+        check_expected_audience(audience)          # before PyJWT sees it, on both lanes
         header_b64, _, _ = _split(token)
         try:
             header = _json.loads(_b64url_decode(header_b64))
@@ -267,6 +270,10 @@ class VcJwtProofSuite:
                     raise ClaimsInvalid(str(exc)) from exc
                 claims = self._decode(token, key, alg, audience, verify_exp=False)
                 jwt_expired = True
+
+        # RFC 7519 §4.1.3 on both lanes (ADR-0008): a token restricted to an audience
+        # verifies only for a caller that names one in it. After crypto, on signed claims.
+        check_jwt_audience(claims, audience)
 
         credential = claims.get("vc")
         if not isinstance(credential, dict):
@@ -406,9 +413,10 @@ class VcJwtProofSuite:
         self, claims: dict[str, Any], audience: str | None, *,
         check_temporal: bool = True,
     ) -> bool:
-        # Mirror the PyJWT gate for the ML-DSA path: require iss, enforce exp/nbf with the
-        # suite leeway (shared non-finite-safe helper), check aud when expected. Returns
-        # whether a waived exp has passed.
+        # Mirror the PyJWT gate for the ML-DSA path: require iss; exp/nbf/iat with the
+        # suite leeway, a future iat included (PyJWT's verify_iat); a present sub/jti
+        # must be a string (PyJWT's verify_sub/verify_jti). aud runs in verify() for
+        # both lanes. Returns whether a waived exp has passed.
         if not isinstance(claims.get("iss"), str):
             raise ClaimsInvalid("the 'iss' claim is required")
         # PyJWT rejects a non-string sub / jti; so must this lane, or _reconcile would
@@ -420,11 +428,6 @@ class VcJwtProofSuite:
         expired = check_jwt_temporal(
             claims, leeway_s=self._leeway, subject="token",
             check_temporal=check_temporal)
-        if audience is not None:
-            aud = claims.get("aud")
-            auds = aud if isinstance(aud, list) else [aud]
-            if audience not in auds:
-                raise ClaimsInvalid("audience mismatch")
         return expired
 
     @staticmethod
