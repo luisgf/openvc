@@ -14,19 +14,20 @@ All notable changes to **openvc** are documented here. The format follows
   (2026-07-29), 24 were missing and 5 partly recorded; 3 were recorded and 1 is
   CI-only. Each was checked against its diff, tests and issue, then re-verified
   independently.
-  - `assurance.md` §4 states the failure class of every entry: wrong-accept,
-    misleading flag, batch abort, DoS. It gains groups for temporal validity, issuer
-    identity and WRPRC authorization. §3 gains suites for the surfaces that had none:
+  - `assurance.md` §4 states the failure class of each entry it adds (wrong-accept,
+    wrong-authorize, misleading flag, batch abort, DoS, …). It gains groups for
+    temporal validity, issuer identity and WRPRC authorization. §3 gains suites for the surfaces that had none:
     did:web and the guarded fetch, https `iss` / x5c, the OpenID4VP W3C lanes, WRPRC
     authorization, EBSI TIR, and the expiry waiver.
-  - The threat model gains **I21** (WRPRC authorization fails closed) and a scope note
-    for it, an attack row for re-wrapping someone else's credential (#196), and
-    evidence for I5–I18. **R7** now says a *withheld* disclosable `exp` / `nbf` still
+  - The threat model gains **I21** (WRPRC authorization fails closed) with the
+    relying-party surface across §1–§6, an attack row for re-wrapping someone else's
+    credential (#196), and evidence for I5–I18, with the known open gaps beside it
+    (#219, #225). Its §9 summary no longer says no residual is a wrong-accept. **R7** now says a *withheld* disclosable `exp` / `nbf` still
     verifies as if absent (#229, open). New entries cite symbols and test names, not
     line numbers.
   - I15's `test_hostile_input.py:104/155/211` anchors, set by #155, were never correct
-    in a tagged release; they now name the tests. The pack README's catalog span is
-    I1–I21 and R1–R9.
+    in a tagged release; they now name the tests. The anchors are as of v1.24.0, not
+    the never-tagged v1.24.1. The pack README's catalog span is I1–I21 and R1–R9.
 
 ## [1.31.3] — 2026-10-13
 

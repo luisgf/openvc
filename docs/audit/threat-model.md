@@ -6,10 +6,12 @@
 > citations, the per-suite and per-parser attack-surface tables, the fail-closed
 > **invariants catalog**, and an honest **residual-risk register** — the
 > material an external reviewer starts from. Line numbers are anchors **as of
-> v1.24.1**; treat them as entry points, not guarantees, and re-anchor against
-> the reviewed commit. Entries added on 2026-10-13 — the v1.25.0–v1.31.2
-> hardening, I21, and the evidence added to I5–I18 — cite symbols and test names
-> instead of line numbers, so they stay valid as the code moves.
+> v1.24.0** (no v1.24.1 was ever tagged), except rows added with later fixes — I20
+> and the context-validation rows among them — which are as of their own release;
+> treat them as entry points, not guarantees, and re-anchor against the reviewed
+> commit. Entries added by the 2026-10-13 catch-up — the rest of the
+> v1.25.0–v1.31.2 hardening, I21, and the evidence added to I5–I18 — cite symbols
+> and test names instead of line numbers, so they stay valid as the code moves.
 
 Part of the external-audit pack ([README](README.md)) for
 [#75](https://github.com/luisgf/openvc/issues/75).
@@ -52,13 +54,13 @@ failure path **raises** a typed `OpenvcError` subclass
 
 | Asset | Why it matters | Primary protection |
 |---|---|---|
-| **The verification decision** | A wrong-accept is the whole harm | The fail-closed pipeline (§4, §8) |
+| **The verification decision** | A wrong-accept — or, for a relying-party registration (WRPRC), a wrong-authorize — is the whole harm | The fail-closed pipeline (§4, §8) |
 | **Signing keys** | Private key material | Never in-process on the signing path — the `SigningKey` protocol (`src/openvc/proof/vc_jwt.py:75-92`) keeps material in an HSM/Vault/KMS |
 | **Trust anchors** | The roots a verifier trusts (x5c anchors, EBSI RootTAO, resolved DID docs) | Anchor *compromise* is out of scope (operator's root of trust); openvc must never *widen* an anchor |
 
 ## 3. Trust boundaries
 
-Untrusted input crosses into openvc at four boundaries. Every field beyond each
+Untrusted input crosses into openvc at five boundaries. Every field beyond each
 boundary is attacker-controlled until a signature verifies.
 
 1. **The credential** — fully attacker-controlled bytes (a JWS/SD-JWT string, a
@@ -75,6 +77,9 @@ boundary is attacker-controlled until a signature verifies.
    these return; a custom resolver that skips verification or the SSRF guard
    opts out of the corresponding control (`src/openvc/verify.py:304-307`). The
    blessed defaults in `openvc.resolvers` keep the guard on.
+5. **Relying-party certificates and requests** — a WRPRC (JWT or CWT), its WRPAC
+   and the DCQL request are attacker-controlled until the registrar's signature
+   verifies and I21's cross-checks pass.
 
 ## 4. Attacker model → capability → control
 
@@ -83,10 +88,11 @@ boundary is attacker-controlled until a signature verifies.
 | Present a forged / tampered credential | Wrong-accept | Signature verified through the matching suite; the `{ES256, ES384, EdDSA, Ed25519}` allow-list runs **before any crypto** — `src/openvc/proof/vc_jwt.py:55,198`, `src/openvc/proof/_jws.py:84` (rejects `alg:none`, RS\*, HS\* by exclusion → alg-confusion defence). ES256 must be raw R‖S 64 bytes, never DER — `src/openvc/keys.py:575-589` |
 | Name issuer A but sign with key B | Impersonation | **Issuer binding**: a DI proof's `verificationMethod` must be controlled by the credential `issuer` DID — `src/openvc/verify.py:628-641`; VC-JWT reconciles the JWT envelope (`iss`/`sub`/`jti`) with the embedded `vc` — `src/openvc/proof/vc_jwt.py:360-381`; x5c binds the leaf SAN to `iss` — `src/openvc/x5c.py:56-70`; a W3C `vc+sd-jwt` credential is reconciled the same way, and every identifier a present `issuer` carries must be `iss` — `issuer_identifiers` (#221); an https `iss` that Python and a WHATWG parser read as different hosts is refused before the `/.well-known/jwt-vc-issuer` fetch and never binds an x5c `dNSName` — `_parse_https_issuer` in `jwt_vc_issuer.py` (#236) |
 | Re-spell a signed RDF Data Integrity credential's JSON while keeping its signed dataset (IRI-keyed or aliased member, inline `@context` re-mapping a term, undefined term, `@included`) | Wrong-accept: the policy reads JSON the signature does not cover (expiry/status/schema skipped, `credentialSubject` spoofed past holder binding, unsigned claims) | **Context validation** (VC-DI §2.4.1) after the proof verifies and before any policy read — `src/openvc/proof/_context_validation.py:67-80`, called at `src/openvc/proof/data_integrity.py:233`, `src/openvc/proof/di_ecdsa_rdfc.py:205`, `src/openvc/proof/ecdsa_sd.py:683` (and on the signing side). VC base context first, then only loader-served URLs or absolute-IRI `@vocab`-only objects (`:83-100`); the document and proof must equal the compaction of their own expansion (`:109-132`), with no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, and nothing the RDF conversion drops — every node id, type and property a well-formed absolute IRI, no blank-node property (`:144-175`) |
-| Serve a malicious document at a fetched URL | **SSRF** (internal hosts / cloud metadata) | `src/openvc/fetch.py`: https-only (`:126`), blocks private/loopback/link-local/reserved/multicast/unspecified (`:49-55`), rejects the host if **any** resolved address is forbidden (`:58-72`), refuses redirects (`:143-144`), and **pins the socket to the validated IP** (`:75-92`) closing DNS-rebinding |
+| Serve a malicious document at a fetched URL | **SSRF** (internal hosts / cloud metadata) | `src/openvc/fetch.py`: https-only (`:126`), blocks private/loopback/link-local/reserved/multicast/unspecified (`:49-55`) and, since v1.25.0, any other address that is not `is_global` (RFC 6598 CGNAT, #156), rejects the host if **any** resolved address is forbidden (`:58-72`), refuses redirects (`:143-144`), and **pins the socket to the validated IP** (`:75-92`) closing DNS-rebinding |
 | Ship a tiny highly-compressible status list | **Decompression bomb** (OOM DoS) | Status decode caps the *decompressed* output at 16 MiB and reads incrementally so a bomb is never materialised — `src/openvc/status/_decompress.py:23,38-40,54-66` |
-| Swap / replay a status list or presentation | Stale-status / replay accept | Status token `sub` must equal the fetched URI (anti-swap) — `src/openvc/resolvers.py:122-123`; presentations bind `aud` + one-time `nonce`/`challenge`; a fetched status list is **verified before trust** — `src/openvc/resolvers.py:92-98`; optional status-issuer binding (ADR-0006) — `src/openvc/verify.py:654-669`, and the default status-list resolvers refuse a verified list whose body names an issuer other than its signer (#221); a nested SD-JWT VC's KB-JWT is held to the enclosing presentation's `aud` / `nonce` (#189); with `require_key_binding=True` the KB-JWT is verified before the issuer JWT's `exp` / `nbf`, so an `expired` verdict never stands in for holder binding (#182) |
+| Swap / replay a status list or presentation | Stale-status / replay accept | Status token `sub` must equal the fetched URI (anti-swap) — `src/openvc/resolvers.py:122-123`; presentations bind `aud` + one-time `nonce`/`challenge`; a fetched status list is **verified before trust** — `src/openvc/resolvers.py:92-98`; optional status-issuer binding (ADR-0006) — `src/openvc/verify.py:654-669`, and the default status-list resolvers refuse a verified list whose body names an issuer other than its signer (#221); a nested SD-JWT VC's KB-JWT is held to the enclosing presentation's `aud` / `nonce`, and `VcJwtProofSuite` refuses a JWS typed `sd-jwt` / `*+sd-jwt` / `kb+jwt` before key load (explicit typing, RFC 8725 §3.11 — `_reject_sd_jwt_typ`), so a tail-stripped SD-JWT issuer JWT cannot verify as a VC-JWT and sidestep `require_key_binding=True` (#189); with `require_key_binding=True` the KB-JWT is verified before the issuer JWT's `exp` / `nbf`, so an `expired` verdict never stands in for holder binding (#182) |
 | Wrap a credential issued to someone else (a VC-JWT, a Data Integrity VC, or an SD-JWT VC with its KB-JWT stripped) inside their own, correctly bound `jwt_vc_json` / `ldp_vc` presentation | Wrong-accept: a victim's credential presented as their own (a relay by a verifier that once received it) | DCQL `require_cryptographic_holder_binding` (default `true`, OpenID4VP 1.0 §6.1) is enforced on the W3C formats: each embedded VC-JWT / Data Integrity VC must name the **authenticated** VP signer as its single subject, and each nested SD-JWT VC must carry a KB-JWT bound to this exchange, or the whole response is rejected; a non-boolean flag is malformed, never coerced to `false` — `_check_holder_bound` in `openvc/openid4vp.py` (#196) |
+| Pair one's own WRPAC with another relying party's WRPRC, or request beyond the registered grant (an unregistered or format-less query, an uncovered `meta`, a second `claim` / `claims` spelling, an empty grant) | Wrong-authorize: a relying party receives attributes it never registered for | `check_matches_access_certificate` binds the WRPRC `sub` to the WRPAC entity identifier (absent on either side fails); `check_request_within_registration` requires a matching non-blank `format`, a covered `meta`, a named claim set, and every path inside the grants of the entries that apply; `claim` wins by presence on the grant side, the union is read on the request side — `rp_registration.py` (I21; #89, #152, #160, #161) |
 | Back/post-date validity | Expired / not-yet-valid accept | Temporal checks on `validFrom`/`validUntil`/`expires` (+ VCDM 1.1 aliases) — `src/openvc/proof/_verify_common.py:90-125`; a **present-but-unparseable** timestamp fails **closed** — `:84-85`; a present JWT `exp`/`nbf`/`iat` that is not a finite JSON number (`null` included) rejected on the VC-JWT, SD-JWT VC issuer/KB-JWT, VP-JWT, status-list and key-proof lanes, `exp` exclusive and a future `iat` bounded — `check_jwt_temporal` in the same module; VC-JWT `aud` enforced per RFC 7519 §4.1.3 — `check_jwt_audience` (ADR-0008); SD-JWT VC also applies `exp` / `nbf` to the processed payload, so a disclosed expired `exp` is enforced (a withheld one is R7) (#174); a W3C `vc+sd-jwt` payload is held to its VCDM validity window (#198); under the opt-in `require_not_expired=False` waiver, the reported `expired` is each suite's own verdict on the check it skipped (#203) |
 | Feed hostile bytes to a hand-rolled parser | Uncaught crash / DoS / parser confusion | Depth-bounded, typed-error codecs — see §6 |
 | Deeply nest the trust-list XML | XXE / entity-expansion bomb | The LOTL/TL parser refuses any DOCTYPE outright — `src/openvc/trustlist/parse.py:108-120` — which is what entities and expansion bombs require; 16 MiB + 500k-element caps — `:35-36,100-117` |
@@ -105,7 +111,10 @@ boundary is attacker-controlled until a signature verifies.
   disclosures rejected (`:457-460,552-553`); claim-overwrite blocked (`:174`);
   key-binding-required-without-`aud`/`nonce` fails closed (`:571-579`), and so
   does a present KB-JWT checked against only one of `aud`/`nonce`, or an empty
-  one (`:584-604`, #191). See
+  one (`:584-604`, #191); a present KB-JWT's `iat` is
+  required and bounded in both directions — no older than `kb_max_age_s` (default
+  300 s) plus leeway, not future-dated past it — at the caller's `now` (a naive `now`
+  is UTC), through `check_iat_freshness`, which the key proof shares (#186). See
   **R1** in §9 for the recursion caveat.
 - **Data Integrity** — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (RDF-canonical),
   `eddsa-jcs-2022` / `ecdsa-jcs-2019` (JCS), and selective-disclosure
@@ -138,7 +147,7 @@ finite input", with no explicit constant.
 | Parser | Input | Explicit bound | Fail-closed error | Anchor |
 |---|---|---|---|---|
 | CBOR decoder | mdoc `DeviceResponse`, COSE headers, ecdsa-sd proofValue | Depth **64**; **no** element-count/total-size cap (implicit only) | `CborError` (typed); dup-map-key & trailing-byte rejected | `src/openvc/cbor.py:69,196-197,229-232,261-262` |
-| COSE_Sign1/Mac0 | mdoc IssuerAuth/DeviceAuth | Inherits CBOR depth 64; alg allow-list `{-7,-35,-8,5}` before crypto | `CoseError` family; constant-time MAC compare | `src/openvc/cose.py:57-58,238-242,264` |
+| COSE_Sign1/Mac0 | mdoc IssuerAuth/DeviceAuth; the CWT form of a WRPRC | Inherits CBOR depth 64; alg allow-list `{-7,-35,-8,5}` before crypto | `CoseError` family (a non-integer `crit` label too, #170); constant-time MAC compare | `src/openvc/cose.py:57-58,238-242,264` |
 | mdoc `DeviceResponse` | OpenID4VP `vp_token` | Inherits CBOR; **depth counter resets at each embedded `#6.24`** (R3) | `MdocError` family; CBOR errors re-wrapped | `src/openvc/mdoc.py:307,315,365,377` |
 | multibase / base58 / varint | `publicKeyMultibase`, `proofValue` | base58 **≤4096**; varint **≤9 bytes** | `MultibaseError` (typed) | `src/openvc/multibase.py:18,21,30-31,73-74` |
 | JCS canonicalizer (RFC 8785) | JCS DI unsecured doc + proofConfig | Depth **100**; IEEE-754 range enforced; NaN/Inf rejected | `JcsError` — **not** an `OpenvcError` (R2) | `src/openvc/proof/_jcs.py:18,27,148-149` |
@@ -174,6 +183,9 @@ finite input", with no explicit constant.
   Because the allow-list matches the host and not the port, the TIR v5 adapter pins
   `links.next`, the HATEOAS `attributes` URL and every revision `href` to the
   listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`; #172).
+  A URL whose port does not parse (`:99999`, `:abc`) or a broken IPv6 literal still
+  makes `_origin` raise a bare `ValueError`, so `verify_ebsi_badge` fails closed but
+  untyped (not yet tracked by an issue).
 
 ## 8. Fail-closed invariants catalog
 
@@ -196,20 +208,24 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I11 | Status decompression bounded at 16 MiB, incremental | `status/_decompress.py:23,38-66` | `test_status_decompress.py:46-82` |
 | I12 | CBOR depth ≤ 64; JCS depth ≤ 100; duplicate map key rejected | `cbor.py:69,229-232`; `proof/_jcs.py:18` | `test_cbor.py:104,152`; `test_di_jcs.py:388` |
 | I13 | Trust-list XML refuses DOCTYPE (XXE + expansion closed) | `trustlist/parse.py:108-120` | `test_trustlist.py:104,121` |
-| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`) |
-| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py` |
-| I16 | Hostile deeply-nested input fails closed **pipeline-wide**: every untrusted JSON parse goes through one loader that refuses nesting past **100** (`openvc._json`; 3.14's `json.loads` parses ~116k levels while `repr()` / `==` overflow far sooner), objects handed over already parsed (credential / `vp_token` dicts, DI suite input, injected-fetch DID documents and issuer metadata, RP DCQL) are held to the same bound, the pipeline maps any residual `RecursionError` to a typed error, and SD-JWT `_unpack` / JCS / did:webvh SCID walk stay capped at 100 | `_json.py`; `proof/sd_jwt.py:66,129`; `verify.py`, `aio.py`, `openid4vp.py`, `proof/vc_jwt.py`, `proof/_jws.py`, `proof/_verify_common.py`, `jwe.py`, `did/base.py`, `did/did_jwk.py`, `did/did_webvh.py`, `jwt_vc_issuer.py`, `fetch.py`, `resolvers.py` | `test_hostile_input.py`, `test_did_webvh.py`, `test_typed_error_deep_nesting.py` |
+| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`), `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_kb_freshness.py` |
+| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch. **Known open gap** (I14 too): a hostile DID-document shape — valid JSON, wrong structure — served for an unsigned token's own `did:web` issuer still raises a bare exception and aborts the batch (#219, open) | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`; `test_vc_jwt_numeric_dates.py` (`test_verify_many_isolates_malformed_numeric_date`) |
+| I16 | Hostile deeply-nested input fails closed **pipeline-wide**: every untrusted JSON parse goes through one loader that refuses nesting past **100** (`openvc._json`; 3.14's `json.loads` parses ~116k levels while `repr()` / `==` overflow far sooner), objects handed over already parsed (credential / `vp_token` dicts, DI suite input, injected-fetch DID documents and issuer metadata, RP DCQL) are held to the same bound, the pipeline maps any residual `RecursionError` to a typed error, and SD-JWT `_unpack` / JCS / did:webvh SCID walk stay capped at 100 | `_json.py`; `proof/sd_jwt.py:66,129`; `verify.py`, `aio.py`, `openid4vp.py`, `proof/vc_jwt.py`, `proof/_jws.py`, `proof/_verify_common.py`, `jwe.py`, `did/base.py`, `did/did_jwk.py`, `did/did_webvh.py`, `jwt_vc_issuer.py`, `fetch.py`, `resolvers.py` | `test_hostile_input.py`, `test_did_webvh.py`, `test_typed_error_deep_nesting.py`, `test_typed_error_vc_shape.py` (`test_deeply_nested_cryptosuite_is_typed`) |
 | I17 | An OID4VCI key proof is pinned to `typ: openid4vci-proof+jwt` and must carry **exactly one** of `jwk`/`kid`/`x5c`/`trust_chain`, with the key bound to the header `alg`'s (kty, crv) | `openid4vci.py:676,752,855` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
 | I18 | Key-proof `iat` freshness is enforced in **both** directions (stale *and* future-dated, non-finite rejected), and the nonce is consumed **exactly once per request, after every signature verifies** | `openid4vci.py:915,917,655` | `test_openid4vci.py`, `test_openid4vci_vectors.py`, `test_sd_jwt_kb_freshness.py` (the freshness helper, `check_iat_freshness`, is shared with the SD-JWT KB-JWT) |
 | I19 | A key proof carrying a `key_attestation` must be signed by one of its `attested_keys` (OID4VCI App. D), compared by RFC 7638 thumbprint. **Not an attacker control** — the attestation's signature is never checked here, so a forger attests their own key; this catches an honest wallet, or the caller's own `resolve_proof_key*`, yielding a key the wallet never claimed, and can only reject, never accept | `openid4vci.py:833` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
 | I20 | An RDF Data Integrity document is accepted, and signed, only in the compacted form of its own expansion under the VC base context plus loader-served URLs or absolute-IRI `@vocab`-only objects — no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, and nothing the RDF conversion drops (safe mode: every node id, type and property a well-formed absolute IRI, no blank-node property) — so every JSON member the policy reads is one the signature covers | `proof/_context_validation.py:67-175`; `proof/data_integrity.py:181,233`; `proof/di_ecdsa_rdfc.py:149,205`; `proof/ecdsa_sd.py:512,683` | `test_di_context_validation.py` |
-| I21 | WRPRC authorization fails closed: the WRPRC `sub` must equal the WRPAC entity identifier (absent on either side is a failure, never a match), and a DCQL request is authorized only if every credential query matches a registered entry by a non-blank string `format` and covered `meta`, and every requested claim path lies inside that entry's grant. An empty grant grants nothing, not even a request naming no claims; grant-side spelling precedence is narrow and decided by key presence (`claim` over `claims`, never their union), while the request side reads the union | `check_matches_access_certificate`, `check_request_within_registration`, `_registered_paths` (`rp_registration.py`) | `test_rp_registration.py` |
+| I21 | WRPRC authorization fails closed: the WRPRC `sub` must equal the WRPAC entity identifier (absent on either side is a failure, never a match), and a DCQL request is authorized only if every credential query (a) has at least one registered entry with the same non-blank string `format` and a `meta` that covers the query's, (b) names at least one claim — a query naming none asks for every attribute and is always refused — and (c) has every requested claim path inside the union of the grants of the entries so matched; an entry with an empty grant, or registered for a different `meta`, contributes nothing. Grant-side spelling precedence is narrow and decided by key presence (`claim` over `claims`, never their union), while the request side reads the union | `check_matches_access_certificate`, `check_request_within_registration`, `_registered_paths` (`rp_registration.py`) | `test_rp_registration.py` |
 
 ## 9. Residual risks & known limitations
 
-The honest register. None is a wrong-accept (I1–I7 hold); the open items are
-**availability / typed-error-hygiene** hardening and documented caveats — the
-"harden next" list an external reviewer should weigh. Ranked by our assessment;
+The honest register. No open item is a wrong-accept that openvc's own checks could
+catch (I1–I7, I20 and I21 hold); the open items are **availability /
+typed-error-hygiene** hardening and documented caveats — the "harden next" list an
+external reviewer should weigh. One caveat, **R7**, is an issuer-configuration gap: an
+expired or revoked credential whose issuer made `exp` / `nbf` / status selectively
+disclosable verifies when the holder withholds them (refusing to issue such claims is
+#229, open). **R9** was a wrong-accept and is resolved. Ranked by our assessment;
 items marked **✅ Resolved** have since been fixed and stay here as an audit trail.
 
 - **R1 — SD-JWT `_unpack` / `json.loads` nesting bound. ✅ Resolved in v1.20.1
@@ -253,7 +269,9 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
 - **R5 — `fetch.py` leans on stdlib `ipaddress` classification.** No explicit
   IPv4-mapped-IPv6 (`::ffff:a.b.c.d`) / NAT64 normalization beyond what
   `ipaddress` classifies on the target Python. Worth an auditor sanity-check
-  across the supported interpreter range.
+  across the supported interpreter range. Since v1.25.0 `test_forbidden_ips` pins
+  the IPv4-mapped private and CGNAT forms on every CI interpreter; the mapped-form
+  classification still varies across `ipaddress` versions.
 - **R6 — XAdES primary verify relies on `signxml`/`lxml` DTD-forbidding.**
   openvc sets `resolve_entities=False, no_network=True, load_dtd=False`
   explicitly only on its defence-in-depth whole-document reparse
@@ -264,10 +282,13 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   `ecdsa-sd-2023`, a holder can withhold `credentialStatus`/`credentialSchema`,
   so the fail-closed status gate cannot fire (`src/openvc/verify.py:30-35,517-518`).
   Documented caveat: issuers must make those pointers **mandatory /
-  non-disclosable**. The same holds for a selectively disclosable `exp` / `nbf` (and
-  `status`, `cnf`) on SD-JWT VC: a **disclosed** one is enforced on the processed
-  payload since v1.25.0 (#174), but a **withheld** one leaves the credential verified
-  as if it had none. openvc's own `issue(disclosable=…)` does not yet refuse those
+  non-disclosable**. The same holds for a selectively disclosable `exp` / `nbf` / `status` on
+  SD-JWT VC: a **disclosed** `exp` / `nbf` is enforced on the processed payload since
+  v1.25.0 (#174), and a disclosed `status` was already read from it, but a
+  **withheld** one leaves the credential verified as if it had none. A disclosable
+  `cnf` is never read: key binding uses only the issuer-signed body's `cnf`, so any
+  KB-JWT presented against it is refused and a KB-stripped presentation verifies with
+  `key_bound=False`. openvc's own `issue(disclosable=…)` does not yet refuse those
   claims (#229, open).
 - **R8 — `credentialSchema` pattern-ReDoS.** Schema validation is opt-in and
   remote `$ref` is off; a catastrophic `pattern` in a trusted schema is a
@@ -295,7 +316,10 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   that gives a core VC term a second, shorter name can still hide that member.
   They are scoped to the call, though: since v1.27.1 only the bundled contexts are
   tagged `static` in pyld's process-global cache, so one caller's injected document
-  never governs another caller's canonicalization (#185).
+  never governs another caller's canonicalization through a URL it serves (#185). An
+  inline context that `@import`s a URL is still resolved once into that cache and
+  reused by later calls (#225, open); on the verify path the v1.30.2 inline-context
+  rule refuses such a document, so it is not reachable there today.
 
 ## 10. Out of scope
 

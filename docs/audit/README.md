@@ -7,8 +7,9 @@ vetting the project) needs to scope and start a review of openvc's security
 core. It is self-review documentation — the *funded external audit* itself is
 gated on funding (see §5).
 
-Anchors are pinned to **v1.24.1**; re-anchor line numbers against the commit
-under review.
+Anchors are pinned to **v1.24.0** (no v1.24.1 was ever tagged; rows added with later
+fixes are as of their own release); re-anchor line numbers against the commit under
+review. Entries added on 2026-10-13 cite symbols and test names instead.
 
 ## 1. What openvc is (in one paragraph)
 
@@ -56,10 +57,11 @@ Ranked by attacker leverage against the one property — **no wrong-accept**:
    XAdES-BASELINE-B profile, the XSW guard, and the `signxml`/`lxml` dependency
    (I13, R6).
 
-The residual-risk register (R1–R8) is deliberately the reviewer's shortcut to
+The residual-risk register (R1–R9) is deliberately the reviewer's shortcut to
 the soft spots we already know about; **R1** (SD-JWT unbounded recursion →
-batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117)),
-leaving the typed-error-hygiene items **R2–R3** at the top of the harden-next list.
+batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117))
+and **R9** (the RDF Data Integrity wrong-accept) in v1.30.2, leaving the
+typed-error-hygiene items **R2–R3** at the top of the harden-next list.
 
 ## 4. How to reproduce the evidence
 
