@@ -341,12 +341,12 @@ def test_far_dated_mso_validity_verifies_without_overflow(bound):
 @pytest.mark.parametrize("now", [
     1_767_225_600,                                             # epoch int
     "2026-01-01",                                              # ISO string
-    dt.datetime.max,                                           # + leeway leaves the range
+    dt.datetime.max.replace(tzinfo=dt.timezone(dt.timedelta(hours=-5))),   # no UTC form
 ])
 def test_mistyped_now_is_a_typed_mdoc_error(now):
     st = dcapi_session_transcript(ORIGIN, NONCE)
     dr, iaca = _build_online(session_transcript=st)
-    with pytest.raises(mdoc.MdocError, match="now|leeway_s"):
+    with pytest.raises(mdoc.MdocError, match="now"):
         mdoc.verify_device_response(dr, trust_anchors=[iaca], session_transcript=st, now=now)
 
 

@@ -41,10 +41,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from .. import _json
 from ..cbor import CborError, CborTag
 from ..cbor import decode as _cbor_decode
 from ..cbor import encode as _cbor_encode
 from ..keys import P256SigningKey, verify_signature
+from ._context_validation import validate_document
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -55,6 +57,7 @@ from ._verify_common import (
     check_proof_purpose,
     check_validity_window,
     resolve_verification_key,
+    safe_repr,
 )
 from .contexts import document_loader
 from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
@@ -439,11 +442,19 @@ class VerifiedSdCredential:
     issuer: str | None
     subject: str | None
     proof: dict[str, Any]
+    # check_temporal=False only: the disclosed validUntil/expirationDate or the
+    # proof's own ``expires`` has passed (the skipped expiry check would have failed).
+    expired: bool = False
+
+
+def _proof_config(proof: dict[str, Any], context: Any) -> dict[str, Any]:
+    config = {k: v for k, v in proof.items() if k != "proofValue"}
+    config["@context"] = context
+    return config
 
 
 def _proof_config_hash(proof: dict[str, Any], context: Any, loader: Any) -> bytes:
-    config = {k: v for k, v in proof.items() if k != "proofValue"}
-    config["@context"] = context
+    config = _proof_config(proof, context)
     nquads = _pyld().normalize(
         config, {"algorithm": "URDNA2015", "format": "application/n-quads",
                  "documentLoader": loader})
@@ -497,6 +508,8 @@ class EcdsaSdProofSuite:
             "verificationMethod": verification_method, "proofPurpose": proof_purpose,
         }
         proof_hash = _proof_config_hash(proof, credential["@context"], loader)
+        # never sign JSON the signature would not cover (see _context_validation)
+        validate_document(credential, _proof_config(proof, credential["@context"]), loader)
 
         hmac_key = secrets.token_bytes(32)
         transform = _transform(credential, hmac_key, loader)
@@ -607,11 +620,15 @@ class EcdsaSdProofSuite:
         credential's validity window (with the suite's leeway, evaluated at *now*)
         are enforced — a derived proof only reveals a subset, so these bounds are
         checked against whatever the holder disclosed."""
+        if _json.nesting_exceeds(derived):        # a dict handed over already parsed
+            raise ProofMalformed(
+                f"credential is nested deeper than {_json.MAX_DEPTH} levels")
         proof = derived.get("proof")
         if not isinstance(proof, dict):
             raise ProofMalformed("credential has no proof object")
         if proof.get("cryptosuite") != CRYPTOSUITE:
-            raise UnsupportedCryptosuite(f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
+            raise UnsupportedCryptosuite(
+                f"unsupported cryptosuite {safe_repr(proof.get('cryptosuite'))}")
         proof_value = proof.get("proofValue")
         if not isinstance(proof_value, str):
             raise ProofValueMalformed("proofValue is missing or not a string")
@@ -661,9 +678,12 @@ class EcdsaSdProofSuite:
             if not verify_signature(alg="ES256", public_jwk=ephemeral_jwk,
                                     signing_input=(line + "\n").encode("utf-8"), signature=sig):
                 raise SignatureInvalid("a disclosed statement signature does not verify")
+        # The signatures cover the disclosed RDF statements; the checks below read the
+        # JSON. Context validation (VC-DI §2.4.1) makes the two agree first.
+        validate_document(unsecured, _proof_config(proof, derived.get("@context")), loader)
 
         check_proof_purpose(proof, expected_proof_purpose)
-        check_validity_window(
+        expired = check_validity_window(
             unsecured, proof, now=now, leeway_s=self._leeway,
             check_temporal=check_temporal)
 
@@ -672,7 +692,8 @@ class EcdsaSdProofSuite:
         subj = unsecured.get("credentialSubject")
         subject = subj.get("id") if isinstance(subj, dict) else None
         return VerifiedSdCredential(
-            credential=derived, issuer=issuer, subject=subject, proof=proof)
+            credential=derived, issuer=issuer, subject=subject, proof=proof,
+            expired=expired)
 
 
 # --------------------------------------------------------------------------- #

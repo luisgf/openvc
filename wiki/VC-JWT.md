@@ -52,7 +52,11 @@ already hold the key. Normally you let the pipeline resolve it from the
   credential that says something else.
 - **Temporal checks fail closed.** `exp` / `nbf` / `iat` (with a small
   clock-skew leeway) and the credential's `validFrom` / `validUntil`; a
-  present-but-unparseable timestamp rejects.
+  present-but-unparseable timestamp rejects. `exp`, `nbf` and `iat` must each be
+  a finite JSON number (RFC 7519 NumericDate) when present. `null`, a string
+  (even `"1700000000"`), a bool, `NaN`/`Infinity` or a container is a
+  `ClaimsInvalid`. `require_not_expired=False` waives an *expired* verdict, never
+  a malformed date. In `verify_many` such a token fails as its own item.
 
 ## Signing keys
 

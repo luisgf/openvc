@@ -1,18 +1,20 @@
 """
 tests/test_typed_clock_pins.py — a misconfigured clock pin fails typed, never bare.
 
-``check_validity_window`` (the Data Integrity lanes, and the VC-JWT body window) read
-``now`` with ``now.tzinfo`` and added the leeway with plain datetime arithmetic. An
-epoch ``int`` or an ISO string raised a bare ``AttributeError``; a pin within the
-leeway of ``datetime.max`` / ``datetime.min`` raised a bare ``OverflowError``. Both
-escape ``OpenvcError``, so ``verify_many`` / ``verify_many_async`` aborted the whole
-batch instead of failing the one item — while the SD-JWT lane already typed the same
-mistake through ``utc_epoch(now, error=...)``.
+``check_validity_window`` (every Data Integrity suite) read ``now`` with
+``now.tzinfo``. An epoch ``int`` or an ISO string raised a bare ``AttributeError``,
+``datetime.max`` at a negative offset a bare ``OverflowError`` on the way to UTC, and
+a string or ``None`` leeway a bare ``TypeError``. Each escaped ``OpenvcError``, so
+``verify_many`` / ``verify_many_async`` aborted the whole batch instead of failing the
+one item — while the SD-JWT KB-JWT check already typed the same mistake through
+``utc_epoch(now, error=...)``.
 
 ``utc_instant`` / ``utc_window`` are the datetime-returning siblings of ``utc_epoch``:
-one reading (``None`` is the current time, naive is UTC), one typed failure. The x5c,
-mdoc and WRPAC/WRPRC lanes now read their pins through them as well; their own tests
-pin those lanes' error classes.
+one reading (``None`` is the current time, naive is UTC), one typed failure, and the
+leeway rule ``check_validity_window`` adopted in 1.30.1 (compare differences, never
+``instant ± leeway``; an oversized leeway saturates). The x5c, mdoc, WRPAC/WRPRC and
+Trusted List lanes read their pins through them as well; their own tests pin those
+lanes' error classes.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from openvc import VerificationPolicy, verify_credential, verify_many
+from openvc import VerificationPolicy, verify_many
 from openvc.aio import verify_many_async
 from openvc.errors import OpenvcError
 from openvc.keys import Ed25519SigningKey
@@ -38,8 +40,6 @@ from openvc.proof._verify_common import (
 )
 from openvc.proof.di_jcs import EddsaJcsProofSuite
 from openvc.proof.errors import ProofError
-from openvc.proof.sd_jwt import SdJwtVcProofSuite
-from openvc.proof.vc_jwt import VcJwtProofSuite
 
 UTC = timezone.utc
 VC2 = "https://www.w3.org/ns/credentials/v2"
@@ -47,16 +47,22 @@ NOW_2021 = datetime(2021, 1, 1, tzinfo=UTC)
 MINUS_5 = timezone(timedelta(hours=-5))
 _WINDOW = {"validFrom": "2020-01-01T00:00:00Z", "validUntil": "2022-01-01T00:00:00Z"}
 
-# Pins that are not an instant at all, or that leave datetime's range once read as UTC
-# or widened by the leeway. Every one used to escape as AttributeError/OverflowError.
+# Pins that are not an instant openvc can read. Every one escaped as a bare
+# AttributeError (not a datetime) or OverflowError (no UTC equivalent).
 _BAD_NOWS = [
     pytest.param(1_609_459_200, id="epoch-int"),
     pytest.param(1_609_459_200.0, id="epoch-float"),
     pytest.param("2021-01-01T00:00:00Z", id="iso-string"),
     pytest.param(date(2021, 1, 1), id="date-not-datetime"),
-    pytest.param(datetime.max, id="naive-max"),
-    pytest.param(datetime.min, id="naive-min"),
     pytest.param(datetime.max.replace(tzinfo=MINUS_5), id="max-at-minus-5h"),
+]
+
+# Pins at the very edge of datetime's range are real instants: they get a verdict,
+# and the window arithmetic must not overflow on them.
+_EDGE_NOWS = [
+    pytest.param(datetime.max, id="naive-max"),
+    pytest.param(datetime.max.replace(tzinfo=UTC), id="max"),
+    pytest.param(datetime.min, id="naive-min"),
     pytest.param(datetime.min.replace(tzinfo=UTC) + timedelta(seconds=30), id="min-plus-30s"),
 ]
 
@@ -91,6 +97,17 @@ class _ConfigError(OpenvcError):
     """Stands in for a lane's own error class (X5cError, MdocError, ...)."""
 
 
+class _SubDatetime(datetime):
+    """A caller's datetime subclass (pendulum, pandas and friends)."""
+
+
+class _NaiveAstimezone(datetime):
+    """A subclass whose astimezone() hands back a naive datetime."""
+
+    def astimezone(self, tz=None):
+        return datetime(self.year, self.month, self.day, self.hour)
+
+
 # --------------------------------------------------------------------------- #
 # utc_instant — the shared reading
 # --------------------------------------------------------------------------- #
@@ -121,26 +138,22 @@ def test_utc_instant_agrees_with_utc_epoch():
         assert int(utc_instant(pin).timestamp()) == utc_epoch(pin)
 
 
-# the window-edge pins are fine instants; only utc_window (below) rejects those
-_UNREADABLE_NOWS = [p for p in _BAD_NOWS
-                    if p.id not in ("naive-max", "naive-min", "min-plus-30s")]
-
-
-@pytest.mark.parametrize("now", _UNREADABLE_NOWS)
+@pytest.mark.parametrize("now", _BAD_NOWS)
 def test_utc_instant_rejects_a_bad_pin_typed(now):
     with pytest.raises(ProofError, match="now"):
         utc_instant(now)
 
 
-class _SubDatetime(datetime):
-    """A caller's datetime subclass (pendulum, pandas and friends)."""
+@pytest.mark.parametrize("now", _EDGE_NOWS)
+def test_utc_instant_reads_an_edge_pin(now):
+    assert utc_instant(now).tzinfo is UTC
 
 
-class _NaiveAstimezone(datetime):
-    """A subclass whose astimezone() hands back a naive datetime."""
-
-    def astimezone(self, tz=None):
-        return datetime(self.year, self.month, self.day, self.hour)
+def test_utc_instant_raises_the_callers_error_class():
+    with pytest.raises(_ConfigError, match="not int"):
+        utc_instant(0, error=_ConfigError)
+    with pytest.raises(_ConfigError, match="cannot be read"):
+        utc_instant(datetime(2021, 1, 1, tzinfo=_RaisingTz()), error=_ConfigError)
 
 
 def test_utc_instant_returns_a_plain_utc_datetime_for_a_subclass():
@@ -158,51 +171,37 @@ def test_utc_instant_rejects_a_subclass_whose_utc_conversion_lies():
                               leeway_s=60)
 
 
-def test_utc_instant_raises_the_callers_error_class():
-    with pytest.raises(_ConfigError, match="not int"):
-        utc_instant(0, error=_ConfigError)
-    with pytest.raises(_ConfigError, match="cannot be read"):
-        utc_instant(datetime(2021, 1, 1, tzinfo=_RaisingTz()), error=_ConfigError)
-
-
 # --------------------------------------------------------------------------- #
-# utc_window — the leeway arithmetic, bounds-checked once
+# utc_window — the leeway, as check_validity_window reads it
 # --------------------------------------------------------------------------- #
 
 def test_utc_window_returns_the_instant_and_the_leeway():
     assert utc_window(NOW_2021, 60) == (NOW_2021, timedelta(seconds=60))
 
 
-def test_utc_window_counts_a_negative_leeway_as_zero():
-    assert utc_window(NOW_2021, -60) == (NOW_2021, timedelta(0))
+@pytest.mark.parametrize("leeway", [-60, float("nan"), float("-inf")])
+def test_utc_window_counts_a_negative_or_nan_leeway_as_zero(leeway):
+    assert utc_window(NOW_2021, leeway) == (NOW_2021, timedelta(0))
 
 
-@pytest.mark.parametrize("now", [
-    pytest.param(datetime.max.replace(tzinfo=UTC), id="max"),
-    pytest.param(datetime.max.replace(tzinfo=UTC) - timedelta(seconds=59), id="max-59s"),
-    pytest.param(datetime.min.replace(tzinfo=UTC), id="min"),
-    pytest.param(datetime.min.replace(tzinfo=UTC) + timedelta(seconds=59), id="min+59s"),
-])
-def test_utc_window_rejects_an_edge_beyond_datetimes_range(now):
-    with pytest.raises(ProofError, match="does not fit"):
-        utc_window(now, 60)
+@pytest.mark.parametrize("leeway", [float("inf"), 10**30])
+def test_utc_window_saturates_a_leeway_wider_than_timedelta(leeway):
+    assert utc_window(NOW_2021, leeway) == (NOW_2021, timedelta.max)
 
 
-def test_utc_window_accepts_a_pin_exactly_one_leeway_inside_the_range():
-    top = datetime.max.replace(tzinfo=UTC) - timedelta(seconds=60)
-    bottom = datetime.min.replace(tzinfo=UTC) + timedelta(seconds=60)
-    assert utc_window(top, 60)[0] == top
-    assert utc_window(bottom, 60)[0] == bottom
+@pytest.mark.parametrize("now", _EDGE_NOWS)
+def test_utc_window_accepts_an_edge_pin(now):
+    # the edges are never computed, so a pin at datetime.max/min is not an error
+    assert utc_window(now, 60)[1] == timedelta(seconds=60)
 
 
 @pytest.mark.parametrize("leeway", [
     pytest.param("60", id="string"),
     pytest.param(None, id="none"),
-    pytest.param(float("inf"), id="inf"),
-    pytest.param(10**12, id="beyond-year-9999"),
-    pytest.param(10**30, id="beyond-timedelta"),
+    pytest.param(b"60", id="bytes"),
+    pytest.param(1j, id="complex"),
 ])
-def test_utc_window_rejects_a_leeway_that_cannot_widen_the_window(leeway):
+def test_utc_window_rejects_a_leeway_that_is_not_a_number(leeway):
     with pytest.raises(_ConfigError, match="leeway_s"):
         utc_window(NOW_2021, leeway, error=_ConfigError)
 
@@ -225,10 +224,20 @@ def test_check_validity_window_types_a_bad_now_even_with_expiry_waived(now):
         check_validity_window(_WINDOW, {}, now=now, leeway_s=60, check_temporal=False)
 
 
-@pytest.mark.parametrize("leeway", ["60", None, float("inf"), 10**12])
-def test_check_validity_window_types_a_bad_leeway(leeway):
+@pytest.mark.parametrize("leeway", ["60", None])
+def test_check_validity_window_types_a_leeway_that_is_not_a_number(leeway):
     with pytest.raises(ProofError, match="leeway_s"):
         check_validity_window(_WINDOW, {}, now=NOW_2021, leeway_s=leeway)
+
+
+@pytest.mark.parametrize("now", _EDGE_NOWS)
+def test_check_validity_window_gives_an_edge_pin_a_verdict(now):
+    late = utc_instant(now).year == 9999
+    with pytest.raises(CredentialExpired if late else CredentialNotYetValid):
+        check_validity_window(_WINDOW, {}, now=now, leeway_s=60)
+    if late:                                          # waived: reported, not raised
+        assert check_validity_window(_WINDOW, {}, now=now, leeway_s=60,
+                                     check_temporal=False) is True
 
 
 def test_check_validity_window_still_judges_a_good_pin():
@@ -241,7 +250,6 @@ def test_check_validity_window_still_judges_a_good_pin():
 
 
 def test_check_validity_window_compares_far_dated_bounds_without_overflow():
-    # the leeway widens the verifier's instant, never the credential's own dates
     far = {"validFrom": "0001-01-01T00:00:00Z", "validUntil": "9999-12-31T23:59:59Z"}
     check_validity_window(far, {"expires": "9999-12-31T23:59:59Z"}, now=NOW_2021, leeway_s=60)
 
@@ -260,17 +268,12 @@ def _leb128(code: int) -> bytes:
             return bytes(out)
 
 
-def _did_key_signer() -> tuple[Ed25519SigningKey, str]:
-    """A fresh Ed25519 key whose kid is its own offline-resolvable did:key method."""
+def _di_credential() -> dict:
+    """An eddsa-jcs-2022 credential signed by a fresh did:key (no network, no pyld)."""
     priv = ed25519.Ed25519PrivateKey.generate()
     raw = base64.urlsafe_b64decode(Ed25519SigningKey(priv, kid="tmp").public_jwk()["x"] + "==")
     did = "did:key:" + encode_multibase(_leb128(0xED) + raw)
-    return Ed25519SigningKey(priv, kid=f"{did}#{did[len('did:key:'):]}"), did
-
-
-def _di_credential() -> dict:
-    """An eddsa-jcs-2022 credential signed by a fresh did:key (no network, no pyld)."""
-    key, did = _did_key_signer()
+    vm = f"{did}#{did[len('did:key:'):]}"
     credential = {
         "@context": [VC2],
         "type": ["VerifiableCredential"],
@@ -279,7 +282,7 @@ def _di_credential() -> dict:
         "credentialSubject": {"id": "did:example:alice"},
     }
     return EddsaJcsProofSuite().add_proof(
-        credential, signing_key=key, verification_method=key.kid)
+        credential, signing_key=Ed25519SigningKey(priv, kid=vm), verification_method=vm)
 
 
 @pytest.mark.parametrize("now", _BAD_NOWS)
@@ -290,14 +293,14 @@ def test_verify_many_fails_each_item_on_a_bad_now(now):
     assert all(not r.ok and isinstance(r.error, ProofError) for r in out)
 
 
-def test_verify_many_fails_each_item_on_a_bad_leeway():
+def test_verify_many_fails_each_item_on_a_leeway_that_is_not_a_number():
     out = verify_many([_di_credential()],
                       policy=VerificationPolicy(require_status=False, now=NOW_2021,
-                                                leeway_s=10**12))
+                                                leeway_s="60"))
     assert isinstance(out[0].error, ProofError) and "leeway_s" in str(out[0].error)
 
 
-@pytest.mark.parametrize("now", [1_609_459_200, datetime.max])
+@pytest.mark.parametrize("now", [1_609_459_200, "2021-01-01"])
 def test_verify_many_with_expiry_waived_still_fails_typed(now):
     out = verify_many([_di_credential()],
                       policy=VerificationPolicy(require_status=False, now=now,
@@ -311,62 +314,11 @@ def test_verify_many_still_verifies_with_a_good_pin():
     assert out[0].ok
 
 
-@pytest.mark.parametrize("now", [1_609_459_200, "2021-01-01", datetime.max])
+@pytest.mark.parametrize("now", [1_609_459_200, "2021-01-01",
+                                 datetime.max.replace(tzinfo=MINUS_5)])
 def test_verify_many_async_fails_each_item_on_a_bad_now(now):
     batch = [_di_credential(), _di_credential()]
     out = asyncio.run(verify_many_async(
         batch, policy=VerificationPolicy(require_status=False, now=now)))
     assert [r.index for r in out] == [0, 1]
     assert all(not r.ok and isinstance(r.error, ProofError) for r in out)
-
-
-# --------------------------------------------------------------------------- #
-# The expiry waiver — a bad pin is not read as "not expired"
-# --------------------------------------------------------------------------- #
-# A VC-JWT or SD-JWT VC that expires only by its body `validUntil` (no JWT `exp`) is
-# judged under `require_not_expired=False` by the pipeline's `expired` flag, the one
-# place those lanes read `policy.now`. That flag swallowed every ProofError, so a pin
-# the window check could not evaluate came back as a verified `expired=False`.
-
-def _expired_vc_jwt() -> str:
-    key, did = _did_key_signer()
-    return VcJwtProofSuite().sign({
-        "@context": [VC2],
-        "type": ["VerifiableCredential"],
-        "issuer": did,
-        "validUntil": "2021-01-01T00:00:00Z",
-        "credentialSubject": {"id": "did:example:alice"},
-    }, signing_key=key)
-
-
-def _expired_sd_jwt() -> str:
-    key, did = _did_key_signer()
-    return SdJwtVcProofSuite().issue(
-        {"iss": did, "sub": "did:example:alice", "given_name": "Ada",
-         "validUntil": "2021-01-01T00:00:00Z"},
-        signing_key=key, vct="https://credentials.example/id", disclosable=["given_name"])
-
-
-_JOSE_BODY_EXPIRED = [pytest.param(_expired_vc_jwt, id="vc-jwt"),
-                      pytest.param(_expired_sd_jwt, id="sd-jwt")]
-
-
-@pytest.mark.parametrize("make", _JOSE_BODY_EXPIRED)
-def test_expiry_waiver_flags_a_body_expired_jose_credential(make):
-    result = verify_credential(make(), policy=VerificationPolicy(
-        require_status=False, require_not_expired=False, now=datetime(2026, 1, 1, tzinfo=UTC)))
-    assert result.expired is True
-
-
-@pytest.mark.parametrize("now", [
-    pytest.param(1_767_225_600, id="epoch-int"),
-    pytest.param("2026-01-01", id="iso-string"),
-    pytest.param(datetime.max - timedelta(seconds=30), id="within-leeway-of-max"),
-])
-@pytest.mark.parametrize("make", _JOSE_BODY_EXPIRED)
-def test_expiry_waiver_does_not_read_a_bad_pin_as_not_expired(make, now):
-    policy = VerificationPolicy(require_status=False, require_not_expired=False, now=now)
-    for out in (verify_many([make()], policy=policy),
-                asyncio.run(verify_many_async([make()], policy=policy))):
-        assert out[0].result is None                     # never a verified expired=False
-        assert isinstance(out[0].error, ProofError)

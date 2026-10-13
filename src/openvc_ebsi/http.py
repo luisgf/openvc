@@ -21,7 +21,6 @@ Pass ``client.get_json`` wherever a ``Fetch`` is expected (e.g. into the resolve
 
 from __future__ import annotations
 
-import json
 import random
 import time
 from dataclasses import dataclass
@@ -32,6 +31,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from openvc import _json
 from openvc import __version__
 from openvc.cache import TtlCache
 
@@ -180,7 +180,7 @@ class EbsiHttpClient:
 
             if status == 200:
                 try:
-                    data = json.loads(body or b"")
+                    data = _json.loads(body or b"")
                 except (ValueError, RecursionError) as exc:   # non-JSON or hostile-depth body
                     raise MalformedRegistryResponse(
                         f"registry returned a 200 with a non-JSON body: {url}") from exc

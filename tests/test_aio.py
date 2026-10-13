@@ -254,7 +254,9 @@ def test_data_integrity_rdfc_async_matches_sync():
     vm = f"{did}#k"
     key = Ed25519SigningKey.generate(kid=vm)
     doc = {
-        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        # `score` needs a definition: RDF canonicalization would drop it unsigned
+        "@context": ["https://www.w3.org/ns/credentials/v2",
+                     {"@vocab": "https://www.w3.org/ns/credentials/examples#"}],
         "type": ["VerifiableCredential"],
         "issuer": did,
         "validFrom": "2020-01-01T00:00:00Z",

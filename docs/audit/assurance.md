@@ -70,7 +70,10 @@ when its recursion/nesting harness landed alongside the **R1** fix.)
 Example-based, but broad. Representative anchors:
 
 - **VC-JWT / hostile input** — non-object header/payload, non-string `iss`,
-  batch-isolation of a hostile item (`test_hostile_input.py:51-85`).
+  batch-isolation of a hostile item (`test_hostile_input.py:51-85`); malformed
+  `exp`/`nbf`/`iat` (`null`, containers, strings, bools, non-finite) typed and
+  batch-isolated on every entry point, with and without the expiry waiver
+  (`test_vc_jwt_numeric_dates.py`).
 - **SD-JWT** — unreferenced/forged/duplicate disclosure, wrong key, expired,
   `vct` mismatch, KB `aud`/`nonce`/`sd_hash` tamper, non-numeric `exp`/`nbf`
   (`test_sd_jwt.py:118-333`).
@@ -117,6 +120,7 @@ recent first (`git log`, short hashes).
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
+- `#213` — untrusted JSON is depth-bounded (100) where it enters: on 3.14 a value `json.loads` accepts overflowed `repr()` / `==` into a bare `RecursionError` at 40+ sites (messages, status, DID/JWK, issuer metadata), found by a per-position fuzz and two adversarial reviews; one bounded loader, a depth check on pre-parsed input and a pipeline backstop close the class (v1.30.0)
 - `#117` — fail closed on hostile deeply-nested JSON pipeline-wide: SD-JWT `_unpack` depth bound + `RecursionError` mapped typed at every attacker-facing `json.loads` (v1.20.1); closes audit R1
 - `291f79d` — library-wide `OpenvcError` root (one catchable root)
 - `b4e335e` — unify proof error taxonomy + rename ecdsa_sd codecs
@@ -151,6 +155,13 @@ recent first (`git log`, short hashes).
 - `a09f964` — harden VP-JWT verification (replay + holder binding)
 - `886db1f` — challenge/domain presentation binding for Data Integrity
 - `ee1ecac` — enforce Data Integrity validity window and `proofPurpose`
+
+**JSON-LD form ↔ signed dataset (RDF Data Integrity)**
+- GHSA-vrxg-57v4-85mc (v1.30.2) — context validation (VC-DI §2.4.1) on
+  `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` / `ecdsa-sd-2023`, on both the verify and the sign
+  side: the policy reads only JSON the signature covers (threat model I20, R9). Pinned
+  by `tests/test_di_context_validation.py`. The attack tests fail on v1.30.1 and pass
+  here; the W3C golden vectors are unaffected.
 
 **X.509 / trust anchoring**
 - `82b3867` — X.509 `x5c` issuer trust for JOSE credentials
@@ -190,6 +201,16 @@ lanes verify through openvc's own JWS code, not PyJWT. Advisory by advisory:
 | GHSA-w7vc-732c-9m39 / CVE-2026-48525 | DoS via unbounded b64 decode of the unused segment of a `b64=false` detached JWS | **Marginally, pre-2.13** — a hostile token reaches `jwt.decode` on the VC-JWT lane (cost ∝ input size; no wrong-accept). Closed by the floor. On the hand-rolled lanes `b64` is an inert unknown parameter — verification always runs over `b64url(header).b64url(payload)`, so detached-payload confusion is impossible; and a *conformant* `b64=false` token must list `b64` in `crit` (RFC 7797 §6), which every lane now rejects |
 
 Outcome: floor raised to `pyjwt>=2.13` (defense in depth even where structurally
-unreachable) plus the lane-uniform `crit` rejection. `cryptography` 49.0.0
+unreachable) plus the lane-uniform `crit` rejection.
+
+Not an advisory, but the same surface (found 2026-10-12, fixed in 1.30.0): PyJWT
+casts `exp`/`nbf`/`iat` with `int()` and catches only `ValueError`, so a signed
+`"nbf": null` raised a bare `TypeError` out of `_JWT.decode`, outside `OpenvcError`.
+`vc_jwt` now checks those shapes itself before the decode (`check_numeric_dates`).
+The fix's adversarial review found two more untyped exits from the decode. One is
+a `RecursionError` from PyJWT's own `json.loads` on Python ≤ 3.11, where the depth
+limit depends on stack depth. The other is a `UnicodeEncodeError` from a non-ASCII
+signature segment. Non-ASCII tokens are now refused before decoding, and any
+`TypeError`/`ValueError`/`RecursionError` from the decode maps to `ClaimsInvalid`. `cryptography` 49.0.0
 (2026-06-12, stricter X.509 parsing) confirmed compatible: full suite green, and CI
 resolves the newest `cryptography` on every run.

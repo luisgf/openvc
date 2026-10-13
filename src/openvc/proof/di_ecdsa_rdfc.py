@@ -32,6 +32,7 @@ from typing import Any, Mapping
 from ..errors import OpenvcError
 from ..keys import verify_signature
 from ..multibase import encode_multibase
+from ._context_validation import validate_document
 from ._verify_common import (
     ALG_PROFILE,
     DEFAULT_LEEWAY_S,
@@ -144,6 +145,8 @@ class EcdsaRdfcProofSuite:
         loader = document_loader(extra_contexts)
         hash_name = ALG_PROFILE[signing_key.alg][2]
         data = _hash_data(_unsecured(credential), proof_config, loader, hash_name)
+        # never sign JSON the signature would not cover (see _context_validation)
+        validate_document(_unsecured(credential), proof_config, loader)
         signature = signing_key.sign(data)           # raw ES256 / ES384 R‖S
 
         secured = copy.deepcopy(credential)
@@ -197,11 +200,14 @@ class EcdsaRdfcProofSuite:
                 f"{ECDSA_RDFC_CRYPTOSUITE} proof does not verify: {exc}") from exc
         if not ok:
             raise SignatureInvalid(f"{ECDSA_RDFC_CRYPTOSUITE} proof does not verify")
+        # The signature covers the RDF dataset; the checks below read the JSON. Context
+        # validation (VC-DI §2.4.1) makes the two agree before any policy read.
+        validate_document(unsecured, proof_config, loader)
 
         check_proof_purpose(proof, expected_proof_purpose)
         check_presentation_binding(
             proof, expected_challenge=expected_challenge, expected_domain=expected_domain)
-        check_validity_window(
+        expired = check_validity_window(
             unsecured, proof, now=now, leeway_s=self._leeway,
             check_temporal=check_temporal)
 
@@ -210,4 +216,5 @@ class EcdsaRdfcProofSuite:
         subject = (secured.get("credentialSubject") or {})
         subject_id = subject.get("id") if isinstance(subject, dict) else None
         return VerifiedDataIntegrity(
-            credential=secured, issuer=issuer, subject=subject_id, proof=proof)
+            credential=secured, issuer=issuer, subject=subject_id, proof=proof,
+            expired=expired)

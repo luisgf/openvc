@@ -436,15 +436,23 @@ def test_verify_requires_at_least_one_anchor(registrar):
             jwt_wrprc(claims(), chain, key), trust_anchors=[], now=_AT)
 
 
-@pytest.mark.parametrize("leeway_s", [10**12, "60"])
-def test_verify_types_a_leeway_that_cannot_widen_the_window(registrar, leeway_s):
-    # a leeway past year 9999 raised a bare OverflowError from `instant ± leeway`, a
-    # string one a bare TypeError (now both bounds-checked once by utc_window)
+@pytest.mark.parametrize("leeway_s", ["60", None])
+def test_verify_types_a_leeway_that_is_not_a_number(registrar, leeway_s):
+    # read through the shared utc_window: a typed RpRegistrationError, not the bare
+    # TypeError `max(0, leeway_s)` raised
     root, chain, key = registrar
     token = jwt_wrprc(claims(), chain, key)
     with pytest.raises(RpRegistrationError, match="leeway_s"):
         verify_rp_registration_certificate(
             token, trust_anchors=[root], now=_AT, leeway_s=leeway_s)
+
+
+def test_verify_compares_the_window_without_overflow_on_a_huge_leeway(registrar):
+    # `instant + leeway` past year 9999 raised a bare OverflowError; the window now
+    # compares differences, so a huge leeway is only very wide (#228 bounds it)
+    root, chain, key = registrar
+    token = jwt_wrprc(claims(), chain, key)
+    verify_rp_registration_certificate(token, trust_anchors=[root], now=_AT, leeway_s=10**12)
 
 
 def test_verify_rejects_mistyped_trust_params(registrar):

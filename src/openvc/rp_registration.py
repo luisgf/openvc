@@ -69,6 +69,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import _json
 from .errors import OpenvcError
 from .proof._verify_common import utc_window
 
@@ -449,7 +450,9 @@ def _check_typ(typ: Any, expected: str) -> None:
             f"token typ {_BMI_TYP!r} is the German BMI Architekturkonzept registration "
             f"certificate, a different profile with different claim names — not the "
             f"ETSI TS 119 475 WRPRC ({expected!r}) this module parses")
-    raise RpRegistrationError(f"WRPRC typ must be {expected!r}, got {typ!r}")
+    from .proof._verify_common import safe_repr
+
+    raise RpRegistrationError(f"WRPRC typ must be {expected!r}, got {safe_repr(typ)}")
 
 
 def _jwt_envelope(token: str) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes]:
@@ -601,11 +604,11 @@ def _check_temporal(
         raise RpRegistrationError(
             "WRPRC has no 'exp' (conformant per TS 119 475 Table 10, but this call "
             "required one) — check the 'status' claim for revocation instead")
-    if reg.expires_at is not None and instant - leeway > reg.expires_at:
+    if reg.expires_at is not None and instant - reg.expires_at > leeway:
         raise RpRegistrationError(f"WRPRC expired at {reg.expires_at.isoformat()}")
 
     not_before = _numeric_date(reg.claims.get("nbf"), field="nbf") or reg.issued_at
-    if not_before is not None and instant + leeway < not_before:
+    if not_before is not None and not_before - instant > leeway:
         raise RpRegistrationError(f"WRPRC is not valid before {not_before.isoformat()}")
 
     # GEN-5.2.4-08 — binds only when `exp` is present.
@@ -944,6 +947,9 @@ def check_request_within_registration(
             f"{intended_use_id!r}")
     if not isinstance(dcql_query, Mapping):
         raise RpRegistrationError("dcql_query must be a JSON object")
+    if _json.nesting_exceeds(dict(dcql_query)):   # the relying party's, handed over parsed
+        raise RpRegistrationError(
+            f"dcql_query is nested deeper than {_json.MAX_DEPTH} levels")
     queries = dcql_query.get("credentials")
     if not isinstance(queries, (list, tuple)) or not queries:
         raise RpRegistrationError("dcql_query has no 'credentials' array to check")

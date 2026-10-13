@@ -39,6 +39,7 @@ from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
 # The proof error taxonomy lives in openvc.proof.errors; these are re-exported for
 # back-compat (old imports like `from openvc.proof.vc_jwt import SignatureInvalid`).
+from .. import _json
 from .errors import (  # noqa: F401
     ClaimsInvalid,
     MalformedToken,
@@ -48,6 +49,7 @@ from .errors import (  # noqa: F401
 )
 from ._verify_common import (
     check_jwt_temporal,
+    check_numeric_dates,
     check_validity_window,
     reject_unknown_crit,
     safe_repr,
@@ -107,6 +109,9 @@ class VerifiedCredential:
     issuer: str                    # reconciled issuer DID
     subject: str | None            # credentialSubject.id, if present
     claims: dict[str, Any]         # full JWT claim set (iss, exp, jti, ...)
+    # check_temporal=False only: the JWT `exp` or the body's validUntil/expirationDate
+    # has passed, i.e. the expiry check that was skipped would have failed.
+    expired: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -119,6 +124,12 @@ def _b64url_decode(segment: str) -> bytes:
 
 
 def _split(token: str) -> tuple[str, str, str]:
+    # A compact JWS is base64url and dots, all ASCII. Reject anything else up front:
+    # PyJWT encodes the token to UTF-8 before decoding it, so a lone surrogate in the
+    # signature segment (the one segment openvc never parses itself) raised a bare
+    # UnicodeEncodeError out of the decode.
+    if not token.isascii():
+        raise MalformedToken("token is not a compact JWS (non-ASCII characters)")
     try:
         header_b64, payload_b64, sig_b64 = token.split(".")
     except ValueError as exc:
@@ -164,8 +175,8 @@ class VcJwtProofSuite:
         """
         header_b64, payload_b64, _ = _split(token)
         try:
-            header = json.loads(_b64url_decode(header_b64))
-            payload = json.loads(_b64url_decode(payload_b64))
+            header = _json.loads(_b64url_decode(header_b64))
+            payload = _json.loads(_b64url_decode(payload_b64))
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("header/payload is not valid base64url JSON") from exc
         if not isinstance(header, dict) or not isinstance(payload, dict):
@@ -191,7 +202,7 @@ class VcJwtProofSuite:
         Used to read TIR accreditation bodies before the trust-chain walk."""
         _, payload_b64, _ = _split(token)
         try:
-            payload = json.loads(_b64url_decode(payload_b64))
+            payload = _json.loads(_b64url_decode(payload_b64))
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("payload is not valid base64url JSON") from exc
         if not isinstance(payload, dict):
@@ -209,10 +220,14 @@ class VcJwtProofSuite:
         audience: str | None = None,
         check_temporal: bool = True,
     ) -> VerifiedCredential:
-        """Verify signature + temporal claims + VC-JWT reconciliation."""
+        """Verify signature + temporal claims + VC-JWT reconciliation.
+
+        *check_temporal* False waives only the expiry checks (JWT ``exp``, and the
+        body's ``validUntil`` / ``expirationDate``); the result's ``expired`` then
+        reports whether one of them would have failed."""
         header_b64, _, _ = _split(token)
         try:
-            header = json.loads(_b64url_decode(header_b64))
+            header = _json.loads(_b64url_decode(header_b64))
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("invalid JWS header") from exc
         if not isinstance(header, dict):
@@ -225,33 +240,33 @@ class VcJwtProofSuite:
             raise UnsupportedAlgorithm(f"algorithm {safe_repr(alg)} is not permitted")
         reject_unknown_crit(header)
         _reject_sd_jwt_typ(header)
+        # NumericDate shapes before either lane reads them. PyJWT int()-casts exp/nbf/iat
+        # and catches only ValueError, so a signed `"nbf": null` raised a bare TypeError
+        # that escaped OpenvcError and aborted verify_many; and verify_exp=False (the
+        # expiry waiver) skipped exp entirely, accepting NaN/Infinity/"abc". This reads
+        # the untrusted payload but can only reject: the signature still gates everything
+        # accepted, and peek_claims is the same parse peek_issuer already runs pre-crypto.
+        check_numeric_dates(self.peek_claims(token), "exp", "nbf", "iat")
 
         if alg in ALLOWED_ALGS_PQ:
             # ML-DSA is not a PyJWT algorithm — verify the signature through the
             # dependency-light primitive and validate the JWT claims ourselves.
-            claims = self._verify_mldsa(
+            claims, jwt_expired = self._verify_mldsa(
                 token, alg, public_key_jwk, audience, check_temporal=check_temporal)
         else:
             key = self._jwk_to_key(public_key_jwk, alg)
+            jwt_expired = False
+            # PyJWT judges `exp` in both modes, so a waived expiry is exactly the one the
+            # default policy rejects: its clock, its leeway, its coercion of the value.
+            # Only once it says "expired" does the waiver decode again without that one
+            # check, so every other claim check still runs.
             try:
-                claims = _JWT.decode(                      # PyJWT instance that knows "Ed25519"
-                    token,
-                    key=key,
-                    algorithms=[alg],                     # pinned, single alg
-                    leeway=self._leeway,
-                    audience=audience,
-                    options={
-                        "require": ["iss"],
-                        "verify_signature": True,
-                        "verify_exp": check_temporal,
-                        "verify_nbf": True,
-                        "verify_aud": audience is not None,
-                    },
-                )
-            except pyjwt.InvalidSignatureError as exc:
-                raise SignatureInvalid(str(exc)) from exc
-            except (pyjwt.PyJWTError, OverflowError) as exc:  # +Inf exp -> OverflowError in PyJWT
-                raise ClaimsInvalid(str(exc)) from exc
+                claims = self._decode(token, key, alg, audience, verify_exp=True)
+            except pyjwt.ExpiredSignatureError as exc:
+                if check_temporal:
+                    raise ClaimsInvalid(str(exc)) from exc
+                claims = self._decode(token, key, alg, audience, verify_exp=False)
+                jwt_expired = True
 
         credential = claims.get("vc")
         if not isinstance(credential, dict):
@@ -263,7 +278,7 @@ class VcJwtProofSuite:
         # VCDM 2.0 envelopes among them — may encode expiry ONLY in the credential body;
         # without this an expired such credential would still verify. Same leeway; there
         # is no Data-Integrity proof object on the JOSE path, so pass an empty one.
-        check_validity_window(
+        body_expired = check_validity_window(
             credential, {}, now=None, leeway_s=self._leeway,
             check_temporal=check_temporal)
 
@@ -273,7 +288,43 @@ class VcJwtProofSuite:
 
         return VerifiedCredential(
             credential=credential, issuer=issuer, subject=subject, claims=claims,
+            expired=jwt_expired or body_expired,
         )
+
+    def _decode(
+        self, token: str, key: Any, alg: str, audience: str | None, *, verify_exp: bool,
+    ) -> dict[str, Any]:
+        """PyJWT decode with openvc's pinned options. Errors become typed
+        ``ProofError``\\s, except ``ExpiredSignatureError``, which is left to
+        :meth:`verify` to enforce or waive."""
+        try:
+            claims: dict[str, Any] = _JWT.decode(   # PyJWT instance that knows "Ed25519"
+                token,
+                key=key,
+                algorithms=[alg],                     # pinned, single alg
+                leeway=self._leeway,
+                audience=audience,
+                options={
+                    "require": ["iss"],
+                    "verify_signature": True,
+                    "verify_exp": verify_exp,
+                    "verify_nbf": True,
+                    "verify_aud": audience is not None,
+                },
+            )
+        except pyjwt.ExpiredSignatureError:
+            raise
+        except pyjwt.InvalidSignatureError as exc:
+            raise SignatureInvalid(str(exc)) from exc
+        except (pyjwt.PyJWTError, OverflowError, TypeError, ValueError,
+                RecursionError) as exc:
+            # Backstop for PyJWT on attacker bytes. Its int() casts are stopped by
+            # the shape gate in verify(). RecursionError comes from its own json.loads,
+            # which catches only ValueError. On Python <= 3.11 the json depth limit
+            # shrinks with stack depth, and PyJWT parses a few frames deeper than
+            # peek_claims, so a payload can pass our parse and overflow PyJWT's.
+            raise ClaimsInvalid(str(exc)) from exc
+        return claims
 
     # -- signing (issuance) ----------------------------------------------- #
 
@@ -319,9 +370,10 @@ class VcJwtProofSuite:
     def _verify_mldsa(
         self, token: str, alg: str, public_key_jwk: dict[str, Any], audience: str | None,
         *, check_temporal: bool = True,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], bool]:
         """Verify an ML-DSA VC-JWT: signature via the dependency-light primitive (PyJWT
-        has no ML-DSA), then the JWT claims validated here."""
+        has no ML-DSA), then the JWT claims validated here. Returns the claims and
+        whether a waived ``exp`` has passed."""
         from ..keys import KeyBackendError, verify_signature
         try:
             header_b64, payload_b64, sig_b64 = token.split(".")
@@ -342,23 +394,30 @@ class VcJwtProofSuite:
         if not ok:
             raise SignatureInvalid(f"{alg} signature does not verify")
         try:
-            claims = json.loads(payload)
+            claims = _json.loads(payload)
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise MalformedToken("payload is not valid JSON") from exc
         if not isinstance(claims, dict):
             raise ClaimsInvalid("JWT payload must be a JSON object")
-        self._check_jwt_claims(claims, audience, check_temporal=check_temporal)
-        return claims
+        expired = self._check_jwt_claims(claims, audience, check_temporal=check_temporal)
+        return claims, expired
 
     def _check_jwt_claims(
         self, claims: dict[str, Any], audience: str | None, *,
         check_temporal: bool = True,
-    ) -> None:
+    ) -> bool:
         # Mirror the PyJWT gate for the ML-DSA path: require iss, enforce exp/nbf with the
-        # suite leeway (shared non-finite-safe helper), check aud when expected.
+        # suite leeway (shared non-finite-safe helper), check aud when expected. Returns
+        # whether a waived exp has passed.
         if not isinstance(claims.get("iss"), str):
             raise ClaimsInvalid("the 'iss' claim is required")
-        check_jwt_temporal(
+        # PyJWT rejects a non-string sub / jti; so must this lane, or _reconcile would
+        # compare two attacker containers with != (a bare RecursionError when deep)
+        if "sub" in claims and not isinstance(claims["sub"], str):
+            raise ClaimsInvalid("Subject must be a string")
+        if "jti" in claims and not isinstance(claims["jti"], str):
+            raise ClaimsInvalid("JWT ID must be a string")
+        expired = check_jwt_temporal(
             claims, leeway_s=self._leeway, subject="token",
             check_temporal=check_temporal)
         if audience is not None:
@@ -366,6 +425,7 @@ class VcJwtProofSuite:
             auds = aud if isinstance(aud, list) else [aud]
             if audience not in auds:
                 raise ClaimsInvalid("audience mismatch")
+        return expired
 
     @staticmethod
     def _jwk_to_key(jwk: dict[str, Any], alg: str) -> Any:
@@ -378,14 +438,14 @@ class VcJwtProofSuite:
         if alg in ("EdDSA", "Ed25519") and (
                 jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519"):
             raise ProofError(f"{alg} requires an OKP Ed25519 key, got "
-                             f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
+                             f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
         # Pin the EC curve to the alg too, so ES256 cannot verify against a P-384 key (PyJWT's
         # ECAlgorithm would load whatever curve the JWK declares and hash by the alg) — matching
         # the curve-pinned openvc.keys.verify_signature used on the SD-JWT / VP / status paths.
         _EC_CRV = {"ES256": "P-256", "ES384": "P-384"}
         if alg in _EC_CRV and (jwk.get("kty") != "EC" or jwk.get("crv") != _EC_CRV[alg]):
             raise ProofError(f"{alg} requires an EC {_EC_CRV[alg]} key, got "
-                             f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
+                             f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
         try:
             if alg in ("ES256", "ES384"):
                 return ECAlgorithm.from_jwk(json.dumps(jwk))
@@ -402,17 +462,18 @@ class VcJwtProofSuite:
         vc_issuer = vc.get("issuer")
         vc_issuer = vc_issuer.get("id") if isinstance(vc_issuer, dict) else vc_issuer
         if vc_issuer and vc_issuer != iss:
-            raise ClaimsInvalid(f"iss {iss!r} != vc.issuer {vc_issuer!r}")
+            raise ClaimsInvalid(f"iss {iss!r} != vc.issuer {safe_repr(vc_issuer)}")
 
         sub = claims.get("sub")
         cs = vc.get("credentialSubject")
         vc_sub = cs.get("id") if isinstance(cs, dict) else None   # may be a list of subjects
         if sub and vc_sub and sub != vc_sub:
-            raise ClaimsInvalid(f"sub {sub!r} != credentialSubject.id {vc_sub!r}")
+            raise ClaimsInvalid(
+                f"sub {safe_repr(sub)} != credentialSubject.id {safe_repr(vc_sub)}")
 
         jti = claims.get("jti")
         if jti and vc.get("id") and jti != vc["id"]:
-            raise ClaimsInvalid(f"jti {jti!r} != vc.id {vc['id']!r}")
+            raise ClaimsInvalid(f"jti {safe_repr(jti)} != vc.id {safe_repr(vc['id'])}")
 
         subject = sub if isinstance(sub, str) else (vc_sub if isinstance(vc_sub, str) else None)
         return iss, subject

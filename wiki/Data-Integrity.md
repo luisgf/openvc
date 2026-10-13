@@ -141,14 +141,56 @@ by the credential's `issuer` DID, so an attacker cannot sign someone else's
 
 The window is evaluated at `VerificationPolicy.now` (or the suite's `now=`):
 `None` is the current time and a naive `datetime` is UTC. A `now` that is not a
-`datetime`, such as an epoch `int` or an ISO string, raises `ProofError`. So does
-a `now` within the leeway of `datetime.min` / `datetime.max`, and a `leeway_s`
-that is not a number or is too large to add to `now`. A negative or `NaN` leeway
-counts as 0. These are configuration errors, so `verify_many` reports one on each
-item rather than aborting the batch. The same holds under
-`require_not_expired=False`: a pin the `expired` flag cannot evaluate is an error,
-never `expired=False`. The `x5c`, mdoc, relying-party certificate and Trusted
-List checks read `now` the same way, each raising its own error class.
+`datetime`, such as an epoch `int` or an ISO string, raises `ProofError`, and so
+does a `leeway_s` that is not a number. A negative or `NaN` leeway counts as 0.
+These are configuration errors, so `verify_many` reports one on each item rather
+than aborting the batch, with `require_not_expired=False` too. The `x5c`, mdoc,
+relying-party certificate and Trusted List checks read `now` the same way, each
+raising its own error class.
+
+## The JSON must be what was signed
+
+The RDF suites (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `ecdsa-sd-2023`) sign the **RDF
+dataset** a document expands to. Every check above, and your own code, reads the
+**JSON**. Many different JSON documents expand to the same dataset, so after the proof
+verifies openvc validates the document's JSON-LD form ("context validation", VC Data
+Integrity §2.4.1). It runs the same check before it signs. A document that fails
+raises `ProofMalformed`:
+
+- **`@context`** must start with the VC base context
+  (`https://www.w3.org/ns/credentials/v2`, or `https://www.w3.org/2018/credentials/v1`
+  passed through `extra_contexts`). After that, every entry is either a context URL the
+  offline loader serves (bundled, or yours through `extra_contexts`) or an inline object
+  that carries **only** `@vocab`, set to an absolute IRI. Inline term definitions are
+  refused. Publish them as a context and pass it through `extra_contexts`.
+- **Every member is spelled the way JSON-LD compaction would spell it.** A term no
+  context defines is refused, because JSON-LD drops it from the dataset and the
+  signature never covers its value. These are refused too:
+  - a member keyed by its full IRI;
+  - a keyword spelling, such as `@type` for `type`;
+  - a nested `@context`;
+  - a relative IRI, such as `"verificationMethod": "k"`.
+
+  Only two variations are accepted, because JSON-LD treats each pair as the same value:
+  a one-element array and its element, and `{"id": X}` and `X`.
+- **Nothing about the document is stated outside it.** `@included`, `@reverse`, a
+  top-level `@graph`, and a second description of the document's own node nested
+  inside it are all refused.
+- **Nothing in the JSON is dropped on the way to RDF** (JSON-LD "safe mode"). The RDF
+  conversion silently drops a statement whose subject, property or IRI value is not a
+  well-formed absolute IRI, such as an `id` containing whitespace or a property from a
+  blank-node `@vocab`. It also leaves out `@index` and `@direction` annotations. All of
+  these are refused, because their values would not be signed.
+
+The bundled v2 context has no `@vocab`, so a custom claim needs a definition. Use an
+inline `{"@vocab": "…"}`, as in the selective-disclosure example above, or your own
+context through `extra_contexts`. openvc trusts what you put in `extra_contexts`. A
+context that gives a core VC term (`validUntil`, `credentialStatus`, …) a second,
+shorter name can still hide that member, so inject only contexts you have reviewed.
+
+In a `VerifiablePresentation`, the embedded `verifiableCredential` entries are skipped
+here. Each one is verified on its own, under its own `@context`. The JCS suites sign
+the JSON itself, so none of this applies to them.
 
 ## Conformance
 

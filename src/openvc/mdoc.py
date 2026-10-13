@@ -412,11 +412,11 @@ def _check_validity(mso: dict[Any, Any], instant: datetime, leeway: timedelta) -
         raise MdocMalformed("MSO validityInfo needs a signed time (ISO 18013-5 §9.1.2.4)")
     if valid_from is None or valid_until is None:
         raise MdocMalformed("MSO validityInfo needs both validFrom and validUntil")
-    # The leeway goes on the verifier's instant (bounds checked by utc_window), never on
-    # the issuer's dates: a "never expires" validUntil of 9999-12-31 plus a minute overflows.
-    if instant + leeway < valid_from:
+    # Compare differences, never a date ± leeway: a "never expires" validUntil of
+    # 9999-12-31 plus a minute overflows, while two datetimes always subtract cleanly.
+    if valid_from - instant > leeway:
         raise MdocValidityError(f"MSO is not yet valid (validFrom {valid_from.isoformat()})")
-    if instant - leeway > valid_until:
+    if instant - valid_until > leeway:
         raise MdocValidityError(f"MSO has expired (validUntil {valid_until.isoformat()})")
     return MdocValidity(signed=signed, valid_from=valid_from, valid_until=valid_until)
 
