@@ -46,7 +46,12 @@ from .errors import (  # noqa: F401
     SignatureInvalid,
     UnsupportedAlgorithm,
 )
-from ._verify_common import check_jwt_temporal, check_validity_window, reject_unknown_crit
+from ._verify_common import (
+    check_jwt_temporal,
+    check_validity_window,
+    reject_unknown_crit,
+    safe_repr,
+)
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -221,8 +226,10 @@ class VcJwtProofSuite:
             raise MalformedToken("JWS header must be a JSON object")
 
         alg = header.get("alg")
-        if alg not in self._algs:                          # allow-list BEFORE crypto
-            raise UnsupportedAlgorithm(f"algorithm {alg!r} is not permitted")
+        # allow-list BEFORE crypto; a JSON array/object `alg` is unhashable, so
+        # type-check it first or `in frozenset` raises a bare TypeError
+        if not isinstance(alg, str) or alg not in self._algs:
+            raise UnsupportedAlgorithm(f"algorithm {safe_repr(alg)} is not permitted")
         reject_unknown_crit(header)
         _reject_sd_jwt_typ(header)
 

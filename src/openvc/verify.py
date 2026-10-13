@@ -787,9 +787,11 @@ def _check_status(
         else:
             w3c = check_credential_status(w3c_source, resolve_status_list=resolve_status_list)
             if w3c.revoked and policy.require_not_revoked:
-                raise CredentialRevoked(f"credential {w3c_source.get('id')!r} is revoked")
+                raise CredentialRevoked(
+                    f"credential {_as_str(w3c_source.get('id'))!r} is revoked")
             if w3c.suspended:
-                raise CredentialSuspended(f"credential {w3c_source.get('id')!r} is suspended")
+                raise CredentialSuspended(
+                    f"credential {_as_str(w3c_source.get('id'))!r} is suspended")
             result = w3c
     elif w3c_source.get("credentialStatus") and policy.require_status:
         # a credentialStatus is declared but of an entry type we cannot check
