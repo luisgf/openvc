@@ -4,6 +4,42 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.3] — unreleased
+
+Tests and docs only: no library code changes.
+
+### Tests
+
+- **The documentation-claims test runs in CI again.** `tests/test_docs_claims.py`
+  ([#57](https://github.com/luisgf/openvc/pull/57)) was stacked on the README
+  rewrite ([#55](https://github.com/luisgf/openvc/pull/55)). #55 merged first,
+  so #57 merged into its branch and never reached `main`. The test is now on
+  `main`, updated for today's code. The release runbook assumed it was running.
+  - **Allow-list statements are pinned, not tokens.** `Ed25519` is also a curve
+    and key name, so finding the token on a page cannot show the page lists it.
+    Each prose set `{…}`, and each list of three or more algorithm names joined
+    by `/`, `|` or `,`, must equal `ALLOWED_ALGS`. This covers the README,
+    `SECURITY.md`, every wiki page, `docs/index.md`, `docs/api/` and
+    `docs/audit/`. One historical set on the Versioning page is exempt by name.
+  - **The default DID methods include `did:webvh`**, for the sync and the async
+    default resolver. A malformed `did:web` / `did:webvh` host proves dispatch
+    without network I/O.
+  - **The version check catches a version stated as current**: an `==` pin, a
+    `__version__` value, "the current/latest release is X.Y.Z". It used to fail
+    on any appearance of the current version string. The release gate runs
+    after the version bump, so the old rule also failed on the wiki's dated notes
+    ("Before 1.31.0 …"). Replayed over every tag, it would have blocked the
+    v1.29.0, v1.30.5 and v1.31.0 releases. The new rule matches nothing in any
+    tag.
+
+### Fixed (docs)
+
+- **Two allow-list statements missed `Ed25519`**, the RFC 9864 name accepted
+  since 1.11.0 ([#59](https://github.com/luisgf/openvc/issues/59)): the README
+  capability table (`ES256` / `ES384` / `EdDSA`) and the `SigningKey.alg`
+  comment on the Keys & HSM wiki page. The comment now also notes the opt-in
+  ML-DSA algorithms. Every other page already stated the full set.
+
 ## [1.31.2] — 2026-10-13
 
 ### Security
