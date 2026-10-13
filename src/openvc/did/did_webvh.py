@@ -45,6 +45,7 @@ from typing import Any, Awaitable, Callable
 from .. import _json
 from ..multibase import MultibaseError, b58btc_encode, decode_multibase, read_varint
 from ..proof._jcs import JcsError, canonicalize
+from ..proof._verify_common import safe_repr
 from .base import DidDocument, DidResolutionError, parse_did_document
 from .did_web import _did_web_url  # reuse the did:web host/path mapping (SSRF-neutral, pure)
 
@@ -86,7 +87,7 @@ def _did_webvh_url(did: str) -> str:
     try:
         web_url = _did_web_url("did:web:" + rest)
     except DidResolutionError as exc:
-        raise DidWebvhError(f"did:webvh {did!r}: {exc}") from exc
+        raise DidWebvhError(f"did:webvh {safe_repr(did)}: {exc}") from exc
     return web_url[: -len("did.json")] + "did.jsonl"
 
 

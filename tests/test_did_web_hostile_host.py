@@ -87,6 +87,13 @@ HOSTILE_DID_WEB = [
     "did:web:%CE%B1%CF%82.gr",                  # final sigma folds to sigma
     "did:web:%E1%BA%9Eexample.com",             # capital sharp s: lower() gives ss
     "did:web:example.com%EF%B8%93443",          # U+FE13: urlparse NFKC reads a colon
+    # An IP address in any form WHATWG reads as one (the last label is a number).
+    "did:web:127.0.0.1",
+    "did:web:8.8.8.8%3A443",
+    "did:web:2130706433",                       # 127.0.0.1 as one decimal number
+    "did:web:0x7f.1",                           # hex, shorthand
+    "did:web:0177.0.0.1",                       # octal
+    "did:web:example.0x",
 ]
 
 
@@ -148,6 +155,8 @@ def test_did_web_resolver_never_calls_the_fetch(did):
     ("did:web:example.com%3A65535:a:b", "https://example.com:65535/a/b/did.json"),
     ("did:web:localhost%3A8443", "https://localhost:8443/.well-known/did.json"),
     ("did:web:Sub-1.EXAMPLE.com", "https://Sub-1.EXAMPLE.com/.well-known/did.json"),
+    ("did:web:123.example.com", "https://123.example.com/.well-known/did.json"),
+    ("did:web:example.x0", "https://example.x0/.well-known/did.json"),
     ("did:web:xn--mnchen-3ya.de", "https://xn--mnchen-3ya.de/.well-known/did.json"),
     ("did:web:" + ".".join(["a" * 63] * 3 + ["a" * 61]),
      "https://" + ".".join(["a" * 63] * 3 + ["a" * 61]) + "/.well-known/did.json"),
@@ -181,6 +190,8 @@ def test_did_webvh_url_rejects_hostile_host_as_webvh_error(did):
     "https://faß.de/did.json",             # Unicode host: IDNA2003 would fetch fass.de
     "https://münchen.de/did.json",         # even a valid IDN: send the xn-- A-label
     "https://" + "a" * 254 + "/did.json",       # over 253 characters
+    "https://\u212aexample.com/did.json",       # KELVIN SIGN: lower() makes it ASCII "k"
+    "https://example.com/\u00fc/did.json",      # a non-ASCII path cannot be sent either
 ])
 @pytest.mark.parametrize("fetcher", [https_json_fetch, https_text_fetch, https_bytes_fetch])
 def test_fetch_rejects_malformed_url_before_dns(no_network, fetcher, url):
@@ -217,6 +228,24 @@ def test_async_did_web_resolver_rejects_a_huge_unicode_host_fast():
                  DidResolutionError)
 
 
+def test_fetch_rejects_combining_marks_fast(no_network):
+    # Out-of-order combining marks: CPython <= 3.12 NFKC-sorts them with an insertion
+    # sort inside urlparse. 0.5 MB took 25 s there, before any host check ran.
+    host = "a" + "\u0301" * 64_000 + "\u0316" * 64_000 + ".com"
+    _assert_fast(lambda: https_json_fetch(f"https://{host}/did.json"), UnsafeUrlError)
+
+
+def test_error_message_is_bounded_for_a_huge_did():
+    # The message names the DID through safe_repr, not repr(): a 2 MB DID of control
+    # characters used to make a 16 MB error string.
+    with pytest.raises(DidResolutionError) as info:
+        _did_web_url("did:web:" + "\x01" * 2_000_000)
+    assert len(str(info.value)) < 4_000
+    with pytest.raises(DidWebvhError) as info:
+        _did_webvh_url("did:webvh:Qm:" + "\x01" * 2_000_000)
+    assert len(str(info.value)) < 4_000
+
+
 def test_fetch_rejects_a_huge_unicode_host_fast(no_network):
     _assert_fast(lambda: https_json_fetch(f"https://{HUGE_HOST}/did.json"), UnsafeUrlError)
 
@@ -236,22 +265,19 @@ def test_async_fetch_rejects_malformed_url_before_dns(no_network):
 
 
 def test_fetch_types_an_idna_label_too_long():
-    # The IDNA codec raises UnicodeError inside getaddrinfo, before any DNS query.
-    with pytest.raises(UnsafeUrlError, match="cannot resolve"):
+    # The real getaddrinfo: it IDNA-encodes a str host before the C lookup, and the
+    # codec rejects a label over 63 characters, so no DNS query is sent.
+    with pytest.raises(UnsafeUrlError, match="cannot resolve") as info:
         https_json_fetch("https://" + "a" * 64 + ".com/did.json")
+    assert isinstance(info.value.__cause__, UnicodeError)
 
 
-def test_fetch_types_a_non_ascii_request_target(monkeypatch):
-    # A valid host with a non-ASCII path resolves, then http.client fails to encode
-    # the request line (UnicodeEncodeError), before the TCP connection.
-    monkeypatch.setattr(fetch.socket, "getaddrinfo",
-                        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))])
-
-    def _tcp(address, *a, **k):
-        raise AssertionError(f"TCP connection attempted to {address!r}")
-    monkeypatch.setattr(fetch.socket, "create_connection", _tcp)
+def test_https_get_types_a_non_ascii_request_target(no_network):
+    # The guarded fetch refuses a non-ASCII URL up front; _https_get still types one:
+    # http.client fails to encode the request line, before the TCP connection.
     with pytest.raises(DidResolutionError, match="fetch failed") as info:
-        https_json_fetch("https://example.com/ü/did.json")
+        fetch._https_get("example.com", "93.184.216.34", 443, "/\u00fc/did.json",
+                         timeout=1.0, max_bytes=10)
     assert isinstance(info.value.__cause__, UnicodeEncodeError)
 
 

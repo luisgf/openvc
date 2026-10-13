@@ -23,6 +23,7 @@ import re
 from typing import Any, Awaitable, Callable
 from urllib.parse import unquote
 
+from ..proof._verify_common import safe_repr
 from .base import DidDocument, DidResolutionError, parse_did_document
 
 Fetch = Callable[[str], dict[str, Any]]
@@ -32,32 +33,41 @@ AsyncFetch = Callable[[str], Awaitable[dict[str, Any]]]
 # One RFC 1123 host label: letters, digits and inner hyphens, at most 63 characters.
 _LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _PORT = re.compile(r"[0-9]{1,5}")
+# A last label a WHATWG parser reads as an IPv4 number: decimal, or 0x hex.
+_NUMERIC_LABEL = re.compile(r"[0-9]+|0[xX][0-9A-Fa-f]*")
 
 
 def _check_host(host: str, did: str) -> None:
     """Reject a decoded did:web host that is not a domain name with an optional port.
 
-    The spec defines the host by RFC 1035/1123 domain-name syntax, which is ASCII.
-    Checking it here keeps a hostile host (a bad port, a bracket, a control
-    character, ``@`` or ``/``) a typed error before any fetch runs, the caller's own
-    fetch included.
+    The spec defines the host by RFC 1035/1123 domain-name syntax, which is ASCII,
+    and forbids IP addresses. Checking it here keeps a hostile host (a bad port, an
+    IP literal, a control character, ``@`` or ``/``) a typed error before any fetch
+    runs, the caller's own fetch included.
 
     An internationalized host must be written as its A-label (``xn--…``). A Unicode
     host is refused rather than converted: Python's IDNA codec is IDNA2003, which
     maps ``faß.de`` to ``fass.de`` where IDNA2008 and browsers use ``xn--fa-hia.de``,
     a different registrable domain. Its punycode encoder is also quadratic, so the
-    length is bounded first, before any per-character work.
+    length is bounded first, before any per-character work. A dotted, decimal or hex
+    IPv4 form (``127.0.0.1``, ``2130706433``, ``0x7f.1``) is refused the way WHATWG
+    spots one: the last label is a number.
     """
+    shown = safe_repr(did)              # bounded: the DID can be megabytes long
     name, colon, port = host.rpartition(":") if ":" in host else (host, "", "")
     if colon and not (_PORT.fullmatch(port) and 0 < int(port) <= 65535):
-        raise DidResolutionError(f"did:web {did!r} has an invalid port {port!r}")
+        raise DidResolutionError(f"did:web {shown} has an invalid port {safe_repr(port)}")
     if len(name) > 253:
-        raise DidResolutionError(f"did:web {did!r} host is longer than 253 characters")
+        raise DidResolutionError(f"did:web {shown} host is longer than 253 characters")
     if not name.isascii():
         raise DidResolutionError(
-            f"did:web {did!r} host {name!r} is not ASCII; write an IDN as its xn-- A-label")
-    if not all(_LABEL.fullmatch(label) for label in name.split(".")):
-        raise DidResolutionError(f"did:web {did!r} host {name!r} is not a domain name")
+            f"did:web {shown} host {name!r} is not ASCII; write an IDN as its xn-- A-label")
+    labels = name.split(".")
+    if not all(_LABEL.fullmatch(label) for label in labels):
+        raise DidResolutionError(f"did:web {shown} host {name!r} is not a domain name")
+    if _NUMERIC_LABEL.fullmatch(labels[-1]):
+        raise DidResolutionError(
+            f"did:web {shown} host {name!r} is an IP address, which did:web forbids")
 
 
 def _did_web_url(did: str) -> str:

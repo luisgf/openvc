@@ -8,11 +8,11 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
-- **A did:web host can no longer stall the event loop, and a Unicode host no
-  longer resolves at another domain**
-  ([#235](https://github.com/luisgf/openvc/issues/235)). Both were found by the
+- **A did:web host or a fetched URL can no longer stall the event loop, and a
+  Unicode host no longer resolves at another domain**
+  ([#235](https://github.com/luisgf/openvc/issues/235)). Found by the
   adversarial review of [#209](https://github.com/luisgf/openvc/pull/209), run
-  after it merged.
+  after it merged; this change's own review found the `urlparse` cost.
 
   The did:web host check that #209 added IDNA-encoded the host before bounding
   its length. CPython's punycode encoder is quadratic: 10,000 CJK characters took
@@ -22,6 +22,13 @@ All notable changes to **openvc** are documented here. The format follows
   signature check. Before #209 the encode ran inside `getaddrinfo` on a worker
   thread. The sync path with the default fetch had the same cost already, and so
   did https-issuer and status-list hosts.
+
+  The guarded fetch had a second cost that did not depend on #209. On CPython
+  3.12 and earlier, `urlparse` NFKC-normalizes a non-ASCII netloc, and
+  out-of-order combining marks make that quadratic: a 256 KB host took about
+  6.7 s and 0.5 MB about 25 s. `normalize` holds the GIL, so running the fetch on
+  a worker thread still froze the event loop. A status-list or schema URL in a
+  self-signed credential was enough to trigger it.
 
   A Unicode host also went to another registrable domain than other
   implementations use. Python's IDNA codec is IDNA2003, so `did:web:fa%C3%9F.de`
@@ -34,13 +41,26 @@ All notable changes to **openvc** are documented here. The format follows
 
   A did:web or did:webvh host must now be ASCII, at most 253 characters, checked
   before any per-character work. An internationalized host is written as its
-  A-label (`did:web:xn--mnchen-3ya.de`). The SSRF-guarded fetch applies the same
-  two rules to every https URL before DNS and raises `UnsafeUrlError`. The did:web
-  spec defines the host by RFC 1035/1123, which are ASCII.
+  A-label (`did:web:xn--mnchen-3ya.de`). The did:web spec defines the host by
+  RFC 1035/1123, which are ASCII, and forbids IP addresses. The host is now also
+  refused when its last label is a number, the way WHATWG spots an IPv4 address
+  (`127.0.0.1`, `2130706433`, `0x7f.1`); before, only a bracketed IPv6 literal
+  was. The SSRF-guarded fetch refuses a non-ASCII URL before `urlparse` reads
+  it, which also closes U+212A, the one character whose lower case is ASCII. It
+  then refuses a host over 253 characters before DNS, raising `UnsafeUrlError`.
+  A did:web error message names the DID through `safe_repr`: a 2 MB DID used to
+  make a 16 MB message.
 
-  A did:web with a Unicode host (`did:web:m%C3%BCnchen.de`) or an https URL with
-  one is now rejected; use the A-label instead. Those DIDs already resolved
-  differently in openvc than in other implementations.
+  These are now rejected:
+
+  - a did:web with a Unicode host (`did:web:m%C3%BCnchen.de`; use its A-label);
+  - a did:web whose host is an IPv4 address in any form;
+  - an https URL with any non-ASCII character, in the host or the path, sent to
+    the guarded fetch. A non-ASCII path already failed when the request was
+    sent.
+
+  Those DIDs already resolved differently in openvc than in other
+  implementations, or broke the did:web spec.
 
 ## [1.31.1] — 2026-10-13
 
