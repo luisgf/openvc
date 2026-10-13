@@ -114,7 +114,7 @@ refused:
 - userinfo and a backslash;
 - a control character or whitespace;
 - params, a query or a fragment;
-- a non-ASCII host (write an IDN as its `xn--` A-label);
+- a non-ASCII character (write an IDN host as its `xn--` A-label);
 - a percent-encoded host;
 - port 0;
 - a `.` or `..` segment.

@@ -33,7 +33,10 @@ All notable changes to **openvc** are documented here. The format follows
   - a control character or whitespace (`urlparse` silently drops `\t\r\n`);
   - params, a query or a fragment, even an empty one (the metadata URL silently
     dropped them);
-  - a non-ASCII host (write an IDN as its `xn--` A-label);
+  - a non-ASCII character anywhere (write an IDN host as its `xn--` A-label).
+    This is checked before `urlparse` runs, because on CPython 3.12 and
+    earlier its NFKC pass over a non-ASCII netloc is quadratic: a 256 KB
+    issuer took about 6.5 s there;
   - a percent-encoded host;
   - port 0 (the guarded fetch read it as 443);
   - a `.` or `..` path segment, encoded or not.
