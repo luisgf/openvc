@@ -4,6 +4,53 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.3] — unreleased
+
+### Security
+
+- **A Key Binding JWT checked against only `audience` or only `nonce` is now
+  rejected** ([#191](https://github.com/luisgf/openvc/issues/191)). At the top
+  level (`verify_credential`, `verify_credential_async` and
+  `SdJwtVcProofSuite.verify`), the KB-JWT's `aud` was checked only when an
+  `audience` was passed and its `nonce` only when a `nonce` was passed, each
+  independently. A caller that passed one of the two got `key_bound=True` for a
+  KB-JWT that was never bound to it. With `audience` alone, a KB-JWT from another
+  of the verifier's own sessions verified. With `nonce` alone, one made for
+  another verifier verified. RFC 9901 §7.3 step 5.6 binds a KB-JWT by validating
+  `nonce` **and** `aud`, and one of them is not a binding.
+
+  When a KB-JWT is present and exactly one of `audience` / `nonce` is given,
+  verification now raises `ClaimsInvalid` before any KB-JWT parsing or crypto
+  runs. The same call with **no** KB-JWT still verifies, with `key_bound=False`,
+  because `VerificationPolicy.audience` also pins a VC-JWT's `aud` and a policy
+  carrying `audience` alone must keep working for those. Passing both values as
+  non-empty strings, or neither, is unchanged, as is `require_key_binding=True`
+  with a missing value (already refused); the one empty-value change is below.
+  The KB-JWT `iat` window from 1.28.0 limited this to near-real-time
+  replay. No openvc lane was affected: `verify_vp_token` and the VP cascades
+  always pass both values.
+
+  The fix stops a misleading `key_bound=True`. It does not, by itself, stop the
+  replay: an attacker who strips the KB-JWT gets the same credential through with
+  an honest `key_bound=False`. A caller who needs the holder binding still has to
+  set `require_key_binding=True` or check `key_bound`. openvc raises rather than downgrade the flag because a
+  half-configured call is a caller error that a quiet `False` would hide; the error
+  points at the missing value. Passing **neither** value keeps its documented
+  meaning: `key_bound=True` then proves possession of the `cnf` key for some
+  verifier, not a binding to you. Changing that would change a value callers gate
+  on, so it is out of scope for a patch. The wiki (*SD-JWT VC → What `key_bound`
+  attests*) now has a table of every case.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **An empty `audience` or `nonce` no longer counts as a binding value.** With
+    both values passed, one of them empty (`nonce=""`, say, from a lost session),
+    the KB-JWT was checked against `""`. Any KB-JWT the holder had signed with an
+    empty nonce for that audience verified, even with `require_key_binding=True`.
+    That is an audience-only binding in disguise. When either value is passed, a
+    present KB-JWT is now refused (`ClaimsInvalid`) unless both are non-empty
+    strings, matching the VP-JWT, OpenID4VP and nested-binding gates, which already
+    refused `""`.
+
 ## [1.29.2] — 2026-10-13
 
 ### Security
@@ -71,49 +118,6 @@ Older Pythons refuse such JSON up front with a typed `MalformedToken`.
 - **A status-list token's `exp` must be a finite number.** `NaN`, `±Infinity`
   and a bignum used to pass, and every comparison against them reads "not
   expired". This now follows the same rule as `check_jwt_temporal`.
-
-- **A Key Binding JWT checked against only `audience` or only `nonce` is now
-  rejected** ([#191](https://github.com/luisgf/openvc/issues/191)). At the top
-  level (`verify_credential`, `verify_credential_async` and
-  `SdJwtVcProofSuite.verify`), the KB-JWT's `aud` was checked only when an
-  `audience` was passed and its `nonce` only when a `nonce` was passed, each
-  independently. A caller that passed one of the two got `key_bound=True` for a
-  KB-JWT that was never bound to it. With `audience` alone, a KB-JWT from another
-  of the verifier's own sessions verified. With `nonce` alone, one made for
-  another verifier verified. RFC 9901 §7.3 step 5.6 binds a KB-JWT by validating
-  `nonce` **and** `aud`, and one of them is not a binding.
-
-  When a KB-JWT is present and exactly one of `audience` / `nonce` is given,
-  verification now raises `ClaimsInvalid` before any KB-JWT parsing or crypto
-  runs. The same call with **no** KB-JWT still verifies, with `key_bound=False`,
-  because `VerificationPolicy.audience` also pins a VC-JWT's `aud` and a policy
-  carrying `audience` alone must keep working for those. Passing both values as
-  non-empty strings, or neither, is unchanged, as is `require_key_binding=True`
-  with a missing value (already refused); the one empty-value change is below.
-  The KB-JWT `iat` window from 1.28.0 limited this to near-real-time
-  replay. No openvc lane was affected: `verify_vp_token` and the VP cascades
-  always pass both values.
-
-  The fix stops a misleading `key_bound=True`. It does not, by itself, stop the
-  replay: an attacker who strips the KB-JWT gets the same credential through with
-  an honest `key_bound=False`. A caller who needs the holder binding still has to
-  set `require_key_binding=True` or check `key_bound`. openvc raises rather than downgrade the flag because a
-  half-configured call is a caller error that a quiet `False` would hide; the error
-  points at the missing value. Passing **neither** value keeps its documented
-  meaning: `key_bound=True` then proves possession of the `cnf` key for some
-  verifier, not a binding to you. Changing that would change a value callers gate
-  on, so it is out of scope for a patch. The wiki (*SD-JWT VC → What `key_bound`
-  attests*) now has a table of every case.
-
-  Fixed before merge, from this change's own adversarial review:
-  - **An empty `audience` or `nonce` no longer counts as a binding value.** With
-    both values passed, one of them empty (`nonce=""`, say, from a lost session),
-    the KB-JWT was checked against `""`. Any KB-JWT the holder had signed with an
-    empty nonce for that audience verified, even with `require_key_binding=True`.
-    That is an audience-only binding in disguise. When either value is passed, a
-    present KB-JWT is now refused (`ClaimsInvalid`) unless both are non-empty
-    strings, matching the VP-JWT, OpenID4VP and nested-binding gates, which already
-    refused `""`.
 
 ## [1.29.1] — 2026-10-13
 
