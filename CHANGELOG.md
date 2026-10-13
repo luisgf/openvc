@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.30.4] — unreleased
+## [1.30.5] — unreleased
 
 ### Fixed
 
@@ -50,6 +50,22 @@ Side effects of the shared reader, all edge cases:
   typed error.
 - On mdoc, a negative `leeway_s` now counts as 0, as it already did on the Data
   Integrity and WRPRC windows. It used to narrow the window.
+
+## [1.30.4] — 2026-10-13
+
+### Fixed
+
+- **`VpJwtProofSuite.verify` with a pinned `holder_key_jwk` and no `resolver`
+  works again** ([#200](https://github.com/luisgf/openvc/issues/200)). It raised
+  a bare `AttributeError` instead, even for a VP with no credentials, so the
+  failure escaped `OpenvcError` and aborted batch callers. The resolver was
+  defaulted only when the holder key was not pinned. Since 1.6.0
+  ([#24](https://github.com/luisgf/openvc/issues/24)) the cascade passes it to
+  `batch_resolvers`, which cannot take `None`. The resolver now defaults to
+  `default_resolver()` whenever none is given, as in `verify_credential` and as
+  before 1.6.0. A pinned key still decides the VP signature and is never
+  resolved. The resolver serves only the embedded credentials' issuers. This
+  failed closed: nothing verified that should not.
 
 ## [1.30.3] — 2026-10-13
 
@@ -2685,6 +2701,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.30.4]: https://github.com/luisgf/openvc/releases/tag/v1.30.4
 [1.30.3]: https://github.com/luisgf/openvc/releases/tag/v1.30.3
 [1.30.2]: https://github.com/luisgf/openvc/releases/tag/v1.30.2
 [1.30.1]: https://github.com/luisgf/openvc/releases/tag/v1.30.1
