@@ -40,10 +40,10 @@ CONTRACT = {
                          "require_status_issuer_binding", "status_issuer_allowlist",
                          "require_not_expired", "require_not_revoked",
                          "kb_max_age_s"],
-    VerifiedCredential: ["credential", "issuer", "subject", "claims"],
-    VerifiedDataIntegrity: ["credential", "issuer", "subject", "proof"],
-    VerifiedSdCredential: ["credential", "issuer", "subject", "proof"],
-    VerifiedSdJwt: ["claims", "issuer", "vct", "key_bound", "confirmation"],
+    VerifiedCredential: ["credential", "issuer", "subject", "claims", "expired"],
+    VerifiedDataIntegrity: ["credential", "issuer", "subject", "proof", "expired"],
+    VerifiedSdCredential: ["credential", "issuer", "subject", "proof", "expired"],
+    VerifiedSdJwt: ["claims", "issuer", "vct", "key_bound", "confirmation", "expired"],
     VerifiedPresentation: ["holder", "credentials", "claims", "vp"],
     VerifiedProof: ["public_jwk", "thumbprint", "alg", "key_source", "issued_at",
                     "nonce", "client_id", "key_attestation", "header", "claims"],
@@ -93,6 +93,18 @@ def test_verification_policy_is_add_only():
     missing = [f.name for f in dc.fields(VerificationPolicy)
                if f.default is dc.MISSING and f.default_factory is dc.MISSING]
     assert not missing, f"VerificationPolicy fields without a default break add-only: {missing}"
+
+
+SUITE_RESULTS = [VerifiedCredential, VerifiedDataIntegrity, VerifiedSdCredential,
+                 VerifiedSdJwt]
+
+
+@pytest.mark.parametrize("cls", SUITE_RESULTS, ids=[c.__name__ for c in SUITE_RESULTS])
+def test_suite_expired_field_defaults_false(cls):
+    # 1.30.0 appended `expired` to the suite results; it must default (add-only), and
+    # to False, so a consumer constructing one positionally keeps a non-expired result
+    field = {f.name: f for f in dc.fields(cls)}["expired"]
+    assert field.default is False
 
 
 def test_verification_result_optional_outputs_default():

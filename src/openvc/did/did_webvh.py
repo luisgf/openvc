@@ -42,6 +42,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from .. import _json
 from ..multibase import MultibaseError, b58btc_encode, decode_multibase, read_varint
 from ..proof._jcs import JcsError, canonicalize
 from .base import DidDocument, DidResolutionError, parse_did_document
@@ -80,8 +81,12 @@ def _did_webvh_url(did: str) -> str:
     scid, _, rest = msi.partition(":")
     if not scid or not rest:
         raise DidWebvhError("did:webvh must be did:webvh:{scid}:{domain}[:path...]")
-    # Reuse did:web's mapping on the post-SCID remainder, then swap the filename.
-    web_url = _did_web_url("did:web:" + rest)
+    # Reuse did:web's mapping (and its host check) on the post-SCID remainder, then
+    # swap the filename.
+    try:
+        web_url = _did_web_url("did:web:" + rest)
+    except DidResolutionError as exc:
+        raise DidWebvhError(f"did:webvh {did!r}: {exc}") from exc
     return web_url[: -len("did.json")] + "did.jsonl"
 
 
@@ -379,7 +384,7 @@ class _WebvhReplay:
             if len(entries) >= _MAX_LOG_ENTRIES:
                 raise DidWebvhError(f"did.jsonl exceeds {_MAX_LOG_ENTRIES} entries")
             try:
-                obj = json.loads(line)
+                obj = _json.loads(line)
             except (ValueError, json.JSONDecodeError, RecursionError) as exc:
                 raise DidWebvhError(f"did.jsonl line is not valid JSON: {exc}") from exc
             if not isinstance(obj, dict):

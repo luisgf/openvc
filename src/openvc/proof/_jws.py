@@ -20,6 +20,7 @@ import base64
 import json
 from typing import Any
 
+from .. import _json
 from ._verify_common import reject_unknown_crit, safe_repr
 from .errors import MalformedToken, SignatureInvalid, UnsupportedAlgorithm
 from .vc_jwt import ALLOWED_ALGS, SigningKey
@@ -61,8 +62,8 @@ def parse_compact(token: str) -> tuple[dict[str, Any], dict[str, Any], bytes, by
     order to) verify."""
     try:
         header_b64, payload_b64, sig_b64 = token.split(".")
-        header = json.loads(b64url_decode(header_b64))
-        payload = json.loads(b64url_decode(payload_b64))
+        header = _json.loads(b64url_decode(header_b64))
+        payload = _json.loads(b64url_decode(payload_b64))
         signature = b64url_decode(sig_b64)
     except (ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise MalformedToken("not a valid compact JWS (need 3 base64url JSON parts)") from exc

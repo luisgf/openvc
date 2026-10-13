@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ._jws import parse_compact, sign_compact, verify_compact
-from ._verify_common import check_jwt_temporal
+from ._verify_common import check_jwt_temporal, safe_repr
 from .vc_jwt import ClaimsInvalid, MalformedToken, SigningKey
 
 DEFAULT_LEEWAY_S = 60
@@ -54,7 +54,10 @@ class VpJwtProofSuite:
         header, payload, _, _ = parse_compact(vp_jwt)
         vp = payload.get("vp")
         holder = payload.get("iss") or (vp.get("holder") if isinstance(vp, dict) else None)
-        return (holder if isinstance(holder, str) else None), header.get("kid")
+        kid = header.get("kid")
+        if kid is not None and not isinstance(kid, str):     # as VcJwtProofSuite.peek_issuer
+            raise MalformedToken("kid must be a string")
+        return (holder if isinstance(holder, str) else None), kid
 
     # -- holder presentation ---------------------------------------------- #
 
@@ -215,7 +218,7 @@ class VpJwtProofSuite:
             for result in results:
                 if not result.subject or result.subject != holder:
                     raise ClaimsInvalid(
-                        f"credential subject {result.subject!r} is not the holder "
+                        f"credential subject {safe_repr(result.subject)} is not the holder "
                         f"{holder!r} (holder binding required)")
 
         return VerifiedPresentation(
@@ -243,7 +246,7 @@ class VpJwtProofSuite:
     def _check_audience(aud: Any, expected: str) -> None:
         ok = aud == expected or (isinstance(aud, list) and expected in aud)
         if not ok:
-            raise ClaimsInvalid(f"aud {aud!r} != expected verifier {expected!r}")
+            raise ClaimsInvalid(f"aud {safe_repr(aud)} != expected verifier {expected!r}")
 
 
 __all__ = [

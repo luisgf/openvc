@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.30.0] — unreleased
+## [1.31.0] — unreleased
 
 ### Security
 
@@ -69,6 +69,437 @@ All notable changes to **openvc** are documented here. The format follows
     skips it when no document base is passed, so an undefined type stayed
     relative where JSON-LD resolves it.
   - **The RDF-canonicalized suites are refused, as above.**
+
+## [1.30.2] — 2026-10-13
+
+### Security
+
+- **The RDF Data Integrity suites now validate a document's JSON-LD form before any
+  policy check reads it** ([GHSA-vrxg-57v4-85mc](https://github.com/luisgf/openvc/security/advisories/GHSA-vrxg-57v4-85mc)).
+  This covers `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and `ecdsa-sd-2023`. They sign the
+  RDF dataset a credential expands to. The checks that follow the signature read the
+  JSON, and nothing tied the two together. Many JSON documents expand to the same
+  dataset, so a holder could change the JSON and keep the signature valid. Every case
+  below verified under the default policy, on the sync and async pipelines:
+  - **Hide a signed member from the policy.** The member was re-keyed to its full IRI,
+    or given a shorter alias by an inline `@context`, or moved into `@included` or into
+    a second description of the credential's own node. This skipped an expired
+    `validUntil`, a future `validFrom`, a revoked `credentialStatus`, a required
+    `credentialSchema`, and the proof's own `expires`. It also worked on a derived
+    `ecdsa-sd-2023` credential whose validity window was mandatory.
+  - **Spoof `credentialSubject`.** An inline copy of the VC context replaced the real
+    one, so that `credentialSubject` named the presenter while the signed subject sat
+    under another key. The result reported the presenter as the subject. Inside an
+    `ldp_vc` presentation this passed `require_cryptographic_holder_binding`, so a
+    holder could present someone else's credential as their own.
+  - **Add unsigned claims.** The bundled v2 context has no `@vocab`. JSON-LD drops a
+    term no context defines, so the signature never covered it, and any value placed
+    under such a term (`credentialSubject.age_over_18: true`) verified.
+
+  The JCS suites sign the JSON itself and were not affected, nor were VC-JWT and
+  SD-JWT VC. After the proof verifies, and before signing, the RDF suites now apply
+  context validation (VC Data Integrity §2.4.1). A document that fails raises a typed
+  `ProofMalformed`:
+  - `@context` must start with the VC base context (v2, or v1 through
+    `extra_contexts`). After that, only context URLs the offline loader serves are
+    allowed, plus inline objects that carry nothing but an absolute-IRI `@vocab`.
+  - The document and its proof must be the compacted form of their own expansion
+    under that context. The only accepted variations are a one-element array for its
+    element and `{"id": X}` for `X`, which JSON-LD treats as the same value.
+  - `@included`, `@reverse`, a top-level `@graph`, and a nested second description of
+    the document's own node are refused.
+  - Nothing may be dropped on the way to RDF (JSON-LD "safe mode"). That refuses a
+    node id, type or property that is not a well-formed absolute IRI, a blank-node
+    property, and `@index` / `@direction` annotations, none of which reach the signed
+    dataset.
+  - In a `VerifiablePresentation`, the embedded credentials are skipped by this check.
+    Each one is verified on its own, under its own `@context`.
+
+  **What this rejects that used to be accepted.** These documents were never fully
+  covered by their signature, and other verifiers that apply context validation
+  reject them too:
+  - A credential carrying a term its contexts do not define. Issuing one with
+    `add_proof` / `add_base_proof` now raises `ProofMalformed` instead of signing a
+    document whose claim is not signed. Define custom terms with an inline
+    `{"@vocab": "…"}` or with a context passed through `extra_contexts`.
+  - An inline `@context` object with term definitions.
+  - A relative IRI, such as `verification_method="k"`. JSON-LD resolved it against
+    pyld's default base, so the dataset signed `http://example.org/base/k`.
+  - `@index` and `@direction` annotations. openvc canonicalizes without
+    `rdfDirection`, so neither was ever signed.
+
+  The W3C golden vectors for all three suites still verify unchanged. A context
+  passed through `extra_contexts` stays trusted: one that gives a core VC term a
+  second, shorter name can still hide that member, so inject only contexts you have
+  reviewed ([details](https://github.com/luisgf/openvc/wiki/Data-Integrity#the-json-must-be-what-was-signed)).
+
+  Fixed before merge, from this change's own adversarial review:
+  - **A blank-node `@vocab` re-opened unsigned claims.** With `{"@vocab": "_:"}`,
+    every undefined term became a blank-node property. RDF conversion drops those, yet
+    compaction reproduced them, so the round trip alone passed. Now an inline `@vocab`
+    must be an absolute IRI, and the safe-mode rule refuses blank-node properties.
+  - **A whole forged top level could ride on a dropped node id.** RDF conversion drops
+    every statement whose subject is not a well-formed IRI, for example
+    `"id": "urn:forged x"`. The credential's real node, restated under any of the forged
+    node's properties, kept the dataset identical. This needed no inline context. It is
+    the same mechanism as the `{"@base": null}` + `@included` forgery (pinned too). The
+    safe-mode rule closes both.
+  - `@index` and `@direction` let a value change shape without changing the dataset.
+    Both are refused now.
+  - A `@context` whose first entry was an object raised a bare `TypeError` in the new
+    check. It is now a typed `ProofMalformed`.
+
+## [1.30.1] — 2026-10-13
+
+### Security
+
+- **A W3C credential secured as SD-JWT is now held to its own `validFrom` /
+  `validUntil`** ([#198](https://github.com/luisgf/openvc/issues/198)). Found by
+  the adversarial review of [#188](https://github.com/luisgf/openvc/pull/188).
+  The SD-JWT lane enforced only the JWT `exp` / `nbf`, on both pipelines. That
+  let a VCDM credential secured with SD-JWT (VC-JOSE-COSE `vc+sd-jwt`), whose only
+  expiry was a past `validUntil`, verify under the default policy, bare or inside
+  an `EnvelopedVerifiableCredential`. VC-JOSE-COSE §3.2.1 makes that credential
+  the SD-JWT's claim set itself. §3.1.3 says, for the JOSE encoding SD-JWT builds
+  on, that `exp` dates the signature, not the data. `SdJwtVcProofSuite.verify` now
+  applies the same VCDM window check as the VC-JWT lane:
+  - `validFrom` / `validUntil`, or the VCDM 1.1 `issuanceDate` /
+    `expirationDate`, are checked on the processed payload, so a disclosed
+    `validUntil` counts.
+  - It uses the current time and the suite leeway, like the VC-JWT lane.
+  - A present but unparseable value fails closed (`MalformedTimestamp`).
+  - `require_not_expired=False` waives only the expiry. `VerifiedSdJwt.expired`
+    (1.30.0) then reports it, so `VerificationResult.expired` is `True`.
+
+  The payload counts as a VCDM credential when its `@context` names a VCDM base
+  context, or when its `typ` is `vc+sd-jwt` and it has no `vct` (a non-empty
+  string). Both signals are read from the issuer-signed SD-JWT; the media type of
+  an enveloping `data:` URL is not consulted.
+  **IETF SD-JWT VCs are unaffected:** a `dc+sd-jwt` one, or one with the
+  pre-draft-06 `vc+sd-jwt` typ and a `vct`, that merely has a claim named
+  `validUntil` still verifies, and is not reported `expired`, because that name
+  is not a validity bound in its vocabulary. With key binding required, the
+  window is checked after the KB-JWT, so an expiry verdict still means the
+  presentation was bound.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **A very large `leeway_s` no longer crashes the validity-window check.** It
+    added the leeway to a `datetime`, so a leeway beyond that type's range raised
+    a bare `OverflowError` that aborted `verify_many`, on every lane that checks
+    `validFrom` / `validUntil`. The check now compares differences, so any leeway
+    is honoured as given.
+  - A `vct` that is not a non-empty string (`""`, `0`, `[]`) no longer counts as
+    one, so it cannot switch the `vc+sd-jwt` rule off.
+
+### Tests
+
+- `tests/test_sd_jwt_vcdm_validity.py` pins #198 in both directions through
+  `verify_credential` and `verify_credential_async`, bare and enveloped: every
+  VCDM signal enforces the window (including the waiver's `expired=True`), and
+  IETF claims named like VCDM bounds are neither enforced nor flagged.
+
+## [1.30.0] — 2026-10-13
+
+### Security
+
+- **A Key Binding JWT checked against only `audience` or only `nonce` is now
+  rejected** ([#191](https://github.com/luisgf/openvc/issues/191)). At the top
+  level (`verify_credential`, `verify_credential_async` and
+  `SdJwtVcProofSuite.verify`), the KB-JWT's `aud` was checked only when an
+  `audience` was passed and its `nonce` only when a `nonce` was passed, each
+  independently. A caller that passed one of the two got `key_bound=True` for a
+  KB-JWT that was never bound to it. With `audience` alone, a KB-JWT from another
+  of the verifier's own sessions verified. With `nonce` alone, one made for
+  another verifier verified. RFC 9901 §7.3 step 5.6 binds a KB-JWT by validating
+  `nonce` **and** `aud`, and one of them is not a binding.
+
+  When a KB-JWT is present and exactly one of `audience` / `nonce` is given,
+  verification now raises `ClaimsInvalid` before any KB-JWT parsing or crypto
+  runs. The same call with **no** KB-JWT still verifies, with `key_bound=False`,
+  because `VerificationPolicy.audience` also pins a VC-JWT's `aud` and a policy
+  carrying `audience` alone must keep working for those. Passing both values as
+  non-empty strings, or neither, is unchanged, as is `require_key_binding=True`
+  with a missing value (already refused); the one empty-value change is below.
+  The KB-JWT `iat` window from 1.28.0 limited this to near-real-time
+  replay. No openvc lane was affected: `verify_vp_token` and the VP cascades
+  always pass both values.
+
+  The fix stops a misleading `key_bound=True`. It does not, by itself, stop the
+  replay: an attacker who strips the KB-JWT gets the same credential through with
+  an honest `key_bound=False`. A caller who needs the holder binding still has to
+  set `require_key_binding=True` or check `key_bound`. openvc raises rather than downgrade the flag because a
+  half-configured call is a caller error that a quiet `False` would hide; the error
+  points at the missing value. Passing **neither** value keeps its documented
+  meaning: `key_bound=True` then proves possession of the `cnf` key for some
+  verifier, not a binding to you. Changing that would change a value callers gate
+  on, so it is out of scope for a patch. The wiki (*SD-JWT VC → What `key_bound`
+  attests*) now has a table of every case.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **An empty `audience` or `nonce` no longer counts as a binding value.** With
+    both values passed, one of them empty (`nonce=""`, say, from a lost session),
+    the KB-JWT was checked against `""`. Any KB-JWT the holder had signed with an
+    empty nonce for that audience verified, even with `require_key_binding=True`.
+    That is an audience-only binding in disguise. When either value is passed, a
+    present KB-JWT is now refused (`ClaimsInvalid`) unless both are non-empty
+    strings, matching the VP-JWT, OpenID4VP and nested-binding gates, which already
+    refused `""`.
+- **JSON nested deeper than 100 levels is refused where it enters openvc, so it can no
+  longer escape the typed-error boundary as a bare `RecursionError`**
+  ([#213](https://github.com/luisgf/openvc/issues/213)). Found by the adversarial
+  reviews of [#194](https://github.com/luisgf/openvc/pull/194) and of this change. On
+  Python 3.14, `json.loads` accepts about 116k levels of nesting, but `repr()` of the
+  result overflows at about 70k and `==` between two such values at about 43k. More
+  than 40 sites formatted or compared an attacker-controlled value: error messages,
+  status parsing, DID and JWK handling, issuer metadata. Each raised a bare
+  `RecursionError`, which escaped `OpenvcError` and aborted a whole `verify_many` /
+  `verify_many_async` batch. Several needed no valid signature: a `did:jwk` issuer's
+  `kty`, a JWE protected header on the `direct_post.jwt` path, a DID document served by
+  the attacker's own `did:web` host, the DC API audience peek. Others needed only a
+  self-issued `did:key` signature, such as a `credentialStatus.statusListIndex`, which
+  is parsed even with no status resolver.
+
+  Rather than make each site safe, openvc now bounds the input:
+  - every untrusted JSON parse goes through one loader that refuses nesting deeper than
+    100 levels, the same bound the JCS canonicaliser and the SD-JWT unpacker already
+    apply. That covers every JWS header and payload, SD-JWT disclosures, JWE headers,
+    `vp_token`, enveloped credentials, `did:jwk`, `did:webvh` logs, fetched JSON,
+    schemas, type metadata, LoTE lists and the EBSI registry client. The failure is the
+    format's own typed parse error (`MalformedToken`, `SdJwtError`, `JweMalformed`,
+    `VpTokenMalformed`, ...);
+  - objects openvc receives already parsed are held to the same bound: a credential or
+    `vp_token` dict, a Data Integrity suite's input, a DID document or JWT VC Issuer
+    metadata from an injected fetch, and a relying party's DCQL query in
+    `check_request_within_registration`;
+  - `verify_credential`, `verify_credential_async` and `verify_vp_token` map any
+    `RecursionError` that still reaches them to `UnknownCredentialFormat` /
+    `VpTokenMalformed`, as a backstop.
+
+  No real credential, DID document, status list or trust list nests anywhere near 100
+  levels. The bound applies on every Python version, so the typed class no longer
+  depends on the interpreter.
+- **Error messages no longer quote an untrusted container or an unbounded string.**
+  `safe_repr` (from [#212](https://github.com/luisgf/openvc/pull/212)) now cuts a
+  string past 200 characters and names an int past 64 bits by its type (`repr()` of an
+  int over 4300 digits raises `ValueError`). It is now used for a Data Integrity
+  `proof.type` / `cryptosuite` (including `ecdsa-sd-2023`), the validity dates, the
+  `challenge` / `domain` binding, the DC API audience, a VP-JWT `aud`, a VC-JWT's
+  `vc.issuer` / `credentialSubject.id` / `vc.id`, a JWT VC Issuer's metadata `issuer`
+  and `kid`, the `kid` and issuer DID in key-resolution errors (sync and async), and
+  the `kty` / `crv` of a key that caller code supplies (a pinned JWK, a custom resolver,
+  an OpenID4VCI `resolve_proof_key`). A multi-megabyte `did:jwk` used to be quoted in
+  full.
+- **`VpJwtProofSuite.peek_holder` rejects a non-string `kid` with `MalformedToken`**, as
+  `VcJwtProofSuite.peek_issuer` already did.
+- **The ML-DSA VC-JWT lane rejects a non-string `sub` or `jti`, as the PyJWT lane
+  does**, so `_reconcile` never compares two attacker containers with `!=`. The lane is
+  experimental and opt-in (`VcJwtProofSuite(allow_pq=True)`); the pipeline never
+  enables it.
+
+### Added
+
+- **The proof suites report the expiry they waived.** `VerifiedCredential`,
+  `VerifiedSdJwt`, `VerifiedDataIntegrity` and `VerifiedSdCredential` gain
+  `expired: bool = False`, appended with a default (the frozen return-object
+  contract is updated; positional constructions keep working). Called with
+  `check_temporal=False`, a suite sets it when an expiry check it skipped would
+  have failed:
+  - VC-JWT: the JWT `exp`, as PyJWT judges it, or the body's `validUntil` /
+    `expirationDate`;
+  - SD-JWT VC: `exp`;
+  - Data Integrity: the credential's `validUntil` / `expirationDate`, or the
+    proof's own `expires`.
+
+  With `check_temporal=True` it is always `False`, because an expiry raises.
+  `check_validity_window` and `check_jwt_temporal` (`openvc.proof._verify_common`)
+  return the same verdict as a `bool`.
+
+### Changed
+
+- **An expired or revoked `JsonSchemaCredential` now fails under every
+  policy.** The schema VC's inner verification copied `require_not_expired` /
+  `require_not_revoked` from the outer policy, and kept only the credential from
+  that result. Under the waiver an expired schema VC was therefore applied, with
+  `schema.validated=True` and `expired=False`, while the default policy rejects
+  it with `SchemaResolutionError`. The waivers concern the verified credential's
+  own disposition. The schema VC is a trust input that credential depends on,
+  like a status-list credential (which the blessed resolvers verify under the
+  default policy) or an `x5c` chain, so it no longer inherits them. One helper
+  now builds the inner policy for both pipelines.
+- **Under the waiver, PyJWT still judges a VC-JWT's `exp`.** The suite used to
+  switch PyJWT's `exp` check off when expiry was waived. It now decodes with the
+  check on, and decodes again without it only after PyJWT reports an expiry, so
+  every other claim check still runs and a waived `exp` is judged exactly as the
+  default policy judges it. Malformed `exp` / `nbf` / `iat` shapes are refused
+  before PyJWT under both policies
+  ([#195](https://github.com/luisgf/openvc/pull/195)).
+- `openvc.verify` no longer imports `CredentialExpired`, `ProofError`,
+  `check_validity_window` or `check_jwt_temporal`. The removed helper had
+  pulled them in since 1.27.0; they were never in its `__all__`. Import them
+  from `openvc.proof.errors` and `openvc.proof._verify_common`.
+- **A deeply nested input now fails with its format's parse-time error class.** On
+  Python 3.14 a few deep inputs used to parse and fail at a later check, so a caller that
+  matches on the class sees it change:
+  - a deep dict passed to `verify_credential` now raises `UnknownCredentialFormat` (a
+    `VerificationError`), where the Data Integrity suite used to raise a `ProofError`;
+  - a deep LDP-VP raises `VpTokenMalformed`, not `UnsupportedPresentationFormat`;
+  - a deep JWE header raises `JweMalformed`, not `UnsupportedJweAlgorithm`;
+  - a deep LoTE header raises `TrustListParseError`, not `TrustListSignatureError`.
+
+  All of them are still `OpenvcError`, and all still fail closed. JSON nested deeper than
+  100 levels is rejected wherever openvc parses it.
+
+### Fixed
+
+- **`VerificationResult.expired` is now the default policy's verdict.**
+  `VerificationPolicy(require_not_expired=False)` (1.27.0) reports a waived
+  expiry as `expired=True`. `openvc.verify` computed the flag by re-deriving
+  expiry with other clocks and fields than the proof suites enforce, so it could
+  disagree with the verdict it stood in for. The values below were identical on
+  the sync and async pipelines, which 1.28.0 had made agree:
+
+  | Credential | Default policy | `expired` under the waiver in 1.29.2 |
+  |---|---|---|
+  | Data Integrity proof whose own `expires` passed (every suite, ecdsa-sd-2023 derived and P-384 included) | `CredentialExpired: proof expired` | `False` |
+  | VC-JWT body `validUntil` passed at the current time, `policy.now` pinned before it | `CredentialExpired` | `False` |
+  | VC-JWT body `validUntil` still ahead, `policy.now` pinned after it | accepted | `True` |
+  | VC-JWT `exp` PyJWT coerces to a past date (`"1000"`, `true`, `-10**400`) | `ClaimsInvalid: Signature has expired` | `False` |
+  | VC-JWT `exp` = `int(now) - leeway`, or a float PyJWT truncates past it | `ClaimsInvalid: Signature has expired` | `False` |
+  | SD-JWT VC with a past VCDM `validUntil` / `expirationDate` claim | accepted | `True` |
+
+  A `False` above is fail-open for a caller who acts on the flag. Each suite now
+  reports the expiry check it skipped (see *Added*); both pipelines copy that
+  verdict and `_expired_flag` is gone, along with its match on the error
+  message's text. `expired` is now `True` exactly when the default policy would
+  have rejected the credential for its own expiry. Found by the adversarial
+  review of [#188](https://github.com/luisgf/openvc/pull/188).
+
+### Tests
+
+- `tests/test_expired_flag_parity.py` gains a case per row above, all run
+  through both pipelines. Each one requires `expired` to equal "the default
+  policy rejected this for expiry":
+  - a proof `expires` on all seven Data Integrity suite/curve combinations;
+  - both clock directions of the VC-JWT body;
+  - the PyJWT-coerced and boundary `exp`s;
+  - the SD-JWT VCDM claims;
+  - the expired and current schema VC.
+
+  The coerced-`exp` cases assert only agreement with the default policy, so
+  they hold whether those values are read as dates or refused as malformed. The
+  shared helpers' `bool` is pinned too. 27 of the new tests fail on 1.29.2.
+
+## [1.29.2] — 2026-10-13
+
+### Security
+
+- **A hostile status-list index is a typed `StatusListError`, not a bare
+  `OverflowError` that aborts a whole batch.** `parse_status_entries` read
+  `credentialStatus.statusListIndex` with `int()` and caught `TypeError` /
+  `ValueError` but not `OverflowError`. A signed VC-JWT whose index was
+  `Infinity`, `-Infinity`, `1e400` or `-1e400` (`json.loads` reads the last two
+  as infinities) raised `OverflowError: cannot convert float infinity to
+  integer`. That escaped `OpenvcError`, so it aborted `verify_many` /
+  `verify_many_async` for every item, not just the bad one, and escaped
+  `verify_credential` / `verify_credential_async` too. A self-issued `did:jwk`
+  could mint one. `require_status=False` did not help: the entries are parsed
+  before the resolver check. Both `BitstringStatusListEntry` and
+  `StatusList2021Entry` were affected.
+
+  The W3C `statusListIndex` and the IETF Token Status List `status.status_list.idx`
+  (SD-JWT VC, or a VC-JWT's JWT payload) now share one index rule. A
+  non-negative integer is accepted, and for the W3C index so is a string of ASCII
+  digits, which is the form the REC requires. The rule now also rejects inputs
+  that `int()` silently coerced into a different bit:
+  - a `bool` (`true` was read as index 1);
+  - any `float`, including `NaN` and an integral `5.0` (`3.7` was read as 3);
+  - a sign, whitespace, an underscore or a non-ASCII digit in the string
+    (`"+5"`, `" 5"`, `"5_0"` and `"٥"` were read as 5, 5, 50 and 5);
+  - a negative index, or one at or past 2^27, the most statuses any list openvc
+    decodes can hold (the 16 MiB decompression cap at one bit per status).
+    Neither can address a bit. Both used to pass parsing and failed only once a
+    list was fetched, so they passed outright under `require_status=False`.
+
+  A W3C index that `int()` refused (`"abc"`) already failed this way, even under
+  `require_status=False`. These shapes now do too, and in a batch they fail only
+  their own item. The IETF parser already refused floats, bools and negatives;
+  it now also refuses an `idx` past the cap. Error messages never `repr()` a
+  container or an integer wider than 64 bits.
+
+Fixed before merge, from this change's own adversarial review. Each item below
+was also a bare exception that aborted a whole `verify_many` batch. The
+"deeply nested" ones need Python 3.14: its `json.loads` accepts arrays nested
+deeper than `str()` / `repr()` can render, so they raise `RecursionError`.
+Older Pythons refuse such JSON up front with a typed `MalformedToken`.
+- **A status entry's `statusListCredential` or `status_list.uri` must be a
+  string.** Both were passed through `str()`, so a deeply nested array raised
+  `RecursionError`. This reached `verify_credential` and the batch under
+  `require_status=False`, with a self-issued `did:jwk`. A number or an object
+  used to become a garbage URL; it is now a `StatusListError` too.
+- **A W3C entry's `statusPurpose` must be a string.** An explicit `null` used to
+  match no purpose, so a set bit was ignored when the list declared no purpose.
+- **A corrupt `encodedList` is a `StatusListError`, not a bare `zlib.error`.**
+  `decode_bitstring` caught `OSError` but not the `zlib.error` that `GzipFile`
+  raises on a valid gzip header followed by bad DEFLATE data. An 18-byte list
+  served by the credential's own issuer was enough, even with
+  `require_status_issuer_binding=True`. The IETF decoder already caught it.
+- **The status messages no longer `repr()` attacker values.** That covered:
+  - a W3C list's `statusPurpose`, and its non-string `encodedList`;
+  - an IETF list's `bits`;
+  - a status-list token's `typ`, `sub` and `exp`, in `verify_status_list_token`
+    (which the default token resolver runs);
+  - the credential `id` in "credential … is revoked/suspended", in `verify`,
+    `aio` and `openvc_ebsi`. A self-issued credential controls both that `id`
+    and its own list's bit.
+- **A resolver that returns something other than an object is a
+  `StatusListError`**, not a bare `AttributeError`.
+- **A status-list token's `exp` must be a finite number.** `NaN`, `±Infinity`
+  and a bignum used to pass, and every comparison against them reads "not
+  expired". This now follows the same rule as `check_jwt_temporal`.
+
+- **A VC-JWT with a malformed `exp`, `nbf` or `iat` no longer aborts a whole
+  `verify_many` batch** ([#195](https://github.com/luisgf/openvc/pull/195)).
+  openvc handed these claims to PyJWT, which casts them with `int()` and
+  catches only `ValueError`. Under the default policy, a signed
+  `"nbf": null`, `"iat": []` or `"exp": {}` raised a bare `TypeError` from
+  `verify_credential`, `verify_credential_async` and `VcJwtProofSuite.verify`.
+  `TypeError` is not an `OpenvcError`. `verify_many` and `verify_many_async`
+  catch only `OpenvcError` per item, so the error escaped and took every other
+  result in the batch with it. That broke the typed-error boundary of
+  [#99](https://github.com/luisgf/openvc/issues/99). Anyone could mint such a
+  token: a self-issued `did:jwk` is enough. Under `require_not_expired=False`,
+  PyJWT skipped `exp` altogether, so an `exp` of `NaN`, `±Infinity`, `"abc"`,
+  `1e400`, `null`, `[]` or `{}` verified. The SD-JWT VC and ML-DSA lanes
+  already rejected these `exp` values, apart from `null`.
+
+  The VC-JWT suite now checks the shape of `exp`, `nbf` and `iat` before PyJWT
+  reads them. It uses `is_numeric_date`, the helper the SD-JWT lane already
+  uses for `exp` / `nbf`. A present value that is not a finite JSON number is a
+  `ClaimsInvalid` on both the classic and the ML-DSA lane, whatever the expiry
+  policy, and `verify_many` reports it as that item's error while the rest
+  still verify. The check runs on the payload before the signature, so a token
+  that is both forged and malformed now reports `ClaimsInvalid` rather than
+  `SignatureInvalid`. Either way it is rejected.
+
+  The adversarial review of this fix found two more ways a signed VC-JWT could
+  escape PyJWT untyped, both closed here. On Python 3.10 and 3.11 the JSON
+  depth limit shrinks as the stack grows, and PyJWT parses the payload a few
+  frames deeper than openvc does. A narrow band of nesting depths therefore
+  passed openvc's parse and raised a bare `RecursionError` inside PyJWT. One
+  batch carrying a ladder of depths always hit it, and `verify_vp_token` was
+  exposed the same way. Separately, a lone surrogate in the signature segment
+  raised a bare `UnicodeEncodeError`. A non-ASCII token is now a
+  `MalformedToken` before anything is decoded. As a backstop, a `TypeError`,
+  `ValueError` or `RecursionError` from PyJWT is now caught as
+  `ClaimsInvalid`.
+
+  Some tokens that used to verify are now rejected: a numeric string
+  (`"exp": "1999999999"`), a bool (`"nbf": true`) and an integer too large for
+  a float. PyJWT `int()`-cast the first two, and the third never expires.
+  RFC 7519 §2 defines a NumericDate as a JSON number. On the ML-DSA lane,
+  `null` is now rejected rather than read as absent, and the shape of `iat` is
+  checked for the first time. That lane still does not reject a future `iat`,
+  which the classic lane does.
 
 ## [1.29.1] — 2026-10-13
 
@@ -230,6 +661,37 @@ Fixed before merge, from this change's own adversarial review:
   `repr()`. A non-string cryptosuite is now named by its type.
 - A `tuple` `type`, from a Python caller that built the credential in-process,
   is still accepted as an array.
+
+- **A hostile `did:web`, `did:webvh` or https issuer host is a typed error, not a
+  bare `ValueError`** ([#207](https://github.com/luisgf/openvc/issues/207)).
+  Found by the adversarial review of
+  [#202](https://github.com/luisgf/openvc/pull/202), which did not cause it. The
+  host reached `urlparse`, `getaddrinfo` and `http.client` unchecked. A port out
+  of range or not an integer, an unbalanced `[`, a host that NFKC-normalizes into
+  a delimiter (`ex℀mple.com`), an IDNA label over 63 characters and a NUL each
+  raised its own bare exception (`ValueError`, `UnicodeError`,
+  `http.client.InvalidURL`). None is an `OpenvcError`, so one such credential
+  aborted a whole `verify_many` / `verify_many_async` batch. This reached
+  `verify_credential`, `VpJwtProofSuite.verify` (the holder key and the
+  cascade), `verify_vp_token` (`jwt_vc_json` before the signature check, and the
+  `ldp_vc` cascade), the async twins, and the opt-in `jwt_vc_issuer_fetch` lane.
+  It failed closed before any TCP connection, so it was not an SSRF.
+
+  Two layers now type it. `did:web` and `did:webvh` check the host before any
+  fetch, the caller's own fetch included. It must be a domain name of RFC 1123
+  labels with an optional port from 1 to 65535, or they raise
+  `DidResolutionError` (`DidWebvhError` for did:webvh). A Unicode host is checked
+  in its IDNA form and passed through unchanged. The SSRF-guarded fetch raises
+  `UnsafeUrlError` for a URL it cannot parse or a host with a control character,
+  before DNS, and `DidResolutionError` when the request line cannot be encoded
+  (a non-ASCII path). That covers status-list, schema and well-known URLs too.
+  `jwt_vc_issuer_metadata_url` raises `JwtVcIssuerError`, and an unparseable
+  https `iss` is unbound in the x5c SAN check (`X5cError`).
+
+  A did:web host that is not a domain name now fails before the fetch: a
+  bracketed IP literal (the did:web spec forbids IP addresses), an empty port or
+  port `0`, a trailing root dot, or an `@`, `/` or `#` decoded from the host.
+  `did:web:evil.com%40example.com` used to fetch from `example.com`.
 
 ### Fixed (docs)
 
@@ -2215,6 +2677,10 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.30.2]: https://github.com/luisgf/openvc/releases/tag/v1.30.2
+[1.30.1]: https://github.com/luisgf/openvc/releases/tag/v1.30.1
+[1.30.0]: https://github.com/luisgf/openvc/releases/tag/v1.30.0
+[1.29.2]: https://github.com/luisgf/openvc/releases/tag/v1.29.2
 [1.29.1]: https://github.com/luisgf/openvc/releases/tag/v1.29.1
 [1.29.0]: https://github.com/luisgf/openvc/releases/tag/v1.29.0
 [1.28.2]: https://github.com/luisgf/openvc/releases/tag/v1.28.2

@@ -33,7 +33,9 @@ def _load_shim():
 shim = _load_shim()
 
 _CREDENTIAL = {
-    "@context": ["https://www.w3.org/ns/credentials/v2"],
+    # `alumniOf` needs a definition: RDF canonicalization would drop it unsigned
+    "@context": ["https://www.w3.org/ns/credentials/v2",
+                 {"@vocab": "https://www.w3.org/ns/credentials/examples#"}],
     "id": "urn:uuid:0c71c1e0-0f3a-4b6e-9a1a-000000000069",
     "type": ["VerifiableCredential"],
     "issuer": "did:example:issuer",

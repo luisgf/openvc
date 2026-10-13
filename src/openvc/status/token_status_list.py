@@ -31,6 +31,7 @@ from typing import Any, Awaitable, Callable
 
 from ..observability import logger, span
 from ._decompress import DecompressionBomb, inflate_bounded
+from ._index import brief, status_index
 from .bitstring import StatusListError
 
 # IETF status values (draft-ietf-oauth-status-list, "Status Types").
@@ -43,7 +44,7 @@ _VALID_BITS = frozenset({1, 2, 4, 8})
 
 def _check_bits(bits: int) -> None:
     if bits not in _VALID_BITS:
-        raise StatusListError(f"bits must be one of 1, 2, 4, 8; got {bits!r}")
+        raise StatusListError(f"bits must be one of 1, 2, 4, 8; got {brief(bits)}")
 
 
 # --------------------------------------------------------------------------- #
@@ -153,20 +154,24 @@ def parse_token_status_ref(claims: dict[str, Any]) -> TokenStatusRef | None:
     idx = ref.get("idx")
     if not uri or idx is None:
         raise StatusListError("status_list reference needs both uri and idx")
-    if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0:
-        raise StatusListError(
-            f"status_list idx must be a non-negative integer, got {idx!r}")
-    return TokenStatusRef(uri=str(uri), index=idx)
+    if not isinstance(uri, str):           # never str() it: deep nesting overflows the stack
+        raise StatusListError(f"status_list uri must be a URL string, got {brief(uri)}")
+    # the draft makes idx a JSON integer: no string, float or bool form
+    return TokenStatusRef(
+        uri=uri, index=status_index(idx, field="status_list idx", allow_string=False))
 
 
 def _status_list_claim(token_claims: dict[str, Any]) -> tuple[int, str]:
+    if not isinstance(token_claims, dict):  # a caller's resolver returned something else
+        raise StatusListError(
+            f"resolved status list token claims must be an object, got {brief(token_claims)}")
     sl = token_claims.get("status_list")
     if not isinstance(sl, dict):
         raise StatusListError("status list token has no status_list claim")
     bits = sl.get("bits")
     lst = sl.get("lst")
     if not isinstance(bits, int) or isinstance(bits, bool):
-        raise StatusListError(f"status_list.bits must be an integer, got {bits!r}")
+        raise StatusListError(f"status_list.bits must be an integer, got {brief(bits)}")
     if not isinstance(lst, str):
         raise StatusListError("status_list.lst must be a base64url string")
     return bits, lst
