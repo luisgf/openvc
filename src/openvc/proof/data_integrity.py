@@ -74,6 +74,10 @@ class VerifiedDataIntegrity:
     issuer: str | None
     subject: str | None
     proof: dict[str, Any]
+    # check_temporal=False only: the credential's validUntil/expirationDate or the
+    # proof's own ``expires`` has passed, i.e. the expiry check that was skipped
+    # would have failed.
+    expired: bool = False
 
 
 def _iso(dt: datetime) -> str:
@@ -225,7 +229,7 @@ class DataIntegrityProofSuite:
         check_proof_purpose(proof, expected_proof_purpose)
         check_presentation_binding(
             proof, expected_challenge=expected_challenge, expected_domain=expected_domain)
-        check_validity_window(
+        expired = check_validity_window(
             unsecured, proof, now=now, leeway_s=self._leeway,
             check_temporal=check_temporal)
 
@@ -234,7 +238,8 @@ class DataIntegrityProofSuite:
         subject = (secured.get("credentialSubject") or {})
         subject_id = subject.get("id") if isinstance(subject, dict) else None
         return VerifiedDataIntegrity(
-            credential=secured, issuer=issuer, subject=subject_id, proof=proof)
+            credential=secured, issuer=issuer, subject=subject_id, proof=proof,
+            expired=expired)
 
 
 def _verify_ed25519(jwk: dict[str, Any], data: bytes, signature: bytes) -> bool:
