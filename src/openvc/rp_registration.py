@@ -430,11 +430,13 @@ def _check_alg(alg: Any) -> str:
     5.1.2, which requires an IANA-registered identifier and *recommends* the TS 119 312
     set; openvc's ``{ES256, ES384, EdDSA, Ed25519}`` is a subset of it, so RS*/HS*/
     ``none`` never reach a verify call."""
+    from .proof._verify_common import safe_repr
     from .proof.vc_jwt import ALLOWED_ALGS
 
     if not isinstance(alg, str) or alg not in ALLOWED_ALGS:
         raise RpRegistrationError(
-            f"WRPRC alg {alg!r} is not permitted (need one of {sorted(ALLOWED_ALGS)})")
+            f"WRPRC alg {safe_repr(alg)} is not permitted "
+            f"(need one of {sorted(ALLOWED_ALGS)})")
     return alg
 
 

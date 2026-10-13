@@ -32,7 +32,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..proof._jws import sign_compact, verify_compact
+from ..proof._verify_common import is_numeric_date
 from ..proof.vc_jwt import SigningKey
+from ._index import brief
 from .bitstring import StatusListError, encode_bitstring
 from .token_status_list import _check_bits, encode_status_list
 
@@ -182,18 +184,19 @@ def verify_status_list_token(
     header, claims = verify_compact(token, public_key_jwk=public_key_jwk)
     if header.get("typ") != STATUS_LIST_JWT_TYP:
         raise StatusListError(
-            f"unexpected token typ {header.get('typ')!r}, want {STATUS_LIST_JWT_TYP!r}")
+            f"unexpected token typ {brief(header.get('typ'))}, want {STATUS_LIST_JWT_TYP!r}")
     if expected_uri is not None and claims.get("sub") != expected_uri:
         raise StatusListError(
-            f"status list token sub {claims.get('sub')!r} != expected {expected_uri!r}")
+            f"status list token sub {brief(claims.get('sub'))} != expected {expected_uri!r}")
     exp = claims.get("exp")
     if exp is not None:
         # exp is a NumericDate (RFC 7519); a present-but-non-numeric exp fails
         # CLOSED — skipping it would let a stale/superseded list be accepted (the
-        # same fail-open bug openvc.proof._verify_common is written to avoid).
-        if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        # same fail-open bug openvc.proof._verify_common is written to avoid). NaN and
+        # ±Infinity are refused too: every comparison against them reads "not expired".
+        if not is_numeric_date(exp):
             raise StatusListError(
-                f"status list token exp must be a numeric timestamp, got {exp!r}")
+                f"status list token exp must be a finite numeric timestamp, got {brief(exp)}")
         instant = _epoch(now) if now is not None else int(time.time())
         if instant - max(0, leeway_s) > exp:
             raise StatusListError("status list token has expired")

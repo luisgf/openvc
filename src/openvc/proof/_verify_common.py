@@ -54,6 +54,18 @@ def reject_unknown_crit(header: dict[str, Any]) -> None:
         raise MalformedToken("JWS 'crit' extensions are not supported")
 
 
+def safe_repr(value: Any) -> str:
+    """*value* for an error message, when it is attacker-shaped JSON.
+
+    A scalar is shown as ``repr``; a container is named by its type. ``json.loads``
+    on Python 3.14 accepts an array nested deeply enough that ``repr()`` of it raises
+    a bare ``RecursionError``, which would escape ``OpenvcError`` from the very
+    ``raise`` meant to report the bad value."""
+    if value is None or isinstance(value, (str, int, float)):
+        return repr(value)
+    return type(value).__name__
+
+
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
 
 # How old an SD-JWT Key Binding JWT's `iat` may be (RFC 9901 §7.3, step 5.5: "within an
@@ -447,5 +459,6 @@ __all__ = [
     "non_negative_seconds",
     "reject_unknown_crit",
     "resolve_verification_key",
+    "safe_repr",
     "utc_epoch",
 ]
