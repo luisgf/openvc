@@ -220,6 +220,14 @@ using that credential's own `@context`:
   matches that IRI and nothing else. An absolute `@base` in the context applies
   to undefined terms, as in JSON-LD.
 
+The types are read from the credential's JSON. This works for VC-JWT and for
+every Data Integrity suite. The RDF-canonicalized suites (`eddsa-rdfc-2022`,
+`ecdsa-rdfc-2019`, `ecdsa-sd-2023`) have required, since 1.30.2, that the JSON
+is exactly what their proof signs (context validation,
+[GHSA-vrxg-57v4-85mc](https://github.com/luisgf/openvc/security/advisories/GHSA-vrxg-57v4-85mc)).
+Their types must therefore be defined by a trusted context; an inline `@vocab`
+is allowed.
+
 Expanding needs the `[data-integrity]` extra (pyld), plus every context the
 credential cites. openvc bundles only the VCDM 2.0 context and never fetches
 one. Pass any other context through `extra_contexts`, including the VCDM 1.1
@@ -228,11 +236,6 @@ credentials use. Failures are typed and fail closed:
 
 - An unknown context raises `DocumentLoaderError`.
 - A credential whose types cannot be expanded raises `ClaimsInvalid`.
-- Types are matched on VC-JWT and JCS Data Integrity credentials
-  (`eddsa-jcs-2022`, `ecdsa-jcs-2019`). A credential secured with an
-  RDF-canonicalized suite (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`,
-  `ecdsa-sd-2023`) is refused with `ClaimsInvalid` for now, even when its types
-  would match.
 - An SD-JWT nested in the presentation never matches.
 - Without pyld, a query that carries `type_values` raises `OpenID4VPError`
   before anything is verified.

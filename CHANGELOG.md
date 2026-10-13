@@ -24,7 +24,10 @@ All notable changes to **openvc** are documented here. The format follows
   alternative, or the response is rejected with `ClaimsInvalid`. openvc expands
   each credential's `type` with JSON-LD against the credential's own
   `@context`. A term the context defines becomes its IRI, and a term no context
-  defines stays as written, unless the context sets an absolute `@base`.
+  defines stays as written, unless the context sets an absolute `@base`. The
+  types come from the credential's JSON, which every accepted format signs:
+  VC-JWT and every Data Integrity suite. The RDF-canonicalized suites have
+  guaranteed this since 1.30.2.
 
   The comparison is on IRIs, not short names. `VerifiableCredential` expands to
   `https://www.w3.org/2018/credentials#VerifiableCredential`, so a query for the
@@ -38,10 +41,6 @@ All notable changes to **openvc** are documented here. The format follows
     flat `type_values`, and an empty or non-string type.
   - An unbundled context raises `DocumentLoaderError`.
   - A credential whose types cannot be expanded raises `ClaimsInvalid`.
-  - Types are matched on VC-JWT and JCS Data Integrity credentials. A
-    credential secured with an RDF-canonicalized suite (`eddsa-rdfc-2022`,
-    `ecdsa-rdfc-2019`, `ecdsa-sd-2023`) is refused with `ClaimsInvalid` for
-    now.
   - An SD-JWT nested in the presentation never matches: its holder could
     reshape a `type` by withholding disclosures.
   - A query without `type_values` still puts no constraint on the type.
@@ -58,9 +57,6 @@ All notable changes to **openvc** are documented here. The format follows
   - A query that names types by short name, such as
     `[["VerifiableCredential", …]]`, used to pass because nothing was checked.
     It now fails: write the IRIs.
-  - An `ldp_vc` query with `type_values` now rejects credentials secured with
-    the RDF-canonicalized suites. Drop `type_values` from that query, or have
-    the issuer use `eddsa-jcs-2022` / `ecdsa-jcs-2019`.
 
   Fixed before merge, from this change's own adversarial review:
   - **Each expansion now gets its own pyld context resolver**, so no context
@@ -68,7 +64,15 @@ All notable changes to **openvc** are documented here. The format follows
   - **An absolute `@base` in the credential's context is now honoured.** pyld
     skips it when no document base is passed, so an undefined type stayed
     relative where JSON-LD resolves it.
-  - **The RDF-canonicalized suites are refused, as above.**
+  - **An RDF-canonicalized credential's JSON `type` could be forged.** The
+    review found that a holder could rewrite the JSON of an `eddsa-rdfc-2022`,
+    `ecdsa-rdfc-2019` or `ecdsa-sd-2023` credential so that its signed dataset
+    stayed the same while its top-level `type` named anything. The same
+    weakness hid the validity window, the status and the subject from every
+    other check, so it was fixed for all of them in 1.30.2
+    ([GHSA-vrxg-57v4-85mc](https://github.com/luisgf/openvc/security/advisories/GHSA-vrxg-57v4-85mc)).
+    This change relies on that fix. A regression test pins that the forged
+    credential fails before `type_values` reads it.
 
 ## [1.30.2] — 2026-10-13
 

@@ -312,11 +312,8 @@ def test_missing_pyld_is_a_typed_error_before_verifying(monkeypatch):
 # regressions from the adversarial review of #216
 # --------------------------------------------------------------------------- #
 
-@needs_pyld
-@pytest.mark.parametrize("cryptosuite", ["eddsa-rdfc-2022", "ecdsa-rdfc-2019"])
-def test_rdf_canonicalized_credential_is_refused_not_matched(cryptosuite):
-    # type_values is matched only on VC-JWT and JCS credentials: even an honest
-    # RDF-canonicalized credential of the requested type is refused rather than matched.
+def _rdf_vp(cryptosuite, credential_body):
+    """An ldp_vc VP (JCS holder proof) embedding one RDF-canonicalized credential."""
     if cryptosuite == "eddsa-rdfc-2022":
         from openvc.proof.data_integrity import DataIntegrityProofSuite as Suite
         ikey, idid = _did_key_ed25519()
@@ -325,17 +322,55 @@ def test_rdf_canonicalized_credential_is_refused_not_matched(cryptosuite):
         ikey, idid = _did_key_p256()
     hkey, hdid = _did_key_ed25519()
     vc = Suite().add_proof(
-        {"@context": [V2], "type": ["VerifiableCredential", "UniversityDegreeCredential"],
-         "issuer": idid, "credentialSubject": {"id": hdid}},
+        {**credential_body, "issuer": idid, "credentialSubject": {"id": hdid}},
         signing_key=ikey, verification_method=ikey.kid, proof_purpose="assertionMethod")
-    vp = EddsaJcsProofSuite().add_proof(
+    return vc, hkey, hdid
+
+
+def _wrap(vcs, hkey, hdid):
+    return EddsaJcsProofSuite().add_proof(
         {"@context": [V2], "type": ["VerifiablePresentation"], "holder": hdid,
-         "verifiableCredential": [vc]},
+         "verifiableCredential": vcs},
         signing_key=hkey, verification_method=hkey.kid, proof_purpose="authentication",
         challenge=NONCE, domain=CLIENT_ID)
-    _verify("ldp_vc", vp)                        # no type_values: still verifies
-    with pytest.raises(ClaimsInvalid, match="matched only on VC-JWT and JCS"):
-        _verify("ldp_vc", vp, [[VC_IRI, "UniversityDegreeCredential"]])
+
+
+RDF_SUITES = ["eddsa-rdfc-2022", "ecdsa-rdfc-2019"]
+# An RDF credential's types must be defined by a trusted context (1.30.2 context
+# validation); an inline @vocab is the one inline context it may carry.
+DEGREE_VOCAB = ([V2, {"@vocab": "https://example.org/examples#"}],
+                ["VerifiableCredential", "UniversityDegreeCredential"])
+
+
+@needs_pyld
+@pytest.mark.parametrize("cryptosuite", RDF_SUITES)
+def test_rdf_canonicalized_credential_matches_its_signed_types(cryptosuite):
+    ctx, types = DEGREE_VOCAB
+    vc, hkey, hdid = _rdf_vp(cryptosuite, {"@context": ctx, "type": types})
+    p = _verify("ldp_vc", _wrap([vc], hkey, hdid), [[VC_IRI, DEGREE_IRI]])
+    assert len(p.credentials) == 1
+    with pytest.raises(ClaimsInvalid, match="none of the requested type_values"):
+        _verify("ldp_vc", _wrap([vc], hkey, hdid), [[VC_IRI, "https://other.example/X"]])
+
+
+@needs_pyld
+@pytest.mark.parametrize("cryptosuite", RDF_SUITES)
+def test_rdf_forged_type_fails_before_the_type_check(cryptosuite):
+    # The adversarial review of this change found that a holder could rewrite an RDF
+    # credential's JSON so its signed dataset stayed the same while the top-level `type`
+    # named anything (GHSA-vrxg-57v4-85mc). Context validation (1.30.2) now refuses
+    # that JSON when the proof is verified, before type_values reads it.
+    from openvc.proof.errors import ProofMalformed
+
+    dmv = "https://dmv.example/DriversLicense"
+    vc, hkey, hdid = _rdf_vp(cryptosuite, {"@context": [V2], "type": ["VerifiableCredential"]})
+    original = {k: v for k, v in vc.items() if k not in ("@context", "proof")}
+    forged = {"@context": [V2, {"@base": None}], "id": "forged",
+              "type": ["VerifiableCredential", dmv], "issuer": vc["issuer"],
+              "credentialSubject": vc["credentialSubject"],
+              "@included": [original], "proof": vc["proof"]}
+    with pytest.raises(ProofMalformed):
+        _verify("ldp_vc", _wrap([forged], hkey, hdid), [[VC_IRI, dmv]])
 
 
 @needs_pyld

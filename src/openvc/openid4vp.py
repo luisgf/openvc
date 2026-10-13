@@ -254,11 +254,8 @@ def verify_vp_token(
     query names IRIs: ``VerifiableCredential`` expands to
     ``https://www.w3.org/2018/credentials#VerifiableCredential``, while a term no context
     defines stays as written. Expanding needs the ``[data-integrity]`` extra (``pyld``)
-    and every context the credential cites — only the VCDM 2.0 context is bundled. Types
-    are matched on VC-JWT and JCS Data Integrity credentials; one secured with an
-    RDF-canonicalized suite (``eddsa-rdfc-2022``, ``ecdsa-rdfc-2019``, ``ecdsa-sd-2023``)
-    is refused with ``ClaimsInvalid`` for now, and a nested SD-JWT never matches. A
-    malformed constraint is :class:`VpTokenMalformed`.
+    and every context the credential cites — only the VCDM 2.0 context is bundled. A
+    nested SD-JWT never matches. A malformed constraint is :class:`VpTokenMalformed`.
     Like ``vct_values``, the check selects the right credential type, not a trusted
     issuer: check each result's ``issuer`` yourself.
 
@@ -1044,11 +1041,13 @@ def _expanded_types(query_id: str, index: int, result: Any, loader: Any) -> froz
     """The fully expanded IRIs of a verified W3C credential's ``type``, as JSON-LD gives
     them after applying the credential's own ``@context`` (OpenID4VP 1.0 §B.1.1).
 
-    Types are matched on a VC-JWT or a JCS Data Integrity credential. A credential
-    secured with an RDF-canonicalized suite (``eddsa-rdfc-2022``, ``ecdsa-rdfc-2019``,
-    ``ecdsa-sd-2023``) is refused rather than matched, for now. An SD-JWT has no W3C
-    ``type`` to match, and its holder could reshape one by withholding disclosures, so it
-    yields none. Only ``@context`` and ``type`` are expanded: the credential is a
+    Types are read from the credential's JSON, so only a format whose JSON is what its
+    proof covers counts: a VC-JWT, a JCS Data Integrity credential, and an
+    RDF-canonicalized one (``eddsa-rdfc-2022``, ``ecdsa-rdfc-2019``, ``ecdsa-sd-2023``),
+    whose suite has already required that JSON to be the compacted form of the signed
+    dataset under trusted contexts (context validation, GHSA-vrxg-57v4-85mc). An SD-JWT
+    has no W3C ``type`` to match, and its holder could reshape one by withholding
+    disclosures, so it yields none. Only ``@context`` and ``type`` are expanded: the credential is a
     top-level node, so nothing else in it changes how its types expand. Each call gets
     its own pyld context resolver, so no context processed here is cached for, or taken
     from, another call."""
@@ -1065,14 +1064,10 @@ def _expanded_types(query_id: str, index: int, result: Any, loader: Any) -> froz
         FORMAT_VC_JWT,
     )
 
-    fmt = getattr(result, "format", None)
-    if fmt in (FORMAT_DI_EDDSA, FORMAT_DI_ECDSA_RDFC, FORMAT_DI_ECDSA_SD):
-        raise ClaimsInvalid(
-            f"Credential Query {query_id!r}: embedded credential #{index} is secured with "
-            f"{fmt!r}; type_values is matched only on VC-JWT and JCS Data Integrity "
-            f"credentials")
     credential = getattr(result, "credential", None)
-    if (fmt not in (FORMAT_VC_JWT, FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS)
+    if (getattr(result, "format", None) not in (
+            FORMAT_VC_JWT, FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS, FORMAT_DI_EDDSA,
+            FORMAT_DI_ECDSA_RDFC, FORMAT_DI_ECDSA_SD)
             or not isinstance(credential, Mapping)):
         return frozenset()
     document = {key: credential[key] for key in ("@context", "type") if key in credential}
