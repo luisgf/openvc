@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .. import _json
 from ..multibase import decode_multibase
 from ..observability import logger, span
 from .errors import (
@@ -54,14 +55,27 @@ def reject_unknown_crit(header: dict[str, Any]) -> None:
         raise MalformedToken("JWS 'crit' extensions are not supported")
 
 
+# The longest string an error message quotes in full; a longer one is cut, so an
+# attacker-sized string never becomes an attacker-sized log line.
+_SHOWN_MAX = 200
+
+
 def safe_repr(value: Any) -> str:
     """*value* for an error message, when it is attacker-shaped JSON.
 
-    A scalar is shown as ``repr``; a container is named by its type. ``json.loads``
-    on Python 3.14 accepts an array nested deeply enough that ``repr()`` of it raises
-    a bare ``RecursionError``, which would escape ``OpenvcError`` from the very
-    ``raise`` meant to report the bad value."""
-    if value is None or isinstance(value, (str, int, float)):
+    Only a bounded scalar is shown as ``repr``: a ``str`` (cut past ``_SHOWN_MAX``
+    characters), ``None``, a ``bool``, a ``float`` and a 64-bit ``int``. Anything else is
+    named by its type. ``json.loads`` on Python 3.14 accepts an array nested deeply
+    enough that ``repr()`` of it raises a bare ``RecursionError``, which would escape
+    ``OpenvcError`` from the very ``raise`` meant to report the bad value. ``repr()`` of
+    an int past the int-to-str digit limit raises ``ValueError`` the same way."""
+    if isinstance(value, str):
+        if len(value) <= _SHOWN_MAX:
+            return repr(value)
+        return f"{value[:_SHOWN_MAX]!r}... ({len(value)} chars)"
+    if value is None or isinstance(value, (bool, float)):
+        return repr(value)
+    if isinstance(value, int) and value.bit_length() <= 64:
         return repr(value)
     return type(value).__name__
 
@@ -116,7 +130,7 @@ def _bound(document: dict[str, Any], *keys: str) -> datetime | None:
             continue
         ts = _parse_ts(raw)
         if ts is None:
-            raise MalformedTimestamp(f"{key} is not a valid dateTime: {raw!r}")
+            raise MalformedTimestamp(f"{key} is not a valid dateTime: {safe_repr(raw)}")
         return ts
     return None
 
@@ -183,13 +197,16 @@ def prepare_di_proof(
     key algebra, not this block; single-sourcing it keeps the fail-closed guards (notably the
     string-``proofValue`` check) from drifting between them, byte-for-byte identical to before
     (the golden fixtures pin it)."""
+    if _json.nesting_exceeds(secured):            # a dict handed over already parsed
+        raise ProofMalformed(f"credential is nested deeper than {_json.MAX_DEPTH} levels")
     proof = secured.get("proof")
     if not isinstance(proof, dict):
         raise ProofMalformed("credential has no proof object")
     if proof.get("type") != proof_type:
-        raise ProofMalformed(f"unexpected proof type {proof.get('type')!r}")
+        raise ProofMalformed(f"unexpected proof type {safe_repr(proof.get('type'))}")
     if proof.get("cryptosuite") != cryptosuite:
-        raise UnsupportedCryptosuite(f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
+        raise UnsupportedCryptosuite(
+            f"unsupported cryptosuite {safe_repr(proof.get('cryptosuite'))}")
     proof_value = proof.get("proofValue")
     if not isinstance(proof_value, str):
         raise ProofMalformed("proof has no proofValue")
@@ -361,14 +378,16 @@ def check_presentation_binding(
     list; ``None`` on either expectation skips that check."""
     if expected_challenge is not None and proof.get("challenge") != expected_challenge:
         raise PresentationBindingError(
-            f"proof challenge {proof.get('challenge')!r} != expected {expected_challenge!r}")
+            f"proof challenge {safe_repr(proof.get('challenge'))} != expected "
+            f"{expected_challenge!r}")
     if expected_domain is not None:
         domain = proof.get("domain")
         ok = domain == expected_domain or (
             isinstance(domain, list) and expected_domain in domain)
         if not ok:
             raise PresentationBindingError(
-                f"proof domain {domain!r} does not include expected {expected_domain!r}")
+                f"proof domain {safe_repr(domain)} does not include expected "
+                f"{expected_domain!r}")
 
 
 def resolve_verification_key(
@@ -454,7 +473,8 @@ def match_alg(jwk: dict[str, Any], allowed_algs: frozenset[str], *, cryptosuite:
         p_kty, p_crv, _ = ALG_PROFILE[alg]
         if kty == p_kty and crv == p_crv:
             return alg
-    raise ProofMalformed(f"{cryptosuite} does not accept a kty={kty!r} crv={crv!r} key")
+    raise ProofMalformed(
+        f"{cryptosuite} does not accept a kty={safe_repr(kty)} crv={safe_repr(crv)} key")
 
 
 __all__ = [

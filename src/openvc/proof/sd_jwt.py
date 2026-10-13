@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Mapping
 
+from .. import _json
 from ..keys import KeyBackendError, verify_signature
 from ._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
@@ -498,8 +499,8 @@ class SdJwtVcProofSuite:
         """(header, payload, signing_input, signature) for a compact JWS."""
         try:
             header_b64, payload_b64, sig_b64 = jws.split(".")
-            header = json.loads(_b64url_decode(header_b64))
-            payload = json.loads(_b64url_decode(payload_b64))
+            header = _json.loads(_b64url_decode(header_b64))
+            payload = _json.loads(_b64url_decode(payload_b64))
             signature = _b64url_decode(sig_b64)
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             # RecursionError: a deeply-nested (valid) JSON header/payload overruns the
@@ -547,7 +548,7 @@ class SdJwtVcProofSuite:
         by_digest: dict[str, list] = {}
         for disclosure in disclosures:
             try:
-                parsed = json.loads(_b64url_decode(disclosure))
+                parsed = _json.loads(_b64url_decode(disclosure))
             except (ValueError, json.JSONDecodeError, RecursionError) as exc:
                 raise SdJwtError("a disclosure is not valid base64url JSON") from exc
             if not isinstance(parsed, list) or len(parsed) not in (2, 3):

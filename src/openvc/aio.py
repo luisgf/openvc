@@ -43,6 +43,7 @@ from .did.base import (
 )
 from .errors import OpenvcError
 from .observability import logger, span
+from .proof._verify_common import safe_repr
 from .schema import SchemaUnavailable, validate_credential_schema_async
 from .status import (
     CredentialRevoked,
@@ -75,6 +76,7 @@ from .verify import (
     _check_types,
     _enforce_status_issuer,
     _fail_closed,
+    _reject_deep_credential,
     _schema_inner_policy,
     _unwrap_enveloped,
     detect_format,
@@ -125,6 +127,7 @@ async def verify_credential_async(
     policy = policy or VerificationPolicy()
     resolver = resolver if resolver is not None else default_async_resolver()
 
+    _reject_deep_credential(credential)
     fmt = detect_format(credential)
     logger.debug("verify_async: format=%s", fmt)
     with span("openvc.verify_credential_async", format=fmt):
@@ -136,6 +139,10 @@ async def verify_credential_async(
         except OpenvcError as exc:
             logger.info("verify_async failed: format=%s error=%s", fmt, type(exc).__name__)
             raise
+        except RecursionError as exc:           # backstop: a value nested past the stack
+            logger.info("verify_async failed: format=%s error=RecursionError", fmt)
+            raise UnknownCredentialFormat(
+                "credential is nested too deeply to verify") from exc
         logger.debug("verify_async ok: format=%s issuer=%s", result.format, result.issuer)
     return result
 
@@ -345,7 +352,7 @@ async def _resolve_jose_key_with_x5c_async(
                 return resolve_x5c_key(x5c, iss, trust_anchors=x5c_trust_anchors, now=now)
             except X5cError as exc:
                 raise KeyResolutionFailed(
-                    f"x5c key resolution failed for issuer {iss!r}: {exc}") from exc
+                    f"x5c key resolution failed for issuer {safe_repr(iss)}: {exc}") from exc
     return await _resolve_jose_key_async(resolver, iss, kid, jwt_vc_issuer_fetch)
 
 
@@ -360,24 +367,24 @@ async def _resolve_jose_key_async(
     if iss.startswith("https://"):
         if jwt_vc_issuer_fetch is None:
             raise KeyResolutionFailed(
-                f"issuer {iss!r} is an https URL; pass an async jwt_vc_issuer_fetch "
+                f"issuer {safe_repr(iss)} is an https URL; pass an async jwt_vc_issuer_fetch "
                 "(e.g. openvc.fetch.https_json_fetch_async) to resolve its key")
         from .jwt_vc_issuer import JwtVcIssuerError, resolve_jwt_vc_issuer_key_async
         try:
             return await resolve_jwt_vc_issuer_key_async(iss, kid, fetch=jwt_vc_issuer_fetch)
         except (JwtVcIssuerError, DidError) as exc:
             raise KeyResolutionFailed(
-                f"could not resolve issuer key for {iss!r}: {exc}") from exc
+                f"could not resolve issuer key for {safe_repr(iss)}: {exc}") from exc
 
     try:
         doc = await resolver.resolve(iss)
     except DidError as exc:
         raise KeyResolutionFailed(
-            f"could not resolve issuer DID {iss!r}: {exc}") from exc
+            f"could not resolve issuer DID {safe_repr(iss)}: {exc}") from exc
     vm = doc.key_by_kid(kid)
     if vm is None:
         raise KeyResolutionFailed(
-            f"no verification method for kid {kid!r} in DID {iss!r}")
+            f"no verification method for kid {safe_repr(kid)} in DID {safe_repr(iss)}")
     return vm.public_key_jwk
 
 

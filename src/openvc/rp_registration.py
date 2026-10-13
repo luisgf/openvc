@@ -69,6 +69,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import _json
 from .errors import OpenvcError
 
 __all__ = [
@@ -949,6 +950,9 @@ def check_request_within_registration(
             f"{intended_use_id!r}")
     if not isinstance(dcql_query, Mapping):
         raise RpRegistrationError("dcql_query must be a JSON object")
+    if _json.nesting_exceeds(dict(dcql_query)):   # the relying party's, handed over parsed
+        raise RpRegistrationError(
+            f"dcql_query is nested deeper than {_json.MAX_DEPTH} levels")
     queries = dcql_query.get("credentials")
     if not isinstance(queries, (list, tuple)) or not queries:
         raise RpRegistrationError("dcql_query has no 'credentials' array to check")
