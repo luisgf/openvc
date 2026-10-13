@@ -15,6 +15,7 @@ import base64
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Protocol, runtime_checkable
 
+from .. import _json
 from ..errors import OpenvcError
 from ..multibase import MultibaseError, decode_multibase, read_varint
 
@@ -81,9 +82,11 @@ class DidDocument:
         If the document declares that relationship, the method must be referenced
         by it (returns None otherwise — the key exists but is not usable for this
         purpose). If the document does not declare the relationship at all, the
-        binding cannot be enforced and the matched key is returned as-is."""
+        binding cannot be enforced and the matched key is returned as-is. A
+        *proof_purpose* that is not a string (including None) names no relationship
+        and returns None."""
         vm = self.key_by_kid(kid)
-        if vm is None:
+        if vm is None or not isinstance(proof_purpose, str):   # unhashable -> no key
             return None
         refs = self.relationships.get(proof_purpose)
         if refs is None:                       # relationship not declared -> lenient
@@ -184,6 +187,9 @@ def parse_did_document(raw: dict[str, Any]) -> DidDocument:
     (``verificationMethod`` / relationships), never ``@context`` — so **DID 1.1 / CID 1.0**
     documents (the ``https://www.w3.org/ns/did/v1.1`` context) resolve unchanged. The DID 1.1
     relationship-semantics diff is revisited when it reaches Proposed Recommendation."""
+    if _json.nesting_exceeds(raw):           # an injected fetch hands it over already parsed
+        raise DidResolutionError(
+            f"DID document is nested deeper than {_json.MAX_DEPTH} levels")
     doc = raw.get("didDocument", raw)
     vms = [
         VerificationMethod(

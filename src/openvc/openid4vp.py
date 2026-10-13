@@ -54,11 +54,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from . import _json
 from .errors import OpenvcError
 from .proof._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
     DEFAULT_LEEWAY_S,
     non_negative_seconds,
+    safe_repr,
 )
 from .proof.errors import ClaimsInvalid
 
@@ -302,24 +304,27 @@ def verify_vp_token(
     _check_completeness(token, queries, dcql_query)
 
     verified: list[VerifiedPresentation] = []
-    for query_id, presentations in token.items():
-        query = queries.get(query_id)
-        if query is None:
-            raise VpTokenMalformed(
-                f"vp_token key {query_id!r} is not a Credential Query id in the DCQL query")
-        for presentation in _presentation_list(query_id, query, presentations):
-            verified.append(_verify_one(
-                query_id, query, presentation,
-                nonce=nonce, client_id=client_id, accepted_auds=accepted_auds,
-                expected_origins=expected_origins, trust_anchors=trust_anchors,
-                mdoc_jwk_thumbprint=mdoc_jwk_thumbprint,
-                resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
-                require_holder_binding=require_holder_binding,
-                jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
-                x5c_trust_anchors=x5c_trust_anchors,
-                resolve_status_list=resolve_status_list,
-                resolve_status_list_token=resolve_status_list_token,
-                require_status=require_status, kb_max_age_s=kb_max_age_s))
+    try:
+        for query_id, presentations in token.items():
+            query = queries.get(query_id)
+            if query is None:
+                raise VpTokenMalformed(
+                    f"vp_token key {query_id!r} is not a Credential Query id in the DCQL query")
+            for presentation in _presentation_list(query_id, query, presentations):
+                verified.append(_verify_one(
+                    query_id, query, presentation,
+                    nonce=nonce, client_id=client_id, accepted_auds=accepted_auds,
+                    expected_origins=expected_origins, trust_anchors=trust_anchors,
+                    mdoc_jwk_thumbprint=mdoc_jwk_thumbprint,
+                    resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
+                    require_holder_binding=require_holder_binding,
+                    jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+                    x5c_trust_anchors=x5c_trust_anchors,
+                    resolve_status_list=resolve_status_list,
+                    resolve_status_list_token=resolve_status_list_token,
+                    require_status=require_status, kb_max_age_s=kb_max_age_s))
+    except RecursionError as exc:       # backstop: a value nested past the stack
+        raise VpTokenMalformed("vp_token is nested too deeply to verify") from exc
     return VpTokenVerification(presentations=tuple(verified))
 
 
@@ -362,7 +367,7 @@ def verify_encrypted_vp_response(
 
     plaintext = decrypt_compact(response, key=key)
     try:
-        payload = json.loads(plaintext)
+        payload = _json.loads(plaintext)
     except (ValueError, RecursionError) as exc:
         raise VpTokenMalformed(f"decrypted response is not valid JSON: {exc}") from exc
     if not isinstance(payload, Mapping) or "vp_token" not in payload:
@@ -384,12 +389,15 @@ def verify_encrypted_vp_response(
 def _parse_vp_token(vp_token: Mapping[str, Any] | str) -> Mapping[str, Any]:
     if isinstance(vp_token, str):
         try:
-            vp_token = json.loads(vp_token)
+            vp_token = _json.loads(vp_token)
         except (ValueError, RecursionError) as exc:
             raise VpTokenMalformed(f"vp_token is not valid JSON: {exc}") from exc
     if not isinstance(vp_token, Mapping):
         raise VpTokenMalformed(
             "vp_token must be a JSON object keyed by Credential Query id")
+    # a vp_token handed over already parsed skips the bounded loader: same bound
+    if _json.nesting_exceeds(dict(vp_token)):
+        raise VpTokenMalformed(f"vp_token is nested deeper than {_json.MAX_DEPTH} levels")
     return vp_token
 
 
@@ -450,7 +458,7 @@ def _presentation_list(query_id: str, query: Mapping[str, Any], value: Any) -> l
 
 
 def _b64url_json(segment: str) -> Mapping[str, Any]:
-    obj = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+    obj = _json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
     return obj if isinstance(obj, Mapping) else {}
 
 
@@ -493,7 +501,7 @@ def _effective_audience(
         if isinstance(candidate, str) and candidate in accepted_auds:
             return candidate
     raise ClaimsInvalid(
-        f"DC API presentation audience {aud!r} is not one of the expected origins "
+        f"DC API presentation audience {safe_repr(aud)} is not one of the expected origins "
         f"(need one of {sorted(accepted_auds)})")
 
 
@@ -786,10 +794,11 @@ def _verify_ldp_vp(
             f"the {FORMAT_LDP_VC} Presentation for {query_id!r} has no Data Integrity "
             f"holder proof")
     cryptosuite = proof.get("cryptosuite")
-    if cryptosuite not in _LDP_VP_CRYPTOSUITES:
+    # a JSON array/object cryptosuite is unhashable: type-check before `in frozenset`
+    if not isinstance(cryptosuite, str) or cryptosuite not in _LDP_VP_CRYPTOSUITES:
         raise UnsupportedPresentationFormat(
             f"the {FORMAT_LDP_VC} Presentation for {query_id!r} uses an unsupported "
-            f"Data Integrity cryptosuite {cryptosuite!r}")
+            f"Data Integrity cryptosuite {safe_repr(cryptosuite)}")
 
     # Verify the holder's authentication proof, bound to the request: challenge = the
     # transaction nonce, domain = the full prefixed client_id. The holder key is

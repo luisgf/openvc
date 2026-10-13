@@ -69,6 +69,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import _json
 from .errors import OpenvcError
 
 __all__ = [
@@ -430,11 +431,13 @@ def _check_alg(alg: Any) -> str:
     5.1.2, which requires an IANA-registered identifier and *recommends* the TS 119 312
     set; openvc's ``{ES256, ES384, EdDSA, Ed25519}`` is a subset of it, so RS*/HS*/
     ``none`` never reach a verify call."""
+    from .proof._verify_common import safe_repr
     from .proof.vc_jwt import ALLOWED_ALGS
 
     if not isinstance(alg, str) or alg not in ALLOWED_ALGS:
         raise RpRegistrationError(
-            f"WRPRC alg {alg!r} is not permitted (need one of {sorted(ALLOWED_ALGS)})")
+            f"WRPRC alg {safe_repr(alg)} is not permitted "
+            f"(need one of {sorted(ALLOWED_ALGS)})")
     return alg
 
 
@@ -446,7 +449,9 @@ def _check_typ(typ: Any, expected: str) -> None:
             f"token typ {_BMI_TYP!r} is the German BMI Architekturkonzept registration "
             f"certificate, a different profile with different claim names — not the "
             f"ETSI TS 119 475 WRPRC ({expected!r}) this module parses")
-    raise RpRegistrationError(f"WRPRC typ must be {expected!r}, got {typ!r}")
+    from .proof._verify_common import safe_repr
+
+    raise RpRegistrationError(f"WRPRC typ must be {expected!r}, got {safe_repr(typ)}")
 
 
 def _jwt_envelope(token: str) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes]:
@@ -947,6 +952,9 @@ def check_request_within_registration(
             f"{intended_use_id!r}")
     if not isinstance(dcql_query, Mapping):
         raise RpRegistrationError("dcql_query must be a JSON object")
+    if _json.nesting_exceeds(dict(dcql_query)):   # the relying party's, handed over parsed
+        raise RpRegistrationError(
+            f"dcql_query is nested deeper than {_json.MAX_DEPTH} levels")
     queries = dcql_query.get("credentials")
     if not isinstance(queries, (list, tuple)) or not queries:
         raise RpRegistrationError("dcql_query has no 'credentials' array to check")

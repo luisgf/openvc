@@ -81,10 +81,31 @@ issuer key from `iss` (see
 **What `key_bound` attests.** `key_bound=True` means a KB-JWT was present,
 verified against the credential's `cnf` key over the disclosures you received, and
 within the freshness window above. Its `aud` and `nonce` are checked against the
-values **you pass**, and only then.
-Without `audience` + `nonce`, the flag proves possession of the key for some
-verifier, not a binding to you. Pass both, or set `require_key_binding=True`, which
-refuses to run without them. An SD-JWT VC nested in a `jwt_vc_json` / `ldp_vc`
+values **you pass**, and they bind it only **together** (RFC 9901 §7.3 step 5.6).
+With the default `require_key_binding=False`:
+
+| you pass | a KB-JWT is present | no KB-JWT |
+|---|---|---|
+| `audience` **and** `nonce` (non-empty strings) | both must match, else `ClaimsInvalid`; `key_bound=True` means bound to you | verifies, `key_bound=False` |
+| only one of them, or an empty one | **`ClaimsInvalid`**, before any KB-JWT crypto runs | verifies, `key_bound=False` |
+| neither | `key_bound=True`, but that is **possession only**: the key signed for *some* verifier, not a binding to you | verifies, `key_bound=False` |
+
+With `require_key_binding=True`, every cell except the first one fails with
+`ClaimsInvalid`: it refuses to run without both values, and it refuses a presentation
+with no KB-JWT.
+
+A single value is not a binding. `aud` alone accepts a KB-JWT from another of
+your own sessions, and `nonce` alone accepts one made for another verifier. An empty
+value binds nothing either: `nonce=""` would accept any KB-JWT the holder signed with
+an empty nonce. So openvc refuses rather than report a half-checked `key_bound=True`,
+and a KB-JWT is never checked against just one of the two values. With no KB-JWT,
+`audience` alone stays a valid policy, which matters because
+`VerificationPolicy.audience` also pins a VC-JWT's `aud`.
+
+That refusal stops a misleading flag; it does not make the KB-JWT **required**. A
+presentation with its KB-JWT stripped still verifies with `key_bound=False`, whatever
+you passed. If you need the holder binding, set `require_key_binding=True` (with both
+values) or check `key_bound is True`. An SD-JWT VC nested in a `jwt_vc_json` / `ldp_vc`
 presentation gets its `aud` / `nonce` from that presentation. A KB-JWT bound
 anywhere else rejects the whole response — see
 [SD-JWT VCs nested in a W3C presentation](Presentations#sd-jwt-vcs-nested-in-a-w3c-presentation).
@@ -155,6 +176,47 @@ In production, resolve Type Metadata over the network with the SSRF-guarded
 default — `openvc.resolvers.default_type_metadata_resolver` — instead of the
 in-memory lambda above.
 
+## W3C credentials secured as SD-JWT (`vc+sd-jwt`)
+
+The same suite verifies a W3C VCDM credential secured with SD-JWT, as defined by
+[VC-JOSE-COSE](https://www.w3.org/TR/vc-jose-cose/) §3.2, either bare or inside an
+`EnvelopedVerifiableCredential` (`data:application/vc+sd-jwt,…`). Such a credential
+**is** the JWT claim set, with `@context`, `issuer`, `validFrom` and so on at the top
+level. Its `exp` dates the signature, not the data: §3.1.3 says so for the JOSE
+encoding SD-JWT builds on. An issuer may therefore
+put the expiry only in `validUntil`, and openvc enforces it just as the VC-JWT lane
+does:
+
+- `validFrom` / `validUntil`, or the VCDM 1.1 `issuanceDate` / `expirationDate`, are
+  checked on the processed payload. That is after the disclosures are applied, so a
+  disclosed `validUntil` counts. The check uses the current time and the suite
+  leeway.
+- A past `validUntil` raises `CredentialExpired`, and a future `validFrom` raises
+  `CredentialNotYetValid`. A present but unparseable value raises
+  `MalformedTimestamp`.
+- `require_not_expired=False` (or `check_temporal=False` on the suite) waives only
+  the expiry, and the result reports `expired=True`.
+- The JWT `exp` / `nbf` are still enforced as well.
+- With `require_key_binding=True`, the window is checked after the KB-JWT, so an
+  expiry verdict still means the presentation was bound.
+
+openvc treats the payload as a VCDM credential when the issuer signed either of
+these:
+
+| Signal | Example |
+|---|---|
+| The payload's `@context` names a VCDM base context, as a string or anywhere in the array | `"@context": ["https://www.w3.org/ns/credentials/v2", …]` (or `…/2018/credentials/v1`) |
+| The `typ` is `vc+sd-jwt` and the payload has no `vct` (a non-empty string) | a W3C issuer that omitted `@context`, or made it disclosable and the holder withheld it |
+
+An **IETF SD-JWT VC is not affected**: a `dc+sd-jwt` one, or one with the legacy
+`vc+sd-jwt` typ and a `vct`. Its claims are the issuer's own vocabulary, so a claim
+that happens to be named `validUntil` is not a validity bound: it is not enforced
+and not reported as `expired`. Its `exp` / `nbf` remain the temporal gate. The
+`vc+sd-jwt` typ alone is not enough, because the IETF drafts used it until draft-06
+renamed it `dc+sd-jwt`, and openvc still accepts it. The `data:` media type of an
+enveloping credential is not consulted either, because it sits outside the issuer's
+signature.
+
 ## Caveat: keep enforcement pointers non-disclosable
 
 If a credential's `credentialStatus` (or `credentialSchema`) must be
@@ -165,4 +227,10 @@ status only works for claims the holder cannot withhold — the same applies to
 [Security model](Security-Model)). RFC 9901 §9.7 likewise forbids making
 `exp` / `nbf` / `iss` / `cnf` / `aud` selectively disclosable: a withheld
 `exp` cannot be distinguished from an absent one, so an expired credential
-would verify.
+would verify. The same holds for a W3C credential's `validUntil` / `validFrom` and
+its `@context`. VC-JOSE-COSE §3.2.1 says properties needed for validation SHOULD
+NOT be selectively disclosable. A holder can withhold a disclosable `validUntil`.
+A holder can also withhold a disclosable `@context`, including a VCDM entry that is
+itself an array-element disclosure. The credential then counts as VCDM only if it is
+typed `vc+sd-jwt` and has no `vct`. If it is `dc+sd-jwt`, or carries a `vct`, its
+window is no longer read.

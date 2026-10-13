@@ -52,12 +52,12 @@ from __future__ import annotations
 
 import base64
 import calendar
-import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, NoReturn, Sequence
 
+from .. import _json
 from .consume import Select
 from .errors import (
     TrustListError,
@@ -382,7 +382,7 @@ def parse_lote(
             raise TrustListParseError(
                 f"LoTE is {len(payload)} bytes, over the {max_bytes}-byte cap")
         try:
-            decoded = json.loads(payload)
+            decoded = _json.loads(payload)
         except (ValueError, RecursionError) as exc:
             raise TrustListParseError(f"LoTE is not valid JSON: {exc}") from exc
     else:
@@ -561,6 +561,7 @@ def consume_lote(
             f"LoTE token is {len(token)} bytes, over the {max_bytes}-byte cap")
 
     from ..proof._jws import parse_compact
+    from ..proof._verify_common import safe_repr
     from ..proof.errors import ProofError
     from ..proof.vc_jwt import ALLOWED_ALGS
 
@@ -572,7 +573,8 @@ def consume_lote(
     alg = header.get("alg")
     if not isinstance(alg, str) or alg not in ALLOWED_ALGS:
         raise TrustListSignatureError(
-            f"LoTE alg {alg!r} is not permitted (need one of {sorted(ALLOWED_ALGS)})")
+            f"LoTE alg {safe_repr(alg)} is not permitted "
+            f"(need one of {sorted(ALLOWED_ALGS)})")
     _reject_unknown_crit(header)
 
     leaf, chain = _signer_chain(header)

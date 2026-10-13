@@ -8,11 +8,14 @@ a credential's validity window, the meaning of ``proofPurpose``, and the DID
 verification-relationship binding do not depend on how the proof was signed. They
 run **after** the signature verifies (the fields they read are integrity-protected
 by that signature), except the key-selection binding, which necessarily precedes
-crypto (you cannot verify without first choosing an authorized key).
+crypto (you cannot verify without first choosing an authorized key), and the
+VC-JWT NumericDate shape gate (:func:`check_numeric_dates`), which must run before
+PyJWT reads those claims and can only reject.
 
-The VC-JWT / SD-JWT suites do their own temporal check via the JWT ``exp``/``nbf``
-claims; this module is the Data Integrity equivalent, so a proof embedded in the
-credential's JSON is held to the same temporal and purpose rules.
+The VC-JWT and SD-JWT suites check the JWT ``exp``/``nbf`` (:func:`check_jwt_temporal`)
+and, for a W3C VCDM payload, the same validity window (:func:`check_validity_window`)
+the Data Integrity suites use, so a credential is held to the same temporal rules
+whichever way it is secured.
 
 Every error here subclasses :class:`~openvc.proof.errors.ProofError`, so a caller
 can catch the whole verification-failure family with one ``except``.
@@ -25,6 +28,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .. import _json
 from ..multibase import decode_multibase
 from ..observability import logger, span
 from .errors import (
@@ -50,6 +54,31 @@ def reject_unknown_crit(header: dict[str, Any]) -> None:
     (``openvc.cose``) and JWE (``openvc.jwe``) paths already take."""
     if "crit" in header:
         raise MalformedToken("JWS 'crit' extensions are not supported")
+
+
+# The longest string an error message quotes in full; a longer one is cut, so an
+# attacker-sized string never becomes an attacker-sized log line.
+_SHOWN_MAX = 200
+
+
+def safe_repr(value: Any) -> str:
+    """*value* for an error message, when it is attacker-shaped JSON.
+
+    Only a bounded scalar is shown as ``repr``: a ``str`` (cut past ``_SHOWN_MAX``
+    characters), ``None``, a ``bool``, a ``float`` and a 64-bit ``int``. Anything else is
+    named by its type. ``json.loads`` on Python 3.14 accepts an array nested deeply
+    enough that ``repr()`` of it raises a bare ``RecursionError``, which would escape
+    ``OpenvcError`` from the very ``raise`` meant to report the bad value. ``repr()`` of
+    an int past the int-to-str digit limit raises ``ValueError`` the same way."""
+    if isinstance(value, str):
+        if len(value) <= _SHOWN_MAX:
+            return repr(value)
+        return f"{value[:_SHOWN_MAX]!r}... ({len(value)} chars)"
+    if value is None or isinstance(value, (bool, float)):
+        return repr(value)
+    if isinstance(value, int) and value.bit_length() <= 64:
+        return repr(value)
+    return type(value).__name__
 
 
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
@@ -102,7 +131,7 @@ def _bound(document: dict[str, Any], *keys: str) -> datetime | None:
             continue
         ts = _parse_ts(raw)
         if ts is None:
-            raise MalformedTimestamp(f"{key} is not a valid dateTime: {raw!r}")
+            raise MalformedTimestamp(f"{key} is not a valid dateTime: {safe_repr(raw)}")
         return ts
     return None
 
@@ -114,7 +143,7 @@ def check_validity_window(
     now: datetime | None,
     leeway_s: int,
     check_temporal: bool = True,
-) -> None:
+) -> bool:
     """Enforce the credential's validity window and the proof's own expiry.
 
     Honours both VCDM 2.0 (``validFrom`` / ``validUntil``) and VCDM 1.1
@@ -123,6 +152,11 @@ def check_validity_window(
     UTC time); pinning it lets a conformance vector or an "as of" audit verify
     deterministically regardless of wall-clock. An absent bound is not a
     violation, but a present-but-unparseable one fails closed (see :func:`_bound`).
+
+    *check_temporal* False skips only the two expiry checks; the return value says
+    whether one of them would have failed (always False when they ran). Suites
+    report it as their ``expired`` field, so a waived expiry is judged by the
+    same code, clock and fields as an enforced one.
     """
     if now is None:
         instant = datetime.now(timezone.utc)
@@ -130,20 +164,31 @@ def check_validity_window(
         instant = now.replace(tzinfo=timezone.utc)  # silently as system-local time
     else:
         instant = now.astimezone(timezone.utc)
-    leeway = timedelta(seconds=max(0, leeway_s))
+    try:
+        leeway = timedelta(seconds=max(0, leeway_s))
+    except OverflowError:               # wider than timedelta holds: the widest one, not a
+        leeway = timedelta.max          # bare error that would abort verify_many
+    # Compare differences, never `instant ± leeway`: a huge leeway would push that past
+    # datetime's range (a bare OverflowError); two datetimes always subtract cleanly.
 
     not_before = _bound(document, "validFrom", "issuanceDate")
-    if not_before is not None and instant + leeway < not_before:
+    if not_before is not None and not_before - instant > leeway:
         raise CredentialNotYetValid(
             f"credential is not valid before {not_before.isoformat()}")
 
+    expired = False
     not_after = _bound(document, "validUntil", "expirationDate")
-    if check_temporal and not_after is not None and instant - leeway > not_after:
-        raise CredentialExpired(f"credential expired at {not_after.isoformat()}")
+    if not_after is not None and instant - not_after > leeway:
+        if check_temporal:
+            raise CredentialExpired(f"credential expired at {not_after.isoformat()}")
+        expired = True
 
     proof_expires = _bound(proof, "expires", "expirationDate")
-    if check_temporal and proof_expires is not None and instant - leeway > proof_expires:
-        raise CredentialExpired(f"proof expired at {proof_expires.isoformat()}")
+    if proof_expires is not None and instant - proof_expires > leeway:
+        if check_temporal:
+            raise CredentialExpired(f"proof expired at {proof_expires.isoformat()}")
+        expired = True
+    return expired
 
 
 def prepare_di_proof(
@@ -158,13 +203,16 @@ def prepare_di_proof(
     key algebra, not this block; single-sourcing it keeps the fail-closed guards (notably the
     string-``proofValue`` check) from drifting between them, byte-for-byte identical to before
     (the golden fixtures pin it)."""
+    if _json.nesting_exceeds(secured):            # a dict handed over already parsed
+        raise ProofMalformed(f"credential is nested deeper than {_json.MAX_DEPTH} levels")
     proof = secured.get("proof")
     if not isinstance(proof, dict):
         raise ProofMalformed("credential has no proof object")
     if proof.get("type") != proof_type:
-        raise ProofMalformed(f"unexpected proof type {proof.get('type')!r}")
+        raise ProofMalformed(f"unexpected proof type {safe_repr(proof.get('type'))}")
     if proof.get("cryptosuite") != cryptosuite:
-        raise UnsupportedCryptosuite(f"unsupported cryptosuite {proof.get('cryptosuite')!r}")
+        raise UnsupportedCryptosuite(
+            f"unsupported cryptosuite {safe_repr(proof.get('cryptosuite'))}")
     proof_value = proof.get("proofValue")
     if not isinstance(proof_value, str):
         raise ProofMalformed("proof has no proofValue")
@@ -197,11 +245,30 @@ def is_numeric_date(value: Any) -> bool:
         return False
 
 
+def check_numeric_dates(
+    claims: dict[str, Any], *names: str, subject: str = "token",
+) -> None:
+    """Reject each of *names* that is **present** in *claims* but not a NumericDate (per
+    :func:`is_numeric_date`), raising a typed :class:`~openvc.proof.errors.ClaimsInvalid`.
+
+    This checks shape only and compares nothing against a clock, so an expiry waiver
+    cannot switch it off. Presence means the key exists: JSON ``null`` is rejected too,
+    because RFC 7519 §2 defines a NumericDate as a JSON number. (:func:`check_jwt_temporal`
+    reads ``null`` as absent.) The VC-JWT lane runs this before PyJWT sees the token.
+    PyJWT casts ``exp``/``nbf``/``iat`` with ``int()`` and catches only ``ValueError``,
+    so a signed ``"nbf": null`` used to escape as a bare ``TypeError``. A string such as
+    ``"1"`` or a bool cast silently instead of failing.
+    """
+    for name in names:
+        if name in claims and not is_numeric_date(claims[name]):
+            raise ClaimsInvalid(f"{subject} {name} must be a finite numeric timestamp")
+
+
 def check_jwt_temporal(
     claims: dict[str, Any], *, leeway_s: int, subject: str = "token",
     now: int | None = None,
     check_temporal: bool = True,
-) -> None:
+) -> bool:
     """Enforce a JWT's ``exp``/``nbf`` NumericDate claims, fail-closed.
 
     Single-sources the JOSE temporal rule for the SD-JWT VC, VP-JWT and VC-JWT (ML-DSA)
@@ -210,20 +277,28 @@ def check_jwt_temporal(
     which would make every comparison ``False``, i.e. *never expire*) is rejected; skipping
     that would be a fail-open expiry bypass. *now* pins the instant (epoch seconds) for
     deterministic tests; ``None`` uses the current time.
+
+    *check_temporal* False skips only the ``exp`` comparison (its shape is still
+    checked); the return value says whether it would have failed — always False when
+    it ran. See :func:`check_validity_window`.
     """
     current = int(time.time()) if now is None else now
+    expired = False
     exp = claims.get("exp")
     if exp is not None:
         if not is_numeric_date(exp):
             raise ClaimsInvalid(f"{subject} exp must be a finite numeric timestamp")
-        if check_temporal and current > exp + leeway_s:
-            raise ClaimsInvalid(f"{subject} has expired")
+        if current > exp + leeway_s:
+            if check_temporal:
+                raise ClaimsInvalid(f"{subject} has expired")
+            expired = True
     nbf = claims.get("nbf")
     if nbf is not None:
         if not is_numeric_date(nbf):
             raise ClaimsInvalid(f"{subject} nbf must be a finite numeric timestamp")
         if current + leeway_s < nbf:
             raise ClaimsInvalid(f"{subject} is not yet valid")
+    return expired
 
 
 def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
@@ -294,7 +369,8 @@ def check_proof_purpose(proof: dict[str, Any], expected: str | None) -> None:
         return
     actual = proof.get("proofPurpose")
     if actual != expected:
-        raise ProofPurposeMismatch(f"proofPurpose {actual!r} != expected {expected!r}")
+        raise ProofPurposeMismatch(
+            f"proofPurpose {safe_repr(actual)} != expected {expected!r}")
 
 
 def check_presentation_binding(
@@ -309,14 +385,16 @@ def check_presentation_binding(
     list; ``None`` on either expectation skips that check."""
     if expected_challenge is not None and proof.get("challenge") != expected_challenge:
         raise PresentationBindingError(
-            f"proof challenge {proof.get('challenge')!r} != expected {expected_challenge!r}")
+            f"proof challenge {safe_repr(proof.get('challenge'))} != expected "
+            f"{expected_challenge!r}")
     if expected_domain is not None:
         domain = proof.get("domain")
         ok = domain == expected_domain or (
             isinstance(domain, list) and expected_domain in domain)
         if not ok:
             raise PresentationBindingError(
-                f"proof domain {domain!r} does not include expected {expected_domain!r}")
+                f"proof domain {safe_repr(domain)} does not include expected "
+                f"{expected_domain!r}")
 
 
 def resolve_verification_key(
@@ -340,6 +418,12 @@ def resolve_verification_key(
     """
     if not isinstance(verification_method, str) or not verification_method:
         raise KeyResolutionError("proof has no verificationMethod to resolve")
+    if proof_purpose is not None and not isinstance(proof_purpose, str):
+        # read from the proof before its signature is checked: an array/object is
+        # unhashable in the relationship lookup and would raise a bare TypeError.
+        # Checked before resolving, so a junk purpose never triggers a DID fetch.
+        raise ProofMalformed(
+            f"proofPurpose must be a string, not {type(proof_purpose).__name__}")
 
     from ..did.base import DidResolutionError, UnsupportedDidMethod
 
@@ -402,7 +486,8 @@ def match_alg(jwk: dict[str, Any], allowed_algs: frozenset[str], *, cryptosuite:
         p_kty, p_crv, _ = ALG_PROFILE[alg]
         if kty == p_kty and crv == p_crv:
             return alg
-    raise ProofMalformed(f"{cryptosuite} does not accept a kty={kty!r} crv={crv!r} key")
+    raise ProofMalformed(
+        f"{cryptosuite} does not accept a kty={safe_repr(kty)} crv={safe_repr(crv)} key")
 
 
 __all__ = [
@@ -426,5 +511,6 @@ __all__ = [
     "non_negative_seconds",
     "reject_unknown_crit",
     "resolve_verification_key",
+    "safe_repr",
     "utc_epoch",
 ]

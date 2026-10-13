@@ -31,6 +31,8 @@ except ImportError:                                    # pragma: no cover
     _HAS_PYLD = False
 
 V2 = "https://www.w3.org/ns/credentials/v2"
+# defines `alumniOf`: RDF canonicalization would drop an undefined term unsigned
+EXAMPLES_VOCAB = {"@vocab": "https://www.w3.org/ns/credentials/examples#"}
 NONCE = "n-0S6_WzA2Mj"
 CLIENT_ID = "x509_san_dns:verifier.example"
 DCQL = {"credentials": [{"id": "c1", "format": "ldp_vc"}]}
@@ -65,7 +67,7 @@ def _issue_and_present(cryptosuite: str, *, nonce=NONCE, client_id=CLIENT_ID,
     hdid, hkid = _did_key(hk, mc)
     hk = key_factory(hk._sk, kid=hkid)
 
-    vc = {"@context": [V2], "type": ["VerifiableCredential"], "issuer": idid,
+    vc = {"@context": [V2, EXAMPLES_VOCAB], "type": ["VerifiableCredential"], "issuer": idid,
           "credentialSubject": {"id": hdid, "alumniOf": "Example University"}}
     secured_vc = suite.add_proof(vc, signing_key=ik, verification_method=ikid,
                                  proof_purpose="assertionMethod")
@@ -244,7 +246,7 @@ def test_ldp_vp_cascade_rejects_bad_embedded_issuer_proof():
     hdid, hkid = _did_key(hk, mc)
     hk = key_factory(hk._sk, kid=hkid)
 
-    vc = {"@context": [V2], "type": ["VerifiableCredential"], "issuer": idid,
+    vc = {"@context": [V2, EXAMPLES_VOCAB], "type": ["VerifiableCredential"], "issuer": idid,
           "credentialSubject": {"id": hdid, "alumniOf": "Example University"}}
     secured_vc = suite.add_proof(vc, signing_key=ik, verification_method=ikid,
                                  proof_purpose="assertionMethod")

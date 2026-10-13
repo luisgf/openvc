@@ -311,7 +311,8 @@ def test_expired_credential_does_not_verify():
     cred = _credential()
     cred["validUntil"] = "2025-01-01T00:00:00Z"                  # past (today is 2026)
     key = P256SigningKey.generate(kid="k")
-    secured = EcdsaRdfcProofSuite().add_proof(cred, signing_key=key, verification_method="k")
+    secured = EcdsaRdfcProofSuite().add_proof(
+        cred, signing_key=key, verification_method="did:example:issuer#k")
     with pytest.raises(CredentialExpired):
         EcdsaRdfcProofSuite().verify(secured, public_key_jwk=key.public_jwk())
 
@@ -320,7 +321,8 @@ def test_not_yet_valid_credential_does_not_verify():
     cred = _credential()
     cred["validFrom"] = "2099-01-01T00:00:00Z"                  # future
     key = P384SigningKey.generate(kid="k")
-    secured = EcdsaRdfcProofSuite().add_proof(cred, signing_key=key, verification_method="k")
+    secured = EcdsaRdfcProofSuite().add_proof(
+        cred, signing_key=key, verification_method="did:example:issuer#k")
     with pytest.raises(CredentialNotYetValid):
         EcdsaRdfcProofSuite().verify(secured, public_key_jwk=key.public_jwk())
 
@@ -328,7 +330,8 @@ def test_not_yet_valid_credential_does_not_verify():
 def test_proof_purpose_mismatch_rejected():
     key = P256SigningKey.generate(kid="k")
     secured = EcdsaRdfcProofSuite().add_proof(
-        _credential(), signing_key=key, verification_method="k", proof_purpose="assertionMethod")
+        _credential(), signing_key=key, verification_method="did:example:issuer#k",
+        proof_purpose="assertionMethod")
     with pytest.raises(ProofPurposeMismatch):
         EcdsaRdfcProofSuite().verify(
             secured, public_key_jwk=key.public_jwk(), expected_proof_purpose="authentication")

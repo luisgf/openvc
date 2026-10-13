@@ -15,6 +15,7 @@ import base64
 import json
 from typing import Any
 
+from .. import _json
 from .base import DidDocument, DidResolutionError, VerificationMethod
 
 # did:jwk exposes its single key for every assertion-style relationship (keyAgreement
@@ -34,7 +35,7 @@ class DidJwkResolver:
             raise DidResolutionError("did:jwk has no encoded JWK")
         try:
             raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
-            jwk: Any = json.loads(raw)
+            jwk: Any = _json.loads(raw)
         except (ValueError, json.JSONDecodeError, RecursionError) as exc:
             raise DidResolutionError(f"did:jwk is not valid base64url JSON: {exc}") from exc
         if not isinstance(jwk, dict) or "kty" not in jwk:

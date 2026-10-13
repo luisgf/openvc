@@ -31,6 +31,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from . import _json
 from .did.base import DidResolutionError
 from .did.did_web import AsyncDidWebResolver, DidWebResolver
 from .observability import logger, span
@@ -70,7 +71,9 @@ def _resolve_public_ips(host: str, port: int) -> list[str]:
     (fail closed: one bad address rejects the host)."""
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
+    # ValueError covers the UnicodeError the IDNA codec raises on a host it cannot
+    # encode (an empty label, or one over 63 characters) before any DNS query.
+    except (socket.gaierror, ValueError) as exc:
         raise UnsafeUrlError(f"cannot resolve host {host!r}: {exc}") from exc
     ips = [str(info[4][0]) for info in infos]
     if not ips:
@@ -90,7 +93,6 @@ def _https_get(
     validation and Host header for *hostname*. Returns (status, body). Reads at
     most ``max_bytes + 1`` so the caller can detect oversize."""
     context = ssl.create_default_context()
-    conn = http.client.HTTPSConnection(hostname, port, timeout=timeout, context=context)
 
     def _connect_to_validated_ip(address: Any, timeout: Any = None,
                                  source_address: Any = None) -> socket.socket:
@@ -99,8 +101,12 @@ def _https_get(
         return socket.create_connection((ip, port), timeout=timeout,
                                         source_address=source_address)
 
-    setattr(conn, "_create_connection", _connect_to_validated_ip)
+    conn: http.client.HTTPSConnection | None = None
     try:
+        # Built inside the try: the constructor raises InvalidURL on a control
+        # character in the host.
+        conn = http.client.HTTPSConnection(hostname, port, timeout=timeout, context=context)
+        setattr(conn, "_create_connection", _connect_to_validated_ip)
         conn.request("GET", target, headers={
             "Accept": "application/did+ld+json, application/json"})
         resp = conn.getresponse()
@@ -121,10 +127,13 @@ def _https_get(
             chunks.append(chunk)
             remaining -= len(chunk)
         return resp.status, b"".join(chunks)
-    except (OSError, http.client.HTTPException) as exc:
+    # ValueError: a non-ASCII request target fails to encode (UnicodeEncodeError) as
+    # the request line is written, and ssl rejects some server hostnames.
+    except (OSError, http.client.HTTPException, ValueError) as exc:
         raise DidResolutionError(f"fetch failed for https://{hostname}{target}: {exc}") from exc
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _https_fetch_guarded(
@@ -132,23 +141,32 @@ def _https_fetch_guarded(
 ) -> bytes:
     """Fetch *url* over https with the SSRF guards above and return the raw body.
     Shared by :func:`https_json_fetch` and :func:`https_text_fetch`."""
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+        # Force the lazy accessors: an out-of-range or non-numeric port, an unbalanced
+        # IPv6 bracket, or a netloc that NFKC-normalizes into a delimiter raises
+        # ValueError here, inside the typed taxonomy.
+        hostname, port = parsed.hostname, parsed.port or 443
+    except ValueError as exc:
+        raise UnsafeUrlError(f"malformed URL: {exc}") from exc
     if parsed.scheme != "https":
         raise UnsafeUrlError(f"only https is allowed, got scheme {parsed.scheme!r}")
-    if not parsed.hostname:
+    if not hostname:
         raise UnsafeUrlError("URL has no host")
-    port = parsed.port or 443
+    # Refused before DNS: getaddrinfo would resolve a host truncated at a NUL.
+    if any(ord(char) < 0x21 or ord(char) == 0x7F for char in hostname):
+        raise UnsafeUrlError(f"host {hostname!r} contains control characters or whitespace")
     # Log host + path only — a query string could carry a caller secret, so it is never
     # logged (nor is any response body).
-    logger.debug("fetch https://%s%s", parsed.hostname, parsed.path or "/")
-    ip = _resolve_public_ips(parsed.hostname, port)[0]
+    logger.debug("fetch https://%s%s", hostname, parsed.path or "/")
+    ip = _resolve_public_ips(hostname, port)[0]
 
     target = parsed.path or "/"
     if parsed.query:
         target += "?" + parsed.query
 
-    with span("openvc.fetch", host=parsed.hostname):
-        status, raw = _https_get(parsed.hostname, ip, port, target,
+    with span("openvc.fetch", host=hostname):
+        status, raw = _https_get(hostname, ip, port, target,
                                  timeout=timeout_s, max_bytes=max_bytes)
     if status in _REDIRECT_STATUSES:
         raise UnsafeUrlError(f"redirect ({status}) not followed (SSRF guard)")
@@ -174,7 +192,7 @@ def https_json_fetch(
     """
     raw = _https_fetch_guarded(url, timeout_s=timeout_s, max_bytes=max_bytes)
     try:
-        data = json.loads(raw)
+        data = _json.loads(raw)
     except (ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise DidResolutionError(f"response is not JSON: {exc}") from exc
     if not isinstance(data, dict):

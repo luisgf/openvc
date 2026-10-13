@@ -66,13 +66,13 @@ dataclasses. Parsers, never builders, and never fetchers (ADR-0007 D7).
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
+from . import _json
 from .errors import OpenvcError
 from .keys import MLDSA_ALGS, InvalidKey, jwk_thumbprint
 from .proof._jws import parse_compact, verify_compact
@@ -82,6 +82,7 @@ from .proof._verify_common import (
     check_jwt_temporal,
     is_numeric_date,
     reject_unknown_crit,
+    safe_repr,
     utc_epoch,
 )
 from .proof.errors import ClaimsInvalid, MalformedToken, UnsupportedAlgorithm
@@ -498,7 +499,7 @@ def _as_mapping(value: Mapping[str, Any] | str, subject: str) -> Mapping[str, An
     if not isinstance(value, str):
         raise CredentialRequestMalformed(f"{subject} must be an object or a JSON string")
     try:
-        parsed = json.loads(value)
+        parsed = _json.loads(value)
     except (ValueError, RecursionError) as exc:      # RecursionError: hostile nesting
         raise CredentialRequestMalformed(f"{subject} is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict):
@@ -947,14 +948,16 @@ def _verify_one_proof(
     header, _, _, _ = parse_compact(proof)
 
     typ = header.get("typ")
-    if typ not in PROOF_TYP:
+    if not isinstance(typ, str) or typ not in PROOF_TYP:
         # Type confusion is the attack: without this pin a KB-JWT, a VP-JWT, an ID
-        # token or a status-list token could be replayed as a key proof.
-        raise ClaimsInvalid(f"key proof typ must be openid4vci-proof+jwt, got {typ!r}")
+        # token or a status-list token could be replayed as a key proof. The str check
+        # keeps an unhashable (array/object) typ from raising a bare TypeError.
+        raise ClaimsInvalid(
+            f"key proof typ must be openid4vci-proof+jwt, got {safe_repr(typ)}")
 
     alg = header.get("alg")
     if not isinstance(alg, str) or alg not in allowed_algs:
-        raise UnsupportedAlgorithm(f"key proof alg {alg!r} is not allow-listed")
+        raise UnsupportedAlgorithm(f"key proof alg {safe_repr(alg)} is not allow-listed")
     reject_unknown_crit(header)
 
     # Parsed here, not read at the end: the key resolver needs it (in the attested-key
@@ -1143,7 +1146,7 @@ def _check_key_binds_to_alg(jwk: Mapping[str, Any], alg: str) -> None:
         if jwk.get("kty") != kty or jwk.get("crv") != crv:
             raise ClaimsInvalid(
                 f"key proof alg {alg} needs a kty={kty} crv={crv} key, got "
-                f"kty={jwk.get('kty')!r} crv={jwk.get('crv')!r}")
+                f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
         return
     if alg in MLDSA_ALGS:                    # only reachable via a widened allowed_algs
         if jwk.get("kty") != "AKP" or jwk.get("alg") != alg:

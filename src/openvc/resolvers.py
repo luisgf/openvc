@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from . import _json
 from .fetch import (
     https_bytes_fetch,
     https_bytes_fetch_async,
@@ -177,7 +178,7 @@ def _as_credential(raw: str) -> Any:
     (VC-JWT): return a dict for the former, the JWS string for the latter."""
     text = raw.strip()
     try:
-        obj = json.loads(text)
+        obj = _json.loads(text)
     except (ValueError, json.JSONDecodeError, RecursionError):
         return text
     return obj if isinstance(obj, dict) else text

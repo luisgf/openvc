@@ -43,6 +43,7 @@ from .did.base import (
 )
 from .errors import OpenvcError
 from .observability import logger, span
+from .proof._verify_common import safe_repr
 from .schema import SchemaUnavailable, validate_credential_schema_async
 from .status import (
     CredentialRevoked,
@@ -74,8 +75,9 @@ from .verify import (
     _bytes_to_credential,
     _check_types,
     _enforce_status_issuer,
-    _expired_flag,
     _fail_closed,
+    _reject_deep_credential,
+    _schema_inner_policy,
     _unwrap_enveloped,
     detect_format,
 )
@@ -125,6 +127,7 @@ async def verify_credential_async(
     policy = policy or VerificationPolicy()
     resolver = resolver if resolver is not None else default_async_resolver()
 
+    _reject_deep_credential(credential)
     fmt = detect_format(credential)
     logger.debug("verify_async: format=%s", fmt)
     with span("openvc.verify_credential_async", format=fmt):
@@ -136,6 +139,10 @@ async def verify_credential_async(
         except OpenvcError as exc:
             logger.info("verify_async failed: format=%s error=%s", fmt, type(exc).__name__)
             raise
+        except RecursionError as exc:           # backstop: a value nested past the stack
+            logger.info("verify_async failed: format=%s error=RecursionError", fmt)
+            raise UnknownCredentialFormat(
+                "credential is nested too deeply to verify") from exc
         logger.debug("verify_async ok: format=%s issuer=%s", result.format, result.issuer)
     return result
 
@@ -247,7 +254,7 @@ async def _verify_vc_jwt_async(
         format=FORMAT_VC_JWT, credential=verified.credential, claims=verified.claims,
         issuer=verified.issuer, subject=verified.subject, status=status,
         schema=schema, raw=verified,
-        expired=_expired_flag(policy, verified.credential, verified.claims))
+        expired=verified.expired)
 
 
 async def _verify_sd_jwt_async(
@@ -277,7 +284,7 @@ async def _verify_sd_jwt_async(
         format=FORMAT_SD_JWT_VC, credential=verified.claims, claims=verified.claims,
         issuer=verified.issuer, subject=_as_str(verified.claims.get("sub")),
         key_bound=verified.key_bound, status=status, schema=schema, raw=verified,
-        expired=_expired_flag(policy, verified.claims, verified.claims))
+        expired=verified.expired)
 
 
 async def _verify_data_integrity_async(
@@ -323,7 +330,7 @@ async def _verify_data_integrity_async(
     return VerificationResult(
         format=fmt, credential=verified.credential, issuer=verified.issuer,
         subject=verified.subject, status=status, schema=schema, raw=verified,
-        expired=_expired_flag(policy, verified.credential, None))
+        expired=verified.expired)
 
 
 # -- async key resolution --------------------------------------------------- #
@@ -345,7 +352,7 @@ async def _resolve_jose_key_with_x5c_async(
                 return resolve_x5c_key(x5c, iss, trust_anchors=x5c_trust_anchors, now=now)
             except X5cError as exc:
                 raise KeyResolutionFailed(
-                    f"x5c key resolution failed for issuer {iss!r}: {exc}") from exc
+                    f"x5c key resolution failed for issuer {safe_repr(iss)}: {exc}") from exc
     return await _resolve_jose_key_async(resolver, iss, kid, jwt_vc_issuer_fetch)
 
 
@@ -360,24 +367,24 @@ async def _resolve_jose_key_async(
     if iss.startswith("https://"):
         if jwt_vc_issuer_fetch is None:
             raise KeyResolutionFailed(
-                f"issuer {iss!r} is an https URL; pass an async jwt_vc_issuer_fetch "
+                f"issuer {safe_repr(iss)} is an https URL; pass an async jwt_vc_issuer_fetch "
                 "(e.g. openvc.fetch.https_json_fetch_async) to resolve its key")
         from .jwt_vc_issuer import JwtVcIssuerError, resolve_jwt_vc_issuer_key_async
         try:
             return await resolve_jwt_vc_issuer_key_async(iss, kid, fetch=jwt_vc_issuer_fetch)
         except (JwtVcIssuerError, DidError) as exc:
             raise KeyResolutionFailed(
-                f"could not resolve issuer key for {iss!r}: {exc}") from exc
+                f"could not resolve issuer key for {safe_repr(iss)}: {exc}") from exc
 
     try:
         doc = await resolver.resolve(iss)
     except DidError as exc:
         raise KeyResolutionFailed(
-            f"could not resolve issuer DID {iss!r}: {exc}") from exc
+            f"could not resolve issuer DID {safe_repr(iss)}: {exc}") from exc
     vm = doc.key_by_kid(kid)
     if vm is None:
         raise KeyResolutionFailed(
-            f"no verification method for kid {kid!r} in DID {iss!r}")
+            f"no verification method for kid {safe_repr(kid)} in DID {safe_repr(iss)}")
     return vm.public_key_jwk
 
 
@@ -469,9 +476,11 @@ async def _check_status_async(
             w3c = await check_credential_status_async(
                 w3c_source, resolve_status_list=resolve_status_list)
             if w3c.revoked and policy.require_not_revoked:
-                raise CredentialRevoked(f"credential {w3c_source.get('id')!r} is revoked")
+                raise CredentialRevoked(
+                    f"credential {_as_str(w3c_source.get('id'))!r} is revoked")
             if w3c.suspended:
-                raise CredentialSuspended(f"credential {w3c_source.get('id')!r} is suspended")
+                raise CredentialSuspended(
+                    f"credential {_as_str(w3c_source.get('id'))!r} is suspended")
             result = w3c
     elif w3c_source.get("credentialStatus") and policy.require_status:
         raise StatusUnavailable(
@@ -529,21 +538,12 @@ def _make_schema_verifier_async(
 ) -> Any:
     """Async twin of ``openvc.verify._make_schema_verifier``: build the async
     ``verify_inner`` a ``JsonSchemaCredential`` uses, running the inner VC through
-    ``verify_credential_async`` with schema OFF (bounded recursion) and the outer
-    audience/type constraints dropped."""
+    ``verify_credential_async`` with schema OFF (bounded recursion) under the same
+    ``_schema_inner_policy`` (outer constraints dropped, no expiry/revocation waiver)."""
     async def verify_inner(raw: bytes) -> dict[str, Any]:
-        inner_policy = VerificationPolicy(
-            leeway_s=policy.leeway_s,
-            require_status=policy.require_status,
-            now=policy.now,
-            require_not_expired=policy.require_not_expired,
-            require_not_revoked=policy.require_not_revoked,
-            require_status_issuer_binding=policy.require_status_issuer_binding,
-            status_issuer_allowlist=policy.status_issuer_allowlist,
-            kb_max_age_s=policy.kb_max_age_s,
-        )
         result = await verify_credential_async(
-            _bytes_to_credential(raw), policy=inner_policy, resolver=resolver,
+            _bytes_to_credential(raw), policy=_schema_inner_policy(policy),
+            resolver=resolver,
             resolve_status_list=resolve_status_list,
             resolve_status_list_token=resolve_status_list_token,
             resolve_credential_schema=None,          # bound recursion

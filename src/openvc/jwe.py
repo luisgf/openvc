@@ -24,6 +24,7 @@ import struct
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from . import _json
 from .errors import OpenvcError
 from .keys import KeyAgreementKey, KeyBackendError
 
@@ -109,21 +110,24 @@ def decrypt_compact(token: str, *, key: KeyAgreementKey) -> bytes:
     protected_b64, encrypted_key_b64, iv_b64, ciphertext_b64, tag_b64 = parts
 
     try:
-        header = json.loads(_b64url_decode(protected_b64))
+        header = _json.loads(_b64url_decode(protected_b64))
     except (ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise JweMalformed(f"invalid JWE protected header: {exc}") from exc
     if not isinstance(header, dict):
         raise JweMalformed("JWE protected header must be a JSON object")
+
+    from .proof._verify_common import safe_repr
 
     alg = header.get("alg")
     enc = header.get("enc")
     # isinstance guards keep an unhashable alg/enc (a JSON list/object) from raising a
     # bare TypeError out of the `in frozenset/dict` test — fail closed and typed.
     if not isinstance(alg, str) or alg not in ALLOWED_ALG:
-        raise UnsupportedJweAlgorithm(f"JWE alg {alg!r} is not permitted (only ECDH-ES)")
+        raise UnsupportedJweAlgorithm(
+            f"JWE alg {safe_repr(alg)} is not permitted (only ECDH-ES)")
     if not isinstance(enc, str) or enc not in ALLOWED_ENC:
         raise UnsupportedJweAlgorithm(
-            f"JWE enc {enc!r} is not permitted (only A128GCM / A256GCM)")
+            f"JWE enc {safe_repr(enc)} is not permitted (only A128GCM / A256GCM)")
     if header.get("zip") is not None:                  # no decompression -> no zip bombs
         raise UnsupportedJweAlgorithm("JWE compression ('zip') is not supported")
     if "crit" in header:                               # unknown critical extensions -> reject
