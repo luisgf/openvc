@@ -54,6 +54,13 @@ The resolver stays `resolve(uri)` — the binding is a pipeline concern because 
 expected issuer is per-credential (a batch reuses one resolver across issuers). The
 async pipeline mirrors it (`aio._check_status_async`).
 
+*Amendment (1.31.0).* The pipeline only sees the list's body, so the resolver must
+return a body whose `issuer` is authenticated. The default status-list resolvers now
+refuse a verified list whose body names an issuer other than `result.issuer`, the
+issuer its signature was verified for. Without that check, an IETF `dc+sd-jwt` list
+could carry an unreconciled `issuer` claim naming the victim while being signed by the
+attacker.
+
 Default **off** is deliberate and documented: the binding is a *hardening opt-in*, not a
 silent behaviour change. The `docs/threat-model` / Security-Model note the residual gap
 when it is off.

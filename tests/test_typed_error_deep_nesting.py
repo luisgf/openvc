@@ -471,7 +471,8 @@ def test_deep_presentation_binding_message_is_typed(member, kwargs):
 
 
 def test_reconcile_message_names_a_container_by_type(issuer):
-    with pytest.raises(ClaimsInvalid, match="vc.issuer list"):
+    # the message names `issuer`, not `vc.issuer`: the SD-JWT lane shares it (#221)
+    with pytest.raises(ClaimsInvalid, match="!= issuer list"):
         VcJwtProofSuite._reconcile({"iss": issuer[1]}, {"issuer": _deep(100_000)})
 
 

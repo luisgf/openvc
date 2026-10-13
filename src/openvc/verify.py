@@ -143,7 +143,10 @@ class VerificationPolicy:
     5.5). ``audience`` and ``nonce`` bind an SD-JWT KB-JWT together (step 5.6): a
     KB-JWT checked against only one of them, or an empty one, is rejected
     (``ClaimsInvalid``), while ``audience`` alone still pins a VC-JWT's ``aud``. That
-    does not make the KB-JWT required — ``require_key_binding`` does."""
+    does not make the KB-JWT required — ``require_key_binding`` does.
+    ``expected_types`` pins a W3C credential's ``type`` (a bare string is one type); an
+    IETF SD-JWT VC is typed by ``vct``, so a policy that sets it rejects one — pin those
+    with ``expected_vct``."""
     leeway_s: int = DEFAULT_LEEWAY_S
     expected_types: Sequence[str] | None = None
     expected_vct: str | None = None
@@ -594,6 +597,7 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
         require_key_binding=policy.require_key_binding, expected_vct=policy.expected_vct,
         check_temporal=policy.require_not_expired,
         kb_max_age_s=policy.kb_max_age_s, now=policy.now)
+    _check_sd_jwt_types(verified, policy.expected_types)
     # the disclosed claims may carry either a W3C credentialStatus or an IETF status
     status = _check_status(verified.claims, verified.claims, policy,
                            resolve_status_list, resolve_status_list_token,
@@ -731,6 +735,8 @@ def _bind_issuer_to_verification_method(verified: Any) -> None:
 def _check_types(credential: dict[str, Any], expected: Sequence[str] | None) -> None:
     if not expected:
         return
+    if isinstance(expected, str):                     # one type, not its characters
+        expected = [expected]
     types = credential.get("type", [])
     # a VC-JWT's `vc.type` is issuer-signed but still attacker-shaped: a non-array
     # carries none of the expected types (a typed TypeMismatch, never a bare TypeError,
@@ -740,6 +746,20 @@ def _check_types(credential: dict[str, Any], expected: Sequence[str] | None) -> 
     missing = [t for t in expected if t not in types]
     if missing:
         raise TypeMismatch(f"credential is missing required type(s): {missing}")
+
+
+def _check_sd_jwt_types(verified: Any, expected: Sequence[str] | None) -> None:
+    """``expected_types`` on the SD-JWT lane. A W3C VCDM payload (``verified.vcdm``, the
+    suite's own verdict) is checked like VC-JWT / Data Integrity (VC-JOSE-COSE §5.4).
+    An IETF SD-JWT VC is typed by ``vct``, not ``type``: a pin the lane cannot check
+    rejects instead of passing silently — which would also let a holder dodge it by
+    withholding a disclosable ``@context``."""
+    if verified.vcdm:
+        _check_types(verified.claims, expected)
+    elif expected:
+        raise TypeMismatch(
+            "expected_types constrains a W3C credential's `type`; this IETF SD-JWT VC is "
+            "typed by `vct` (pin it with expected_vct)")
 
 
 def _enforce_status_issuer(status_obj: Any, field: str,

@@ -216,6 +216,23 @@ does:
 - With `require_key_binding=True`, the window is checked after the KB-JWT, so an
   expiry verdict still means the presentation was bound.
 
+Its body must also agree with the JWT claims, with the same rules as the VC-JWT lane.
+VC-JOSE-COSE §4.1.2 says `iss`, if present, MUST match `issuer` (or `issuer.id`). For
+`jti` / `id` and `sub` / `credentialSubject.id`, §3.1.3 (non-normative) only advises
+against conflicts, but openvc enforces them as policy, as it does on VC-JWT. A
+conflict raises `ClaimsInvalid`. Every identifier a present `issuer` carries must be
+`iss`: the string itself, or an object's `id` and `@id`. A null, empty or non-string
+one is rejected, not skipped. An object with no `id` identifies no one, and is
+accepted like an absent `issuer`. Without this check, an attacker could sign with its own key
+(`iss` = the attacker) and name a university as `issuer`. `result.issuer` would then
+be the attacker and `result.credential["issuer"]` the university. The check reads the
+processed payload, so a disclosed `issuer` counts too. Neither the expiry waiver nor
+key binding changes it.
+
+`VerificationPolicy.expected_types` applies as well. It works as on VC-JWT and Data
+Integrity, and is required by §5.4 ("claims that are understood MUST be evaluated").
+A missing type raises `TypeMismatch`, and so does a withheld or malformed `type`.
+
 openvc treats the payload as a VCDM credential when the issuer signed either of
 these:
 
@@ -233,6 +250,29 @@ renamed it `dc+sd-jwt`, and openvc still accepts it. The `data:` media type of a
 enveloping credential is not consulted either, because it sits outside the issuer's
 signature.
 
+Likewise, an IETF SD-JWT VC's claims named `issuer`, `id` or `credentialSubject` are
+not reconciled with `iss`, `jti` or `sub`. Such a credential may legitimately name,
+say, the authority behind an underlying document. On every lane, the authenticated
+issuer is **`result.issuer`**, the verified `iss`. Never read it from
+`result.credential`. `result.raw.vcdm` (`VerifiedSdJwt.vcdm`) tells you which rules
+the suite applied.
+
+**`expected_types` rejects an IETF SD-JWT VC.** Such a credential is typed by `vct`,
+so a policy that sets `expected_types` raises `TypeMismatch` that points at
+`expected_vct`. It no longer verifies as if the pin were met. Before 1.31.0 the SD-JWT
+lane ignored `expected_types` entirely: a policy that asked for a
+`UniversityDegreeCredential` accepted any SD-JWT VC. Rejecting is also what keeps the
+pin holder-proof. If an issuer makes the `@context` of a `dc+sd-jwt` VCDM credential
+disclosable, a holder who withholds it turns the payload into a non-VCDM one, and
+ignoring the pin there would bypass it. To verify both kinds under one pin, use one
+policy per format: `expected_types` for W3C credentials and `expected_vct` for IETF
+SD-JWT VCs. An empty or unset `expected_types` constrains nothing, as on every lane.
+A presentation verified under one policy, such as `VpJwtProofSuite.verify(...,
+policy=...)`, applies that policy to every credential it carries. So if the policy sets
+`expected_types` and the presentation mixes an IETF SD-JWT VC with a W3C credential,
+the whole presentation is rejected. Leave `expected_types` unset there and check each
+`result.credentials` entry yourself.
+
 ## Caveat: keep enforcement pointers non-disclosable
 
 If a credential's `credentialStatus` (or `credentialSchema`) must be
@@ -249,4 +289,5 @@ NOT be selectively disclosable. A holder can withhold a disclosable `validUntil`
 A holder can also withhold a disclosable `@context`, including a VCDM entry that is
 itself an array-element disclosure. The credential then counts as VCDM only if it is
 typed `vc+sd-jwt` and has no `vct`. If it is `dc+sd-jwt`, or carries a `vct`, its
-window is no longer read.
+window and its `issuer` / `id` / `sub` consistency are no longer checked, and a policy
+that sets `expected_types` rejects it.
