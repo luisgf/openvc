@@ -24,7 +24,7 @@ All notable changes to **openvc** are documented here. The format follows
   alternative, or the response is rejected with `ClaimsInvalid`. openvc expands
   each credential's `type` with JSON-LD against the credential's own
   `@context`. A term the context defines becomes its IRI, and a term no context
-  defines stays as written.
+  defines stays as written, unless the context sets an absolute `@base`.
 
   The comparison is on IRIs, not short names. `VerifiableCredential` expands to
   `https://www.w3.org/2018/credentials#VerifiableCredential`, so a query for the
@@ -38,6 +38,10 @@ All notable changes to **openvc** are documented here. The format follows
     flat `type_values`, and an empty or non-string type.
   - An unbundled context raises `DocumentLoaderError`.
   - A credential whose types cannot be expanded raises `ClaimsInvalid`.
+  - Types are matched on VC-JWT and JCS Data Integrity credentials. A
+    credential secured with an RDF-canonicalized suite (`eddsa-rdfc-2022`,
+    `ecdsa-rdfc-2019`, `ecdsa-sd-2023`) is refused with `ClaimsInvalid` for
+    now.
   - An SD-JWT nested in the presentation never matches: its holder could
     reshape a `type` by withholding disclosures.
   - A query without `type_values` still puts no constraint on the type.
@@ -54,6 +58,17 @@ All notable changes to **openvc** are documented here. The format follows
   - A query that names types by short name, such as
     `[["VerifiableCredential", …]]`, used to pass because nothing was checked.
     It now fails: write the IRIs.
+  - An `ldp_vc` query with `type_values` now rejects credentials secured with
+    the RDF-canonicalized suites. Drop `type_values` from that query, or have
+    the issuer use `eddsa-jcs-2022` / `ecdsa-jcs-2019`.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **Each expansion now gets its own pyld context resolver**, so no context
+    is shared between calls or callers.
+  - **An absolute `@base` in the credential's context is now honoured.** pyld
+    skips it when no document base is passed, so an undefined type stayed
+    relative where JSON-LD resolves it.
+  - **The RDF-canonicalized suites are refused, as above.**
 
 ## [1.29.1] — 2026-10-13
 

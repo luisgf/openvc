@@ -217,7 +217,8 @@ using that credential's own `@context`:
   value `"UniversityDegreeCredential"`.
 - **A term the issuer maps in its own context** (for example
   `{"UniversityDegreeCredential": "https://example.org/examples#UniversityDegreeCredential"}`)
-  matches that IRI and nothing else.
+  matches that IRI and nothing else. An absolute `@base` in the context applies
+  to undefined terms, as in JSON-LD.
 
 Expanding needs the `[data-integrity]` extra (pyld), plus every context the
 credential cites. openvc bundles only the VCDM 2.0 context and never fetches
@@ -227,6 +228,11 @@ credentials use. Failures are typed and fail closed:
 
 - An unknown context raises `DocumentLoaderError`.
 - A credential whose types cannot be expanded raises `ClaimsInvalid`.
+- Types are matched on VC-JWT and JCS Data Integrity credentials
+  (`eddsa-jcs-2022`, `ecdsa-jcs-2019`). A credential secured with an
+  RDF-canonicalized suite (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`,
+  `ecdsa-sd-2023`) is refused with `ClaimsInvalid` for now, even when its types
+  would match.
 - An SD-JWT nested in the presentation never matches.
 - Without pyld, a query that carries `type_values` raises `OpenID4VPError`
   before anything is verified.

@@ -306,3 +306,85 @@ def test_missing_pyld_is_a_typed_error_before_verifying(monkeypatch):
     with pytest.raises(OpenID4VPError, match="data-integrity") as info:
         _verify("jwt_vc_json", "not-a-jwt", [[VC_IRI]])
     assert type(info.value) is OpenID4VPError
+
+
+# --------------------------------------------------------------------------- #
+# regressions from the adversarial review of #216
+# --------------------------------------------------------------------------- #
+
+@needs_pyld
+@pytest.mark.parametrize("cryptosuite", ["eddsa-rdfc-2022", "ecdsa-rdfc-2019"])
+def test_rdf_canonicalized_credential_is_refused_not_matched(cryptosuite):
+    # type_values is matched only on VC-JWT and JCS credentials: even an honest
+    # RDF-canonicalized credential of the requested type is refused rather than matched.
+    if cryptosuite == "eddsa-rdfc-2022":
+        from openvc.proof.data_integrity import DataIntegrityProofSuite as Suite
+        ikey, idid = _did_key_ed25519()
+    else:
+        from openvc.proof.di_ecdsa_rdfc import EcdsaRdfcProofSuite as Suite
+        ikey, idid = _did_key_p256()
+    hkey, hdid = _did_key_ed25519()
+    vc = Suite().add_proof(
+        {"@context": [V2], "type": ["VerifiableCredential", "UniversityDegreeCredential"],
+         "issuer": idid, "credentialSubject": {"id": hdid}},
+        signing_key=ikey, verification_method=ikey.kid, proof_purpose="assertionMethod")
+    vp = EddsaJcsProofSuite().add_proof(
+        {"@context": [V2], "type": ["VerifiablePresentation"], "holder": hdid,
+         "verifiableCredential": [vc]},
+        signing_key=hkey, verification_method=hkey.kid, proof_purpose="authentication",
+        challenge=NONCE, domain=CLIENT_ID)
+    _verify("ldp_vc", vp)                        # no type_values: still verifies
+    with pytest.raises(ClaimsInvalid, match="matched only on VC-JWT and JCS"):
+        _verify("ldp_vc", vp, [[VC_IRI, "UniversityDegreeCredential"]])
+
+
+@needs_pyld
+@pytest.mark.parametrize("lane", LANES)
+def test_inline_import_is_not_cached_across_calls(lane):
+    # Each expansion has its own context resolver: one call's extra_contexts never decide
+    # another call's match, and an unknown @import is refused every time.
+    url = "https://tenant.example/ctx"
+    dmv, other = "https://dmv.example/DriversLicense", "https://other.example/X"
+    vp = _present(lane, [([V2, {"@import": url}], ["VerifiableCredential", "DriversLicense"])])
+    _verify(lane, vp, [[VC_IRI, dmv]],
+            extra_contexts={url: {"@context": {"DriversLicense": dmv}}})
+    with pytest.raises(ClaimsInvalid):
+        _verify(lane, vp, [[VC_IRI, dmv]],
+                extra_contexts={url: {"@context": {"DriversLicense": other}}})
+    with pytest.raises(DocumentLoaderError):
+        _verify(lane, vp, [[VC_IRI, dmv]])
+
+
+@needs_pyld
+@pytest.mark.parametrize("lane", LANES)
+def test_context_base_is_honoured(lane):
+    # JSON-LD resolves an undefined type against a context's absolute @base; pyld skips
+    # that when the document base is None, which would have kept it relative.
+    ctx = [V2, {"@base": "https://x.example/"}]
+    vp = _present(lane, [(ctx, ["VerifiableCredential", "Foo"])])
+    _verify(lane, vp, [[VC_IRI, "https://x.example/Foo"]])
+    with pytest.raises(ClaimsInvalid):
+        _verify(lane, vp, [[VC_IRI, "Foo"]])
+
+
+@needs_pyld
+@pytest.mark.parametrize("lane", LANES)
+def test_null_base_keeps_undefined_types_relative(lane):
+    vp = _present(lane, [([V2, {"@base": None}], ["VerifiableCredential", "Foo"])])
+    _verify(lane, vp, [[VC_IRI, "Foo"]])
+
+
+@needs_pyld
+def test_dot_segment_type_does_not_match_its_resolved_form():
+    vp = _present("jwt_vc_json", [([V2], ["VerifiableCredential", "./Dot", "../Up"])])
+    for wanted in ("Dot", "https://openvc.invalid/Up"):
+        with pytest.raises(ClaimsInvalid):
+            _verify("jwt_vc_json", vp, [[VC_IRI, wanted]])
+
+
+@needs_pyld
+def test_type_not_mapped_to_at_type_never_matches():
+    # Without a context aliasing `type` to @type, the written types are not types at all.
+    vp = _present("jwt_vc_json", [([{"type": "https://x.example/p"}], ["VerifiableCredential"])])
+    with pytest.raises(ClaimsInvalid, match="none of the requested type_values"):
+        _verify("jwt_vc_json", vp, [["VerifiableCredential"]])

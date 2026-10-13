@@ -253,8 +253,11 @@ def verify_vp_token(
     query names IRIs: ``VerifiableCredential`` expands to
     ``https://www.w3.org/2018/credentials#VerifiableCredential``, while a term no context
     defines stays as written. Expanding needs the ``[data-integrity]`` extra (``pyld``)
-    and every context the credential cites — only the VCDM 2.0 context is bundled. A
-    nested SD-JWT never matches. A malformed constraint is :class:`VpTokenMalformed`.
+    and every context the credential cites — only the VCDM 2.0 context is bundled. Types
+    are matched on VC-JWT and JCS Data Integrity credentials; one secured with an
+    RDF-canonicalized suite (``eddsa-rdfc-2022``, ``ecdsa-rdfc-2019``, ``ecdsa-sd-2023``)
+    is refused with ``ClaimsInvalid`` for now, and a nested SD-JWT never matches. A
+    malformed constraint is :class:`VpTokenMalformed`.
     Like ``vct_values``, the check selects the right credential type, not a trusted
     issuer: check each result's ``issuer`` yourself.
 
@@ -1023,18 +1026,27 @@ def _check_type_values(
                 f"the requested type_values")
 
 
+# A document base no real IRI can mean. A type no context defines resolves against it and
+# is mapped back to the string as written (OpenID4VP 1.0 §B.1.1: it "remains a relative
+# IRI"), while a context's own absolute @base still applies, as in JSON-LD (pyld ignores a
+# context @base when the document base is None).
+_RELATIVE_BASE = "https://openvc.invalid/relative/"
+
+
 def _expanded_types(query_id: str, index: int, result: Any, loader: Any) -> frozenset[str]:
     """The fully expanded IRIs of a verified W3C credential's ``type``, as JSON-LD gives
     them after applying the credential's own ``@context`` (OpenID4VP 1.0 §B.1.1).
 
-    Only a credential whose ``@context`` and ``type`` the issuer's proof covers whole
-    counts: a VC-JWT or a Data Integrity credential. An SD-JWT has no W3C ``type`` to
-    match, and its holder could reshape one by withholding disclosures, so it yields none.
-    Only ``@context`` and ``type`` are expanded: the credential is a top-level node, so
-    nothing else in it changes how its types expand. ``base`` is ``None`` so a term no
-    context defines stays a relative IRI, as the spec requires (pyld otherwise resolves it
-    against a placeholder base)."""
+    Types are matched on a VC-JWT or a JCS Data Integrity credential. A credential
+    secured with an RDF-canonicalized suite (``eddsa-rdfc-2022``, ``ecdsa-rdfc-2019``,
+    ``ecdsa-sd-2023``) is refused rather than matched, for now. An SD-JWT has no W3C
+    ``type`` to match, and its holder could reshape one by withholding disclosures, so it
+    yields none. Only ``@context`` and ``type`` are expanded: the credential is a
+    top-level node, so nothing else in it changes how its types expand. Each call gets
+    its own pyld context resolver, so no context processed here is cached for, or taken
+    from, another call."""
     from pyld import jsonld
+    from pyld.context_resolver import ContextResolver
 
     from .proof.contexts import DocumentLoaderError
     from .verify import (
@@ -1046,15 +1058,21 @@ def _expanded_types(query_id: str, index: int, result: Any, loader: Any) -> froz
         FORMAT_VC_JWT,
     )
 
+    fmt = getattr(result, "format", None)
+    if fmt in (FORMAT_DI_EDDSA, FORMAT_DI_ECDSA_RDFC, FORMAT_DI_ECDSA_SD):
+        raise ClaimsInvalid(
+            f"Credential Query {query_id!r}: embedded credential #{index} is secured with "
+            f"{fmt!r}; type_values is matched only on VC-JWT and JCS Data Integrity "
+            f"credentials")
     credential = getattr(result, "credential", None)
-    if (getattr(result, "format", None) not in (
-            FORMAT_VC_JWT, FORMAT_DI_EDDSA, FORMAT_DI_ECDSA_SD, FORMAT_DI_EDDSA_JCS,
-            FORMAT_DI_ECDSA_JCS, FORMAT_DI_ECDSA_RDFC)
+    if (fmt not in (FORMAT_VC_JWT, FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS)
             or not isinstance(credential, Mapping)):
         return frozenset()
     document = {key: credential[key] for key in ("@context", "type") if key in credential}
     try:
-        expanded = jsonld.expand(document, {"documentLoader": loader, "base": None})
+        expanded = jsonld.expand(document, {
+            "documentLoader": loader, "base": _RELATIVE_BASE,
+            "contextResolver": ContextResolver({}, loader)})
     except Exception as exc:
         # pyld wraps a loader refusal in its own JsonLdError: surface the actionable
         # "unbundled context" error if it caused this (as Data Integrity does). Anything
@@ -1072,10 +1090,21 @@ def _expanded_types(query_id: str, index: int, result: Any, loader: Any) -> froz
             f"Credential Query {query_id!r}: cannot expand the types of embedded "
             f"credential #{index} to match type_values "
             f"({code if isinstance(code, str) else type(exc).__name__})") from exc
+    written = document.get("type")
+    written = [written] if isinstance(written, str) else written
     types: set[str] = set()
     for node in expanded if isinstance(expanded, list) else ():
         values = node.get("@type") if isinstance(node, Mapping) else None
         for value in values if isinstance(values, list) else [values]:
-            if isinstance(value, str):
-                types.add(value)
+            if not isinstance(value, str):
+                continue
+            if value.startswith(_RELATIVE_BASE):
+                # a type no context defines: kept only if that is exactly what was written
+                # (a dot-segment form like "./T" resolved into something else is dropped)
+                value = value[len(_RELATIVE_BASE):]
+                if not isinstance(written, list) or value not in written:
+                    continue
+            elif value.startswith("https://openvc.invalid/"):
+                continue                     # "../T" climbed out of the sentinel base
+            types.add(value)
     return frozenset(types)
