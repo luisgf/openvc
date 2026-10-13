@@ -141,6 +141,14 @@ def _https_fetch_guarded(
 ) -> bytes:
     """Fetch *url* over https with the SSRF guards above and return the raw body.
     Shared by :func:`https_json_fetch` and :func:`https_text_fetch`."""
+    # ASCII before anything parses it. urlparse NFKC-normalizes a non-ASCII netloc,
+    # which is quadratic on CPython <= 3.12 for out-of-order combining marks, even
+    # on a worker thread (normalize holds the GIL). getaddrinfo would IDNA-encode a
+    # Unicode host with IDNA2003, mapping faß.de to fass.de where IDNA2008 and
+    # browsers give xn--fa-hia.de, another domain. A non-ASCII path cannot be sent
+    # either. An IDN must arrive as its xn-- A-label.
+    if not url.isascii():
+        raise UnsafeUrlError("URL is not ASCII; send an IDN host as its xn-- A-label")
     try:
         parsed = urlparse(url)
         # Force the lazy accessors: an out-of-range or non-numeric port, an unbalanced
@@ -153,6 +161,8 @@ def _https_fetch_guarded(
         raise UnsafeUrlError(f"only https is allowed, got scheme {parsed.scheme!r}")
     if not hostname:
         raise UnsafeUrlError("URL has no host")
+    if len(hostname) > 253:
+        raise UnsafeUrlError("host is longer than 253 characters")
     # Refused before DNS: getaddrinfo would resolve a host truncated at a NUL.
     if any(ord(char) < 0x21 or ord(char) == 0x7F for char in hostname):
         raise UnsafeUrlError(f"host {hostname!r} contains control characters or whitespace")
