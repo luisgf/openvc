@@ -9,17 +9,23 @@ openvc verifying what openvc produced. These hold it to artifacts made by *other
   against the published A.5 issuer key) and by the EUDI reference implementation (a real
   PID with the issuer cert in ``x5c``);
 * W3C Bitstring Status List ``encodedList`` decode vectors — the v1.0 REC's own example
-  and a Digital Bazaar one — both multibase-encoded exactly as the REC mandates.
+  and a Digital Bazaar one — both multibase-encoded exactly as the REC mandates;
+* an OpenID4VP 1.0 ``vp_token`` that a third-party wallet (eudi-dev) presented to a
+  third-party verifier (polaris-oid4vp), captured with provenance — the presentation
+  layer (DCQL response, KB-JWT, encrypted ``direct_post.jwt``) made by someone else
+  (issue #121).
 
 Fixtures + provenance live in ``tests/fixtures/interop/``. Offline and deterministic:
 the SD-JWT VCs carry an ``exp``, so the clock is frozen to the 2026-07-16 retrieval date
-(the fixed signed bytes cannot be re-minted with a later expiry). Self-contained
+(the fixed signed bytes cannot be re-minted with a later expiry); the OpenID4VP capture
+pins ``now`` through the API to the instant its verifier recorded. Self-contained
 (tests/ is not a package — no cross-import).
 """
 from __future__ import annotations
 
 import base64
 import datetime
+import hashlib
 import json
 from pathlib import Path
 
@@ -135,3 +141,149 @@ def test_decode_bitstring_tolerates_multibase_and_bare():
     # multibase 'u' prefix (real W3C lists carry it; openvc's own legacy output did not).
     encoded = (STATUS / "w3c-rec-example3-encodedList.txt").read_text().strip()
     assert decode_bitstring(encoded) == decode_bitstring(encoded[1:])
+
+
+# --------------------------------------------------------------------------- #
+# OpenID4VP 1.0 vp_token — a third-party wallet's presentation (issue #121)
+# --------------------------------------------------------------------------- #
+
+CAPTURE = FIX / "openid4vp" / "eudi-dev-capture"
+
+# PROVENANCE.md's capture instant: the second polaris-oid4vp reached its verdict — the
+# verifier's own receipt time, never a value read from the token. The KB-JWT is only
+# fresh then, and the issuer leaf expires 2026-11-09; pinning `now` (not the wall clock)
+# keeps the fixed bytes verifiable for good.
+CAPTURE_AT = datetime.datetime.fromtimestamp(1791661760, datetime.timezone.utc)
+
+# Byte-for-byte. The seven data files' digests are PROVENANCE.md's own table;
+# PROVENANCE.md — the author's attribution and Apache-2.0 statement — is pinned too,
+# so it is never edited by accident.
+CAPTURE_SHA256 = {
+    "presentation.txt": "4a968717cab4bb2a1a68db4b50cea437842c0ed3b5595e39bf6c2b268187fb9b",
+    "vp-token.json": "682e0fddf1213e3fe01e69bd71164b50afe54d1743773b7060270257d52b9e14",
+    "request.jwt": "ab312d0a48d61e69dc77b986b8bf5fbf7fdff10a156f87ac2a87ad5235baba06",
+    "request.json": "94806366b3a6ff619b4207f6c90b2a6e8621383fd0ee8a765e763f1370f718da",
+    "issuer-ca.pem": "34edc1bcf6880020e13c1140e4f13657627e5888843d91f2a4ab71ee99778a45",
+    "response.jwe": "675469a50f8ac2c7076e52e08d19ec5034360001a395ec0a5b5ed3ffcd3b8654",
+    "verifier-decryption-key.test-only.jwk.json":
+        "e2516a6e174a68d13b5d5d9d6c17544401c56aafeda2fad8ef311d04b81f6838",
+    "PROVENANCE.md": "d44e6ace36742e1edc7b3c1c35b062371e88ae72d9afa128b4508b2ae80b5e5f",
+}
+
+
+def _capture_json(name: str):
+    return json.loads((CAPTURE / name).read_text())
+
+
+def _capture_kwargs(**overrides):
+    from cryptography import x509
+
+    req = _capture_json("request.json")
+    kwargs = dict(
+        dcql_query=req["dcql_query"], nonce=req["nonce"], client_id=req["client_id"],
+        x5c_trust_anchors=[
+            x509.load_pem_x509_certificate((CAPTURE / "issuer-ca.pem").read_bytes())],
+        now=CAPTURE_AT)
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _verify_capture(vp_token=None, **overrides):
+    from openvc import verify_vp_token
+
+    token = _capture_json("vp-token.json") if vp_token is None else vp_token
+    return verify_vp_token(token, **_capture_kwargs(**overrides))
+
+
+def _flip_first_signature_char(jws: str) -> str:
+    # The FIRST character: every one of its bits is significant (the last one can land
+    # on base64url padding bits and leave the signature unchanged).
+    header, payload, sig = jws.split(".")
+    return ".".join([header, payload, ("A" if sig[0] != "A" else "B") + sig[1:]])
+
+
+def test_eudi_dev_capture_is_byte_exact():
+    for name, digest in CAPTURE_SHA256.items():
+        assert hashlib.sha256((CAPTURE / name).read_bytes()).hexdigest() == digest, name
+
+
+def test_eudi_dev_capture_is_internally_consistent():
+    # vp-token.json carries presentation.txt verbatim under the DCQL query id, and the
+    # assembled request.json repeats the signed request object's own members.
+    presentation = (CAPTURE / "presentation.txt").read_text()
+    assert _capture_json("vp-token.json") == {"pid": [presentation]}
+    payload_b64 = (CAPTURE / "request.jwt").read_text().strip().split(".")[1]
+    signed = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
+    for member, value in _capture_json("request.json").items():
+        assert signed[member] == value, member
+
+
+def test_eudi_dev_vp_token_verifies():
+    (p,) = _verify_capture().for_query("pid")
+    assert p.raw.issuer == "https://issuer.polaris.test"   # bound via the anchored x5c leaf
+    assert p.raw.vct == "urn:eudi:pid:1"
+    assert p.raw.key_bound is True
+    assert (p.raw.claims["given_name"], p.raw.claims["family_name"]) == ("Jean", "Dupont")
+
+
+def test_eudi_dev_encrypted_response_verifies():
+    # The direct_post.jwt body exactly as the wallet posted it (ECDH-ES + A128GCM).
+    from openvc import verify_encrypted_vp_response
+    from openvc.keys import P256KeyAgreementKey
+
+    jwk = _capture_json("verifier-decryption-key.test-only.jwk.json")
+    result = verify_encrypted_vp_response(
+        (CAPTURE / "response.jwe").read_text().strip(),
+        key=P256KeyAgreementKey.from_jwk(jwk, kid=jwk.get("kid", "verifier-enc")),
+        **_capture_kwargs())
+    (p,) = result.for_query("pid")
+    assert (p.raw.claims["given_name"], p.raw.claims["family_name"]) == ("Jean", "Dupont")
+
+
+def test_eudi_dev_capture_an_hour_later_is_stale():
+    """The author's stale-clock control, kept as asked: the same presentation an hour
+    after the capture. polaris-oid4vp refuses it; openvc accepted it until #186 (v1.28.0)."""
+    from openvc.proof.errors import ClaimsInvalid
+
+    with pytest.raises(ClaimsInvalid, match="KB-JWT is too old"):
+        _verify_capture(now=CAPTURE_AT + datetime.timedelta(hours=1))
+
+
+def test_eudi_dev_capture_after_the_issuer_leaf_expires_is_rejected():
+    # The pin covers the x5c validity window as well — nothing here reads the wall clock.
+    # The huge leeway keeps the KB-JWT "fresh", so only the certificate window can refuse.
+    from openvc.verify import KeyResolutionFailed
+
+    with pytest.raises(KeyResolutionFailed):
+        _verify_capture(now=datetime.datetime(2026, 12, 1, tzinfo=datetime.timezone.utc),
+                        leeway_s=10 ** 8)
+
+
+def test_eudi_dev_capture_unrelated_anchor_rejected():
+    from cryptography import x509
+
+    from openvc.verify import KeyResolutionFailed
+
+    unrelated = x509.load_pem_x509_certificate((SD / "eudi-pid-issuer.pem").read_bytes())
+    with pytest.raises(KeyResolutionFailed):
+        _verify_capture(x5c_trust_anchors=[unrelated])
+
+
+def test_eudi_dev_capture_tampered_signatures_rejected():
+    presentation = (CAPTURE / "presentation.txt").read_text()
+    parts = presentation.split("~")
+    kb_flipped = "~".join(parts[:-1] + [_flip_first_signature_char(parts[-1])])
+    issuer_flipped = "~".join([_flip_first_signature_char(parts[0])] + parts[1:])
+    for tampered, what in ((kb_flipped, "KB-JWT"), (issuer_flipped, "issuer JWT")):
+        with pytest.raises(SignatureInvalid, match=what):
+            _verify_capture({"pid": [tampered]})
+
+
+def test_eudi_dev_capture_binding_mismatches_rejected():
+    from openvc.proof.errors import ClaimsInvalid
+
+    req = _capture_json("request.json")
+    with pytest.raises(ClaimsInvalid, match="nonce"):
+        _verify_capture(nonce="not-the-request-nonce")
+    with pytest.raises(ClaimsInvalid, match="aud"):      # the bare hash, prefix dropped
+        _verify_capture(client_id=req["client_id"].split(":", 1)[1])

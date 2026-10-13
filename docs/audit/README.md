@@ -70,8 +70,8 @@ flake8 && mypy               # lint + type-check
 ```
 
 The negative corpus and the golden interop fixtures (`tests/fixtures/`, W3C
-vc-di-eddsa / vc-di-ecdsa, ISO 18013-5 Annex D, EU trusted-list) are the drift
-alarm; `tests/test_fuzz_codecs.py` is the property-based harness. See
+vc-di-eddsa / vc-di-ecdsa, ISO 18013-5 Annex D, EU trusted-list, and an OpenID4VP
+`vp_token` presented by a third-party wallet) are the drift alarm; `tests/test_fuzz_codecs.py` is the property-based harness. See
 [assurance.md](assurance.md) for the coverage map.
 
 ## 5. Funding routes (why this is fundable)
