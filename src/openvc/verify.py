@@ -137,12 +137,13 @@ class VerificationPolicy:
     validated only when a ``resolve_credential_schema`` fetch is supplied; set it
     True to reject a credential that declares a schema but is verified without
     one. ``now`` pins the evaluation instant for Data Integrity temporal checks and
-    for the SD-JWT Key Binding JWT freshness window (the JOSE suites' ``exp``/``nbf``
-    use the current time). ``kb_max_age_s`` bounds how old a KB-JWT's ``iat`` may be
-    (RFC 9901 §7.3 step 5.5). ``audience`` and ``nonce`` bind an SD-JWT KB-JWT
-    together (step 5.6): a KB-JWT checked against only one of them, or an empty one,
-    is rejected (``ClaimsInvalid``), while ``audience`` alone still pins a VC-JWT's
-    ``aud``. That does not make the KB-JWT required — ``require_key_binding`` does."""
+    for the SD-JWT Key Binding JWT freshness window (the JOSE suites' ``exp``/``nbf``,
+    and the VCDM ``validFrom``/``validUntil`` they enforce, use the current time).
+    ``kb_max_age_s`` bounds how old a KB-JWT's ``iat`` may be (RFC 9901 §7.3 step
+    5.5). ``audience`` and ``nonce`` bind an SD-JWT KB-JWT together (step 5.6): a
+    KB-JWT checked against only one of them, or an empty one, is rejected
+    (``ClaimsInvalid``), while ``audience`` alone still pins a VC-JWT's ``aud``. That
+    does not make the KB-JWT required — ``require_key_binding`` does."""
     leeway_s: int = DEFAULT_LEEWAY_S
     expected_types: Sequence[str] | None = None
     expected_vct: str | None = None

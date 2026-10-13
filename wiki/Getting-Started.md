@@ -93,7 +93,9 @@ What the result tells you:
 
 - **`result.expired`** is `True` when the expiry waiver is on and the default
   policy would have rejected the credential for its own expiry: a VC-JWT's `exp`
-  or body `validUntil` / `expirationDate`, an SD-JWT VC's `exp`, or a Data
+  or body `validUntil` / `expirationDate`, an SD-JWT VC's `exp` (plus `validUntil`
+  / `expirationDate` when it is a W3C credential secured as SD-JWT, see
+  [SD-JWT VC](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt-vcsd-jwt)), or a Data
   Integrity credential's `validUntil` / `expirationDate` and the proof's own
   `expires`. The proof suite that skipped the check reports it, on the clock it
   enforces with: the current time for the JOSE formats, `policy.now` for Data

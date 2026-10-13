@@ -176,6 +176,47 @@ In production, resolve Type Metadata over the network with the SSRF-guarded
 default — `openvc.resolvers.default_type_metadata_resolver` — instead of the
 in-memory lambda above.
 
+## W3C credentials secured as SD-JWT (`vc+sd-jwt`)
+
+The same suite verifies a W3C VCDM credential secured with SD-JWT, as defined by
+[VC-JOSE-COSE](https://www.w3.org/TR/vc-jose-cose/) §3.2, either bare or inside an
+`EnvelopedVerifiableCredential` (`data:application/vc+sd-jwt,…`). Such a credential
+**is** the JWT claim set, with `@context`, `issuer`, `validFrom` and so on at the top
+level. Its `exp` dates the signature, not the data: §3.1.3 says so for the JOSE
+encoding SD-JWT builds on. An issuer may therefore
+put the expiry only in `validUntil`, and openvc enforces it just as the VC-JWT lane
+does:
+
+- `validFrom` / `validUntil`, or the VCDM 1.1 `issuanceDate` / `expirationDate`, are
+  checked on the processed payload. That is after the disclosures are applied, so a
+  disclosed `validUntil` counts. The check uses the current time and the suite
+  leeway.
+- A past `validUntil` raises `CredentialExpired`, and a future `validFrom` raises
+  `CredentialNotYetValid`. A present but unparseable value raises
+  `MalformedTimestamp`.
+- `require_not_expired=False` (or `check_temporal=False` on the suite) waives only
+  the expiry, and the result reports `expired=True`.
+- The JWT `exp` / `nbf` are still enforced as well.
+- With `require_key_binding=True`, the window is checked after the KB-JWT, so an
+  expiry verdict still means the presentation was bound.
+
+openvc treats the payload as a VCDM credential when the issuer signed either of
+these:
+
+| Signal | Example |
+|---|---|
+| The payload's `@context` names a VCDM base context, as a string or anywhere in the array | `"@context": ["https://www.w3.org/ns/credentials/v2", …]` (or `…/2018/credentials/v1`) |
+| The `typ` is `vc+sd-jwt` and the payload has no `vct` (a non-empty string) | a W3C issuer that omitted `@context`, or made it disclosable and the holder withheld it |
+
+An **IETF SD-JWT VC is not affected**: a `dc+sd-jwt` one, or one with the legacy
+`vc+sd-jwt` typ and a `vct`. Its claims are the issuer's own vocabulary, so a claim
+that happens to be named `validUntil` is not a validity bound: it is not enforced
+and not reported as `expired`. Its `exp` / `nbf` remain the temporal gate. The
+`vc+sd-jwt` typ alone is not enough, because the IETF drafts used it until draft-06
+renamed it `dc+sd-jwt`, and openvc still accepts it. The `data:` media type of an
+enveloping credential is not consulted either, because it sits outside the issuer's
+signature.
+
 ## Caveat: keep enforcement pointers non-disclosable
 
 If a credential's `credentialStatus` (or `credentialSchema`) must be
@@ -186,4 +227,10 @@ status only works for claims the holder cannot withhold — the same applies to
 [Security model](Security-Model)). RFC 9901 §9.7 likewise forbids making
 `exp` / `nbf` / `iss` / `cnf` / `aud` selectively disclosable: a withheld
 `exp` cannot be distinguished from an absent one, so an expired credential
-would verify.
+would verify. The same holds for a W3C credential's `validUntil` / `validFrom` and
+its `@context`. VC-JOSE-COSE §3.2.1 says properties needed for validation SHOULD
+NOT be selectively disclosable. A holder can withhold a disclosable `validUntil`.
+A holder can also withhold a disclosable `@context`, including a VCDM entry that is
+itself an array-element disclosure. The credential then counts as VCDM only if it is
+typed `vc+sd-jwt` and has no `vct`. If it is `dc+sd-jwt`, or carries a `vct`, its
+window is no longer read.

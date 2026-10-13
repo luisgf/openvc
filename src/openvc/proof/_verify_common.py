@@ -163,22 +163,27 @@ def check_validity_window(
         instant = now.replace(tzinfo=timezone.utc)  # silently as system-local time
     else:
         instant = now.astimezone(timezone.utc)
-    leeway = timedelta(seconds=max(0, leeway_s))
+    try:
+        leeway = timedelta(seconds=max(0, leeway_s))
+    except OverflowError:               # wider than timedelta holds: the widest one, not a
+        leeway = timedelta.max          # bare error that would abort verify_many
+    # Compare differences, never `instant ± leeway`: a huge leeway would push that past
+    # datetime's range (a bare OverflowError); two datetimes always subtract cleanly.
 
     not_before = _bound(document, "validFrom", "issuanceDate")
-    if not_before is not None and instant + leeway < not_before:
+    if not_before is not None and not_before - instant > leeway:
         raise CredentialNotYetValid(
             f"credential is not valid before {not_before.isoformat()}")
 
     expired = False
     not_after = _bound(document, "validUntil", "expirationDate")
-    if not_after is not None and instant - leeway > not_after:
+    if not_after is not None and instant - not_after > leeway:
         if check_temporal:
             raise CredentialExpired(f"credential expired at {not_after.isoformat()}")
         expired = True
 
     proof_expires = _bound(proof, "expires", "expirationDate")
-    if proof_expires is not None and instant - leeway > proof_expires:
+    if proof_expires is not None and instant - proof_expires > leeway:
         if check_temporal:
             raise CredentialExpired(f"proof expired at {proof_expires.isoformat()}")
         expired = True
