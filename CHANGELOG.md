@@ -71,6 +71,72 @@ All notable changes to **openvc** are documented here. The format follows
   was `["U", "n", "i", …]` satisfied it. A string is now treated as a
   one-element list.
 
+- **DCQL `meta.type_values` is now enforced for `jwt_vc_json` and `ldp_vc`**
+  ([#205](https://github.com/luisgf/openvc/issues/205)). Found by the
+  adversarial review of [#194](https://github.com/luisgf/openvc/pull/194).
+  `verify_vp_token` never read the constraint on these two formats, so a
+  Credential Query for a `UniversityDegreeCredential` was answered by any
+  credential that verified. That included one the holder minted from their own
+  `did:key`, even with `require_holder_binding=True`. A VP could also carry an
+  unrelated credential next to the requested one. The other formats already
+  enforced their equivalent constraint: `vct_values` for `dc+sd-jwt` and
+  `doctype_value` for `mso_mdoc`.
+
+  The check follows OpenID4VP 1.0 §B.1.1. **Every** embedded credential must
+  have, among its fully expanded types, all the IRIs of at least one
+  alternative, or the response is rejected with `ClaimsInvalid`. openvc expands
+  each credential's `type` with JSON-LD against the credential's own
+  `@context`. A term the context defines becomes its IRI, and a term no context
+  defines stays as written, unless the context sets an absolute `@base`. The
+  types come from the credential's JSON, which every accepted format signs:
+  VC-JWT and every Data Integrity suite. The RDF-canonicalized suites have
+  guaranteed this since 1.30.2.
+
+  The comparison is on IRIs, not short names. `VerifiableCredential` expands to
+  `https://www.w3.org/2018/credentials#VerifiableCredential`, so a query for the
+  bare `"VerifiableCredential"` matches no VCDM credential. Under the VCDM 2.0
+  context, which has no `@vocab`, an undefined `UniversityDegreeCredential` still
+  matches as written.
+
+  The check fails closed:
+  - A malformed constraint is `VpTokenMalformed`, raised before anything is
+    verified. That covers a non-object `meta`, an explicit `null`, an empty or
+    flat `type_values`, and an empty or non-string type.
+  - An unbundled context raises `DocumentLoaderError`.
+  - A credential whose types cannot be expanded raises `ClaimsInvalid`.
+  - An SD-JWT nested in the presentation never matches: its holder could
+    reshape a `type` by withholding disclosures.
+  - A query without `type_values` still puts no constraint on the type.
+
+  Like `vct_values`, the check selects the right credential type, not a
+  trusted issuer.
+
+  **Upgrading:**
+  - Matching needs the `[data-integrity]` extra (pyld) once a query carries
+    `type_values`. Without it, `verify_vp_token` raises `OpenID4VPError`.
+  - Matching also needs every context the credential cites. Only VCDM 2.0 is
+    bundled. Pass the VCDM 1.1 context, and any others, through
+    `extra_contexts`, which now reaches the `jwt_vc_json` lane too.
+  - A query that names types by short name, such as
+    `[["VerifiableCredential", …]]`, used to pass because nothing was checked.
+    It now fails: write the IRIs.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **Each expansion now gets its own pyld context resolver**, so no context
+    is shared between calls or callers.
+  - **An absolute `@base` in the credential's context is now honoured.** pyld
+    skips it when no document base is passed, so an undefined type stayed
+    relative where JSON-LD resolves it.
+  - **An RDF-canonicalized credential's JSON `type` could be forged.** The
+    review found that a holder could rewrite the JSON of an `eddsa-rdfc-2022`,
+    `ecdsa-rdfc-2019` or `ecdsa-sd-2023` credential so that its signed dataset
+    stayed the same while its top-level `type` named anything. The same
+    weakness hid the validity window, the status and the subject from every
+    other check, so it was fixed for all of them in 1.30.2
+    ([GHSA-vrxg-57v4-85mc](https://github.com/luisgf/openvc/security/advisories/GHSA-vrxg-57v4-85mc)).
+    This change relies on that fix. A regression test pins that the forged
+    credential fails before `type_values` reads it.
+
 ### Added
 
 - **`VerifiedSdJwt.vcdm: bool = False`** says whether the suite treated the payload
