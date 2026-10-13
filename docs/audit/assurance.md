@@ -156,6 +156,13 @@ recent first (`git log`, short hashes).
 - `886db1f` — challenge/domain presentation binding for Data Integrity
 - `ee1ecac` — enforce Data Integrity validity window and `proofPurpose`
 
+**JSON-LD form ↔ signed dataset (RDF Data Integrity)**
+- GHSA-vrxg-57v4-85mc (v1.30.2) — context validation (VC-DI §2.4.1) on
+  `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` / `ecdsa-sd-2023`, on both the verify and the sign
+  side: the policy reads only JSON the signature covers (threat model I20, R9). Pinned
+  by `tests/test_di_context_validation.py`. The attack tests fail on v1.30.1 and pass
+  here; the W3C golden vectors are unaffected.
+
 **X.509 / trust anchoring**
 - `82b3867` — X.509 `x5c` issuer trust for JOSE credentials
 - `b933460` — emit `x5c` header on SD-JWT VC issuance to anchor the issuer (#94)

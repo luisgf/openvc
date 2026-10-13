@@ -46,6 +46,7 @@ from ..cbor import CborError, CborTag
 from ..cbor import decode as _cbor_decode
 from ..cbor import encode as _cbor_encode
 from ..keys import P256SigningKey, verify_signature
+from ._context_validation import validate_document
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -446,9 +447,14 @@ class VerifiedSdCredential:
     expired: bool = False
 
 
-def _proof_config_hash(proof: dict[str, Any], context: Any, loader: Any) -> bytes:
+def _proof_config(proof: dict[str, Any], context: Any) -> dict[str, Any]:
     config = {k: v for k, v in proof.items() if k != "proofValue"}
     config["@context"] = context
+    return config
+
+
+def _proof_config_hash(proof: dict[str, Any], context: Any, loader: Any) -> bytes:
+    config = _proof_config(proof, context)
     nquads = _pyld().normalize(
         config, {"algorithm": "URDNA2015", "format": "application/n-quads",
                  "documentLoader": loader})
@@ -502,6 +508,8 @@ class EcdsaSdProofSuite:
             "verificationMethod": verification_method, "proofPurpose": proof_purpose,
         }
         proof_hash = _proof_config_hash(proof, credential["@context"], loader)
+        # never sign JSON the signature would not cover (see _context_validation)
+        validate_document(credential, _proof_config(proof, credential["@context"]), loader)
 
         hmac_key = secrets.token_bytes(32)
         transform = _transform(credential, hmac_key, loader)
@@ -670,6 +678,9 @@ class EcdsaSdProofSuite:
             if not verify_signature(alg="ES256", public_jwk=ephemeral_jwk,
                                     signing_input=(line + "\n").encode("utf-8"), signature=sig):
                 raise SignatureInvalid("a disclosed statement signature does not verify")
+        # The signatures cover the disclosed RDF statements; the checks below read the
+        # JSON. Context validation (VC-DI §2.4.1) makes the two agree first.
+        validate_document(unsecured, _proof_config(proof, derived.get("@context")), loader)
 
         check_proof_purpose(proof, expected_proof_purpose)
         expired = check_validity_window(

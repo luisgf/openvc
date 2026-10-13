@@ -4,6 +4,85 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.2] — unreleased
+
+### Security
+
+- **The RDF Data Integrity suites now validate a document's JSON-LD form before any
+  policy check reads it** ([GHSA-vrxg-57v4-85mc](https://github.com/luisgf/openvc/security/advisories/GHSA-vrxg-57v4-85mc)).
+  This covers `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and `ecdsa-sd-2023`. They sign the
+  RDF dataset a credential expands to. The checks that follow the signature read the
+  JSON, and nothing tied the two together. Many JSON documents expand to the same
+  dataset, so a holder could change the JSON and keep the signature valid. Every case
+  below verified under the default policy, on the sync and async pipelines:
+  - **Hide a signed member from the policy.** The member was re-keyed to its full IRI,
+    or given a shorter alias by an inline `@context`, or moved into `@included` or into
+    a second description of the credential's own node. This skipped an expired
+    `validUntil`, a future `validFrom`, a revoked `credentialStatus`, a required
+    `credentialSchema`, and the proof's own `expires`. It also worked on a derived
+    `ecdsa-sd-2023` credential whose validity window was mandatory.
+  - **Spoof `credentialSubject`.** An inline copy of the VC context replaced the real
+    one, so that `credentialSubject` named the presenter while the signed subject sat
+    under another key. The result reported the presenter as the subject. Inside an
+    `ldp_vc` presentation this passed `require_cryptographic_holder_binding`, so a
+    holder could present someone else's credential as their own.
+  - **Add unsigned claims.** The bundled v2 context has no `@vocab`. JSON-LD drops a
+    term no context defines, so the signature never covered it, and any value placed
+    under such a term (`credentialSubject.age_over_18: true`) verified.
+
+  The JCS suites sign the JSON itself and were not affected, nor were VC-JWT and
+  SD-JWT VC. After the proof verifies, and before signing, the RDF suites now apply
+  context validation (VC Data Integrity §2.4.1). A document that fails raises a typed
+  `ProofMalformed`:
+  - `@context` must start with the VC base context (v2, or v1 through
+    `extra_contexts`). After that, only context URLs the offline loader serves are
+    allowed, plus inline objects that carry nothing but an absolute-IRI `@vocab`.
+  - The document and its proof must be the compacted form of their own expansion
+    under that context. The only accepted variations are a one-element array for its
+    element and `{"id": X}` for `X`, which JSON-LD treats as the same value.
+  - `@included`, `@reverse`, a top-level `@graph`, and a nested second description of
+    the document's own node are refused.
+  - Nothing may be dropped on the way to RDF (JSON-LD "safe mode"). That refuses a
+    node id, type or property that is not a well-formed absolute IRI, a blank-node
+    property, and `@index` / `@direction` annotations, none of which reach the signed
+    dataset.
+  - In a `VerifiablePresentation`, the embedded credentials are skipped by this check.
+    Each one is verified on its own, under its own `@context`.
+
+  **What this rejects that used to be accepted.** These documents were never fully
+  covered by their signature, and other verifiers that apply context validation
+  reject them too:
+  - A credential carrying a term its contexts do not define. Issuing one with
+    `add_proof` / `add_base_proof` now raises `ProofMalformed` instead of signing a
+    document whose claim is not signed. Define custom terms with an inline
+    `{"@vocab": "…"}` or with a context passed through `extra_contexts`.
+  - An inline `@context` object with term definitions.
+  - A relative IRI, such as `verification_method="k"`. JSON-LD resolved it against
+    pyld's default base, so the dataset signed `http://example.org/base/k`.
+  - `@index` and `@direction` annotations. openvc canonicalizes without
+    `rdfDirection`, so neither was ever signed.
+
+  The W3C golden vectors for all three suites still verify unchanged. A context
+  passed through `extra_contexts` stays trusted: one that gives a core VC term a
+  second, shorter name can still hide that member, so inject only contexts you have
+  reviewed ([details](https://github.com/luisgf/openvc/wiki/Data-Integrity#the-json-must-be-what-was-signed)).
+
+  Fixed before merge, from this change's own adversarial review:
+  - **A blank-node `@vocab` re-opened unsigned claims.** With `{"@vocab": "_:"}`,
+    every undefined term became a blank-node property. RDF conversion drops those, yet
+    compaction reproduced them, so the round trip alone passed. Now an inline `@vocab`
+    must be an absolute IRI, and the safe-mode rule refuses blank-node properties.
+  - **A whole forged top level could ride on a dropped node id.** RDF conversion drops
+    every statement whose subject is not a well-formed IRI, for example
+    `"id": "urn:forged x"`. The credential's real node, restated under any of the forged
+    node's properties, kept the dataset identical. This needed no inline context. It is
+    the same mechanism as the `{"@base": null}` + `@included` forgery (pinned too). The
+    safe-mode rule closes both.
+  - `@index` and `@direction` let a value change shape without changing the dataset.
+    Both are refused now.
+  - A `@context` whose first entry was an object raised a bare `TypeError` in the new
+    check. It is now a typed `ProofMalformed`.
+
 ## [1.30.1] — 2026-10-13
 
 ### Security
