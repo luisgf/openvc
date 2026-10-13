@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import time
 
 import pytest
 from cryptography import x509
@@ -31,7 +32,7 @@ from cryptography.x509.oid import NameOID
 from openvc import fetch
 from openvc.aio import verify_credential_async, verify_many_async
 from openvc.did.base import DidResolutionError
-from openvc.did.did_web import DidWebResolver, _did_web_url
+from openvc.did.did_web import AsyncDidWebResolver, DidWebResolver, _did_web_url
 from openvc.did.did_webvh import DidWebvhError, _did_webvh_url
 from openvc.errors import OpenvcError
 from openvc.fetch import (
@@ -79,6 +80,13 @@ HOSTILE_DID_WEB = [
     "did:web:%5B2001%3Adb8%3A%3A1%5D",          # an IP literal (the spec forbids IPs)
     "did:web:" + ".".join(["a" * 63] * 4),      # 255 characters, over the 253 limit
     "did:web:ex%FFample.com",                   # invalid UTF-8 decodes to U+FFFD
+    # A Unicode host, even a valid IDN: it must be written as its xn-- A-label (#235).
+    # Python's IDNA2003 codec would map each to another domain than IDNA2008 does.
+    "did:web:m%C3%BCnchen.de",                  # IDNA2008: xn--mnchen-3ya.de
+    "did:web:fa%C3%9F.de",                      # IDNA2003 folds to fass.de
+    "did:web:%CE%B1%CF%82.gr",                  # final sigma folds to sigma
+    "did:web:%E1%BA%9Eexample.com",             # capital sharp s: lower() gives ss
+    "did:web:example.com%EF%B8%93443",          # U+FE13: urlparse NFKC reads a colon
 ]
 
 
@@ -141,9 +149,6 @@ def test_did_web_resolver_never_calls_the_fetch(did):
     ("did:web:localhost%3A8443", "https://localhost:8443/.well-known/did.json"),
     ("did:web:Sub-1.EXAMPLE.com", "https://Sub-1.EXAMPLE.com/.well-known/did.json"),
     ("did:web:xn--mnchen-3ya.de", "https://xn--mnchen-3ya.de/.well-known/did.json"),
-    # A Unicode host is checked in IDNA form but passed through unchanged, so a DID
-    # that resolved before still maps to the same URL.
-    ("did:web:m%C3%BCnchen.de", "https://münchen.de/.well-known/did.json"),
     ("did:web:" + ".".join(["a" * 63] * 3 + ["a" * 61]),
      "https://" + ".".join(["a" * 63] * 3 + ["a" * 61]) + "/.well-known/did.json"),
 ])
@@ -173,11 +178,56 @@ def test_did_webvh_url_rejects_hostile_host_as_webvh_error(did):
     "https://ex℀mple.com/did.json",        # NFKC normalizes into a delimiter
     "https://8.8.8.8\x00.x/did.json",           # NUL: getaddrinfo would truncate it
     "https://exa mple.com/did.json",            # whitespace
+    "https://faß.de/did.json",             # Unicode host: IDNA2003 would fetch fass.de
+    "https://münchen.de/did.json",         # even a valid IDN: send the xn-- A-label
+    "https://" + "a" * 254 + "/did.json",       # over 253 characters
 ])
 @pytest.mark.parametrize("fetcher", [https_json_fetch, https_text_fetch, https_bytes_fetch])
 def test_fetch_rejects_malformed_url_before_dns(no_network, fetcher, url):
     with pytest.raises(UnsafeUrlError):
         fetcher(url)
+
+
+# --------------------------------------------------------------------------- #
+# Bounded work: a huge host is rejected in linear time (#235)
+# --------------------------------------------------------------------------- #
+
+# CPython's punycode encoder is quadratic: 50,000 CJK characters took about a minute
+# to IDNA-encode, on the event-loop thread for the async resolver. Rejecting on length
+# and ASCII first makes it milliseconds; the bound is generous so CI never flakes.
+HUGE_HOST = "".join(chr(0x4E00 + i % 20000) for i in range(50_000)) + ".com"
+
+
+def _assert_fast(call, error):
+    start = time.perf_counter()
+    with pytest.raises(error):
+        call()
+    assert time.perf_counter() - start < 2.0
+
+
+def test_did_web_rejects_a_huge_unicode_host_fast():
+    _assert_fast(lambda: _did_web_url("did:web:" + HUGE_HOST), DidResolutionError)
+
+
+def test_async_did_web_resolver_rejects_a_huge_unicode_host_fast():
+    async def _fetch(url):
+        raise AssertionError(f"fetch called with {url!r}")
+    resolver = AsyncDidWebResolver(_fetch)
+    _assert_fast(lambda: asyncio.run(resolver.resolve("did:web:" + HUGE_HOST)),
+                 DidResolutionError)
+
+
+def test_fetch_rejects_a_huge_unicode_host_fast(no_network):
+    _assert_fast(lambda: https_json_fetch(f"https://{HUGE_HOST}/did.json"), UnsafeUrlError)
+
+
+def test_verify_many_async_isolates_a_huge_unicode_host_fast(no_network):
+    batch = [_good_vc_jwt(), _vc_jwt("did:web:" + HUGE_HOST)]
+    start = time.perf_counter()
+    good, bad = asyncio.run(verify_many_async(batch))
+    assert time.perf_counter() - start < 2.0
+    assert good.ok is True
+    assert isinstance(bad.error, KeyResolutionFailed)
 
 
 def test_async_fetch_rejects_malformed_url_before_dns(no_network):

@@ -4,6 +4,44 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.2] — unreleased
+
+### Security
+
+- **A did:web host can no longer stall the event loop, and a Unicode host no
+  longer resolves at another domain**
+  ([#235](https://github.com/luisgf/openvc/issues/235)). Both were found by the
+  adversarial review of [#209](https://github.com/luisgf/openvc/pull/209), run
+  after it merged.
+
+  The did:web host check that #209 added IDNA-encoded the host before bounding
+  its length. CPython's punycode encoder is quadratic: 10,000 CJK characters took
+  about 6.6 s, and 50,000 about a minute. `AsyncDidWebResolver` runs the check on
+  the event-loop thread, so one credential stalled `verify_many_async` for that
+  long. It needed no valid signature, since key resolution runs before the
+  signature check. Before #209 the encode ran inside `getaddrinfo` on a worker
+  thread. The sync path with the default fetch had the same cost already, and so
+  did https-issuer and status-list hosts.
+
+  A Unicode host also went to another registrable domain than other
+  implementations use. Python's IDNA codec is IDNA2003, so `did:web:fa%C3%9F.de`
+  was looked up, and its TLS name checked, as `fass.de`. IDNA2008, UTS 46 and
+  browsers give `xn--fa-hia.de`. Whoever held `fass.de` controlled `faß.de` in
+  openvc. `ς`, ZWJ and ZWNJ fold the same way. The same pass-through checked one
+  host and connected to another for some capitals (`ẞexample.com` connected to
+  `ssexample.com`). It also let U+FE13 through, which hands a caller's own fetch
+  a URL that `urlparse` rejects with a bare `ValueError`.
+
+  A did:web or did:webvh host must now be ASCII, at most 253 characters, checked
+  before any per-character work. An internationalized host is written as its
+  A-label (`did:web:xn--mnchen-3ya.de`). The SSRF-guarded fetch applies the same
+  two rules to every https URL before DNS and raises `UnsafeUrlError`. The did:web
+  spec defines the host by RFC 1035/1123, which are ASCII.
+
+  A did:web with a Unicode host (`did:web:m%C3%BCnchen.de`) or an https URL with
+  one is now rejected; use the A-label instead. Those DIDs already resolved
+  differently in openvc than in other implementations.
+
 ## [1.31.1] — 2026-10-13
 
 Tests only: no library code changes.

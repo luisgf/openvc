@@ -37,20 +37,26 @@ _PORT = re.compile(r"[0-9]{1,5}")
 def _check_host(host: str, did: str) -> None:
     """Reject a decoded did:web host that is not a domain name with an optional port.
 
-    The spec defines the host by RFC 1035/1123 domain-name syntax. Checking it here
-    keeps a hostile host (a bad port, a bracket, a control character, ``@`` or ``/``)
-    a typed error before any fetch runs, the caller's own fetch included. A Unicode
-    host is checked in its IDNA (``xn--``) form, the form the resolver looks up.
+    The spec defines the host by RFC 1035/1123 domain-name syntax, which is ASCII.
+    Checking it here keeps a hostile host (a bad port, a bracket, a control
+    character, ``@`` or ``/``) a typed error before any fetch runs, the caller's own
+    fetch included.
+
+    An internationalized host must be written as its A-label (``xn--…``). A Unicode
+    host is refused rather than converted: Python's IDNA codec is IDNA2003, which
+    maps ``faß.de`` to ``fass.de`` where IDNA2008 and browsers use ``xn--fa-hia.de``,
+    a different registrable domain. Its punycode encoder is also quadratic, so the
+    length is bounded first, before any per-character work.
     """
     name, colon, port = host.rpartition(":") if ":" in host else (host, "", "")
     if colon and not (_PORT.fullmatch(port) and 0 < int(port) <= 65535):
         raise DidResolutionError(f"did:web {did!r} has an invalid port {port!r}")
-    try:
-        ascii_name = name.encode("idna").decode("ascii")
-    except UnicodeError as exc:
-        raise DidResolutionError(f"did:web {did!r} has an invalid host: {exc}") from exc
-    labels = ascii_name.split(".")
-    if len(ascii_name) > 253 or not all(_LABEL.fullmatch(label) for label in labels):
+    if len(name) > 253:
+        raise DidResolutionError(f"did:web {did!r} host is longer than 253 characters")
+    if not name.isascii():
+        raise DidResolutionError(
+            f"did:web {did!r} host {name!r} is not ASCII; write an IDN as its xn-- A-label")
+    if not all(_LABEL.fullmatch(label) for label in name.split(".")):
         raise DidResolutionError(f"did:web {did!r} host {name!r} is not a domain name")
 
 

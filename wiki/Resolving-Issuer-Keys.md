@@ -86,14 +86,20 @@ defaults in `openvc.resolvers` built on it — enforce: **https only**, private
 the connection **pinned to the validated IP** so DNS rebinding cannot swap the
 host after the check. Details in the [Security model](Security-Model).
 
-A malformed host never gets that far. A `did:web` / `did:webvh` host must be a
-domain name (RFC 1123 labels; a Unicode host is checked in its IDNA form), with
-an optional `%3A`-encoded port from 1 to 65535. Anything else raises
-`DidResolutionError` before any fetch, your own fetch included: a bad port, a
-bracketed IP literal, a control character, or an `@`, `/` or `#` decoded from the
-host. The guarded fetch raises `UnsafeUrlError` for any URL it cannot parse. Both
-are `OpenvcError`s, so in `verify_many` a hostile issuer becomes that credential's
-`error` and the rest of the batch still verifies.
+A malformed host never gets that far. A `did:web` / `did:webvh` host must be an
+ASCII domain name (RFC 1123 labels, at most 253 characters), with an optional
+`%3A`-encoded port from 1 to 65535. Anything else raises `DidResolutionError`
+before any fetch, your own fetch included: a bad port, a bracketed IP literal, a
+control character, or an `@`, `/` or `#` decoded from the host. The guarded fetch
+raises `UnsafeUrlError` for any URL it cannot parse. Both are `OpenvcError`s, so in
+`verify_many` a hostile issuer becomes that credential's `error` and the rest of
+the batch still verifies.
+
+Write an internationalized host as its A-label: `did:web:xn--mnchen-3ya.de`, not
+`did:web:m%C3%BCnchen.de`. The same goes for any https URL the guarded fetch reads.
+A Unicode host is refused, not converted, because Python's IDNA codec is IDNA2003.
+It maps `faß.de` to `fass.de`, where IDNA2008 and browsers use `xn--fa-hia.de`, a
+different domain.
 
 ## Beyond DIDs
 

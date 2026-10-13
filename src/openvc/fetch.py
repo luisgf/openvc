@@ -153,6 +153,14 @@ def _https_fetch_guarded(
         raise UnsafeUrlError(f"only https is allowed, got scheme {parsed.scheme!r}")
     if not hostname:
         raise UnsafeUrlError("URL has no host")
+    # Bounded and ASCII before DNS. getaddrinfo would IDNA-encode a Unicode host with
+    # IDNA2003, which maps faß.de to fass.de (IDNA2008 and browsers give
+    # xn--fa-hia.de, another domain), using a quadratic encoder. An IDN must arrive
+    # as its xn-- A-label.
+    if len(hostname) > 253:
+        raise UnsafeUrlError("host is longer than 253 characters")
+    if not hostname.isascii():
+        raise UnsafeUrlError(f"host {hostname!r} is not ASCII; use its xn-- A-label")
     # Refused before DNS: getaddrinfo would resolve a host truncated at a NUL.
     if any(ord(char) < 0x21 or ord(char) == 0x7F for char in hostname):
         raise UnsafeUrlError(f"host {hostname!r} contains control characters or whitespace")
