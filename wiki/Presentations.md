@@ -48,7 +48,21 @@ result = VpJwtProofSuite().verify(
     vp, audience="https://verifier.example", nonce="chal-42",
     require_holder_binding=True)
 print(result.holder, len(result.credentials), result.credentials[0].subject)
+
+# Or pin a holder key you already trust instead of resolving it from `iss`.
+pinned = VpJwtProofSuite().verify(
+    vp, audience="https://verifier.example", nonce="chal-42",
+    holder_key_jwk=holder.public_jwk(), expected_holder=holder_did,
+    require_holder_binding=True)
+assert pinned.holder == holder_did
 ```
+
+`holder_key_jwk=` pins the holder key, so it is never resolved. `resolver=`
+still resolves the embedded credentials' issuers. It defaults to the pipeline's
+`default_resolver()` (offline `did:key` / `did:jwk`, SSRF-guarded `did:web` /
+`did:webvh`), so pass one only for other DID methods. With a pinned key, `iss`
+is whatever the signer wrote. Pass `expected_holder=` before you trust
+`result.holder` or ask for `require_holder_binding`.
 
 A VP-JWT with no `verifiableCredential` is valid VCDM (DID Auth, for example):
 `verify` accepts it and returns an empty `credentials` tuple, so if you need a
