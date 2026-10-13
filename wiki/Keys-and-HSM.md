@@ -7,7 +7,7 @@ which has exactly three members:
 ```python
 class SigningKey(Protocol):
     @property
-    def alg(self) -> str: ...      # the JOSE algorithm: "ES256" | "ES384" | "EdDSA"
+    def alg(self) -> str: ...      # JOSE alg: "ES256" | "ES384" | "EdDSA" | "Ed25519" (or opt-in ML-DSA)
     @property
     def kid(self) -> str: ...      # the key / verification-method id for the header
     def sign(self, signing_input: bytes) -> bytes: ...   # raw R‖S for ES*, never DER

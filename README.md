@@ -12,7 +12,7 @@ default**, with private keys that never have to enter the process.
 
 | Capability | What is covered | Spec |
 |---|---|---|
-| **Sign & verify** | VC-JWT (`ES256` / `ES384` / `EdDSA`) | [VC-JOSE-COSE](https://www.w3.org/TR/vc-jose-cose/) |
+| **Sign & verify** | VC-JWT (`ES256` / `ES384` / `EdDSA` / `Ed25519`) | [VC-JOSE-COSE](https://www.w3.org/TR/vc-jose-cose/) |
 | | SD-JWT VC — selective disclosure, Key Binding, Type Metadata | [SD-JWT VC](https://datatracker.ietf.org/doc/draft-ietf-oauth-sd-jwt-vc/) |
 | | Data Integrity — `eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `eddsa-jcs-2022` / `ecdsa-jcs-2019` (stdlib JCS, no `pyld`), and selective-disclosure `ecdsa-sd-2023` | [vc-di-eddsa](https://www.w3.org/TR/vc-di-eddsa/) / [vc-di-ecdsa](https://www.w3.org/TR/vc-di-ecdsa/) |
 | **Verify presentations** | VP-JWT, Data Integrity `challenge`/`domain`, and stateless [OpenID4VP 1.0](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html) `vp_token` — incl. HAIP `direct_post.jwt` JWE-encrypted responses and the **W3C Digital Credentials API** (origin-bound) | OpenID4VP / HAIP / DC API |
