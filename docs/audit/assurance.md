@@ -203,7 +203,7 @@ lanes verify through openvc's own JWS code, not PyJWT. Advisory by advisory:
 Outcome: floor raised to `pyjwt>=2.13` (defense in depth even where structurally
 unreachable) plus the lane-uniform `crit` rejection.
 
-Not an advisory, but the same surface (found 2026-10-12, fixed in 1.29.2): PyJWT
+Not an advisory, but the same surface (found 2026-10-12, fixed in 1.30.0): PyJWT
 casts `exp`/`nbf`/`iat` with `int()` and catches only `ValueError`, so a signed
 `"nbf": null` raised a bare `TypeError` out of `_JWT.decode`, outside `OpenvcError`.
 `vc_jwt` now checks those shapes itself before the decode (`check_numeric_dates`).
