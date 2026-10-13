@@ -19,6 +19,7 @@ whose allow-list would reject every legitimate did:web host.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Awaitable, Callable
 from urllib.parse import unquote
 
@@ -28,6 +29,30 @@ Fetch = Callable[[str], dict[str, Any]]
 # The async counterpart: an https URL -> an awaitable of its parsed JSON object.
 AsyncFetch = Callable[[str], Awaitable[dict[str, Any]]]
 
+# One RFC 1123 host label: letters, digits and inner hyphens, at most 63 characters.
+_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_PORT = re.compile(r"[0-9]{1,5}")
+
+
+def _check_host(host: str, did: str) -> None:
+    """Reject a decoded did:web host that is not a domain name with an optional port.
+
+    The spec defines the host by RFC 1035/1123 domain-name syntax. Checking it here
+    keeps a hostile host (a bad port, a bracket, a control character, ``@`` or ``/``)
+    a typed error before any fetch runs, the caller's own fetch included. A Unicode
+    host is checked in its IDNA (``xn--``) form, the form the resolver looks up.
+    """
+    name, colon, port = host.rpartition(":") if ":" in host else (host, "", "")
+    if colon and not (_PORT.fullmatch(port) and 0 < int(port) <= 65535):
+        raise DidResolutionError(f"did:web {did!r} has an invalid port {port!r}")
+    try:
+        ascii_name = name.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise DidResolutionError(f"did:web {did!r} has an invalid host: {exc}") from exc
+    labels = ascii_name.split(".")
+    if len(ascii_name) > 253 or not all(_LABEL.fullmatch(label) for label in labels):
+        raise DidResolutionError(f"did:web {did!r} host {name!r} is not a domain name")
+
 
 def _did_web_url(did: str) -> str:
     """Map a ``did:web`` identifier to its https DID-document URL (pure)."""
@@ -36,6 +61,7 @@ def _did_web_url(did: str) -> str:
         raise DidResolutionError("empty did:web identifier")
     parts = msi.split(":")                          # ':' separates path segments
     host = unquote(parts[0])                        # %3A -> ':' for an explicit port
+    _check_host(host, did)
     segments = [unquote(p) for p in parts[1:]]
     if segments:
         return f"https://{host}/" + "/".join(segments) + "/did.json"

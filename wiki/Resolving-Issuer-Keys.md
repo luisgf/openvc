@@ -86,6 +86,15 @@ defaults in `openvc.resolvers` built on it — enforce: **https only**, private
 the connection **pinned to the validated IP** so DNS rebinding cannot swap the
 host after the check. Details in the [Security model](Security-Model).
 
+A malformed host never gets that far. A `did:web` / `did:webvh` host must be a
+domain name (RFC 1123 labels; a Unicode host is checked in its IDNA form), with
+an optional `%3A`-encoded port from 1 to 65535. Anything else raises
+`DidResolutionError` before any fetch, your own fetch included: a bad port, a
+bracketed IP literal, a control character, or an `@`, `/` or `#` decoded from the
+host. The guarded fetch raises `UnsafeUrlError` for any URL it cannot parse. Both
+are `OpenvcError`s, so in `verify_many` a hostile issuer becomes that credential's
+`error` and the rest of the batch still verifies.
+
 ## Beyond DIDs
 
 - **`/.well-known/jwt-vc-issuer`** (`openvc.jwt_vc_issuer`) — an https issuer

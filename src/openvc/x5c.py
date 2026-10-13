@@ -68,7 +68,10 @@ def _check_issuer_binding(leaf: Any, iss: str) -> None:
         raise X5cError("x5c leaf certificate has no Subject Alternative Name to bind the issuer")
     if iss in san.get_values_for_type(UniformResourceIdentifier):
         return
-    host = urlparse(iss).hostname
+    try:
+        host = urlparse(iss).hostname
+    except ValueError:                  # an unbalanced bracket or NFKC delimiter in iss
+        host = None
     if host and host in san.get_values_for_type(DNSName):
         return
     raise X5cError(f"issuer {iss!r} is not in the x5c leaf certificate's SAN (not bound)")

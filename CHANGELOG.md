@@ -324,6 +324,37 @@ Fixed before merge, from this change's own adversarial review:
 - A `tuple` `type`, from a Python caller that built the credential in-process,
   is still accepted as an array.
 
+- **A hostile `did:web`, `did:webvh` or https issuer host is a typed error, not a
+  bare `ValueError`** ([#207](https://github.com/luisgf/openvc/issues/207)).
+  Found by the adversarial review of
+  [#202](https://github.com/luisgf/openvc/pull/202), which did not cause it. The
+  host reached `urlparse`, `getaddrinfo` and `http.client` unchecked. A port out
+  of range or not an integer, an unbalanced `[`, a host that NFKC-normalizes into
+  a delimiter (`ex℀mple.com`), an IDNA label over 63 characters and a NUL each
+  raised its own bare exception (`ValueError`, `UnicodeError`,
+  `http.client.InvalidURL`). None is an `OpenvcError`, so one such credential
+  aborted a whole `verify_many` / `verify_many_async` batch. This reached
+  `verify_credential`, `VpJwtProofSuite.verify` (the holder key and the
+  cascade), `verify_vp_token` (`jwt_vc_json` before the signature check, and the
+  `ldp_vc` cascade), the async twins, and the opt-in `jwt_vc_issuer_fetch` lane.
+  It failed closed before any TCP connection, so it was not an SSRF.
+
+  Two layers now type it. `did:web` and `did:webvh` check the host before any
+  fetch, the caller's own fetch included. It must be a domain name of RFC 1123
+  labels with an optional port from 1 to 65535, or they raise
+  `DidResolutionError` (`DidWebvhError` for did:webvh). A Unicode host is checked
+  in its IDNA form and passed through unchanged. The SSRF-guarded fetch raises
+  `UnsafeUrlError` for a URL it cannot parse or a host with a control character,
+  before DNS, and `DidResolutionError` when the request line cannot be encoded
+  (a non-ASCII path). That covers status-list, schema and well-known URLs too.
+  `jwt_vc_issuer_metadata_url` raises `JwtVcIssuerError`, and an unparseable
+  https `iss` is unbound in the x5c SAN check (`X5cError`).
+
+  A did:web host that is not a domain name now fails before the fetch: a
+  bracketed IP literal (the did:web spec forbids IP addresses), an empty port or
+  port `0`, a trailing root dot, or an `@`, `/` or `#` decoded from the host.
+  `did:web:evil.com%40example.com` used to fetch from `example.com`.
+
 ### Fixed (docs)
 
 - **The expiry and revocation waivers have a wiki home.**
