@@ -664,7 +664,7 @@ def _require_https_url(
     proof's ``aud`` comparison and the metadata is fetched under it, so a non-https
     value here would smuggle a downgrade into every check that trusts the identifier.
 
-    Three rejections beyond the scheme, each because this string *is* an identifier
+    Four rejections beyond the scheme, each because this string *is* an identifier
     that later compares byte-for-byte against a signed ``aud``:
 
     * **control characters / whitespace** — ``urlparse`` silently strips ``\\t\\r\\n``,
@@ -672,6 +672,9 @@ def _require_https_url(
     * **userinfo, query, fragment, params** — meaningless in an issuer identifier, a
       visual-spoofing primitive (``https://legit@evil``), and credentials would leak
       into logs through error messages;
+    * **anything a browser would read as another host or path** — a non-ASCII host
+      (IDNA2003 vs UTS 46), a backslash, a percent-encoded host, port 0 or a dot
+      segment (``jwt_vc_issuer._url_parsers_disagree``, shared with the issuer lanes);
     * **a netloc that is not a host** — ``hostname``/``port`` raise lazily, so
       accepting ``https://issuer.example:notaport`` here would hand the caller a raw
       :class:`ValueError` later, outside this module's error taxonomy.
@@ -695,6 +698,12 @@ def _require_https_url(
         raise error(f"{name} must not carry userinfo: {value!r}")
     if parsed.params or parsed.query or parsed.fragment:
         raise error(f"{name} must not carry params, a query or a fragment: {value!r}")
+    # The same forms the https issuer lanes refuse: a non-ASCII (IDN) host, a
+    # backslash, a percent-encoded host, port 0, a dot segment.
+    from .jwt_vc_issuer import _url_parsers_disagree
+    reason = _url_parsers_disagree(value, parsed)
+    if reason is not None:
+        raise error(f"{name} {reason}: {value!r}")
     return value
 
 

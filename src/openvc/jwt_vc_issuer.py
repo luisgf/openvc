@@ -37,20 +37,52 @@ class JwtVcIssuerError(OpenvcError):
     """The issuer metadata could not be resolved, did not match, or has no key."""
 
 
-def _parse_https_issuer(iss: str) -> ParseResult:
+# Path segments a WHATWG parser resolves away and urlparse keeps as they are.
+_DOT_SEGMENTS = frozenset({".", "..", "%2e", ".%2e", "%2e.", "%2e%2e"})
+
+
+def _url_parsers_disagree(value: str, parsed: ParseResult) -> str | None:
+    """Why Python's ``urlparse`` and a WHATWG parser (a browser, a JS front-end)
+    could read the https URL *value* as different hosts, ports or paths, or ``None``.
+
+    A non-ASCII host is IDNA2003 to Python and UTS 46 to a browser: ``faß.de`` is
+    ``fass.de`` to one and ``xn--fa-hia.de`` to the other. WHATWG reads ``\\`` as
+    ``/``, decodes a percent-encoded host, resolves ``.`` / ``..`` segments and keeps
+    port 0, which the guarded fetch reads as 443; ``urlparse`` does none of that.
+    ``;``, ``?`` and ``#`` start params, a query and a fragment, which an issuer
+    identifier carries none of and the metadata URL would silently drop, even when
+    empty. Shared by the https issuer lanes (``jwt_vc_issuer``, ``x5c``,
+    ``openid4vci``) so they refuse the same forms.
+    """
+    if not value.isascii():
+        return "is not ASCII; write an IDN host as its xn-- A-label"
+    if "\\" in value:
+        return "contains a backslash"
+    if any(char in value for char in ";?#"):
+        return "must not carry params, a query or a fragment"
+    if "%" in parsed.netloc:
+        return "has a percent-encoded host"
+    if parsed.port == 0:
+        return "has port 0"
+    if any(segment.lower() in _DOT_SEGMENTS for segment in parsed.path.split("/")):
+        return "has a . or .. path segment"
+    return None
+
+
+def _parse_https_issuer(iss: Any) -> ParseResult:
     """Parse an https issuer identifier, or raise :class:`JwtVcIssuerError`.
 
-    Beyond the scheme, this refuses every form that two URL parsers can read as
-    different hosts or paths. ``urlparse`` drops ``\\t\\r\\n`` and WHATWG reads a
-    backslash as ``/``, so a control character, whitespace or ``\\`` is refused.
-    Userinfo is refused: ``https://trusted.example\\@attacker.example`` names
-    ``attacker.example`` to Python and ``trusted.example`` to a browser. Params, a
-    query and a fragment are refused too: an issuer identifier carries none, and
-    the metadata URL would silently drop them.
+    Beyond the scheme, this refuses every form that lets two URL parsers name
+    different hosts or paths. A control character or whitespace is refused before
+    parsing, because ``urlparse`` drops ``\\t\\r\\n``. Userinfo is refused:
+    ``https://trusted.example\\@attacker.example`` names ``attacker.example`` to
+    Python and ``trusted.example`` to a browser. The rest is
+    :func:`_url_parsers_disagree`.
     """
-    if any(ord(char) < 0x21 or ord(char) == 0x7F for char in iss) or "\\" in iss:
-        raise JwtVcIssuerError(
-            f"issuer {iss!r} contains a control character, whitespace or a backslash")
+    if not isinstance(iss, str):
+        raise JwtVcIssuerError(f"issuer must be a string, not {type(iss).__name__}")
+    if any(ord(char) < 0x21 or ord(char) == 0x7F for char in iss):
+        raise JwtVcIssuerError(f"issuer {iss!r} contains control characters or whitespace")
     try:
         parsed = urlparse(iss)
         _ = parsed.hostname, parsed.port    # lazy: force a bad port or bracket to raise here
@@ -58,12 +90,13 @@ def _parse_https_issuer(iss: str) -> ParseResult:
         raise JwtVcIssuerError(f"issuer {iss!r} is not a valid URL: {exc}") from exc
     if parsed.scheme != "https":
         raise JwtVcIssuerError(f"issuer {iss!r} is not an https URL")
-    if not parsed.hostname:
+    if not parsed.hostname or not parsed.hostname.strip("."):
         raise JwtVcIssuerError(f"issuer {iss!r} has no host")
     if parsed.username is not None or parsed.password is not None:
         raise JwtVcIssuerError(f"issuer {iss!r} must not carry userinfo")
-    if parsed.params or parsed.query or parsed.fragment:
-        raise JwtVcIssuerError(f"issuer {iss!r} must not carry params, a query or a fragment")
+    reason = _url_parsers_disagree(iss, parsed)
+    if reason is not None:
+        raise JwtVcIssuerError(f"issuer {iss!r} {reason}")
     return parsed
 
 

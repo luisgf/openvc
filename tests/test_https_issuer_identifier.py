@@ -10,8 +10,10 @@ front-end). openvc fetched the keys from, or bound the certificate of,
 ``attacker.example`` while a consumer that showed the issuer's host read
 ``trusted.example``.
 
-Every form two parsers can read differently is now refused: userinfo, a backslash, a
-control character or whitespace, params, a query and a fragment.
+Every form that lets the two parsers name different hosts or paths is now refused:
+userinfo, a backslash, a control character or whitespace, params, a query and a
+fragment (even empty), a non-ASCII host, a percent-encoded host, port 0 and a dot
+segment. openid4vci's ``credential_issuer`` refuses the same forms.
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ from cryptography.x509.oid import NameOID
 
 from openvc.jwt_vc_issuer import JwtVcIssuerError, jwt_vc_issuer_metadata_url
 from openvc.keys import P256SigningKey
+from openvc.openid4vci import CredentialOfferMalformed, parse_credential_offer
 from openvc.multibase import encode_multibase
 from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.verify import KeyResolutionFailed, verify_many
@@ -48,6 +51,21 @@ HOSTILE_ISS = [
     "https://issuer.example?tenant=1",              # a query
     "https://issuer.example/tenant;v=1",            # params: the URL dropped them
     "https://:443",                                 # no host
+    "https://.",
+    # From this change's adversarial review: the hosts below are one domain to
+    # Python (IDNA2003, raw %) and another to a browser (UTS 46, decoded %).
+    "https://fa\u00df.de",                         # Python fass.de, WHATWG xn--fa-hia.de
+    "https://\u1e9e.example",                      # capital sharp s
+    "https://\u03c2.example",                      # final sigma
+    "https://m\u00fcller.de",                      # any IDN: send its xn-- A-label
+    "https://%74rusted.example",                    # WHATWG decodes it to trusted.example
+    "https://h.example/attacker/%2e%2e/victim",     # WHATWG resolves it to /victim
+    "https://h.example/a/../victim",
+    "https://h.example/./x",
+    "https://issuer.example/t;",                    # empty params, query and fragment:
+    "https://issuer.example/t?",                    # the metadata URL dropped them
+    "https://issuer.example/t#",
+    "https://issuer.example:0",                     # WHATWG keeps 0, the fetch used 443
 ]
 
 
@@ -67,6 +85,28 @@ def test_metadata_url_keeps_clean_iss(iss, url):
     assert jwt_vc_issuer_metadata_url(iss) == url
 
 
+@pytest.mark.parametrize("iss", [None, 5, b"https://issuer.example", ["x"]])
+def test_metadata_url_types_a_non_string_iss(iss):
+    with pytest.raises(JwtVcIssuerError):
+        jwt_vc_issuer_metadata_url(iss)
+
+
+# openid4vci's credential_issuer is the same kind of identifier, so it refuses the
+# same forms (it already refused userinfo, whitespace, a query and a fragment).
+@pytest.mark.parametrize("issuer", [
+    "https://trusted.example\\.attacker.example",  # WHATWG: trusted.example
+    "https://fa\u00df.de",
+    "https://%74rusted.example",
+    "https://h.example/a/%2e%2e/b",
+    "https://issuer.example:0",
+    "https://issuer.example/t?",
+])
+def test_credential_offer_refuses_the_same_forms(issuer):
+    with pytest.raises(CredentialOfferMalformed):
+        parse_credential_offer(
+            {"credential_issuer": issuer, "credential_configuration_ids": ["c"]})
+
+
 def _did_key_vc() -> str:
     sk = P256SigningKey.generate(kid="_")
     mb = encode_multibase(bytes([0x80, 0x24]) + sk.public_key_raw(compressed=True))
@@ -81,16 +121,19 @@ def _vc(issuer: str, key) -> str:
         signing_key=key)
 
 
-def test_pipeline_never_fetches_for_an_ambiguous_iss():
-    # Before #236 the metadata and the JWKS came from attacker.example and the
-    # credential verified, reporting the ambiguous iss as its issuer.
+@pytest.mark.parametrize("iss", [
+    "https://trusted.example\\@attacker.example",
+    "https://fa\u00df.de",
+])
+def test_pipeline_never_fetches_for_an_ambiguous_iss(iss):
+    # Before #236 the metadata and the JWKS came from attacker.example (or fass.de)
+    # and the credential verified, reporting the ambiguous iss as its issuer.
     fetched: list[str] = []
 
     def _fetch(url):
         fetched.append(url)
         raise AssertionError(f"fetch called with {url!r}")
-    hostile = _vc("https://trusted.example\\@attacker.example",
-                  P256SigningKey.generate(kid="k1"))
+    hostile = _vc(iss, P256SigningKey.generate(kid="k1"))
     good, bad = verify_many([_did_key_vc(), hostile], jwt_vc_issuer_fetch=_fetch)
     assert good.ok is True
     assert isinstance(bad.error, KeyResolutionFailed)
@@ -154,6 +197,12 @@ def test_x5c_dns_san_does_not_bind_an_ambiguous_iss(attacker_chain, iss):
     x5c, root = attacker_chain
     with pytest.raises(X5cError, match="not bound"):
         resolve_x5c_key(x5c, iss, trust_anchors=[root], now=NOW)
+
+
+def test_x5c_types_a_non_string_iss(attacker_chain):
+    x5c, root = attacker_chain
+    with pytest.raises(X5cError, match="not bound"):
+        resolve_x5c_key(x5c, None, trust_anchors=[root], now=NOW)
 
 
 def test_x5c_dns_san_still_binds_a_clean_iss(attacker_chain):

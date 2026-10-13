@@ -8,28 +8,43 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
-- **An https `iss` with userinfo or a backslash no longer fetches keys from, or
-  binds a certificate of, a host other than the one a browser reads**
+- **An https `iss` names the same host to openvc as to a browser**
   ([#236](https://github.com/luisgf/openvc/issues/236)). Found by the
-  adversarial review of [#209](https://github.com/luisgf/openvc/pull/209).
-  `jwt_vc_issuer_metadata_url` kept the raw netloc, and the x5c binding matched
-  a `dNSName` against `urlparse(iss).hostname`.
-  `https://trusted.example\@attacker.example` names `attacker.example` to
-  Python and `trusted.example` to a WHATWG parser such as a browser or a JS
-  front-end. With `jwt_vc_issuer_fetch`, `verify_many` fetched the metadata and
-  JWKS from `attacker.example` and returned ok. The x5c lane bound a leaf for
-  `attacker.example`. A consumer that showed or trusted the issuer's host read
-  `trusted.example`. An exact-string allow-list of issuers was safe.
+  adversarial review of [#209](https://github.com/luisgf/openvc/pull/209), with
+  more forms from this change's own review. `jwt_vc_issuer_metadata_url` kept
+  the raw netloc, and the x5c binding matched a `dNSName` against
+  `urlparse(iss).hostname`. Python and a WHATWG parser (a browser, a JS
+  front-end) read some `iss` values as different hosts:
 
-  An https `iss` must now be free of anything two parsers can read differently:
-  userinfo, a backslash, a control character or whitespace (`urlparse` silently
-  drops `\t\r\n`), params, a query and a fragment. The metadata URL silently
-  dropped the last three. `jwt_vc_issuer_metadata_url` raises
-  `JwtVcIssuerError` (`KeyResolutionFailed` in the pipeline). The x5c lane binds
-  a `dNSName` only to such a clean https `iss`; an `http://` one no longer
-  binds that way. A `uniformResourceIdentifier` SAN still binds when it equals
-  the `iss` exactly. These are the rules `openid4vci` already applies to a
-  `credential_issuer`.
+  - `https://trusted.example\@attacker.example`: `attacker.example` to
+    Python, `trusted.example` to a browser.
+  - `https://faß.de`: Python's IDNA2003 codec gives `fass.de`, UTS 46 gives
+    `xn--fa-hia.de`. `ẞ`, `ς`, and ZWJ / ZWNJ after a virama fold the same way.
+
+  With `jwt_vc_issuer_fetch`, `verify_many` fetched the metadata and JWKS from
+  the first host and returned ok. The x5c lane bound a leaf for
+  `attacker.example`. A consumer that showed or trusted the issuer's host read
+  the second host, and so did an allow-list that held the Unicode form.
+
+  An https `iss` must now be free of every form that lets the two parsers name
+  different hosts or paths. Each of these is now refused:
+
+  - userinfo and a backslash;
+  - a control character or whitespace (`urlparse` silently drops `\t\r\n`);
+  - params, a query or a fragment, even an empty one (the metadata URL silently
+    dropped them);
+  - a non-ASCII host (write an IDN as its `xn--` A-label);
+  - a percent-encoded host;
+  - port 0 (the guarded fetch read it as 443);
+  - a `.` or `..` path segment, encoded or not.
+
+  `jwt_vc_issuer_metadata_url` raises `JwtVcIssuerError` (`KeyResolutionFailed`
+  in the pipeline), and a non-string `iss` is typed too. The x5c lane binds a
+  `dNSName` only to a clean https `iss`; an `http://` one no longer binds that
+  way. A `uniformResourceIdentifier` SAN still binds when it equals the `iss`
+  exactly. openid4vci's `credential_issuer` and its other URL members, which
+  already refused userinfo, whitespace, a query and a fragment, now refuse the
+  same forms, from one shared rule.
 
 ## [1.31.1] — 2026-10-13
 
