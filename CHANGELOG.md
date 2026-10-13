@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.29.2] — unreleased
+## [1.30.0] — unreleased
 
 ### Security
 
@@ -71,6 +71,89 @@ Older Pythons refuse such JSON up front with a typed `MalformedToken`.
 - **A status-list token's `exp` must be a finite number.** `NaN`, `±Infinity`
   and a bignum used to pass, and every comparison against them reads "not
   expired". This now follows the same rule as `check_jwt_temporal`.
+
+### Added
+
+- **The proof suites report the expiry they waived.** `VerifiedCredential`,
+  `VerifiedSdJwt`, `VerifiedDataIntegrity` and `VerifiedSdCredential` gain
+  `expired: bool = False`, appended with a default (the frozen return-object
+  contract is updated; positional constructions keep working). Called with
+  `check_temporal=False`, a suite sets it when an expiry check it skipped would
+  have failed:
+  - VC-JWT: the JWT `exp`, as PyJWT judges it, or the body's `validUntil` /
+    `expirationDate`;
+  - SD-JWT VC: `exp`;
+  - Data Integrity: the credential's `validUntil` / `expirationDate`, or the
+    proof's own `expires`.
+
+  With `check_temporal=True` it is always `False`, because an expiry raises.
+  `check_validity_window` and `check_jwt_temporal` (`openvc.proof._verify_common`)
+  return the same verdict as a `bool`.
+
+### Changed
+
+- **An expired or revoked `JsonSchemaCredential` now fails under every
+  policy.** The schema VC's inner verification copied `require_not_expired` /
+  `require_not_revoked` from the outer policy, and kept only the credential from
+  that result. Under the waiver an expired schema VC was therefore applied, with
+  `schema.validated=True` and `expired=False`, while the default policy rejects
+  it with `SchemaResolutionError`. The waivers concern the verified credential's
+  own disposition. The schema VC is a trust input that credential depends on,
+  like a status-list credential (which the blessed resolvers verify under the
+  default policy) or an `x5c` chain, so it no longer inherits them. One helper
+  now builds the inner policy for both pipelines.
+- **The VC-JWT waiver no longer skips the `exp` shape check.** Under
+  `require_not_expired=False` the suite switched PyJWT's `exp` check off
+  entirely, so an `exp` of `"soon"`, `{}`, `[]`, `null` or `NaN` verified there
+  and not under the default policy. PyJWT now judges `exp` under both policies.
+  Only after it reports an expiry does the waiver decode again without that
+  check, so every other claim check still runs. A `TypeError` from PyJWT's
+  `int()` coercion of a non-scalar `exp` / `nbf` / `iat` is typed as
+  `ClaimsInvalid` on this path.
+- `openvc.verify` no longer imports `CredentialExpired`, `ProofError`,
+  `check_validity_window` or `check_jwt_temporal`. The removed helper had
+  pulled them in since 1.27.0; they were never in its `__all__`. Import them
+  from `openvc.proof.errors` and `openvc.proof._verify_common`.
+
+### Fixed
+
+- **`VerificationResult.expired` is now the default policy's verdict.**
+  `VerificationPolicy(require_not_expired=False)` (1.27.0) reports a waived
+  expiry as `expired=True`. `openvc.verify` computed the flag by re-deriving
+  expiry with other clocks and fields than the proof suites enforce, so it could
+  disagree with the verdict it stood in for. The values below were identical on
+  the sync and async pipelines, which 1.28.0 had made agree:
+
+  | Credential | Default policy | `expired` under the waiver in 1.29.1 |
+  |---|---|---|
+  | Data Integrity proof whose own `expires` passed (every suite, ecdsa-sd-2023 derived and P-384 included) | `CredentialExpired: proof expired` | `False` |
+  | VC-JWT body `validUntil` passed at the current time, `policy.now` pinned before it | `CredentialExpired` | `False` |
+  | VC-JWT body `validUntil` still ahead, `policy.now` pinned after it | accepted | `True` |
+  | VC-JWT `exp` PyJWT coerces to a past date (`"1000"`, `true`, `-10**400`) | `ClaimsInvalid: Signature has expired` | `False` |
+  | VC-JWT `exp` = `int(now) - leeway`, or a float PyJWT truncates past it | `ClaimsInvalid: Signature has expired` | `False` |
+  | SD-JWT VC with a past VCDM `validUntil` / `expirationDate` claim | accepted | `True` |
+
+  A `False` above is fail-open for a caller who acts on the flag. Each suite now
+  reports the expiry check it skipped (see *Added*); both pipelines copy that
+  verdict and `_expired_flag` is gone, along with its match on the error
+  message's text. `expired` is now `True` exactly when the default policy would
+  have rejected the credential for its own expiry. Found by the adversarial
+  review of [#188](https://github.com/luisgf/openvc/pull/188).
+
+### Tests
+
+- `tests/test_expired_flag_parity.py` gains a case per row above, all run
+  through both pipelines. Each one requires `expired` to equal "the default
+  policy rejected this for expiry":
+  - a proof `expires` on all seven Data Integrity suite/curve combinations;
+  - both clock directions of the VC-JWT body;
+  - the PyJWT-coerced and boundary `exp`s;
+  - the SD-JWT VCDM claims;
+  - the expired and current schema VC.
+
+  The coerced-`exp` cases assert only agreement with the default policy, so
+  they hold whether those values are read as dates or refused as malformed. The
+  shared helpers' `bool` is pinned too. 27 of the new tests fail on 1.29.1.
 
 ## [1.29.1] — 2026-10-13
 
@@ -149,24 +232,6 @@ Older Pythons refuse such JSON up front with a typed `MalformedToken`.
   every Credential Query, `dc+sd-jwt` included. The `dc+sd-jwt` lane coerced it with
   `bool()`, so a `null` or a `0` silently opted the query out of holder binding.
 
-### Added
-
-- **The proof suites report the expiry they waived.** `VerifiedCredential`,
-  `VerifiedSdJwt`, `VerifiedDataIntegrity` and `VerifiedSdCredential` gain
-  `expired: bool = False`, appended with a default (the frozen return-object
-  contract is updated; positional constructions keep working). Called with
-  `check_temporal=False`, a suite sets it when an expiry check it skipped would
-  have failed:
-  - VC-JWT: the JWT `exp`, as PyJWT judges it, or the body's `validUntil` /
-    `expirationDate`;
-  - SD-JWT VC: `exp`;
-  - Data Integrity: the credential's `validUntil` / `expirationDate`, or the
-    proof's own `expires`.
-
-  With `check_temporal=True` it is always `False`, because an expiry raises.
-  `check_validity_window` and `check_jwt_temporal` (`openvc.proof._verify_common`)
-  return the same verdict as a `bool`.
-
 ### Changed
 
 - **Under a default DCQL query, `jwt_vc_json` / `ldp_vc` responses that used to verify
@@ -193,68 +258,6 @@ Older Pythons refuse such JSON up front with a typed `MalformedToken`.
 
   `VpJwtProofSuite.verify` takes no DCQL query and is unchanged. The semantics are
   written up in the wiki under *Presentations → Holder binding on the W3C formats*.
-- **An expired or revoked `JsonSchemaCredential` now fails under every
-  policy.** The schema VC's inner verification copied `require_not_expired` /
-  `require_not_revoked` from the outer policy, and kept only the credential from
-  that result. Under the waiver an expired schema VC was therefore applied, with
-  `schema.validated=True` and `expired=False`, while the default policy rejects
-  it with `SchemaResolutionError`. The waivers concern the verified credential's
-  own disposition. The schema VC is a trust input that credential depends on,
-  like a status-list credential (which the blessed resolvers verify under the
-  default policy) or an `x5c` chain, so it no longer inherits them. One helper
-  now builds the inner policy for both pipelines.
-- **The VC-JWT waiver no longer skips the `exp` shape check.** Under
-  `require_not_expired=False` the suite switched PyJWT's `exp` check off
-  entirely, so an `exp` of `"soon"`, `{}`, `[]`, `null` or `NaN` verified there
-  and not under the default policy. PyJWT now judges `exp` under both policies.
-  Only after it reports an expiry does the waiver decode again without that
-  check, so every other claim check still runs. A `TypeError` from PyJWT's
-  `int()` coercion of a non-scalar `exp` / `nbf` / `iat` is typed as
-  `ClaimsInvalid` on this path.
-- `openvc.verify` no longer imports `CredentialExpired`, `ProofError`,
-  `check_validity_window` or `check_jwt_temporal`. The removed helper had
-  pulled them in since 1.27.0; they were never in its `__all__`. Import them
-  from `openvc.proof.errors` and `openvc.proof._verify_common`.
-
-### Fixed
-
-- **`VerificationResult.expired` is now the default policy's verdict.**
-  `VerificationPolicy(require_not_expired=False)` (1.27.0) reports a waived
-  expiry as `expired=True`. `openvc.verify` computed the flag by re-deriving
-  expiry with other clocks and fields than the proof suites enforce, so it could
-  disagree with the verdict it stood in for. The values below were identical on
-  the sync and async pipelines, which 1.28.0 had made agree:
-
-  | Credential | Default policy | `expired` under the waiver in 1.28.2 |
-  |---|---|---|
-  | Data Integrity proof whose own `expires` passed (every suite, ecdsa-sd-2023 derived and P-384 included) | `CredentialExpired: proof expired` | `False` |
-  | VC-JWT body `validUntil` passed at the current time, `policy.now` pinned before it | `CredentialExpired` | `False` |
-  | VC-JWT body `validUntil` still ahead, `policy.now` pinned after it | accepted | `True` |
-  | VC-JWT `exp` PyJWT coerces to a past date (`"1000"`, `true`, `-10**400`) | `ClaimsInvalid: Signature has expired` | `False` |
-  | VC-JWT `exp` = `int(now) - leeway`, or a float PyJWT truncates past it | `ClaimsInvalid: Signature has expired` | `False` |
-  | SD-JWT VC with a past VCDM `validUntil` / `expirationDate` claim | accepted | `True` |
-
-  A `False` above is fail-open for a caller who acts on the flag. Each suite now
-  reports the expiry check it skipped (see *Added*); both pipelines copy that
-  verdict and `_expired_flag` is gone, along with its match on the error
-  message's text. `expired` is now `True` exactly when the default policy would
-  have rejected the credential for its own expiry. Found by the adversarial
-  review of [#188](https://github.com/luisgf/openvc/pull/188).
-
-### Tests
-
-- `tests/test_expired_flag_parity.py` gains a case per row above, all run
-  through both pipelines. Each one requires `expired` to equal "the default
-  policy rejected this for expiry":
-  - a proof `expires` on all seven Data Integrity suite/curve combinations;
-  - both clock directions of the VC-JWT body;
-  - the PyJWT-coerced and boundary `exp`s;
-  - the SD-JWT VCDM claims;
-  - the expired and current schema VC.
-
-  The coerced-`exp` cases assert only agreement with the default policy, so
-  they hold whether those values are read as dates or refused as malformed. The
-  shared helpers' `bool` is pinned too. 27 of the new tests fail on 1.28.2.
 
 ## [1.28.2] — 2026-10-12
 

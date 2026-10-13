@@ -101,7 +101,7 @@ SUITE_RESULTS = [VerifiedCredential, VerifiedDataIntegrity, VerifiedSdCredential
 
 @pytest.mark.parametrize("cls", SUITE_RESULTS, ids=[c.__name__ for c in SUITE_RESULTS])
 def test_suite_expired_field_defaults_false(cls):
-    # 1.29.0 appended `expired` to the suite results; it must default (add-only), and
+    # 1.30.0 appended `expired` to the suite results; it must default (add-only), and
     # to False, so a consumer constructing one positionally keeps a non-expired result
     field = {f.name: f for f in dc.fields(cls)}["expired"]
     assert field.default is False

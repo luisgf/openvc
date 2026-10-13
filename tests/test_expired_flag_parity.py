@@ -15,7 +15,7 @@ here too. Helpers are self-contained (tests/ is not a package — no cross-impor
 
 Through v1.28.1 the flag was also *wrong* on both pipelines: ``openvc.verify``
 re-derived expiry with other clocks and fields than the proof suites enforce. Since
-1.29.0 each suite reports the expiry check it skipped, so the second half of this
+1.30.0 each suite reports the expiry check it skipped, so the second half of this
 file pins the flag to the default policy's own verdict: ``expired`` is True exactly
 when the enforcing policy rejects the credential for its expiry.
 """
@@ -251,7 +251,7 @@ def test_waiver_never_rejects_what_the_default_policy_accepts(case):
 
 
 # --------------------------------------------------------------------------- #
-# The flag is the default policy's verdict (v1.29.0)
+# The flag is the default policy's verdict (v1.30.0)
 # --------------------------------------------------------------------------- #
 
 def _strict_error(credential, key, *, now=None, schemas=None):
