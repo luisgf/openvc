@@ -4,6 +4,55 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.1] — unreleased
+
+### Security
+
+- **A W3C credential secured as SD-JWT is now held to its own `validFrom` /
+  `validUntil`** ([#198](https://github.com/luisgf/openvc/issues/198)). Found by
+  the adversarial review of [#188](https://github.com/luisgf/openvc/pull/188).
+  The SD-JWT lane enforced only the JWT `exp` / `nbf`, on both pipelines. That
+  let a VCDM credential secured with SD-JWT (VC-JOSE-COSE `vc+sd-jwt`), whose only
+  expiry was a past `validUntil`, verify under the default policy, bare or inside
+  an `EnvelopedVerifiableCredential`. VC-JOSE-COSE §3.2.1 makes that credential
+  the SD-JWT's claim set itself. §3.1.3 says, for the JOSE encoding SD-JWT builds
+  on, that `exp` dates the signature, not the data. `SdJwtVcProofSuite.verify` now
+  applies the same VCDM window check as the VC-JWT lane:
+  - `validFrom` / `validUntil`, or the VCDM 1.1 `issuanceDate` /
+    `expirationDate`, are checked on the processed payload, so a disclosed
+    `validUntil` counts.
+  - It uses the current time and the suite leeway, like the VC-JWT lane.
+  - A present but unparseable value fails closed (`MalformedTimestamp`).
+  - `require_not_expired=False` waives only the expiry. `VerifiedSdJwt.expired`
+    (1.30.0) then reports it, so `VerificationResult.expired` is `True`.
+
+  The payload counts as a VCDM credential when its `@context` names a VCDM base
+  context, or when its `typ` is `vc+sd-jwt` and it has no `vct` (a non-empty
+  string). Both signals are read from the issuer-signed SD-JWT; the media type of
+  an enveloping `data:` URL is not consulted.
+  **IETF SD-JWT VCs are unaffected:** a `dc+sd-jwt` one, or one with the
+  pre-draft-06 `vc+sd-jwt` typ and a `vct`, that merely has a claim named
+  `validUntil` still verifies, and is not reported `expired`, because that name
+  is not a validity bound in its vocabulary. With key binding required, the
+  window is checked after the KB-JWT, so an expiry verdict still means the
+  presentation was bound.
+
+  Fixed before merge, from this change's own adversarial review:
+  - **A very large `leeway_s` no longer crashes the validity-window check.** It
+    added the leeway to a `datetime`, so a leeway beyond that type's range raised
+    a bare `OverflowError` that aborted `verify_many`, on every lane that checks
+    `validFrom` / `validUntil`. The check now compares differences, so any leeway
+    is honoured as given.
+  - A `vct` that is not a non-empty string (`""`, `0`, `[]`) no longer counts as
+    one, so it cannot switch the `vc+sd-jwt` rule off.
+
+### Tests
+
+- `tests/test_sd_jwt_vcdm_validity.py` pins #198 in both directions through
+  `verify_credential` and `verify_credential_async`, bare and enveloped: every
+  VCDM signal enforces the window (including the waiver's `expired=True`), and
+  IETF claims named like VCDM bounds are neither enforced nor flagged.
+
 ## [1.30.0] — 2026-10-13
 
 ### Security
@@ -102,44 +151,6 @@ All notable changes to **openvc** are documented here. The format follows
   experimental and opt-in (`VcJwtProofSuite(allow_pq=True)`); the pipeline never
   enables it.
 
-- **A W3C credential secured as SD-JWT is now held to its own `validFrom` /
-  `validUntil`** ([#198](https://github.com/luisgf/openvc/issues/198)). Found by
-  the adversarial review of [#188](https://github.com/luisgf/openvc/pull/188).
-  The SD-JWT lane enforced only the JWT `exp` / `nbf`, on both pipelines. That
-  let a VCDM credential secured with SD-JWT (VC-JOSE-COSE `vc+sd-jwt`), whose only
-  expiry was a past `validUntil`, verify under the default policy, bare or inside
-  an `EnvelopedVerifiableCredential`. VC-JOSE-COSE §3.2.1 makes that credential
-  the SD-JWT's claim set itself. §3.1.3 says, for the JOSE encoding SD-JWT builds
-  on, that `exp` dates the signature, not the data. `SdJwtVcProofSuite.verify` now
-  applies the same VCDM window check as the VC-JWT lane:
-  - `validFrom` / `validUntil`, or the VCDM 1.1 `issuanceDate` /
-    `expirationDate`, are checked on the processed payload, so a disclosed
-    `validUntil` counts.
-  - It uses the current time and the suite leeway, like the VC-JWT lane.
-  - A present but unparseable value fails closed (`MalformedTimestamp`).
-  - `require_not_expired=False` waives only the expiry, and the suite reports it
-    as `expired=True` (see *Added*).
-
-  The payload counts as a VCDM credential when its `@context` names a VCDM base
-  context, or when its `typ` is `vc+sd-jwt` and it has no `vct` (a non-empty
-  string). Both signals are read from the issuer-signed SD-JWT; the media type of
-  an enveloping `data:` URL is not consulted.
-  **IETF SD-JWT VCs are unaffected:** a `dc+sd-jwt` one, or one with the
-  pre-draft-06 `vc+sd-jwt` typ and a `vct`, that merely has a claim named
-  `validUntil` still verifies, and is not reported `expired`, because that name
-  is not a validity bound in its vocabulary. With key binding required, the
-  window is checked after the KB-JWT, so an expiry verdict still means the
-  presentation was bound.
-
-  Fixed before merge, from this change's own adversarial review:
-  - **A very large `leeway_s` no longer crashes the validity-window check.** It
-    added the leeway to a `datetime`, so a leeway beyond that type's range raised
-    a bare `OverflowError` that aborted `verify_many`, on every lane that checks
-    `validFrom` / `validUntil`. The check now compares differences, so any leeway
-    is honoured as given.
-  - A `vct` that is not a non-empty string (`""`, `0`, `[]`) no longer counts as
-    one, so it cannot switch the `vc+sd-jwt` rule off.
-
 ### Added
 
 - **The proof suites report the expiry they waived.** `VerifiedCredential`,
@@ -150,8 +161,7 @@ All notable changes to **openvc** are documented here. The format follows
   have failed:
   - VC-JWT: the JWT `exp`, as PyJWT judges it, or the body's `validUntil` /
     `expirationDate`;
-  - SD-JWT VC: `exp`, and for a W3C credential secured as SD-JWT its
-    `validUntil` / `expirationDate` (see *Security*);
+  - SD-JWT VC: `exp`;
   - Data Integrity: the credential's `validUntil` / `expirationDate`, or the
     proof's own `expires`.
 
@@ -233,10 +243,6 @@ All notable changes to **openvc** are documented here. The format follows
   The coerced-`exp` cases assert only agreement with the default policy, so
   they hold whether those values are read as dates or refused as malformed. The
   shared helpers' `bool` is pinned too. 27 of the new tests fail on 1.29.2.
-- `tests/test_sd_jwt_vcdm_validity.py` pins #198 in both directions through
-  `verify_credential` and `verify_credential_async`, bare and enveloped: every
-  VCDM signal enforces the window (including the waiver's `expired=True`), and
-  IETF claims named like VCDM bounds are neither enforced nor flagged.
 
 ## [1.29.2] — 2026-10-13
 
