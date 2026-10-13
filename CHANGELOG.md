@@ -21,13 +21,15 @@ All notable changes to **openvc** are documented here. The format follows
     authorization, EBSI TIR, and the expiry waiver.
   - The threat model gains **I21** (WRPRC authorization fails closed) with the
     relying-party surface across §1–§6, an attack row for re-wrapping someone else's
-    credential (#196), and evidence for I5–I18, with the known open gaps beside it
-    (#219, #225). Its §9 summary no longer says no residual is a wrong-accept. **R7** now says a *withheld* disclosable `exp` / `nbf` still
+    credential (#196), and evidence for I5–I18. A new **R10** names the open untyped
+    exits at the boundary (#219 and the EBSI `_origin` `ValueError`), R9 names #225,
+    and the §9 summary no longer says no residual is a wrong-accept. **R7** now says a *withheld* disclosable `exp` / `nbf` still
     verifies as if absent (#229, open). New entries cite symbols and test names, not
     line numbers.
   - I15's `test_hostile_input.py:104/155/211` anchors, set by #155, were never correct
     in a tagged release; they now name the tests. The anchors are as of v1.24.0, not
-    the never-tagged v1.24.1. The pack README's catalog span is I1–I21 and R1–R9.
+    the never-tagged v1.24.1. The pack README's catalog span is I1–I21 and R1–R10, and its review ranking gains
+    relying-party authorization.
 
 ## [1.31.3] — 2026-10-13
 
