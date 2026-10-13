@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import time
 
 import pytest
 from cryptography import x509
@@ -83,6 +84,26 @@ def test_metadata_url_rejects_ambiguous_iss(iss):
 ])
 def test_metadata_url_keeps_clean_iss(iss, url):
     assert jwt_vc_issuer_metadata_url(iss) == url
+
+
+# Out-of-order combining marks: CPython <= 3.12 NFKC-sorts them inside urlparse, which
+# took 6.75 s for this iss there. The non-ASCII check now runs before urlparse.
+COMBINING_ISS = "https://a" + "\u0301" * 64_000 + "\u0316" * 64_000 + ".com"
+
+
+def test_metadata_url_rejects_combining_marks_fast():
+    start = time.perf_counter()
+    with pytest.raises(JwtVcIssuerError, match="not ASCII"):
+        jwt_vc_issuer_metadata_url(COMBINING_ISS)
+    assert time.perf_counter() - start < 2.0
+
+
+def test_credential_offer_rejects_combining_marks_fast():
+    start = time.perf_counter()
+    with pytest.raises(CredentialOfferMalformed, match="not ASCII"):
+        parse_credential_offer(
+            {"credential_issuer": COMBINING_ISS, "credential_configuration_ids": ["c"]})
+    assert time.perf_counter() - start < 2.0
 
 
 @pytest.mark.parametrize("iss", [None, 5, b"https://issuer.example", ["x"]])
