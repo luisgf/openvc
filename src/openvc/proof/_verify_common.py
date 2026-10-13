@@ -159,16 +159,7 @@ def check_validity_window(
     report it as their ``expired`` field, so a waived expiry is judged by the
     same code, clock and fields as an enforced one.
     """
-    if now is None:
-        instant = datetime.now(timezone.utc)
-    elif now.tzinfo is None:                      # a naive now is taken as UTC, not
-        instant = now.replace(tzinfo=timezone.utc)  # silently as system-local time
-    else:
-        instant = now.astimezone(timezone.utc)
-    try:
-        leeway = timedelta(seconds=max(0, leeway_s))
-    except OverflowError:               # wider than timedelta holds: the widest one, not a
-        leeway = timedelta.max          # bare error that would abort verify_many
+    instant, leeway = utc_window(now, leeway_s)     # a bad pin is a typed ProofError
     # Compare differences, never `instant ± leeway`: a huge leeway would push that past
     # datetime's range (a bare OverflowError); two datetimes always subtract cleanly.
 
@@ -370,9 +361,10 @@ def check_jwt_audience(
 def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
     """*now* as integer epoch seconds, read the way every openvc clock check reads it:
     ``None`` is the current time, and a **naive** datetime is UTC — never the host's
-    local zone. ``x5c``, ``mdoc`` and :func:`check_validity_window` make the same call;
-    reading a naive pin as local time would shift a freshness window by the host's UTC
-    offset (up to 14 h), and in both directions at once: stale accepted, fresh refused.
+    local zone. :func:`utc_instant` is the same reading for the checks that compare
+    datetimes; reading a naive pin as local time would shift a freshness window by the
+    host's UTC offset (up to 14 h), and in both directions at once: stale accepted,
+    fresh refused.
 
     "Naive" is Python's own definition, ``utcoffset() is None`` — which also covers a
     ``tzinfo`` that answers ``None``. Anything that is not a ``datetime``, or whose
@@ -389,6 +381,58 @@ def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
         return int(now.timestamp())
     except Exception as exc:                  # a caller's tzinfo may raise anything
         raise error(f"now cannot be read as an instant: {exc}") from exc
+
+
+def utc_instant(now: Any, *, error: type[Exception] = ProofError) -> datetime:
+    """*now* as an aware UTC ``datetime``: :func:`utc_epoch`'s reading for the checks
+    that compare datetimes (a Data Integrity validity window, an X.509 path-validation
+    time, an mdoc ``validityInfo``, a WRPRC window). ``None`` is the current time and a
+    naive datetime is UTC.
+
+    Anything that is not a ``datetime`` (an epoch ``int``, an ISO string), whose
+    ``tzinfo`` raises, or that has no UTC equivalent (``datetime.max`` at a negative
+    offset overflows) becomes *error* — not a bare ``AttributeError`` /
+    ``OverflowError`` that would abort ``verify_many`` instead of failing one item.
+    The result is a plain ``datetime`` in ``timezone.utc``, so no caller subclass or
+    ``tzinfo`` is consulted again by the comparisons downstream.
+    """
+    if now is None:
+        return datetime.now(timezone.utc)
+    if not isinstance(now, datetime):
+        raise error(f"now must be a datetime or None, not {type(now).__name__}")
+    try:
+        aware = (now.replace(tzinfo=timezone.utc) if now.utcoffset() is None
+                 else now.astimezone(timezone.utc))
+        if aware.utcoffset() != timedelta(0):          # a subclass that lied about UTC
+            raise ValueError(f"astimezone(UTC) gave offset {aware.utcoffset()}")
+        return datetime(aware.year, aware.month, aware.day, aware.hour, aware.minute,
+                        aware.second, aware.microsecond, tzinfo=timezone.utc)
+    except Exception as exc:                  # a caller's tzinfo may raise anything
+        raise error(f"now cannot be read as an instant: {exc}") from exc
+
+
+def utc_window(
+    now: Any, leeway_s: Any, *, error: type[Exception] = ProofError,
+) -> tuple[datetime, timedelta]:
+    """``(instant, leeway)`` for a validity window evaluated at *now*: the instant from
+    :func:`utc_instant`, and the leeway as a ``timedelta``. A negative or ``NaN`` leeway
+    counts as 0, and one wider than ``timedelta`` holds is ``timedelta.max``.
+
+    Compare *differences* against the leeway (``instant - not_after > leeway``), never
+    ``instant ± leeway``: that leaves datetime's range for a *now* near
+    ``datetime.max`` / ``datetime.min`` or a huge leeway, while two datetimes always
+    subtract cleanly. A leeway that is not a number becomes *error* here, not a bare
+    ``TypeError`` mid-check.
+    """
+    instant = utc_instant(now, error=error)
+    try:
+        leeway = timedelta(seconds=max(0, leeway_s))
+    except OverflowError:               # wider than timedelta holds: the widest one, not a
+        leeway = timedelta.max          # bare error that would abort verify_many
+    except (TypeError, ValueError) as exc:
+        raise error(f"leeway_s must be a number of seconds, not "
+                    f"{type(leeway_s).__name__}") from exc
+    return instant, leeway
 
 
 def non_negative_seconds(value: Any, *, name: str, error: type[Exception] = ProofError) -> int:
@@ -583,4 +627,6 @@ __all__ = [
     "resolve_verification_key",
     "safe_repr",
     "utc_epoch",
+    "utc_instant",
+    "utc_window",
 ]

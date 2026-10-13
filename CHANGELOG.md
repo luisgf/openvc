@@ -94,6 +94,52 @@ All notable changes to **openvc** are documented here. The format follows
     tuple or set (which the classic lane used to match through PyJWT), `""`, or
     a number. It is now a `ClaimsInvalid` on both VC-JWT lanes.
 
+### Fixed
+
+- **A clock pin that is not an instant is a typed error, not a bare
+  `AttributeError` / `OverflowError`.** Found by the adversarial review of
+  [#203](https://github.com/luisgf/openvc/pull/203). `check_validity_window` (every
+  Data Integrity suite, and the credential-body window on VC-JWT and SD-JWT VC)
+  read `now.tzinfo`. An epoch `int` or an ISO string raised `AttributeError`, and
+  `datetime.max` at a negative UTC offset raised `OverflowError` on the way to UTC.
+  A string or `None` `leeway_s` raised `TypeError`. Each of these escaped
+  `OpenvcError`, so one bad `VerificationPolicy` aborted a whole `verify_many` /
+  `verify_many_async` batch instead of failing each item. The SD-JWT KB-JWT check
+  already typed the same mistake through `utc_epoch`.
+
+  `openvc.proof._verify_common` gains `utc_instant`, the datetime-returning sibling
+  of `utc_epoch`, and `utc_window`, which adds the leeway the way
+  `check_validity_window` already did since 1.30.1: negative or `NaN` counts as 0,
+  wider than `timedelta` saturates, and windows compare differences, never
+  `instant ± leeway`. Seven copies of the same `now` reader now go through them,
+  each raising its own error class:
+  - the Data Integrity window (`ProofError`);
+  - `x5c` (`X5cError`). An `x5c` VC-JWT verified with an `int` `policy.now`
+    aborted `verify_many` there too;
+  - mdoc (`MdocError`);
+  - the WRPAC check (`RpCertError`);
+  - the WRPRC window (`RpRegistrationError`);
+  - the `walk_lotl` / `walk_lote` Trusted List walkers and the pinned LoTE signer
+    check (`TrustListError`).
+- **The mdoc and WRPRC windows no longer overflow.** Both added the leeway with
+  datetime arithmetic. On mdoc it was added to the issuer's own dates, so an MSO
+  with a "never expires" `validUntil` of `9999-12-31T23:59:59Z`, or a `validFrom`
+  of `0001-01-01`, raised a bare `OverflowError` from `verify_device_response`. On
+  the WRPRC window, a `leeway_s` past year 9999 raised one. Both now compare
+  differences, like `check_validity_window`.
+
+Side effects of the shared reader, all edge cases:
+
+- A `tzinfo` whose `utcoffset()` returns `None` is naive by Python's definition.
+  Such a pin is now read as UTC on these lanes. They used to read it as the host's
+  local time.
+- `now` is passed on as a plain `datetime` in UTC, so a caller's `datetime`
+  subclass is not consulted again. A subclass whose UTC conversion is not UTC is a
+  typed error.
+- On mdoc, a negative `leeway_s` now counts as 0, as it already did on the Data
+  Integrity and WRPRC windows. It used to narrow the window.
+
+
 ## [1.30.4] — 2026-10-13
 
 ### Fixed

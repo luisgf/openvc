@@ -166,7 +166,9 @@ def _issuer_item_bytes(digest_id, element_id, value):
 
 
 def _tdate(when):
-    return cbor.CborTag(0, when.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    # isoformat, not strftime: glibc's %Y renders year 1 as "1", not "0001"
+    utc = when.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return cbor.CborTag(0, utc.isoformat(timespec="seconds") + "Z")
 
 
 def _build_online(
@@ -321,6 +323,52 @@ def test_expired_mso_rejected():
     dr, iaca = _build_online(session_transcript=st, valid_until=NOW - dt.timedelta(days=1))
     with pytest.raises(mdoc.MdocValidityError):
         mdoc.verify_device_response(dr, trust_anchors=[iaca], session_transcript=st, now=NOW)
+
+
+@pytest.mark.parametrize("bound", [
+    {"valid_until": dt.datetime(9999, 12, 31, 23, 59, 59, tzinfo=dt.timezone.utc)},
+    {"valid_from": dt.datetime(1, 1, 1, tzinfo=dt.timezone.utc)},
+])
+def test_far_dated_mso_validity_verifies_without_overflow(bound):
+    # a "never expires" validUntil of 9999-12-31: the leeway goes on the verifier's
+    # instant, not on the issuer's date (date + leeway raised a bare OverflowError)
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st, **bound)
+    [doc] = mdoc.verify_device_response(dr, trust_anchors=[iaca], session_transcript=st, now=NOW)
+    assert doc.validity.valid_until.year in (2035, 9999)
+
+
+@pytest.mark.parametrize("now", [
+    1_767_225_600,                                             # epoch int
+    "2026-01-01",                                              # ISO string
+    dt.datetime.max.replace(tzinfo=dt.timezone(dt.timedelta(hours=-5))),   # no UTC form
+])
+def test_mistyped_now_is_a_typed_mdoc_error(now):
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st)
+    with pytest.raises(mdoc.MdocError, match="now"):
+        mdoc.verify_device_response(dr, trust_anchors=[iaca], session_transcript=st, now=now)
+
+
+@pytest.mark.parametrize("bound, ok", [
+    ({"valid_until": NOW - dt.timedelta(seconds=60)}, True),    # expired one leeway ago: in
+    ({"valid_until": NOW - dt.timedelta(seconds=61)}, False),
+    ({"valid_from": NOW + dt.timedelta(seconds=60)}, True),     # valid one leeway ahead: in
+    ({"valid_from": NOW + dt.timedelta(seconds=61)}, False),
+])
+def test_mso_validity_leeway_is_exact_at_the_window_edge(bound, ok):
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st, **bound)
+
+    def verify():
+        return mdoc.verify_device_response(
+            dr, trust_anchors=[iaca], session_transcript=st, now=NOW, leeway_s=60)
+
+    if ok:
+        verify()
+    else:
+        with pytest.raises(mdoc.MdocValidityError):
+            verify()
 
 
 def test_untrusted_iaca_rejected():

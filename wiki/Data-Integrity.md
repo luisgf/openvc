@@ -139,6 +139,15 @@ and **issuer binding** — the proof's `verificationMethod` must be controlled
 by the credential's `issuer` DID, so an attacker cannot sign someone else's
 `issuer` with their own key.
 
+The window is evaluated at `VerificationPolicy.now` (or the suite's `now=`):
+`None` is the current time and a naive `datetime` is UTC. A `now` that is not a
+`datetime`, such as an epoch `int` or an ISO string, raises `ProofError`, and so
+does a `leeway_s` that is not a number. A negative or `NaN` leeway counts as 0.
+These are configuration errors, so `verify_many` reports one on each item rather
+than aborting the batch, with `require_not_expired=False` too. The `x5c`, mdoc,
+relying-party certificate and Trusted List checks read `now` the same way, each
+raising its own error class.
+
 ## The JSON must be what was signed
 
 The RDF suites (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `ecdsa-sd-2023`) sign the **RDF
