@@ -4,6 +4,87 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.0] — unreleased
+
+### Security
+
+- **A W3C credential secured as SD-JWT now gets the VC-JWT lane's consistency
+  rules** ([#221](https://github.com/luisgf/openvc/issues/221)). Found by the adversarial review of
+  [#199](https://github.com/luisgf/openvc/pull/199); the gap predates it. Both
+  pipelines (`verify_credential`, `verify_credential_async`) and
+  `SdJwtVcProofSuite.verify` were affected, bare or inside an
+  `EnvelopedVerifiableCredential`. The fix applies only when the payload is VCDM
+  (`vc+sd-jwt`, detected as in #198).
+  - **Issuer impersonation in the credential body.** An SD-JWT signed with the
+    attacker's own `did:jwk` (`iss` = the attacker) could carry
+    `"issuer": "did:web:university.example"` and verify. `result.issuer` then named
+    the attacker while `result.credential["issuer"]` named the university.
+    VC-JOSE-COSE §4.1.2 says `iss`, if present, MUST match `issuer` (or
+    `issuer.id`). The suite now applies the VC-JWT lane's reconciliation to the
+    processed payload, so a disclosed `issuer` counts too, and raises
+    `ClaimsInvalid` on a conflict. The same holds for `jti` / `id` and `sub` /
+    `credentialSubject.id`, which openvc enforces as policy, as on VC-JWT; §3.1.3
+    (non-normative) only advises against those conflicts. The expiry waiver does
+    not relax the check.
+  - **`policy.expected_types` was silently ignored on SD-JWT**, so a policy that
+    pinned a type accepted any SD-JWT. Per VC-JOSE-COSE §5.4, a VCDM payload now
+    gets the same `TypeMismatch` as VC-JWT and Data Integrity. That covers a
+    withheld `type` and a malformed one (`null`, a number, an object).
+  - **Behaviour change for IETF SD-JWT VCs:** a policy that sets `expected_types`
+    now rejects one with `TypeMismatch` that points at `expected_vct`. An IETF
+    SD-JWT VC is typed by `vct`, so the pin cannot be checked, and a pin that
+    cannot be checked fails closed instead of passing. Ignoring it would also let
+    a holder dodge it by withholding a disclosable `@context` from a `dc+sd-jwt`
+    VCDM credential. Callers who verify both kinds under one type pin need a
+    policy per format. A presentation verified under one policy that sets
+    `expected_types` is rejected as a whole if it carries an IETF SD-JWT VC. An
+    unset or empty `expected_types` still constrains nothing.
+
+  The IETF lane is otherwise unchanged. A claim there that is merely named
+  `issuer`, `id` or `credentialSubject` is the issuer's own vocabulary and is not
+  reconciled. As on every lane, `result.issuer` (the verified `iss`) is the
+  authenticated issuer.
+- **A present `issuer` must identify no one but the verified `iss`, whatever its
+  shape**, on the VC-JWT lane and on a W3C SD-JWT (#221, adversarial review).
+  The reconciliation compared only a non-empty string `issuer` or `issuer.id`, and
+  skipped every other shape. So `{"@id": "did:web:university.example"}` (the
+  university, to a JSON-LD processor), `""`, `null`, `{"id": null}` and a list all
+  verified as issued by the signer. Every identifier a present `issuer` carries
+  must now be `iss`: the string itself, or an object's `id` and `@id`. An absent
+  `issuer`, or an object with no `id` such as `{"name": …}`, is still accepted. It
+  identifies no one, and the VCDM 1.1 JWT encoding moves the issuer's id to `iss`.
+  The status-list check below reads an issuer the same way.
+- **The status-list issuer binding (ADR-0006) can no longer be satisfied by a forged
+  SD-JWT list** (#221, adversarial review; this predates the change).
+  `require_status_issuer_binding` compares the `issuer` named in the resolved list's
+  body, and the default resolvers returned the verified list's body as is. An IETF
+  SD-JWT's `issuer` claim is not reconciled with its `iss`. A compromised status
+  host could therefore serve a `dc+sd-jwt` list signed by its own key that named
+  the victim issuer and cleared the revocation bit. A revoked credential then
+  verified as not revoked, even with the binding on and with `expected_issuer` set
+  on the resolver. `default_status_list_resolver` and its async twin now refuse a
+  list whose body names an issuer other than the one its signature was verified
+  for (`StatusListError`). A custom `resolve_status_list` must do the same; see
+  [Status lists](https://github.com/luisgf/openvc/wiki/Status-Lists).
+- **A bare-string `expected_types` is one type.** `expected_types="UniDegree"` was
+  iterated one character at a time on every lane, so a credential whose `type`
+  was `["U", "n", "i", …]` satisfied it. A string is now treated as a
+  one-element list.
+
+### Added
+
+- **`VerifiedSdJwt.vcdm: bool = False`** says whether the suite treated the payload
+  as a W3C VCDM credential (`vc+sd-jwt`). That means it enforced the payload's
+  validity window and its `issuer` / `id` / `credentialSubject.id` consistency. It
+  is appended with a default, so positional constructions keep working, and the
+  frozen return-object contract is updated. The pipelines read it to decide how
+  `expected_types` applies.
+
+### Changed
+
+- The reconciliation's error message names `issuer` rather than `vc.issuer`
+  (`iss '…' != issuer '…'`), because the SD-JWT lane now raises it too.
+
 ## [1.30.1] — 2026-10-13
 
 ### Security

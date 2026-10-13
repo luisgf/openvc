@@ -98,7 +98,7 @@ def default_status_list_resolver(
             credential, resolver=resolver, jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             policy=VerificationPolicy(require_status=False, leeway_s=leeway_s),
             extra_contexts=extra_contexts)
-        return result.credential
+        return _authenticated_list(result)
     return resolve
 
 
@@ -127,6 +127,22 @@ def default_status_list_token_resolver(
         return verify_status_list_token(
             token, public_key_jwk=jwk, expected_uri=uri, leeway_s=leeway_s)
     return resolve
+
+
+def _authenticated_list(result: Any) -> dict:
+    """The verified status-list credential, once the ``issuer`` its body names is the
+    issuer the pipeline authenticated (``result.issuer``). The ADR-0006 binding reads
+    that field, and an IETF SD-JWT's ``issuer`` claim is not reconciled with its
+    ``iss``: a list signed by A that names B must not pass as B's."""
+    from .proof._verify_common import issuer_identifiers, safe_repr
+    credential: dict = result.credential
+    if "issuer" in credential and any(
+            name != result.issuer for name in issuer_identifiers(credential["issuer"])):
+        from .status import StatusListError
+        raise StatusListError(
+            f"status list names issuer {safe_repr(credential['issuer'])} "
+            f"but is signed by {result.issuer!r}")
+    return credential
 
 
 def _require_expected_issuer(claimed: str | None, expected: str | None) -> None:
@@ -216,7 +232,7 @@ def default_status_list_resolver_async(
             credential, resolver=resolver, jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             policy=VerificationPolicy(require_status=False, leeway_s=leeway_s),
             extra_contexts=extra_contexts)
-        return result.credential
+        return _authenticated_list(result)
     return resolve
 
 

@@ -47,9 +47,14 @@ already hold the key. Normally you let the pipeline resolve it from the
   fails closed — on the VC-JWT, SD-JWT, KB-JWT and status-list-token lanes
   alike (the COSE and JWE paths already take the same stance).
 - **Envelope ↔ credential reconciliation.** The JWT claims (`iss`, `sub`,
-  `exp`, `nbf`) must agree with the embedded credential (`issuer`,
-  `credentialSubject.id`, validity window) — a token cannot smuggle a
-  credential that says something else.
+  `jti`, `exp`, `nbf`) must agree with the embedded credential (`issuer`,
+  `credentialSubject.id`, `id`, validity window) — a token cannot smuggle a
+  credential that says something else. Every identifier a present `issuer`
+  carries must be `iss`: the string itself, or an object's `id` and `@id`. A
+  null, empty or non-string one is rejected, not skipped. An object with no `id`
+  identifies no one, and is accepted like an absent `issuer` (the VCDM 1.1 JWT
+  encoding moves the id to `iss`). The SD-JWT lane applies the same rule to a W3C credential
+  ([SD-JWT VC](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt-vcsd-jwt)).
 - **Temporal checks fail closed.** `exp` / `nbf` / `iat` (with a small
   clock-skew leeway) and the credential's `validFrom` / `validUntil`; a
   present-but-unparseable timestamp rejects. `exp`, `nbf` and `iat` must each be

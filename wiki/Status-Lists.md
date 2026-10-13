@@ -107,6 +107,13 @@ and read `result.status.revoked`; suspension still rejects. See
   list's issuer to be the credential's issuer (add trusted delegates via
   `status_issuer_allowlist`); a mismatch raises `StatusListIssuerUntrusted`. See
   [ADR-0006](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0006-status-list-issuer-binding.md).
+  The binding compares the `issuer` named in the list's **body**. The default
+  resolvers refuse a list whose body names an issuer other than the one its
+  signature was verified for (`StatusListError`). Before 1.31.0, an IETF
+  `dc+sd-jwt` list signed by an attacker could name the victim there and clear
+  the revocation bit. A custom `resolve_status_list` must uphold the same rule:
+  return a list whose `issuer` you have authenticated, for example by comparing it
+  with the `result.issuer` of the `verify_credential` call that checked the list.
 - **SD caveat**: keep the `credentialStatus` pointer **non**-selectively
   disclosable, or a holder can withhold it — see [SD-JWT VC](SD-JWT-VC) and
   the [Security model](Security-Model).
