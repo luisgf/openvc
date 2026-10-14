@@ -328,9 +328,11 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   `disclosable` (digests a caller writes into `claims` itself are signed as given).
   `verify()` rejects (`SdJwtError`) a
   presentation that presents such a disclosure, or one of its sub-claims, and a
-  payload that is not a VCDM credential and has no `vct` (`ClaimsInvalid` for a
-  `dc+sd-jwt`; a `vc+sd-jwt` is accepted only with a VCDM `@context`, so without
-  one it is an `SdJwtError`, and the typ alone never makes a payload VCDM, #264).
+  `dc+sd-jwt` that has no `vct` (`ClaimsInvalid`, whatever its `@context`, #272:
+  draft-19 §2.2.1 makes that typ mean the SD-JWT VC rules, so a VCDM `@context` does
+  not waive the REQUIRED `vct`). A `vc+sd-jwt` is accepted only with a VCDM
+  `@context`, so without one it is an `SdJwtError`, and the typ alone never makes a
+  payload VCDM (#264).
   What remains is the **withheld**
   disclosure from a third-party issuer: a withheld digest is indistinguishable
   from a decoy (RFC 9901 §9.7), so no verifier can see it. Pinned as a limitation

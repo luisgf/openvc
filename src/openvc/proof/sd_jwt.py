@@ -275,6 +275,9 @@ class VerifiedSdJwt:
     # the payload is a W3C VCDM credential (a VCDM ``@context``, see ``_declares_vcdm``),
     # whose validity window and issuer / id / subject consistency the suite enforced
     vcdm: bool = False
+    # the verified issuer JWT ``typ``: ``dc+sd-jwt`` (an IETF SD-JWT VC, with a ``vct``)
+    # or ``vc+sd-jwt`` (a W3C VCDM payload, VC-JOSE-COSE). None when not set by verify().
+    typ: str | None = None
 
 
 def _check_aka_vcts(payload: Mapping[str, Any]) -> None:
@@ -534,9 +537,9 @@ class SdJwtVcProofSuite:
         *presents* the disclosure; a withheld one is indistinguishable from a decoy (RFC
         9901 §9.7), so a third-party credential whose ``exp`` or ``status`` was disclosable
         still verifies when the holder omits it. Besides ``iss`` (without which nothing
-        verifies), the detectable case is ``vct``: it is REQUIRED, so a ``dc+sd-jwt`` that
-        is not a VCDM payload and whose processed payload has none raises
-        ``ClaimsInvalid``. With *require_key_binding*, a disclosed ``cnf`` fails earlier,
+        verifies), the detectable case is ``vct``: it is REQUIRED, so a ``dc+sd-jwt`` whose
+        processed payload has none raises ``ClaimsInvalid``, even one that also carries a
+        VCDM ``@context``. With *require_key_binding*, a disclosed ``cnf`` fails earlier,
         as the key-binding ``ClaimsInvalid`` (no ``cnf.jwk`` in the issuer JWT).
         """
         non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=SdJwtError)
@@ -617,13 +620,13 @@ class SdJwtVcProofSuite:
                 "issuer JWT typ 'vc+sd-jwt' needs a W3C VCDM @context; an IETF SD-JWT VC "
                 "is typed 'dc+sd-jwt'")
         vct = unpacked.get("vct")
-        if not vcdm and not (isinstance(vct, str) and vct):
+        if typ == _ISSUER_TYP and not (isinstance(vct, str) and vct):
             # draft-19 §2.2.2.3: `vct` is REQUIRED and never disclosable, so a withheld
             # disclosure of it is detectable: it is absent (like `iss`, without which the
-            # issuer JWT never verified at all). Only a `dc+sd-jwt` gets here: a
-            # `vc+sd-jwt` is VCDM or was refused above. A VCDM payload is typed by `type`
-            # instead (_declares_vcdm reads it by content), so this binds only an IETF
-            # SD-JWT VC.
+            # issuer JWT never verified at all). §2.2.1: a `dc+sd-jwt` follows these rules
+            # whatever else it carries, so a VCDM `@context` does not waive the `vct`
+            # (#272); the VCDM window below still applies to it. A `vc+sd-jwt` is a VCDM
+            # payload (refused above otherwise), typed by `type` instead.
             raise ClaimsInvalid("an SD-JWT VC (dc+sd-jwt) needs a non-empty string vct")
 
         # RFC 9901 §7.1 step 6: nbf/exp are checked on the *processed* payload if present.
@@ -657,7 +660,7 @@ class SdJwtVcProofSuite:
         return VerifiedSdJwt(
             claims=unpacked, issuer=iss, vct=vct if isinstance(vct, str) else None,
             key_bound=key_bound, confirmation=claims.get("cnf"), expired=expired,
-            vcdm=vcdm)
+            vcdm=vcdm, typ=typ)
 
     # -- internals --------------------------------------------------------- #
 

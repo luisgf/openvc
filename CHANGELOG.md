@@ -36,13 +36,34 @@ All notable changes to **openvc** are documented here. The format follows
   `@context`, with or without `vct`, verifies as before, with the VCDM validity window
   and consistency checks.
 
-  Not changed here, and tracked:
-  - `dc+sd-jwt` keeps today's rules. That it always needs a `vct`, even with a VCDM
-    `@context`, and that the OpenID4VP `dc+sd-jwt` lane pins the issuer `typ`, so a
-    `vc+sd-jwt` with a VCDM `@context` no longer answers a `dc+sd-jwt` query, is #272.
-  - "VCDM" still means a VCDM base URL anywhere in `@context`. Requiring a conforming
-    payload (the base context first, and `type` containing `VerifiableCredential`) is
-    #275.
+  The other direction, that a `dc+sd-jwt` always means an IETF SD-JWT VC, is the next
+  entry (#272). "VCDM" still means a VCDM base URL anywhere in `@context`; requiring
+  a conforming payload (the base context first, and `type` containing
+  `VerifiableCredential`) is #275.
+
+- **A `dc+sd-jwt` always means an IETF SD-JWT VC: it needs a `vct`, and only it
+  answers an OpenID4VP `dc+sd-jwt` query**
+  ([#272](https://github.com/luisgf/openvc/issues/272)). The other direction of #264,
+  found by the same cross-check. **This is a behaviour change:** an SD-JWT that
+  verified before can now be refused.
+
+  draft-19 §2.2.1 says `typ: dc+sd-jwt` means the payload follows the SD-JWT VC rules,
+  and §2.2.2.3 makes `vct` REQUIRED. openvc skipped the `vct` gate for any payload
+  with a VCDM `@context`, whatever the `typ`. So a `dc+sd-jwt` with a VCDM `@context`
+  and no `vct`, or with a `vct` the holder withheld, verified as `vcdm=True,
+  vct=None`. Separately, the OpenID4VP `dc+sd-jwt` lane checked only that the
+  Presentation verified as an SD-JWT, and the pipeline calls every SD-JWT
+  `sd-jwt-vc`. A W3C VCDM credential secured as `vc+sd-jwt` therefore answered a
+  `dc+sd-jwt` DCQL query, reported as `format='dc+sd-jwt'`. With no
+  `meta.vct_values`, nothing refused it.
+
+  `SdJwtVcProofSuite.verify` now raises `ClaimsInvalid` for a `dc+sd-jwt` with no
+  non-empty string `vct`, whatever its `@context`. One that carries both a `vct` and
+  a VCDM `@context` still verifies, and the VCDM validity window and consistency
+  checks still apply to it. `VerifiedSdJwt` gains a `typ` field, the verified issuer
+  JWT `typ`: an additive field that defaults to `None`. `verify_vp_token` refuses a
+  `dc+sd-jwt` Presentation whose issuer JWT is not typed `dc+sd-jwt`, raising
+  `VpTokenMalformed`.
 
 ## [1.32.4] — 2026-10-14
 
