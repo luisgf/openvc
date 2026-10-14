@@ -4,6 +4,46 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.0] — unreleased
+
+### Security
+
+- **`vc+sd-jwt` is accepted only for a payload with a VCDM base `@context`**
+  ([#264](https://github.com/luisgf/openvc/issues/264)). Found by the spec-pin
+  freshness check of 2026-10-14. **This is a behaviour change:** an SD-JWT that
+  verified before can now be refused.
+
+  `draft-ietf-oauth-sd-jwt-vc-19` dropped the -18 sentence that let verifiers accept
+  both `vc+sd-jwt` and `dc+sd-jwt` "for a reasonable transitional period". An IETF
+  SD-JWT VC is typed `dc+sd-jwt` (§2.2.1). W3C VC-JOSE-COSE §6.1.3 registers
+  `vc+sd-jwt` for a payload conforming to the VCDM, and the VCDM requires `@context`.
+
+  openvc used to read `typ: vc+sd-jwt` with no `vct` as a VCDM payload on the typ
+  alone. That defeated the REQUIRED `vct` of draft-19 §2.2.2.3. A `vc+sd-jwt` with
+  no `vct` and no `@context` verified as `vcdm=True, vct=None`, and so did one whose
+  issuer made `vct` disclosable and whose holder withheld it. Typed `dc+sd-jwt`, the
+  same payload is refused. In OpenID4VP such a token answered a `dc+sd-jwt` DCQL query
+  with no `meta.vct_values`, labelled `format='dc+sd-jwt'`. No check the caller had
+  configured was bypassed: an `expected_vct`, `vct_values` or `expected_types` pin
+  refused it. Status, KB-JWT / `cnf` and the disclosure refusals still ran.
+
+  `SdJwtVcProofSuite.verify` now raises `SdJwtError` when the issuer `typ` is
+  `vc+sd-jwt` and the payload carries no VCDM `@context`. That includes a
+  `vct`-bearing IETF payload from a pre-draft-06 issuer: re-issue it as `dc+sd-jwt`.
+  VCDM classification reads only `@context`. A presented `@context` disclosure is
+  refused, so the verdict never reads a holder-supplied one. A withheld one leaves the
+  payload not VCDM, and a `vc+sd-jwt` is then refused. A `vc+sd-jwt` with a VCDM
+  `@context`, with or without `vct`, verifies as before, with the VCDM validity window
+  and consistency checks.
+
+  Not changed here, and tracked:
+  - `dc+sd-jwt` keeps today's rules. That it always needs a `vct`, even with a VCDM
+    `@context`, and that the OpenID4VP `dc+sd-jwt` lane pins the issuer `typ`, so a
+    `vc+sd-jwt` with a VCDM `@context` no longer answers a `dc+sd-jwt` query, is #272.
+  - "VCDM" still means a VCDM base URL anywhere in `@context`. Requiring a conforming
+    payload (the base context first, and `type` containing `VerifiableCredential`) is
+    #275.
+
 ## [1.32.4] — 2026-10-14
 
 ### Security
