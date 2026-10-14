@@ -41,6 +41,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
     encode_dss_signature,
 )
 
+from . import _json
 from .errors import OpenvcError
 
 P256_COORD_BYTES = 32  # a P-256 coordinate / scalar is 32 bytes
@@ -507,8 +508,10 @@ def jwk_thumbprint_bytes(
     type, serialized with no whitespace and ordered lexicographically by code point.
     A private key and its public half therefore produce the *same* thumbprint.
 
-    Fails closed: an unknown ``kty``, a missing required member, or a non-string
-    member value raises :class:`InvalidKey` rather than hashing a partial key.
+    Fails closed: an unknown ``kty``, a missing required member, a non-string
+    member value, or a member holding a lone UTF-16 surrogate (JSON ``"\\ud800"``, which
+    has no UTF-8 form to digest) raises :class:`InvalidKey` rather than hashing a partial
+    key.
     """
     try:
         hasher = _THUMBPRINT_HASHES[hash_name]
@@ -532,6 +535,9 @@ def jwk_thumbprint_bytes(
             # key the caller believes they hold — reject instead of guessing.
             raise InvalidKey(
                 f"JWK of kty {kty!r} needs a string {name!r} member for a thumbprint")
+        # ensure_ascii=False below passes a lone UTF-16 surrogate (JSON "\ud800") through,
+        # and it has no UTF-8 form to digest. Refuse it here, naming the member, not its text.
+        _json.utf8(value, error=InvalidKey, what=f"JWK member {name!r}")
         canonical[name] = value
 
     # sort_keys gives RFC 7638 §3's lexicographic-by-code-point order; the separators
@@ -550,6 +556,10 @@ def jwk_thumbprint(
     This is the form used as a `kid`, in a `cnf` claim, and as the DPoP `jkt`. For
     the raw digest — e.g. the ``mdoc_jwk_thumbprint`` an ISO 18013-7 SessionTranscript
     needs — use :func:`jwk_thumbprint_bytes`.
+
+    Fails closed exactly as :func:`jwk_thumbprint_bytes` does: :class:`InvalidKey` for an
+    unknown ``kty``, a missing or non-string required member, or a member holding a lone
+    UTF-16 surrogate.
     """
     return _b64url_encode(jwk_thumbprint_bytes(jwk, hash_name=hash_name))
 

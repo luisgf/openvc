@@ -458,11 +458,20 @@ def _proof_config_hash(proof: dict[str, Any], context: Any, loader: Any) -> byte
     nquads = _pyld().normalize(
         config, {"algorithm": "URDNA2015", "format": "application/n-quads",
                  "documentLoader": loader})
-    return hashlib.sha256(nquads.encode("utf-8")).digest()
+    return hashlib.sha256(_utf8_nquads(nquads, "the proof configuration N-Quads")).digest()
+
+
+def _utf8_nquads(text: str, what: str) -> bytes:
+    """UTF-8 of canonical N-Quads. A statement about a *named* node is never hashed by pyld
+    (only blank nodes are), so a lone UTF-16 surrogate in one reaches this encode, which
+    refuses it as :class:`ProofMalformed` instead of letting a bare ``UnicodeEncodeError``
+    escape the family."""
+    return _json.utf8(text, error=ProofMalformed, what=what)
 
 
 def _sha256_lines(lines: list[str]) -> bytes:
-    return hashlib.sha256("".join(ln + "\n" for ln in lines).encode("utf-8")).digest()
+    return hashlib.sha256(_utf8_nquads(
+        "".join(ln + "\n" for ln in lines), "the mandatory statements")).digest()
 
 
 class EcdsaSdProofSuite:
@@ -523,7 +532,8 @@ class EcdsaSdProofSuite:
 
         ephemeral = P256SigningKey.generate(kid="urn:ephemeral")
         public_key = p256_public_multikey(ephemeral.public_jwk())
-        signatures = [ephemeral.sign((ln + "\n").encode("utf-8")) for ln in non_mandatory]
+        signatures = [ephemeral.sign(_utf8_nquads(ln + "\n", "a non-mandatory statement"))
+                      for ln in non_mandatory]
         base_signature = signing_key.sign(proof_hash + public_key + mandatory_hash)
 
         proof_value = encode_base_proof(
@@ -675,8 +685,10 @@ class EcdsaSdProofSuite:
         if len(parsed["signatures"]) != len(non_mandatory):
             raise SignatureInvalid("disclosed statement / signature count mismatch")
         for line, sig in zip(non_mandatory, parsed["signatures"]):
-            if not verify_signature(alg="ES256", public_jwk=ephemeral_jwk,
-                                    signing_input=(line + "\n").encode("utf-8"), signature=sig):
+            if not verify_signature(
+                    alg="ES256", public_jwk=ephemeral_jwk,
+                    signing_input=_utf8_nquads(line + "\n", "a disclosed statement"),
+                    signature=sig):
                 raise SignatureInvalid("a disclosed statement signature does not verify")
         # The signatures cover the disclosed RDF statements; the checks below read the
         # JSON. Context validation (VC-DI §2.4.1) makes the two agree first.

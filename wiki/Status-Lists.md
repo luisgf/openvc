@@ -75,6 +75,9 @@ fails at build time with a `StatusListError` instead of in the field:
   refuse a `size` that would need it: 2^27 one-bit statuses, but only 2^24 at 8 bits.
 - The time inputs and `ttl` follow the verifier's shape rules too, and a naive
   `datetime` is read as UTC in both builders (the section below).
+- The strings an artefact names are checked too: the credential's `issuer`,
+  `subject_id` and `contexts`, an entry's `id` and the token's `issuer`. An empty or
+  falsy value is an error, not a way to ask for the default (the subsection on issuer, subject, contexts and the entry `id`, below).
 
 `get_status_bit`, `set_status_bit`, `get_status` and `set_status` hold their `index` to
 the same type rule (the list's own length bounds it): a `bool` is no longer read as
@@ -150,6 +153,75 @@ on a host that is not on UTC now yields its UTC reading, a different `validFrom`
 `validUntil` string from before for the same call (it used the host's local zone): pass
 an aware `datetime` if you meant local time. The
 [CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for 1.32.4
+has the list.
+
+### Issuer, subject, contexts and the entry `id`
+
+The strings a list names used to be copied as given, and the proof suite you signed with
+decided whether they mattered: a `contexts` string was accepted by VC-JWT and by
+`eddsa-jcs-2022` and refused only at `add_proof` by `eddsa-rdfc-2022`. The builder is the
+one place that can decide for all of them, so it holds these to what the verifier reads:
+
+| Parameter | Accepted | `StatusListError` |
+|---|---|---|
+| `issuer`, `build_status_list_credential` | a non-empty string, or an object with a non-empty string `id` and no `@id` (other members, such as `name`, are carried as given) | `None`, `""`, a number, `bytes`, a list; an object with no string `id`, or with an `@id`, equal or not |
+| `subject_id` | `None` (the subject is `<id>#list`) or a non-empty string | `""`, `0`, `[]`, `{}`, any non-string |
+| `contexts` | `None` (the VC 2.0 context) or a non-empty `list` / `tuple` that starts with a VC base context, followed by context URLs (non-empty strings) or inline context objects | a bare string (it was read one character at a time), a `dict`, an iterator, an empty list, a first entry that is not a VC base context, any other entry that is not a non-empty string or an object |
+| `id`, `build_status_list_entry` | `None` (the entry has no `id`) or a non-empty string | `""`, `0`, `[]`, `{}`, any non-string |
+| `issuer`, `build_status_list_token` | `None` (no `iss` claim) or a non-empty string | `""`, `0`, `[]`, `{}`, any non-string |
+
+`None` is the only way to ask for a default. An empty or falsy value (`subject_id=""`,
+`contexts=[]`, `contexts=0`) used to be replaced by the default without a word and is now
+an error. A VC base context is `https://www.w3.org/ns/credentials/v2` or
+`https://www.w3.org/2018/credentials/v1`, the rule the RDF suites apply to the first entry.
+It is a shape rule, not a promise that the list verifies on every lane: only the VC 2.0
+context defines `BitstringStatusListCredential`, `encodedList` and `statusPurpose`, and
+only it is bundled, so pass it first. A list that starts with the VC 1.1 context builds and
+is read by VC-JWT and `eddsa-jcs-2022`, which load no context, and `eddsa-rdfc-2022`
+refuses it at `add_proof` (`DocumentLoaderError`: the 1.1 document is not bundled). A context
+URL that is not bundled with openvc still needs `extra_contexts` on the `eddsa-rdfc-2022`
+suite.
+
+```python
+from openvc.status import StatusListError, build_status_list_credential, new_bitstring
+
+VC2 = "https://www.w3.org/ns/credentials/v2"
+vc = build_status_list_credential(
+    id="https://issuer.example/status/1",
+    issuer={"id": "did:example:issuer", "name": "Example issuer"},
+    bitstring=new_bitstring(64),
+    contexts=[VC2, {"@vocab": "https://example.org/terms#"}])
+assert vc["credentialSubject"]["id"] == "https://issuer.example/status/1#list"
+
+try:
+    build_status_list_credential(
+        id="https://issuer.example/status/1", issuer="did:example:issuer",
+        bitstring=new_bitstring(64), contexts="https://example.org/ctx")
+except StatusListError as exc:
+    print(exc)          # contexts must be None or a non-empty list of context URLs ...
+```
+
+The builders read a copy of what you pass and emit that copy: the `issuer` object and the
+`contexts` list are new containers, and every string is an exact `str`, so a `dict`, `list`
+or `str` subclass cannot be checked as one value and written as another (one whose copy
+raises is a `StatusListError`).
+
+Not checked, by design: that an identifier is a URI (`"not a uri"` builds; only key
+resolution, and the RDF suites at `add_proof`, refuse one), its length, the members of
+an `issuer` object besides `id` and `@id`, and the members of an inline context object (a
+member that is not JSON, such as `{"id": b"x"}`, builds and fails at sign). A token built without `issuer` is still allowed,
+and `default_status_list_token_resolver` refuses it (`StatusListError`: no `iss` to find
+the key with), so pass the issuer unless you resolve the key some other way.
+
+This is a behaviour change in 1.33.0. These used to build and now raise: an `issuer` that
+is not a non-empty string or an object with a string `id` and no `@id`; a `subject_id`,
+entry `id` or token `issuer` that is not a non-empty string; `contexts` that is a string,
+a `dict`, an iterator or a list with an entry that is neither a non-empty string nor an
+object, or whose first entry is not a VC base context; and a falsy `subject_id` or
+`contexts` that fell back to the default (pass `None`, or leave it out). Inputs that
+already raised a bare `TypeError` (`contexts=5`, a `bytes` issuer) now raise
+`StatusListError`. The
+[CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for 1.33.0
 has the list.
 
 ## Fail-closed by default in the pipeline

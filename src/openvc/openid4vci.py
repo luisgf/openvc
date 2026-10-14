@@ -413,7 +413,10 @@ def parse_credential_request(
     pins ``credential_configuration_id`` to what this issuer actually offers.
 
     Raises :class:`CredentialRequestMalformed` on any shape violation — a malformed
-    request fails safe rather than being silently narrowed.
+    request fails safe rather than being silently narrowed. A ``proofs`` entry that is not
+    an ASCII compact JWS is one, and that includes a lone UTF-16 surrogate (a JSON
+    ``"\\ud800"`` escape, which has no UTF-8 form): it is refused here, not as a bare
+    ``UnicodeEncodeError``.
     """
     body = _as_mapping(body, "Credential Request")
     limit = 1 if batch_size is None else batch_size
@@ -486,7 +489,13 @@ def _parse_proofs(proofs: Any, limit: int) -> tuple[str, tuple[str, ...]]:
                     f"proof type {proof_type!r} is not supported (only 'jwt')")
             raise CredentialRequestMalformed(
                 f"proofs[{proof_type!r}] entries must be non-empty strings")
-        if len(value.encode("utf-8")) > MAX_PROOF_BYTES:
+        if not value.isascii():
+            # A compact JWS is base64url and dots, ASCII by definition. This also keeps a
+            # lone UTF-16 surrogate (JSON "\ud800"), which has no UTF-8 form, from reaching
+            # the byte count below as a bare UnicodeEncodeError.
+            raise CredentialRequestMalformed(
+                f"proofs[{proof_type!r}] entries must be ASCII compact JWS strings")
+        if len(value) > MAX_PROOF_BYTES:
             raise CredentialRequestMalformed(
                 f"proofs[{proof_type!r}] entry exceeds {MAX_PROOF_BYTES} bytes")
     return proof_type, tuple(values)
@@ -722,10 +731,16 @@ def peek_proof_header(proof: str) -> Mapping[str, Any]:
     second one. Two notions of what a header is can disagree; one cannot.
 
     Read-only, and never a trust decision: the bytes are the wallet's, unauthenticated.
+
+    Raises :class:`~openvc.proof.errors.MalformedToken` if *proof* is not an ASCII compact
+    JWS, is over :data:`MAX_PROOF_BYTES`, or does not parse. A lone UTF-16 surrogate (a
+    JSON ``"\\ud800"`` escape) is refused as one, not as a bare ``UnicodeEncodeError``.
     """
     if not isinstance(proof, str):
         raise MalformedToken("key proof must be a compact JWS string")
-    if len(proof.encode("utf-8")) > MAX_PROOF_BYTES:
+    if not proof.isascii():            # a compact JWS is ASCII; see _parse_proofs
+        raise MalformedToken("key proof must be an ASCII compact JWS")
+    if len(proof) > MAX_PROOF_BYTES:
         raise MalformedToken(f"key proof exceeds {MAX_PROOF_BYTES} bytes")
     header, _, _, _ = parse_compact(proof)
     return MappingProxyType(dict(header))
@@ -742,13 +757,16 @@ def peek_key_attestation(attestation: str) -> UnverifiedKeyAttestation:
     verifier's decisions and that verifier needs a wallet-provider trust anchor openvc
     has no model for (ADR-0007 D9).
 
-    Raises :class:`~openvc.proof.errors.MalformedToken` if it is not a compact JWS, and
+    Raises :class:`~openvc.proof.errors.MalformedToken` if it is not an ASCII compact JWS
+    (a lone UTF-16 surrogate, a JSON ``"\\ud800"`` escape, is one such case), and
     :class:`~openvc.proof.errors.ClaimsInvalid` if it is one but not shaped like a key
     attestation.
     """
     if not isinstance(attestation, str):
         raise MalformedToken("key attestation must be a compact JWS string")
-    if len(attestation.encode("utf-8")) > MAX_KEY_ATTESTATION_BYTES:
+    if not attestation.isascii():      # a compact JWS is ASCII; see _parse_proofs
+        raise MalformedToken("key attestation must be an ASCII compact JWS")
+    if len(attestation) > MAX_KEY_ATTESTATION_BYTES:
         raise MalformedToken(
             f"key attestation exceeds {MAX_KEY_ATTESTATION_BYTES} bytes")
     header, claims, _, _ = parse_compact(attestation)
