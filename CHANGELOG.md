@@ -27,6 +27,17 @@ All notable changes to **openvc** are documented here. The format follows
   with the rule: a version that reaches end-of-life is deprecated in the next MINOR
   release and dropped at the next MAJOR.
 
+### Tests
+
+- **A flaky XAdES trust-list test is now deterministic.** signxml's *signer* drops
+  the leading zero byte of an EC public-key coordinate when it writes the
+  `ECKeyValue` (a 64-byte point instead of 65). For about 2 in 256 random P-256 keys
+  the test fixture therefore carried a `KeyValue` that did not match its certificate,
+  and verification rightly refused it. That was 2 failures in 600 signatures; it
+  failed this PR's py3.13 leg at random. The XAdES tests now draw keys whose
+  coordinates are full width: 0 failures in 600. openvc never signs XAdES, so trust-list
+  verification is unaffected.
+
 ## [1.31.3] — 2026-10-13
 
 Tests and docs only: no library code changes.
