@@ -4,11 +4,10 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.32.1] — unreleased
+## [1.32.2] — unreleased
 
 One security fix in the SD-JWT VC suite, which changes what issues and what
-verifies (see *Changed*). The rest is tests and docs: a docstring and a comment
-in `rp_registration.py`.
+verifies (see *Changed*).
 
 ### Security
 
@@ -66,6 +65,82 @@ in `rp_registration.py`.
     `cnf`, `status` or `credentialStatus` verified.
   - A `dc+sd-jwt` with no `vct` (and no VCDM `@context`) raises `ClaimsInvalid`.
 
+### Tests
+
+- **`tests/test_sdjwt_non_disclosable.py`** (#229). Issue-time refusals: each name
+  alone and mixed, nothing signed, the VCDM window only on a VCDM payload. Each
+  presented refused disclosure, and each sub-claim shape, through the suite,
+  `verify_credential`, `verify_credential_async`, `verify_many` and
+  `verify_many_async`, with the good neighbours of a `[good, bad, good]` batch
+  still verifying. The withheld-disclosure limitation is pinned so it is never
+  mistaken for coverage. Run against v1.32.0: 130 fail, and the 40 that pass are
+  the controls and the limitation pins. Existing tests that issued or presented a
+  disclosable `exp`, `validUntil` or `@context`, or minted a `dc+sd-jwt` with no
+  `vct`, now assert the refusal.
+
+## [1.32.1] — 2026-10-14
+
+### Security
+
+- **A TIR v5 registry URL that does not parse is now a typed error or an
+  off-origin skip, never a bare `ValueError`**
+  ([#243](https://github.com/luisgf/openvc/issues/243)). Found by the audit-pack
+  catch-up in 1.32.0 (#240), which recorded it as an untracked residual.
+
+  The EBSI plugin pins three registry-supplied URLs to the listing's
+  `scheme://host:port` (#172): the HATEOAS `attributes` URL, each `links.next`
+  cursor and each revision `href`. The pin called `urlparse(url).port`. A port out
+  of range (`:99999`) or not numeric (`:abc`), a broken IPv6 literal
+  (`https://[::1/x`) or a character that NFKC folds into a delimiter made it raise a
+  bare `ValueError`. That is not an `OpenvcError`, so a compromised or broken
+  registry made `verify_ebsi_badge` fail closed but untyped, past code that catches
+  `EbsiError` / `OpenvcError`. It was never a wrong-accept.
+
+  A URL with no origin to compare is now handled like an off-origin one, hop by hop:
+  - an `attributes` URL raises `MalformedRegistryResponse`;
+  - an `href` is skipped and its revision never fetched;
+  - a `links.next` ends the walk and keeps the items already read.
+
+  So is a URL the HTTP client would read differently (#246, below): anything but
+  visible ASCII, or over 8 KiB. That check runs before `urlparse` reads the URL: on
+  CPython 3.12 and earlier, `urlparse` NFKC-normalizes a non-ASCII netloc in quadratic
+  time (see 1.31.2). The EBSI client's https host allow-list is unchanged.
+
+  `threat-model.md` §7 and R10 no longer list it as an open residual; R10 keeps the
+  hostile DID-document shape (#219).
+
+- **A URL the EBSI HTTP client cannot parse is refused, typed, before any request**
+  ([#246](https://github.com/luisgf/openvc/issues/246)). Found by the adversarial
+  review of [#244](https://github.com/luisgf/openvc/pull/244), the fix for #243.
+  Present before it.
+
+  `EbsiHttpClient.get_json` checked a URL with `urlparse` and fetched it with httpx.
+  `urlsplit` drops a tab or newline and ignores other control characters; httpx
+  rejects them, and a URL over 64 KiB, with `httpx.InvalidURL`. That is a plain
+  `Exception`, not an `httpx.TransportError`, so it escaped `get_json` untyped. No key
+  was needed: `verify_ebsi_badge` puts the issuer it peeks from an unsigned token
+  into the DID Registry URL, so an `iss` such as `did:ebsi:z\tx` aborted it with a bare
+  `httpx.InvalidURL`. A TIR `attributes`, `links.next` or `href` holding such a
+  character passed the origin pin the same way. The guard also left a broken IPv6
+  literal as a bare `ValueError`, and never read the port, so `:99999` went to the
+  transport.
+
+  The client now refuses, as `HttpForbiddenHost` and before any request, a URL that
+  is not visible ASCII (checked before `urlparse`) or that `urlparse` cannot read,
+  port included. `httpx.InvalidURL` is mapped to `HttpForbiddenHost` as a backstop
+  and is not retried.
+
+- **A registry body httpx cannot decompress is now `MalformedRegistryResponse`**
+  ([#248](https://github.com/luisgf/openvc/issues/248)). Found by the second
+  adversarial pass on #244. Present before it.
+
+  httpx decompresses a `gzip` / `deflate` body while streaming it, and the client
+  advertises both. A corrupt body raised `httpx.DecodingError`, a `RequestError` but
+  not a `TransportError`, so it escaped `get_json`, and `verify_ebsi_badge`, untyped.
+  It escaped from the capped read on a 200 and from the drain of any other status.
+  A broken or compromised allow-listed registry was enough. It is now a
+  `MalformedRegistryResponse` and is not retried.
+
 ### Fixed (docs)
 
 - **`check_request_within_registration` describes the rule it enforces.** Its
@@ -81,16 +156,6 @@ in `rp_registration.py`.
 
 ### Tests
 
-- **`tests/test_sdjwt_non_disclosable.py`** (#229). Issue-time refusals: each name
-  alone and mixed, nothing signed, the VCDM window only on a VCDM payload. Each
-  presented refused disclosure, and each sub-claim shape, through the suite,
-  `verify_credential`, `verify_credential_async`, `verify_many` and
-  `verify_many_async`, with the good neighbours of a `[good, bad, good]` batch
-  still verifying. The withheld-disclosure limitation is pinned so it is never
-  mistaken for coverage. Run against v1.32.0: 130 fail, and the 40 that pass are
-  the controls and the limitation pins. Existing tests that issued or presented a
-  disclosable `exp`, `validUntil` or `@context`, or minted a `dc+sd-jwt` with no
-  `vct`, now assert the refusal.
 - **The pooling rule is pinned.** One test covers entries with identical `meta`:
   their grants pool, and an unregistered path is still refused. A second covers
   overlapping `meta`: an entry for `vct` A alone lends nothing to a query that a
@@ -3247,6 +3312,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.32.1]: https://github.com/luisgf/openvc/releases/tag/v1.32.1
 [1.32.0]: https://github.com/luisgf/openvc/releases/tag/v1.32.0
 [1.31.3]: https://github.com/luisgf/openvc/releases/tag/v1.31.3
 [1.31.2]: https://github.com/luisgf/openvc/releases/tag/v1.31.2

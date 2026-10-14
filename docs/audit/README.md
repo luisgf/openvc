@@ -67,7 +67,7 @@ The residual-risk register (R1–R10) is deliberately the reviewer's shortcut to
 the soft spots we already know about; **R1** (SD-JWT unbounded recursion →
 batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117))
 and **R9** (the RDF Data Integrity wrong-accept) in v1.30.2, leaving the
-typed-error-hygiene items **R10** (open untyped exits at the boundary) and **R2–R3**
+typed-error-hygiene items **R10** (an open untyped exit at the boundary) and **R2–R3**
 at the top of the harden-next list.
 
 ## 4. How to reproduce the evidence
