@@ -539,7 +539,10 @@ def resolve_verification_key(
     :class:`ProofPurposeMismatch`. When the document does not
     declare that relationship at all (a minimal ``did:web`` that only lists
     ``verificationMethod``), the binding cannot be enforced and the key is
-    accepted; the ``proofPurpose`` string is still checked separately.
+    accepted; the ``proofPurpose`` string is still checked separately. A resolver that
+    returns its own document type instead of a ``DidDocument`` is used through its
+    ``key_for_purpose``, and a refusal is classified by its ``key_by_kid``: no method
+    is a :class:`KeyResolutionError`, else :class:`ProofPurposeMismatch`.
     """
     if not isinstance(verification_method, str) or not verification_method:
         raise KeyResolutionError("proof has no verificationMethod to resolve")
@@ -550,7 +553,7 @@ def resolve_verification_key(
         raise ProofMalformed(
             f"proofPurpose must be a string, not {type(proof_purpose).__name__}")
 
-    from ..did.base import DidResolutionError, UnsupportedDidMethod
+    from ..did.base import DidDocument, DidResolutionError, UnsupportedDidMethod
 
     did = verification_method.split("#", 1)[0]
     logger.debug("resolve verification method: %s", did)
@@ -576,6 +579,16 @@ def resolve_verification_key(
     purpose = proof_purpose or "assertionMethod"
     vm = doc.key_for_purpose(verification_method, purpose)
     if vm is None:
+        if not isinstance(doc, DidDocument):
+            # a resolver's own document type: only its key_for_purpose / key_by_kid
+            # are known to exist, so classify the refusal by key_by_kid
+            if doc.key_by_kid(verification_method) is None:
+                raise KeyResolutionError(
+                    f"verificationMethod {safe_repr(verification_method)} not in the "
+                    f"DID document")
+            raise ProofPurposeMismatch(
+                f"verificationMethod {safe_repr(verification_method)} is not authorized "
+                f"for proofPurpose {purpose!r}")
         # the same strict, exact-id selection key_for_purpose made (never the JOSE
         # lanes' fragment-tolerant key_by_kid): a method it did not select is a key
         # resolution failure, not a purpose mismatch

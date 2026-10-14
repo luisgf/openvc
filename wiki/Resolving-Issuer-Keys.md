@@ -116,6 +116,15 @@ document does not declare at all is not enforced. The JOSE lanes (VC-JWT, SD-JWT
 look the key up by the JWS `kid` and still accept a bare or `#`-relative `kid`, since a
 `kid` is only a hint; they check no relationship.
 
+A `#key-1` resolves only against a document `id` that is a DID by the DID Core 1.0 §3.1
+syntax: `did:`, a method name of lower-case letters and digits, and a method-specific id
+of letters, digits, `.`, `-`, `_`, `:` and valid `%XX` escapes. `did:web` fetches some
+DIDs that fail it, such as a path segment with `~`, `+`, `!`, `@` or an invalid `%`-escape
+(`did:web:example.com:~alice`). Such a `did:web` must use absolute method ids and
+relationship entries (`did:web:example.com:~alice#key-1`): a `#key-1` in its document
+selects and grants nothing, so a proof fails closed with `KeyResolutionError` (or
+`ProofPurposeMismatch` when only the entry is relative).
+
 ## What the SSRF guard guarantees
 
 Every issuer-named URL (`did:web` documents, well-known metadata, status

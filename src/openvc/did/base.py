@@ -88,10 +88,10 @@ class DidDocument:
         """The document ``id`` when it is a DID (DID Core 1.0 §3.1), the only base a
         ``#fragment`` resolves against (§3.2.2); else ``None``.
 
-        A lookup calls this once, never once per method or reference: the ``id`` (as
-        long as the DID the proof names) and the number of references are both the
-        document host's to choose, so re-checking the ``id`` per reference would cost
-        their product."""
+        A lookup calls this a fixed number of times, never once per method or
+        reference: the ``id`` (as long as the DID the proof names) and the number of
+        references are both the document host's to choose, so re-checking the ``id``
+        per reference would cost their product."""
         doc_id = self.id
         return doc_id if isinstance(doc_id, str) and _DID_SYNTAX.fullmatch(doc_id) else None
 
@@ -171,10 +171,12 @@ class DidDocument:
         must then pass step 2. A *proof_purpose* that is not a string (including
         None) names no relationship and returns None.
 
-        The document ``id`` is checked once per call, and no method id or reference is
-        resolved: each is compared with the spellings of the one absolute ``id`` it
-        would have to resolve to (:meth:`_spellings`). The cost is linear in the
-        document size, however long its ``id`` and however many references it lists."""
+        The document ``id`` is checked a fixed number of times, and only the selected
+        method's own relative ``id`` is resolved; no other method id or reference is:
+        each is compared with the spellings of the one absolute ``id`` it would have to
+        resolve to (:meth:`_spellings`), computed once per lookup. The cost is linear in
+        the document size, however long its ``id`` and however many references it
+        lists."""
         if not isinstance(proof_purpose, str):                 # unhashable -> no key
             return None
         base = self._base()                    # once per lookup, never per reference

@@ -34,6 +34,7 @@ import asyncio
 import base64
 import json
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -371,7 +372,16 @@ NOT_A_DID = {
     "trailing-colon": f"{DID}:",
     "a-space": "did:web:issuer example",
     "a-bad-escape": "did:web:issuer%zz.example",
+    # DIDs that did:web still fetches (https://example.com/<path>/did.json): their
+    # documents must use absolute ids, which the did:web test below pins
+    "a-tilde": "did:web:example.com:~alice",
+    "a-plus": "did:web:example.com:user+x",
+    "a-bang": "did:web:example.com:a!b",
+    "an-at": "did:web:example.com:a@b",
+    "a-short-escape": "did:web:example.com:c%2",
 }
+WEB_NOT_A_DID = {k: NOT_A_DID[k] for k in ("a-tilde", "a-plus", "a-bang", "an-at",
+                                           "a-short-escape")}
 
 
 @pytest.mark.parametrize("doc_id", NOT_A_DID.values(), ids=NOT_A_DID)
@@ -391,6 +401,28 @@ def test_a_relative_method_id_names_nothing_when_the_document_id_is_not_a_did(do
     doc = parse_did_document({"id": doc_id, "verificationMethod": [_method("#auth", AUTH_KEY)]})
     assert doc.key_for_purpose(doc_id + "#auth", "assertionMethod") is None
     assert doc.key_for_purpose(AUTH, "assertionMethod") is None
+
+
+@pytest.mark.parametrize("did", WEB_NOT_A_DID.values(), ids=WEB_NOT_A_DID)
+def test_a_did_web_outside_the_did_syntax_needs_absolute_ids(did):
+    # did:web resolves these DIDs, but they fail DID Core 1.0 §3.1, so a '#k' in their
+    # document resolves to nothing (fail closed); the absolute id still verifies
+    vm_id = f"{did}#k"
+    credential = _signed(AUTH_KEY, vm_id)
+    relative_id = _doc(did=did, methods=[_method("#k", AUTH_KEY, did)],
+                       assertionMethod=["#k"])
+    _refused(credential, _sync(relative_id), _async(relative_id), KeyResolutionError,
+             NOT_IN_DOC)
+    relative_ref = _doc(did=did, methods=[_method(vm_id, AUTH_KEY, did)],
+                        assertionMethod=["#k"])
+    _refused(credential, _sync(relative_ref), _async(relative_ref), ProofPurposeMismatch,
+             f"{PURPOSE_DENIED} 'assertionMethod'")
+    absolute = _doc(did=did, methods=[_method(vm_id, AUTH_KEY, did)],
+                    assertionMethod=[vm_id])
+    assert verify_credential(credential, resolver=_sync(absolute), policy=POLICY).issuer == did
+    result = asyncio.run(verify_credential_async(credential, resolver=_async(absolute),
+                                                 policy=POLICY))
+    assert result.issuer == did
 
 
 def test_a_did_document_id_resolves_a_relative_reference():
@@ -494,6 +526,70 @@ def test_verify_many_async_fails_only_the_mismatched_items():
     _check_batch(asyncio.run(verify_many_async(batch, resolver=registry, policy=POLICY)))
 
 
+# a resolver may return its own document type rather than a DidDocument: only the
+# key_by_kid / key_for_purpose it is called through are known to exist, and a refusal
+# must still be a typed error, never an AttributeError that aborts a batch
+
+def _foreign_doc() -> SimpleNamespace:
+    real = parse_did_document(_doc(authentication=[AUTH], assertionMethod=[ASSERT]))
+    return SimpleNamespace(id=real.id, verification_methods=real.verification_methods,
+                           relationships=real.relationships, key_by_kid=real.key_by_kid,
+                           key_for_purpose=real.key_for_purpose)
+
+
+class _ForeignResolver:
+    def __init__(self) -> None:
+        self._doc = _foreign_doc()
+
+    def supports(self, did: str) -> bool:
+        return did == DID
+
+    def resolve(self, did: str) -> SimpleNamespace:
+        return self._doc
+
+
+class _AsyncForeignResolver:
+    def __init__(self) -> None:
+        self._doc = _foreign_doc()
+
+    def supports(self, did: str) -> bool:
+        return did == DID
+
+    async def resolve(self, did: str) -> SimpleNamespace:
+        return self._doc
+
+
+FOREIGN_REFUSALS = {
+    "not-granted": (AUTH, ProofPurposeMismatch, PURPOSE_DENIED),
+    "absent": (f"{DID}#absent", KeyResolutionError, NOT_IN_DOC),
+}
+
+
+@pytest.mark.parametrize("vm_id,cls,match", FOREIGN_REFUSALS.values(), ids=FOREIGN_REFUSALS)
+def test_a_resolvers_own_document_type_is_refused_with_a_typed_error(vm_id, cls, match):
+    _refused(_signed(AUTH_KEY, vm_id), _ForeignResolver(), _AsyncForeignResolver(), cls,
+             match)
+    good = _signed(ASSERT_KEY, ASSERT)
+    assert verify_credential(good, resolver=_ForeignResolver(), policy=POLICY).issuer == DID
+    result = asyncio.run(verify_credential_async(good, resolver=_AsyncForeignResolver(),
+                                                 policy=POLICY))
+    assert result.issuer == DID
+
+
+def _foreign_batch() -> list:
+    good = _signed(ASSERT_KEY, ASSERT)
+    return [good, _signed(AUTH_KEY, AUTH), _signed(AUTH_KEY, f"{DID}#absent"), good]
+
+
+def test_verify_many_with_a_resolvers_own_document_type_fails_only_the_bad_items():
+    _check_batch(verify_many(_foreign_batch(), resolver=_ForeignResolver(), policy=POLICY))
+
+
+def test_verify_many_async_with_a_resolvers_own_document_type_fails_only_the_bad_items():
+    _check_batch(asyncio.run(verify_many_async(
+        _foreign_batch(), resolver=_AsyncForeignResolver(), policy=POLICY)))
+
+
 # --------------------------------------------------------------------------- #
 # 6. unchanged: an undeclared relationship is lenient, and kid=None falls back to the
 #    sole method, which must then pass the exact-reference grant
@@ -562,8 +658,9 @@ def test_the_jose_lanes_keep_the_fragment_tolerant_kid(kid):
 # --------------------------------------------------------------------------- #
 # 8. the lookup is linear in the document size. The document id is as long as the DID the
 #    proof names (a did:web path has no length limit), and the number of methods and
-#    references is the host's to choose. The id is checked once per lookup and never copied
-#    per reference, so neither multiplies the other
+#    references is the host's to choose. The id is checked a fixed number of times, and
+#    only the selected method's own relative id is resolved (and prefix-compared with the
+#    id); no other method id or reference is, so neither multiplies the other
 # --------------------------------------------------------------------------- #
 
 LONG_DID = DID + ":" + "a" * 100_000
@@ -627,7 +724,7 @@ class _CountingPattern:
 
 @pytest.mark.parametrize("granted", [False, True], ids=["refused", "granted"])
 @pytest.mark.parametrize("lane", ["assertion-sync", "assertion-async", "authentication"])
-def test_the_document_id_is_checked_once_per_lookup(monkeypatch, lane, granted):
+def test_the_document_id_is_checked_a_fixed_number_of_times(monkeypatch, lane, granted):
     # the DID syntax check runs a fixed number of times, whatever the number of methods
     # and references: it used to run once per '#' method id and once per '#' reference
     real = did_base._DID_SYNTAX
@@ -640,35 +737,55 @@ def test_the_document_id_is_checked_once_per_lookup(monkeypatch, lane, granted):
     assert 1 <= calls[0] == calls[1] <= 2           # the premise: the lookup ran through it
 
 
+class _ResolvedUrl(str):
+    """A string built by appending to a :class:`_CountingId`: counts the prefix
+    comparisons made on it, each as long as the document id."""
+    counts: dict[str, int]
+
+    def startswith(self, *args: Any) -> bool:      # type: ignore[override]
+        self.counts["prefix"] += 1
+        return str.startswith(self, *args)
+
+
 class _CountingId(str):
-    """A document ``id`` that counts how often a string is built by appending to it."""
-    appended: int
+    """A document ``id`` that counts how often a string is built by appending to it, and
+    how often such a string is then prefix-compared."""
+    counts: dict[str, int]
 
     def __new__(cls, value: str) -> _CountingId:
         self = super().__new__(cls, value)
-        self.appended = 0
+        self.counts = {"appended": 0, "prefix": 0}
         return self
 
     def __add__(self, other: str) -> str:
-        self.appended += 1
-        return str.__add__(self, other)
+        self.counts["appended"] += 1
+        resolved = _ResolvedUrl(str.__add__(self, other))
+        resolved.counts = self.counts
+        return resolved
 
 
 @pytest.mark.parametrize("granted", [False, True], ids=["refused", "granted"])
 def test_no_method_or_reference_copies_the_document_id(granted):
     # resolving every '#' method id and reference against the id would build one string
-    # as long as the id per entry; each is compared with the id's spellings instead
-    raw = _long_doc(2_000, 200, granted=granted)
-    raw["id"] = doc_id = _CountingId(LONG_DID)
-    doc = parse_did_document(raw)
-    assert doc.id is doc_id                           # the premise: the parser keeps it
-    vm = doc.key_for_purpose(LONG_VM, "assertionMethod")
-    if granted:
-        assert vm is not None and vm.public_key_jwk == AUTH_KEY.public_jwk()
-    else:
-        assert vm is None
-    appended = doc_id.appended
-    assert appended <= 1                              # the selected method's own id, once
+    # as long as the id per entry; each is compared with the spellings of the selected
+    # method's id instead. Those are computed once: recomputing them per reference
+    # prefix-compares the whole id once per reference, which is as quadratic as a copy
+    # (and too fast per call for the wall-clock row to see)
+    counts = []
+    for references, decoys in ((1, 0), (2_000, 200)):
+        raw = _long_doc(references, decoys, granted=granted)
+        raw["id"] = doc_id = _CountingId(LONG_DID)
+        doc = parse_did_document(raw)
+        assert doc.id is doc_id                       # the premise: the parser keeps it
+        vm = doc.key_for_purpose(LONG_VM, "assertionMethod")
+        if granted:
+            assert vm is not None and vm.public_key_jwk == AUTH_KEY.public_jwk()
+        else:
+            assert vm is None
+        counts.append(dict(doc_id.counts))
+    assert counts[0] == counts[1]                     # independent of the entry count
+    assert counts[1]["appended"] == 1                 # the selected method's own id, once
+    assert counts[1]["prefix"] >= 1                   # the premise: its spellings are seen
 
 
 @pytest.mark.parametrize("granted", [False, True], ids=["refused", "granted"])

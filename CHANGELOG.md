@@ -39,10 +39,14 @@ All notable changes to **openvc** are documented here. The format follows
   `KeyResolutionError` (`resolve_verification_key` now decides that with the same
   strict lookup, never the fragment-tolerant `key_by_kid`). A declared relationship
   grants it only through a reference that resolves to the same `id`, compared as a
-  plain case-sensitive string, else `ProofPurposeMismatch`. The lookup checks the
-  document `id` once and resolves no entry: each method id and reference is compared
+  plain case-sensitive string, else `ProofPurposeMismatch`. In the lookup the
+  document `id` is checked a fixed number of times, and only the selected method's
+  own relative `id` is resolved; no other method id or reference is: each is compared
   with the spellings of the one absolute `id` it must name, so the cost stays linear
-  in the document size, however long the DID and however many entries it lists.
+  in the document size, however long the DID and however many entries it lists. A
+  resolver that returns its own document type instead of a `DidDocument` keeps the
+  previous classification of a refusal (by its `key_by_kid`), so it still gets a typed
+  error rather than an `AttributeError` that would abort `verify_many`.
   Unchanged: an undeclared relationship stays lenient, a declared but empty one grants
   nothing, and a `kid` of `None` still falls back to the document's sole method (which
   must then pass the exact-reference grant). The JOSE lanes keep `key_by_kid`, which
@@ -71,6 +75,12 @@ All notable changes to **openvc** are documented here. The format follows
   - `DidDocument.key_for_purpose` called directly with a bare or `#`-relative `kid`
     returns `None`; it takes the absolute DID URL a proof carries. `key_by_kid` is
     unchanged.
+  - A `#fragment` resolves only against a document `id` that is a DID by DID Core 1.0
+    §3.1 syntax. `did:web` fetches some DIDs that are not: a path segment with `~`,
+    `+`, `!`, `@` or an invalid `%`-escape (`did:web:example.com:~alice`). Their
+    documents must use absolute method ids and references
+    (`did:web:example.com:~alice#key-1`); a `#key-1` in them selects and grants
+    nothing (`KeyResolutionError`, or `ProofPurposeMismatch` for a reference).
 
 ### Tests
 
@@ -84,17 +94,23 @@ All notable changes to **openvc** are documented here. The format follows
   that must not be selected; a same-fragment method listed first that must not
   shadow the exact one; duplicate absolute ids; the `kid`-less fallback; a
   `[good, bad, bad, good]` batch on `verify_many` and `verify_many_async`; the
-  JOSE lanes' unchanged `kid` tolerance; and a linear-cost pin. For a 100 000-character
-  `did:web` with up to 200 extra methods and 10 000 references, the DID syntax check
-  runs a fixed number of times (both lanes, the `assertionMethod` one sync and async),
-  no entry copies the document `id`, and `verify_credential` stays under a loose
-  wall-clock bound. The adversarial review of
+  JOSE lanes' unchanged `kid` tolerance; a resolver that returns its own document
+  type, refused with a typed error on `verify_credential`, `verify_credential_async`,
+  `verify_many` and `verify_many_async` beside good neighbours; `did:web` documents
+  whose `id` fails the §3.1 syntax, where only absolute ids verify; and a linear-cost
+  pin. For a 100 000-character `did:web` with 200 extra methods and 2 000 references,
+  against one method and one reference, the DID syntax check runs the same fixed
+  number of times (both lanes, the `assertionMethod` one sync and async), no entry
+  copies the document `id`, and the selected method's resolved `id` is prefix-compared
+  with the document `id` the same fixed number of times; with 10 000 references,
+  `verify_credential` stays under a loose wall-clock bound. The adversarial review of
   this fix found its first version re-checking the `id` once per reference: about 30 s
   for that document, and minutes near the 1 MiB fetch cap. Each hostile row uses a
   resolvable issuer (an injected `did:web` fetch, or a stub resolver where the point is
   a document `id` `did:web` would refuse) and asserts the exact class. Run against the
-  previous code: 83 fail, and the 41 that pass are the grants, the controls and the four
-  linear-cost rows that need no new attribute (the previous lookup was linear).
+  previous code: 100 fail, and the 43 that pass are the grants, the controls, the four
+  rows with a resolver's own document type (the previous code refused those with a
+  typed error too) and the two wall-clock rows (the previous lookup was linear).
 
 ## [1.32.3] — 2026-10-14
 
