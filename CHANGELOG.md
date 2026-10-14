@@ -100,7 +100,7 @@ All notable changes to **openvc** are documented here. The format follows
   `DID NOT RAISE`, and the controls pass; a check that skips an empty `id`, and one
   that ignores case or surrounding space, each fail their own rows.
 
-## [1.32.3] — unreleased
+## [1.32.3] — 2026-10-14
 
 ### Security
 
@@ -186,6 +186,98 @@ All notable changes to **openvc** are documented here. The format follows
   The match against the verified `vct` is unchanged. One reader (`_dcql_meta`) now serves
   `vct_values`, `doctype_value` and `type_values`, so the three formats cannot drift
   apart again. The Presentations wiki page states the rule.
+
+### Changed
+
+- **The status-list builders and codec refuse inputs outside their documented
+  types** ([#230](https://github.com/luisgf/openvc/issues/230)). Each of these calls
+  used to succeed and now raises `StatusListError`, with what to pass instead.
+
+  Inputs that built an artefact openvc's verifier refuses, or read the wrong bit:
+  - an `index` that is a `bool`, a `float` or `NaN`, or past 2^27, on the builders (pass
+    an `int` below 2^27); a `bool` `index` on the codec, which read the bit of index 0
+    or 1 (pass the `int`);
+  - a `bits` that is a `bool` or a `float` on `build_status_list_token` (pass the
+    `int`: 1, 2, 4 or 8);
+  - a list longer than 16 MiB (split the statuses across lists);
+  - a non-string or empty `statusListCredential` or `status_purpose` on
+    `build_status_list_entry`, a truthy non-string `status_purpose` (`5`) on
+    `build_status_list_credential` (the verifier compares it with the entry's and
+    refuses the list: `status-list purpose 5 != entry purpose 'revocation'`), and a
+    non-string or empty `uri` on `build_token_status_reference` (pass the string); the
+    check side refuses an empty or non-string one, and an empty `status_purpose` never
+    matches a normal list's.
+
+  Inputs that built a working artefact but fall outside the documented types:
+  - anything `bytes()` accepted that is not a buffer, as the list on
+    `build_status_list_credential` or `build_status_list_token`: a `list`, `tuple`,
+    `range`, generator, `dict` (its keys) or an object with `__bytes__`. Pass
+    `bytes(values)`;
+  - an integral `Decimal` or `Fraction` (a database `NUMERIC` column, say) as the
+    `index` of `build_status_list_entry`: pass `int(index)`. On
+    `build_token_status_reference` it put an object into the claim that `json.dumps`
+    cannot serialise;
+  - a `bool` `bits` on `get_status`, `set_status` and `new_status_list`, and a `bool`
+    `size` on `new_bitstring` and `new_status_list` (each read as 1): pass `1`. A
+    `Fraction` `size` on those two, and `Fraction(1)` as `bits` on `new_status_list`,
+    worked by comparing equal to the number: pass the `int`. A `size` past the 16 MiB
+    cap allocated a list the verifier cannot read back;
+  - a falsy `status_purpose` (`""`, `None`, `0`) on `build_status_list_credential`: the
+    verifier skips the purpose match against a falsy list purpose, so entries still
+    revoked off it, and an entry with an empty purpose too could never revoke. Pass the
+    purpose (`"revocation"` is the default);
+  - an `int` as the list, a zeroed list of that many bytes (pass `bytes(n)` if that is
+    what you meant), and an empty or non-string list credential `id` (pass the URL
+    string);
+  - a non-string or empty `uri` on `build_status_list_token`: the token verifies, but
+    no reference can name it, because the check side refuses an empty or non-string
+    `uri`. Pass the URL string.
+
+  A `str`, `None` or a bad `size` / `bits` type used to be a bare `TypeError` or
+  `ValueError` and is now the typed error. Well-formed calls are unchanged, and the
+  codec keeps its messages, in the order it reported them (`set_status`: `bits`, a bad
+  or negative `index`, the `value`, an `index` past the data). The builders'
+  negative-index message now names the field (`statusListIndex must be non-negative`,
+  `status_list idx must be non-negative`), where it said `status index must be
+  non-negative`.
+
+### Fixed
+
+- **The status-list builders no longer mint what openvc's own verifier refuses**
+  ([#230](https://github.com/luisgf/openvc/issues/230)). Found by the adversarial
+  review of #215, which gave the verifier one rule for a status index
+  (`status_index`: an `int`, never a `bool` or `float`, below 2^27) but left the
+  issuer side alone. `build_status_list_entry` and `build_token_status_reference`
+  emitted `True`, `3.7`, `NaN` and `2**27` as an index, and a string index raised a bare
+  `TypeError`; an issuer found out only when every credential pointing at it failed
+  verification. Now:
+  - both builders check `index` with the verifier's own `status_index` and raise
+    `StatusListError` at build time. The W3C entry still emits the base-10 string, the
+    IETF `idx` stays an integer. `status_index` reads the integer through
+    `int.__index__` before it compares anything and returns that plain `int`, so an
+    `int` subclass that overrides `__int__`, `__str__`, `__repr__`, `__format__` or a
+    comparison (an `IntEnum` on Python 3.10 prints `'E.FIVE'`) cannot pass the checks as
+    5 and be written, compared or addressed as something else. `size`, `bits` and the
+    `value` of `set_status` get the same treatment;
+  - `status_list_credential`, `status_purpose` (also on `build_status_list_credential`),
+    the IETF `uri` and the list credential `id` must be non-empty strings;
+  - `build_status_list_credential` and `build_status_list_token` take a `bytes`,
+    `bytearray`, `memoryview` or `array.array` (the annotations say exactly these; wrap
+    any other buffer in `memoryview()`) and refuse anything else (an `int`, a `str`,
+    `None`, a `list`; `bytes(1024)` used to be a silent zeroed list) and a list longer
+    than the 16 MiB the verifier inflates. A non-contiguous `memoryview` (`view[::2]`)
+    is the bytes it exposes (`view.tobytes()`), not the memory behind it, and a buffer
+    whose export raises is a `StatusListError`, not the caller's exception;
+  - `new_bitstring(size)` and `new_status_list(size, bits=...)` refuse a `size` that is
+    not an `int` (a `bool` or `float` too) or whose packed list would exceed those
+    16 MiB: 2^27 one-bit statuses, 2^24 at 8 bits;
+  - `get_status_bit`, `set_status_bit`, `get_status` and `set_status` refuse a `bool`
+    or non-`int` `index` (`get_status_bit(b"\x40", True)` returned bit 1; a `float` was
+    a bare `TypeError`). `get_status`, `set_status`, `new_status_list` and
+    `build_status_list_token` also refuse a `bits` that is a `bool`, a `float` or
+    unhashable, and `set_status` a `value` that is not an `int` (a `bool` still counts
+    as 0 or 1). `set_status_bit` keeps reading its `value` for truthiness. A huge index
+    no longer escapes as a bare `ValueError`: the error text does not render it.
 
 ### Tests
 
@@ -3527,6 +3619,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.32.3]: https://github.com/luisgf/openvc/releases/tag/v1.32.3
 [1.32.2]: https://github.com/luisgf/openvc/releases/tag/v1.32.2
 [1.32.1]: https://github.com/luisgf/openvc/releases/tag/v1.32.1
 [1.32.0]: https://github.com/luisgf/openvc/releases/tag/v1.32.0

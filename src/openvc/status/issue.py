@@ -22,11 +22,21 @@ or :func:`~openvc.status.token_status_list.new_status_list`), set the revoked
 indices (``set_status_bit`` / ``set_status``), build + sign the artifact, serve it
 at the URL the credentials point at, and re-issue it when a revocation changes.
 
+The builders hold the pointer and the list to the rules the verifier applies, so openvc
+never mints one that its own check side then refuses: an index follows
+:func:`~openvc.status._index.status_index` (an ``int``, never a ``bool`` or ``float``,
+below ``MAX_STATUS_INDEX``), the pointer strings are non-empty strings, and a list is
+a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap any other buffer in
+``memoryview()``) of at most the 16 MiB the verifier inflates. Anything else is a
+:class:`~openvc.status.bitstring.StatusListError`, raised at build time. The time inputs
+(*issued_at*, *expires*, *valid_from*) and *ttl* are not covered by this.
+
 This is the only :mod:`openvc.status` module that touches :mod:`openvc.proof` (to
 sign/verify the token); the codecs and the check side stay pure stdlib.
 """
 from __future__ import annotations
 
+import array
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -35,7 +45,8 @@ from ..proof._jws import sign_compact, verify_compact
 from ..proof._verify_common import check_jwt_temporal, is_numeric_date, utc_epoch
 from ..proof.errors import ClaimsInvalid
 from ..proof.vc_jwt import SigningKey
-from ._index import brief
+from ._decompress import MAX_DECOMPRESSED_BYTES
+from ._index import brief, status_index
 from .bitstring import StatusListError, encode_bitstring
 from .token_status_list import _check_bits, encode_status_list
 
@@ -48,6 +59,39 @@ STATUS_LIST_JWT_TYP = "statuslist+jwt"
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _text(value: Any, *, field: str) -> str:
+    """*value* if it is a non-empty ``str``, else a typed error: the verifier reads these
+    fields as strings, and an empty one names nothing."""
+    if not isinstance(value, str) or not value:
+        raise StatusListError(f"{field} must be a non-empty string, got {brief(value)}")
+    return value
+
+
+def _packed(value: Any, *, field: str) -> bytes:
+    """The list bytes of *value*, refused when it is not a buffer or longer than the
+    verifier inflates (``MAX_DECOMPRESSED_BYTES``) — checked before compressing it, so a
+    list that cannot be decoded is never even built.
+
+    Any object with a buffer is read through ``memoryview`` and contributes exactly the
+    bytes ``view.tobytes()`` returns: its elements in C order, so a non-contiguous
+    ``memoryview`` (``view[::2]``) gives the bytes it shows, not the memory behind it."""
+    try:
+        # memoryview refuses an int, a str, None and a list; ``bytes(int)`` would be a
+        # silent zeroed list. It counts bytes, where ``len()`` of an array counts items.
+        view = memoryview(value)
+    except (TypeError, ValueError):                  # ValueError: a released memoryview
+        raise StatusListError(f"{field} must be bytes-like, got {brief(value)}") from None
+    except Exception as exc:                         # a ``__buffer__`` (3.12+) that raises
+        raise StatusListError(
+            f"{field} could not be read as bytes: exporting its buffer raised "
+            f"{type(exc).__name__}") from None
+    if view.nbytes > MAX_DECOMPRESSED_BYTES:
+        raise StatusListError(
+            f"{field} is {view.nbytes} bytes, past the {MAX_DECOMPRESSED_BYTES} the "
+            f"verifier decodes: openvc would refuse to read the list back")
+    return view.tobytes()
 
 
 def _epoch(value: datetime | int) -> int:
@@ -65,7 +109,7 @@ def build_status_list_credential(
     *,
     id: str,
     issuer: str | dict[str, Any],
-    bitstring: bytes | bytearray,
+    bitstring: bytes | bytearray | memoryview | array.array,
     status_purpose: str = "revocation",
     valid_from: datetime | None = None,
     valid_until: datetime | None = None,
@@ -80,12 +124,22 @@ def build_status_list_credential(
     ``set_status_bit``). *status_purpose* must match the entries that reference this
     list. The result is a plain VC — **sign it** with any suite before publishing.
     The inputs are not mutated.
+
+    *bitstring* is a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap
+    any other buffer in ``memoryview()``); it contributes the bytes it exposes
+    (``view.tobytes()``), so a non-contiguous ``memoryview`` is read as it shows.
+    Raises :class:`~openvc.status.bitstring.StatusListError` for an *id* or
+    *status_purpose* that is not a non-empty string, and for a *bitstring* that is not
+    a buffer or is longer than the 16 MiB the verifier inflates.
     """
+    _text(id, field="status list credential id")
+    _text(status_purpose, field="statusPurpose")
+    raw_bits = _packed(bitstring, field="bitstring")
     subject: dict[str, Any] = {
         "id": subject_id or f"{id}#list",
         "type": BITSTRING_SUBJECT_TYPE,
         "statusPurpose": status_purpose,
-        "encodedList": encode_bitstring(bytes(bitstring)),
+        "encodedList": encode_bitstring(raw_bits),
     }
     if ttl is not None:
         subject["ttl"] = ttl
@@ -114,9 +168,17 @@ def build_status_list_entry(
 
     Add the return value to each credential you issue; toggling the same *index* in
     the published list (:func:`build_status_list_credential`) then flips that
-    credential's status. *status_purpose* must match the list's."""
-    if index < 0:
-        raise StatusListError(f"status index must be non-negative, got {index}")
+    credential's status. *status_purpose* must match the list's.
+
+    *index* is an ``int`` below :data:`~openvc.status._index.MAX_STATUS_INDEX` — the
+    verifier's own rule, so it reads back exactly what you wrote; the entry carries it
+    as the base-10 string the spec asks for. A ``bool``, a ``float`` (``NaN``
+    included), a string, a negative or an oversized index, or a *status_list_credential*
+    / *status_purpose* that is not a non-empty string, raises
+    :class:`~openvc.status.bitstring.StatusListError`."""
+    index = status_index(index, field="statusListIndex", allow_string=False)
+    _text(status_list_credential, field="statusListCredential")
+    _text(status_purpose, field="statusPurpose")
     entry: dict[str, Any] = {
         "type": BITSTRING_ENTRY_TYPE,
         "statusPurpose": status_purpose,
@@ -136,7 +198,7 @@ def build_status_list_token(
     *,
     signing_key: SigningKey,
     uri: str,
-    status_list: bytes | bytearray,
+    status_list: bytes | bytearray | memoryview | array.array,
     bits: int = 1,
     issued_at: datetime | int | None = None,
     expires: datetime | int | None = None,
@@ -149,12 +211,21 @@ def build_status_list_token(
     ``status.status_list.uri`` points at; *status_list* is the packed multi-bit
     list (from :func:`~openvc.status.token_status_list.new_status_list` +
     ``set_status``). Signed via the allow-listed ``{ES256, ES384, EdDSA, Ed25519}`` path, so an
-    HSM/Vault key works. *issued_at* / *expires* accept a datetime or epoch int."""
-    _check_bits(bits)
+    HSM/Vault key works. *issued_at* / *expires* accept a datetime or epoch int.
+
+    *status_list* is a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap
+    any other buffer in ``memoryview()``), read as in
+    :func:`build_status_list_credential`. Raises
+    :class:`~openvc.status.bitstring.StatusListError` for a *uri* that is not a
+    non-empty string, a bad *bits*, and a *status_list* that is not a buffer or is
+    longer than the 16 MiB the verifier inflates."""
+    _text(uri, field="status list token uri")
+    bits = _check_bits(bits)
+    packed = _packed(status_list, field="status_list")
     payload: dict[str, Any] = {
         "sub": uri,
         "iat": _epoch(issued_at) if issued_at is not None else int(time.time()),
-        "status_list": {"bits": bits, "lst": encode_status_list(bytes(status_list))},
+        "status_list": {"bits": bits, "lst": encode_status_list(packed)},
     }
     if issuer is not None:
         payload["iss"] = issuer
@@ -217,10 +288,14 @@ def verify_status_list_token(
 
 def build_token_status_reference(*, uri: str, index: int) -> dict[str, Any]:
     """Build the ``status`` claim a referenced token carries to point at an IETF
-    status-list token — merge it into the token's claims when you issue it."""
-    if index < 0:
-        raise StatusListError(f"status index must be non-negative, got {index}")
-    return {"status": {"status_list": {"idx": index, "uri": uri}}}
+    status-list token — merge it into the token's claims when you issue it.
+
+    *index* follows the same rule as :func:`build_status_list_entry`, and the IETF
+    draft makes it a JSON integer, so a string is refused too; *uri* must be a non-empty
+    string. :class:`~openvc.status.bitstring.StatusListError` otherwise."""
+    idx = status_index(index, field="status_list idx", allow_string=False)
+    _text(uri, field="status_list uri")
+    return {"status": {"status_list": {"idx": idx, "uri": uri}}}
 
 
 __all__ = [
