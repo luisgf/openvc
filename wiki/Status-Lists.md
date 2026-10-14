@@ -65,22 +65,34 @@ fails at build time with a `StatusListError` instead of in the field:
   W3C entry still *emits* it as the base-10 string the spec asks for, and the IETF
   `idx` stays a JSON integer.
 - `status_list_credential`, `status_purpose` and the IETF `uri` are non-empty strings.
-- A list is bytes-like (`bytes`, `bytearray`, `memoryview`, `array.array("B")`; an
-  `int` is refused, where it used to become a zeroed list) and may not exceed the
-  16 MiB the verifier decompresses. `build_status_list_credential` and
-  `build_status_list_token` refuse a longer one, and `new_bitstring(size)` /
-  `new_status_list(size, bits=...)` refuse a `size` that would need it: 2^27 one-bit
-  statuses, but only 2^24 at 8 bits.
+- A list is a `bytes`, `bytearray`, `memoryview` or `array.array` (wrap any other
+  buffer in `memoryview()`; an `int` is refused, where it used to become a zeroed
+  list, and so is a `list` or `tuple` of ints: pass `bytes(values)`). A non-contiguous
+  `memoryview` counts as the bytes it shows. It may not exceed the 16 MiB the
+  verifier decompresses: `build_status_list_credential` and `build_status_list_token`
+  refuse a longer one, and `new_bitstring(size)` / `new_status_list(size, bits=...)`
+  refuse a `size` that would need it: 2^27 one-bit statuses, but only 2^24 at 8 bits.
 - The time inputs (`issued_at`, `expires`, `valid_from`) and `ttl` are not checked
   by this; a bad value there still fails with the plain Python error.
 
 `get_status_bit`, `set_status_bit`, `get_status` and `set_status` hold their `index` to
 the same type rule (the list's own length bounds it): a `bool` is no longer read as
-index 1, and a `float` is a `StatusListError`, not a `TypeError`.
+index 1, and a `float` is a `StatusListError`, not a `TypeError`. `set_status` also
+wants an `int` `value`, while `set_status_bit` still reads its `value` for truthiness.
 
-This is a behaviour change from 1.32.2. Before 1.32.2, the builders accepted those
-values: they minted an entry or a list that the verifier then refused in the field, or
-raised a bare `TypeError`.
+This is a behaviour change in 1.32.3: some inputs that used to build something are
+now refused. Most minted an entry or a list that the verifier then refused in the
+field, or raised a bare `TypeError` (a `bool`, `float` or oversized index, a list past
+16 MiB, a `bits` of `True`). Some built an artefact that worked and are refused only
+because they were never the documented types. Pass these instead:
+
+- a `list` or `tuple` of ints as the list: `bytes(values)`;
+- an integral `Decimal` or `Fraction` as the index: `int(index)`;
+- a `bool` `bits` or `size`: the `int` (`1`);
+- an empty `status_purpose`: the purpose (`"revocation"` is the default).
+
+The [CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for
+1.32.3 lists every case.
 
 ## Fail-closed by default in the pipeline
 
