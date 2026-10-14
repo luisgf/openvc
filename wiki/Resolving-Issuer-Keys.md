@@ -53,9 +53,15 @@ the one before it, so resolving means **verifying history** — openvc replays t
 fail-closed: the **SCID** (the identifier is the hash of the genesis entry), the
 **entryHash chain** (an inserted / reordered / tampered entry breaks it), each entry's
 **`eddsa-jcs-2022` proof** by an authorized `updateKey`, and **key pre-rotation** (a
-rotated-in key must have been pre-committed). A deactivated log fails closed. It is
-registered in the default resolver, so no code change is needed to verify a credential
-from a `did:webvh` issuer — or resolve one directly:
+rotated-in key must have been pre-committed). A deactivated log fails closed. The resolved
+document is the final log state itself: its `id` must equal the requested DID, and a
+`didDocument` member in it is refused with `DidWebvhError` rather than unwrapped (the spec
+defines no such member, and unwrapping would return a document other than the one whose
+`id` was checked); on a deactivated log whose last state is wrapped, the error names the
+wrapper. A `did:web` document or an EBSI registry response may still carry the
+`didDocument` envelope. The `did:webvh` resolver is registered in the default resolver, so
+no code change is needed to verify a credential from a `did:webvh` issuer — or resolve one
+directly:
 
 <!-- docs: no-run -->
 ```python

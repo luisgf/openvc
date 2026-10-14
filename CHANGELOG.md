@@ -44,6 +44,41 @@ All notable changes to **openvc** are documented here. The format follows
   for, so it is now refused. No impersonation was possible before: B's key still had to
   verify the token. Validating the DID before it is put in a URL is a separate gap and
   is not changed here.
+- **`did:webvh` refuses a log state that carries a `didDocument` member**
+  ([#256](https://github.com/luisgf/openvc/issues/256), severity low). Found by the
+  adversarial review of [#251](https://github.com/luisgf/openvc/pull/251); the gap
+  predates it. The resolver compared `state["id"]` with the requested DID on the raw
+  log state, then returned `parse_did_document(state)`, and that parser unwraps a
+  `didDocument` member when there is one. The `id` that was checked was not the `id` of
+  the document that came back. The controller signs the whole state, wrapper included,
+  so such a log passes the SCID, entryHash, proof and pre-rotation checks. A state
+  `{"id": DID, "didDocument": {"id": "did:web:other.example", …}}` resolved to a
+  document whose `id`, `raw["id"]` and method ids were `did:web:other.example`, and a
+  state with its own `verificationMethod` beside a same-`id` `didDocument` resolved to
+  the inner methods only. `did:web` was not affected, since it compares the `id` after
+  parsing.
+
+  The wrapper does not cross the controller boundary: every key it yields is one the log
+  controller published, and no verification lane reads `doc.id`, `doc.raw` or a method's
+  `controller`. Each lane binds to the DID string it asked the resolver for. What it
+  broke is the resolver's own contract, for code that calls `DidWebvhResolver.resolve`
+  and trusts `doc.id`, and agreement with other did:webvh resolvers, for which the log
+  state *is* the DID document (did:webvh v1.0, "The DID Log File"). The spec defines no
+  `didDocument` member in it, so there is nothing to unwrap.
+
+  `_WebvhReplay._replay`, shared by `DidWebvhResolver` and `AsyncDidWebvhResolver`, now
+  raises `DidWebvhError` when the returned state carries a `didDocument` member, whatever
+  its value (a `null` counts), before the parser runs; the message names the member. It
+  also checks the parsed `doc.id` against the requested DID, as `did:web` does, as
+  defence in depth. Only the returned (last) state is looked at, because earlier states
+  are never parsed. A credential whose issuer is such a DID fails with
+  `KeyResolutionFailed` on the JOSE lanes and on the async API, and with
+  `KeyResolutionError` on the synchronous Data Integrity lane, the cause being the
+  `DidWebvhError`; a good neighbour in a `verify_many` / `verify_many_async` batch still
+  verifies. A state with no wrapper resolves exactly as before, and every
+  `tests/fixtures/didwebvh` golden log resolves unchanged. `did:web` and the EBSI DID
+  Registry keep tolerating the `didDocument` envelope, which is what the shared parser's
+  unwrapping is for.
 
 ### Changed
 
@@ -110,6 +145,15 @@ All notable changes to **openvc** are documented here. The format follows
   and the wiki ("Type constraints in the query") state the rule.
   `verify_encrypted_vp_response` delegates to `verify_vp_token`, so it follows. The
   `multiple` flag is still read by truthiness, which is a separate gap.
+- **A `did:webvh` log whose last state has a `didDocument` member no longer resolves**
+  (#256). It used to resolve, to the inner document. No golden log and no known
+  implementation produces one. A wrapper that was not an object (`null`, a list, a
+  string, a number) was already a plain `DidResolutionError` from the parser; it is now
+  a `DidWebvhError`, which is a `DidResolutionError`, so code that catches the parent is
+  unaffected. The wrapper is refused where the state's `id` is checked, before the
+  `deactivated` flag: a deactivated log whose last state is wrapped now fails with the
+  wrapper message, not "is deactivated". Both are a `DidWebvhError`, and a deactivated log
+  with a bare last state still reports the deactivation.
 
 ### Fixed
 
@@ -166,6 +210,19 @@ All notable changes to **openvc** are documented here. The format follows
   against `origin/main` at 886774f: 95 negatives fail and the 44 controls pass;
   removing the new call fails the same 95; putting the `pyld` check back in the
   shape parser fails the two `pyld` controls.
+- **`test_did_webvh_state_envelope.py`** (#256). Ten wrapped states (a foreign `id`, a
+  same-`id` wrapper that replaces the state's own methods, one beside the same methods,
+  one alone, and a `null`, empty, list, string, number and `false` member) are refused
+  by the sync and async resolvers with the exact class. Each is also run through
+  `verify_credential`, `verify_credential_async`, `verify_many` and
+  `verify_many_async` with a VC-JWT and an `eddsa-jcs-2022` credential signed by the
+  log controller's own key, so before the fix the four rows whose wrapper holds a
+  document verified. A good neighbour in each batch still verifies, and the same
+  credentials verify against a log without the wrapper. The earlier states of a log are
+  not looked at and the last one is, and the `did:web` and EBSI envelope tolerance is
+  pinned as a control. A deactivated log with a wrapped last state reports the wrapper,
+  and one with a bare last state still reports the deactivation. Mutation-checked
+  against `origin/main`: 61 cases fail there, the 24 controls pass.
 
 ## [1.32.3] — 2026-10-14
 
