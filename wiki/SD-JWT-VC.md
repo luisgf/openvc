@@ -249,7 +249,7 @@ matched exactly, and a token with no `typ` at all:
 | `dc+sd-jwt` | an IETF SD-JWT VC, which needs a `vct` (below) |
 | `vc+sd-jwt` | a payload with a VCDM base `@context`, and nothing else (VC-JOSE-COSE §6.1.3) |
 | `vc+ld+json+sd-jwt` | the same: the draft-era name of that media type |
-| none (no `typ` member) | the same, and the token must not carry a `vc` or `vp` claim |
+| none (no `typ` member) | the same, and the token must not carry a `vc` or `vp` claim, and its `type` must include `VerifiableCredential` and not `VerifiablePresentation` |
 
 The last two rows exist because the W3C Recommendation (13 October 2026) makes the
 SD-JWT `typ` a SHOULD (§3.2.1), and its verification algorithm (§5.2) takes the media
@@ -279,8 +279,8 @@ outside the table, or another spelling of one in it (a different case, surroundi
 whitespace, an `application/` prefix). Only a missing member counts as "no `typ`"; an
 explicit `null` does not.
 
-A token with no `typ` must also not carry a `vc` or `vp` claim, a disclosed one
-included (`SdJwtError`). VC-JOSE-COSE §3.1.3 forbids both names in a JWT Claims Set, and
+A token with no `typ` must also not carry a `vc` or `vp` claim, a presented disclosure
+of one included (`SdJwtError`). VC-JOSE-COSE §3.1.3 forbids both names in a JWT Claims Set, and
 for `vc` there is a second reason. The VC-JWT lane refuses any JWS typed `*+sd-jwt`
 (#189), so it never takes a typed SD-JWT issuer JWT for a VC-JWT, but it has nothing to
 refuse in a token with no `typ`: one whose payload held a `vc` object would also verify
@@ -292,14 +292,27 @@ by it, and the VC-JWT lane is unchanged. The ban cannot help a token this lane n
 an issuer JWT with no `typ` and a `vc` object already verifies as a VC-JWT with its tail
 dropped, on `main` too (#291).
 
+A token with no `typ` must also say it is a **credential**: its processed `type` (a string
+or an array) has to include `VerifiableCredential` and not `VerifiablePresentation`
+(VCDM 2.0 §4.5 and §4.13), or `verify()` raises `SdJwtError` (``issuer JWT without a typ
+needs a `type` that includes VerifiableCredential …``). The `typ` is what tells a credential
+from a presentation, and a VCDM 2.0 presentation secured with SD-JWT has the same
+`@context` as a credential and no `vp` claim to ban, so without this check a holder-signed
+presentation with no `typ` would be read as a credential issued by the holder (#293). The
+check is positive: a `type`, or its `VerifiableCredential` entry, that is missing or
+withheld is refused, and so is one that spells the term as a full IRI or a prefixed name
+(only the compact `VerifiableCredential` counts). It applies to a missing `typ` only;
+`vc+sd-jwt` and `vc+ld+json+sd-jwt` already name a credential.
+
 **What this gives up.** A token with no `typ` has no explicit-typing guard (RFC 9901
 §9.11): for a VCDM payload the header no longer says the JWT is an SD-JWT. What stands in
 for it is the VCDM `@context` the issuer signed (a disclosed one is refused, and a
-withheld one leaves the payload not VCDM, so the token is refused), the `vc` / `vp` ban,
-`require_key_binding=True` still needing a KB-JWT, and the unchanged VC-JWT lane. An
+withheld one leaves the payload not VCDM, so the token is refused), the `type` check, the
+`vc` / `vp` ban, `require_key_binding=True` still needing a KB-JWT, and the unchanged VC-JWT lane. An
 IETF SD-JWT VC is unaffected: it is recognised by `dc+sd-jwt` alone, and a token with no
 `typ` is never read as one. If your issuers always set a `typ` and you want to insist on
-it, reject a result whose `result.raw.typ` is `None`.
+it, reject an `sd-jwt-vc` result whose `result.raw.typ` is `None` (`result.raw` is a
+`VerifiedSdJwt` only for that format).
 
 A `dc+sd-jwt` always needs a non-empty string `vct` (`ClaimsInvalid` otherwise),
 **even when its payload carries a VCDM `@context`**. draft-ietf-oauth-sd-jwt-vc-19

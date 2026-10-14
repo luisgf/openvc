@@ -5,7 +5,9 @@ when its issuer JWT has no ``typ`` member, or carries the draft-era ``vc+ld+json
 ``vc+sd-jwt`` need a VCDM base ``@context``, and #272 made ``dc+sd-jwt`` always need a
 ``vct`` and the only typ the OpenID4VP ``dc+sd-jwt`` format answers. Those rules have their
 own files (test_sd_jwt_vc_typ_vcdm_only.py, test_sd_jwt_vc_dc_typ_ietf_only.py); this one
-pins what #288 and #289 let through, and what they must keep out.
+pins what #288 and #289 let through, and what they must keep out. A VCDM presentation
+secured with SD-JWT is the first of those: it has the ``@context`` of a credential and no
+``vp`` claim, so with no ``typ`` nothing else tells it from a credential (#293).
 
 W3C VC-JOSE-COSE (Recommendation of 13 October 2026, https://www.w3.org/TR/vc-jose-cose/)
 makes the SD-JWT ``typ`` a SHOULD (§3.2.1), and its verification algorithm (§5.2) takes the
@@ -19,11 +21,17 @@ lane needs to select the key, so they still do not verify end to end (#290). RFC
 ``SdJwtVcProofSuite.verify`` does now:
 
 * **No ``typ`` member.** Accepted only if the processed payload declares a W3C VCDM base
-  ``@context`` (VCDM 2.0 or 1.1, as a string or anywhere in an array) and carries no ``vc``
-  or ``vp`` claim (§3.1.3). It then gets the VCDM validity window and the issuer / id /
-  subject reconciliation, exactly like ``vc+sd-jwt``, and reports ``typ is None``. Without
-  a VCDM ``@context`` it is ``SdJwtError``, a ``vct``-bearing IETF payload included: an
-  IETF SD-JWT VC is typed ``dc+sd-jwt``. With a ``vc`` or ``vp`` claim it is ``SdJwtError``.
+  ``@context`` (VCDM 2.0 or 1.1, as a string or anywhere in an array), carries no ``vc``
+  or ``vp`` claim (§3.1.3), and says it is a credential: its ``type`` (a string or an
+  array) includes ``VerifiableCredential`` and not ``VerifiablePresentation`` (VCDM 2.0
+  §4.5, §4.13). It then gets the VCDM validity window and the issuer / id / subject
+  reconciliation, exactly like ``vc+sd-jwt``, and reports ``typ is None``. Without a VCDM
+  ``@context`` it is ``SdJwtError``, a ``vct``-bearing IETF payload included: an IETF
+  SD-JWT VC is typed ``dc+sd-jwt``. With a ``vc`` or ``vp`` claim it is ``SdJwtError``, and
+  so it is without that ``type`` (#293). The test is positive: a ``type`` that is absent,
+  malformed or withheld (Example 4 of the Recommendation makes it selectively disclosable)
+  is refused, like one that says "presentation" or names both. Only an absent ``typ`` is
+  held to it: ``vc+sd-jwt`` and ``vc+ld+json+sd-jwt`` name a credential themselves.
 * **``vc+ld+json+sd-jwt``, exactly.** Treated like ``vc+sd-jwt``: it needs a VCDM
   ``@context``, or it is ``SdJwtError``.
 * **A ``typ`` that is present and anything else** is ``SdJwtError`` ("unexpected issuer JWT
@@ -31,15 +39,24 @@ lane needs to select the key, so they still do not verify end to end (#290). RFC
   whitespace variant, an ``application/`` prefix. A ``"typ": null`` member is present, not
   absent. Matching is exact.
 * **``dc+sd-jwt`` is unchanged**: a non-empty string ``vct``, whatever the ``@context``.
+* **The claim rules do not depend on the typ** (section K). Under no ``typ`` and the
+  draft-era one, as under ``vc+sd-jwt``: a presented disclosure of a validity claim, of
+  ``exp``, ``nbf``, ``cnf``, ``status``, ``credentialStatus``, ``aka_vcts`` or
+  ``vct#integrity``, or of a sub-claim of one, is ``SdJwtError``; a disclosed ``iat`` is
+  checked on the processed payload; ``expected_vct`` and ``aka_vcts`` are enforced; and the
+  ``@context`` reader compares each entry exactly. A ``cty`` is never read as a ``typ``.
 * **The VC-JWT lane is untouched.** A token with no ``typ`` that this lane accepts has no
   ``vc`` claim, so its ``~`` tail dropped is a compact JWS that the VC-JWT lane refuses
   ("no embedded ``vc`` object"); one typed ``vc+ld+json+sd-jwt`` is refused there by its
   ``+sd-jwt`` suffix (#189). A token with a ``vc`` object and no ``typ``, which this lane
-  refuses, still verifies there with its tail dropped, as on ``main`` (#291).
+  refuses, still verifies there with its tail dropped, as on ``main`` (#291). Every typ
+  ``verify()`` accepts is refused by that filter, so a new one cannot slip through it.
 * **OpenID4VP.** The ``dc+sd-jwt`` DCQL lane still answers only an issuer JWT typed
   ``dc+sd-jwt`` (#272), so neither new case answers a ``dc+sd-jwt`` query.
 
 Two real tokens of the Recommendation sit in tests/fixtures/vc_jose_cose/ (section I).
+Section J is the #293 type rule; K and L pin the rules around the typ gate that a token with
+no ``typ``, or with the draft-era one, must not get round.
 
 Helpers are self-contained (tests/ is not a package — no cross-import); issuers are
 ``did:jwk``, resolved offline by the default resolvers; signatures are real P-256 (P-384 for
@@ -50,6 +67,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import secrets
 from pathlib import Path
 
@@ -71,36 +89,59 @@ from openvc.proof.errors import (
     SignatureInvalid,
 )
 from openvc.proof.sd_jwt import (
+    _ACCEPTED_ISSUER_TYP,
+    _OPENVC_NON_DISCLOSABLE,
+    _SD_JWT_VC_NON_DISCLOSABLE,
+    _VCDM_VALIDITY_CLAIMS,
     SdJwtError,
     SdJwtVcProofSuite,
     disclosure_digest,
     make_object_disclosure,
 )
+from openvc.proof.vc_jwt import _reject_sd_jwt_typ
 
 V2 = "https://www.w3.org/ns/credentials/v2"
 V1 = "https://www.w3.org/2018/credentials/v1"
 EXAMPLES_V2 = "https://www.w3.org/ns/credentials/examples/v2"
 PAST = "2021-01-01T00:00:00Z"
 FUTURE = "2099-01-01T00:00:00Z"
+PAST_EPOCH = 1609459200                 # 2021-01-01T00:00:00Z, as a NumericDate
+FUTURE_EPOCH = 4070908800               # 2099-01-01T00:00:00Z
 VCT = "https://credentials.example/membership"
+OTHER_VCT = "https://credentials.example/other"
+ALIAS_VCT = "https://credentials.example/alias"
 DRAFT_TYP = "vc+ld+json+sd-jwt"        # Example 21 of VC-JOSE-COSE: a 2023 draft's media type
 CLIENT_ID = "x509_san_dns:verifier.example"
 NONCE = "n-0S6_WzA2Mj"
 ABSENT = object()                       # `_mint(typ=ABSENT)`: a header with no `typ` member
 
-# What the suite (SdJwtError) and the lanes around it say, as regexes. The first three are
+# What the suite (SdJwtError) and the lanes around it say, as regexes. The first four are
 # the typ gate's refusals of a payload with no VCDM @context (under no typ, then under
-# the draft-era typ) and of a `vc` / `vp` claim under no typ: keep them apart.
+# the two W3C typs), the fifth its refusal of a `vc` / `vp` claim under no typ, and the
+# sixth its refusal of a payload that does not say it is a credential under no typ (#293):
+# keep them apart.
 NO_TYP_NEEDS_CONTEXT = (r"issuer JWT without a typ needs a W3C VCDM @context; "
+                        r"an IETF SD-JWT VC is typed 'dc\+sd-jwt'")
+VC_TYP_NEEDS_CONTEXT = (r"issuer JWT typ 'vc\+sd-jwt' needs a W3C VCDM @context; "
                         r"an IETF SD-JWT VC is typed 'dc\+sd-jwt'")
 DRAFT_TYP_NEEDS_CONTEXT = (r"issuer JWT typ 'vc\+ld\+json\+sd-jwt' needs a W3C VCDM "
                            r"@context; an IETF SD-JWT VC is typed 'dc\+sd-jwt'")
 NO_TYP_NO_VC_CLAIM = (r"issuer JWT without a typ must not carry a `vc` or `vp` claim "
                       r"\(VC-JOSE-COSE §3\.1\.3\)")
+NO_TYP_NEEDS_CREDENTIAL_TYPE = (r"issuer JWT without a typ needs a `type` that includes "
+                                r"VerifiableCredential and not VerifiablePresentation "
+                                r"\(VCDM 2\.0 §4\.5, §4\.13\)")
 UNEXPECTED_TYP = "unexpected issuer JWT typ"
 CONTEXT_DISCLOSED = "'@context' is selectively disclosed"
 VCT_DISCLOSED = "'vct' is selectively disclosed"
 NEEDS_VCT = "needs a non-empty string vct"
+VALIDITY_DISCLOSED = "the W3C VCDM validity window openvc enforces"
+IAT_IN_FUTURE = "iat is in the future"
+IAT_NOT_A_NUMBER = "iat must be a finite numeric timestamp"
+AKA_SHAPE = "aka_vcts must be a non-empty array of non-empty strings"
+AKA_HAS_VCT = "aka_vcts must not contain the credential's vct"
+NO_ISS_TO_PEEK = "no iss in the issuer-signed JWT"             # the pipeline, MalformedToken
+NO_ISS_CLAIM = "iss claim is missing or not a string"          # the suite, ClaimsInvalid
 NOT_IETF = "must be an IETF SD-JWT VC"            # OpenID4VP, VpTokenMalformed
 NO_VC_OBJECT = "no embedded `vc` object"          # VC-JWT lane, ClaimsInvalid
 NOT_A_VC_JWT = "is not a VC-JWT"                  # VC-JWT lane, MalformedToken
@@ -119,12 +160,15 @@ def _issuer():
 KEY, DID = _issuer()
 
 
-def _mint(payload, *, typ=ABSENT, disclose=()):
+def _mint(payload, *, typ=ABSENT, cty=ABSENT, disclose=(), disclose_in=()):
     """Issue an SD-JWT by hand — ``SdJwtVcProofSuite.issue`` always writes ``dc+sd-jwt`` and
     requires a ``vct``. *typ* is this file's one departure from the sibling helpers, and has
     three states: ``ABSENT`` (the default) writes no ``typ`` member; ``None`` writes
     ``"typ": null``, a member that is present and wrong; any other value is written as is.
-    *disclose* moves those top-level claims into disclosures (all of them presented)."""
+    *cty* is the header member the tests add beside it, with two states: ``ABSENT`` (the
+    default) writes none, anything else is written as is. *disclose* moves those top-level
+    claims into disclosures (all of them presented); *disclose_in*, pairs ``(claim, name)``,
+    does the same to the member *name* of the top-level object *claim*."""
     body = dict(payload)
     disclosures = []
     for name in disclose:
@@ -132,10 +176,19 @@ def _mint(payload, *, typ=ABSENT, disclose=()):
                                                   body.pop(name)))
     if disclosures:
         body["_sd"] = sorted(disclosure_digest(d) for d in disclosures)
+    for claim, name in disclose_in:
+        inner = dict(body[claim])
+        disclosure = make_object_disclosure(_b64(secrets.token_bytes(16)), name, inner.pop(name))
+        inner["_sd"] = [disclosure_digest(disclosure)]
+        body[claim] = inner
+        disclosures.append(disclosure)
+    if disclosures:
         body["_sd_alg"] = "sha-256"
     header = {"alg": "ES256", "kid": f"{DID}#0"}
     if typ is not ABSENT:
         header["typ"] = typ
+    if cty is not ABSENT:
+        header["cty"] = cty
     signing_input = f"{_b64(json.dumps(header).encode())}.{_b64(json.dumps(body).encode())}"
     jws = f"{signing_input}.{_b64(KEY.sign(signing_input.encode('ascii')))}"
     return jws + "~" + "".join(d + "~" for d in disclosures)
@@ -242,8 +295,8 @@ def form(request):
     return FORMS[request.param]
 
 
-def _suite_verify(sd_jwt):
-    return SdJwtVcProofSuite().verify(sd_jwt, public_key_jwk=KEY.public_jwk())
+def _suite_verify(sd_jwt, **kwargs):
+    return SdJwtVcProofSuite().verify(sd_jwt, public_key_jwk=KEY.public_jwk(), **kwargs)
 
 
 def _present(claims, *, typ):
@@ -269,6 +322,9 @@ VCDM_CONTEXTS = pytest.mark.parametrize("context", [
     [V1],
 ], ids=["v2-array", "v2-string", "v2-not-first", "v1"])
 
+# Not a VCDM base context, though several of them look like one: the reader compares each
+# entry as a string, exactly, and only the entries of an array (never the keys of an object,
+# never the entries of a nested array).
 NOT_VCDM_CONTEXTS = pytest.mark.parametrize("context", [
     ["https://example.org/ctx"],
     "https://example.org/ctx",
@@ -279,10 +335,31 @@ NOT_VCDM_CONTEXTS = pytest.mark.parametrize("context", [
     [],
     None,
     "",
+    " " + V2,
+    V2 + " ",
+    V2 + "\n",
+    {V2: {}},
+    EXAMPLES_V2,
+    [EXAMPLES_V2],
+    "http://www.w3.org/ns/credentials/v2",
+    "http://www.w3.org/2018/credentials/v1",
+    V2 + "/",
+    V1 + "/",
+    "https://www.w3.org/NS/credentials/V2",
+    "HTTPS://www.w3.org/ns/credentials/v2",
+    [[V2]],
 ], ids=["foreign-array", "foreign-string", "trailing-slash", "case-variant",
-        "non-string-entries", "object", "empty-array", "null", "empty-string"])
+        "non-string-entries", "object", "empty-array", "null", "empty-string",
+        "leading-space", "trailing-space", "trailing-newline", "object-keyed-by-the-url",
+        "examples-context-alone", "examples-context-array", "http-v2", "http-v1",
+        "trailing-slash-string", "trailing-slash-v1", "case-variant-path",
+        "case-variant-scheme", "nested-array"])
 
 WITH_VCT = pytest.mark.parametrize("with_vct", [False, True], ids=["no-vct", "with-vct"])
+
+# The typ states under which a VCDM payload verifies: the rules of section K hold for each.
+VCDM_TYPS = pytest.mark.parametrize("typ", [ABSENT, "vc+sd-jwt", DRAFT_TYP],
+                                    ids=["no-typ", "vc-sd-jwt", "draft-typ"])
 
 VCT_VALUES = pytest.mark.parametrize("vct_values", [None, [VCT]],
                                      ids=["no-vct-values", "vct-values"])
@@ -364,6 +441,16 @@ def test_the_helper_writes_no_typ_member_by_default_a_null_one_or_the_given_stri
     assert "typ" in _header(_mint(_vcdm(), typ=None))
     assert _header(_mint(_vcdm(), typ=None))["typ"] is None
     assert _header(_mint(_vcdm(), typ="vc+sd-jwt"))["typ"] == "vc+sd-jwt"
+
+
+def test_the_helper_writes_no_cty_member_unless_asked_and_leaves_the_typ_alone():
+    assert "cty" not in _header(_mint(_vcdm()))
+    assert "cty" not in _header(_mint(_vcdm(), typ="vc+sd-jwt"))
+    header = _header(_mint(_vcdm(), cty="vc"))
+    assert header["cty"] == "vc"
+    assert "typ" not in header
+    header = _header(_mint(_vcdm(), typ=DRAFT_TYP, cty="vc+ld+json"))
+    assert (header["typ"], header["cty"]) == (DRAFT_TYP, "vc+ld+json")
 
 
 # --------------------------------------------------------------------------- #
@@ -1087,3 +1174,454 @@ def test_example_5_verifies_end_to_end_once_its_issuer_is_named_in_iss():
     assert claims["type"] == ["VerifiableCredential", "ExampleAlumniCredential"]
     assert claims["credentialSubject"]["id"] == "did:example:123"
     assert claims["credentialSubject"]["degree"]["type"] == "BachelorDegree"
+
+
+# --------------------------------------------------------------------------- #
+# J. no typ: the payload has to say it is a credential, not a presentation (#293)
+# --------------------------------------------------------------------------- #
+
+def _vcdm_presentation(**extra):
+    """A VCDM 2.0 presentation secured with SD-JWT by its holder, who stands here for the
+    signer of every other token in this file: the ``@context`` of a credential, an ``aud``
+    and a ``nonce`` addressed to one verifier, an enveloped credential, a ``type`` of
+    ``VerifiablePresentation``, and no ``vp`` claim for the §3.1.3 ban to find."""
+    doc = {
+        "@context": [V2],
+        "type": ["VerifiablePresentation"],
+        "iss": DID,
+        "holder": DID,
+        "aud": CLIENT_ID,
+        "nonce": NONCE,
+        "verifiableCredential": [_envelope(_mint(_vcdm(), typ="vc+sd-jwt"))],
+    }
+    doc.update(extra)
+    return doc
+
+
+def _with_type(declared):
+    """A VCDM payload whose ``type`` is *declared*, or that has no ``type`` (``ABSENT``)."""
+    doc = _vcdm()
+    if declared is ABSENT:
+        del doc["type"]
+    else:
+        doc["type"] = declared
+    return doc
+
+
+# A `type` that includes VerifiableCredential and not VerifiablePresentation, by exact name.
+CREDENTIAL_TYPES = pytest.mark.parametrize("declared", [
+    pytest.param("VerifiableCredential", id="string"),
+    pytest.param(["VerifiableCredential"], id="array-of-one"),
+    pytest.param(["VerifiableCredential", "ExampleAlumniCredential"], id="array-with-more"),
+    pytest.param(["ExampleAlumniCredential", "VerifiableCredential"], id="not-first"),
+    pytest.param(["VerifiableCredential", "VerifiablePresentationReceipt"],
+                 id="another-name-that-starts-like-a-presentation"),
+])
+
+# Every other `type`: one that is missing, malformed, a presentation's or both at once, and
+# the near-misses a lenient reader (a substring, a case fold, a dict's keys) would accept.
+NOT_CREDENTIAL_TYPES = pytest.mark.parametrize("declared", [
+    pytest.param(ABSENT, id="absent"),
+    pytest.param([], id="empty-array"),
+    pytest.param(None, id="null"),
+    pytest.param(5, id="number"),
+    pytest.param(True, id="true"),
+    pytest.param({}, id="empty-object"),
+    pytest.param({"VerifiableCredential": True}, id="object-keyed-by-the-name"),
+    pytest.param([1, None, {}], id="array-of-non-strings"),
+    pytest.param([["VerifiableCredential"]], id="nested-array"),
+    pytest.param("", id="empty-string"),
+    pytest.param("VerifiablePresentation", id="presentation-string"),
+    pytest.param(["VerifiablePresentation"], id="presentation-array"),
+    pytest.param(["VerifiableCredential", "VerifiablePresentation"], id="both"),
+    pytest.param(["VerifiablePresentation", "VerifiableCredential"], id="both-reversed"),
+    pytest.param("verifiablecredential", id="lower-case"),
+    pytest.param(" VerifiableCredential", id="leading-space"),
+    pytest.param(["VerifiableCredential "], id="trailing-space"),
+    pytest.param("MyVerifiableCredential", id="another-name-that-ends-like-a-credential"),
+    pytest.param("VerifiableCredential VerifiablePresentation", id="both-in-one-string"),
+    pytest.param(["ExampleAlumniCredential"], id="another-type-only"),
+])
+
+
+def test_a_vcdm_presentation_with_no_typ_is_refused_not_verified_as_a_credential(run, form):
+    # The hole of #293. A VCDM 2.0 presentation has the @context of a credential and no `vp`
+    # claim, so with no typ to tell the two apart it used to come out as a credential "issued"
+    # by its holder: its aud and nonce, meant for one verifier, read as the credential's claims.
+    with pytest.raises(SdJwtError, match=NO_TYP_NEEDS_CREDENTIAL_TYPE) as excinfo:
+        run(form(_mint(_vcdm_presentation())), None)
+    assert excinfo.type is SdJwtError
+
+
+def test_the_suite_refuses_a_vcdm_presentation_with_no_typ_directly():
+    with pytest.raises(SdJwtError, match=NO_TYP_NEEDS_CREDENTIAL_TYPE) as excinfo:
+        _suite_verify(_mint(_vcdm_presentation()))
+    assert excinfo.type is SdJwtError
+
+
+def test_control_the_presentation_payload_verifies_once_its_type_says_credential(run, form):
+    # Only the `type` differs from the refused presentation: the aud, the nonce, the holder
+    # and the enveloped credential in it are not what the refusal above is about.
+    result = run(form(_mint(_vcdm_presentation(type=["VerifiableCredential"]))), None)
+    assert result.raw.typ is None
+    assert result.raw.vcdm is True
+    assert result.issuer == DID
+
+
+@pytest.mark.parametrize("typ", ["vp+sd-jwt", "vp+ld+json+sd-jwt"],
+                         ids=["vp-sd-jwt", "vp-draft-typ"])
+def test_a_vcdm_presentation_typed_as_one_is_refused_for_its_typ(run, form, typ):
+    # A presentation that names itself is no credential either: the typ gate refuses it before
+    # the payload is read, so the type rule is not what stands in its way.
+    with pytest.raises(SdJwtError, match=UNEXPECTED_TYP) as excinfo:
+        run(form(_mint(_vcdm_presentation(), typ=typ)), None)
+    assert excinfo.type is SdJwtError
+    assert "without a typ" not in str(excinfo.value)
+
+
+@CREDENTIAL_TYPES
+def test_a_token_with_no_typ_whose_type_includes_verifiable_credential_verifies(
+        run, form, declared):
+    result = run(form(_mint(_with_type(declared))), None)
+    assert result.raw.typ is None
+    assert result.raw.vcdm is True
+    assert result.claims["type"] == declared
+
+
+@NOT_CREDENTIAL_TYPES
+def test_a_token_with_no_typ_whose_type_does_not_say_credential_is_refused(run, form, declared):
+    with pytest.raises(SdJwtError, match=NO_TYP_NEEDS_CREDENTIAL_TYPE) as excinfo:
+        run(form(_mint(_with_type(declared))), None)
+    assert excinfo.type is SdJwtError
+
+
+@NOT_CREDENTIAL_TYPES
+def test_the_suite_refuses_a_type_that_does_not_say_credential_directly(declared):
+    with pytest.raises(SdJwtError, match=NO_TYP_NEEDS_CREDENTIAL_TYPE) as excinfo:
+        _suite_verify(_mint(_with_type(declared)))
+    assert excinfo.type is SdJwtError
+
+
+def test_a_withheld_type_leaves_a_token_with_no_typ_refused(run, form):
+    # The Recommendation's Example 4 makes `type` selectively disclosable, and a holder may
+    # drop any disclosure (RFC 9901 §9.7). A rule that only refused a `type` saying
+    # "presentation" would wave this through: what is not there cannot be refused. The rule
+    # asks for the credential's type instead of for the absence of the presentation's.
+    sd_jwt = _without(_mint(_vcdm(), disclose=["type"]), "type")
+    with pytest.raises(SdJwtError, match=NO_TYP_NEEDS_CREDENTIAL_TYPE) as excinfo:
+        run(form(sd_jwt), None)
+    assert excinfo.type is SdJwtError
+
+
+def test_a_presented_type_disclosure_that_says_credential_verifies(run, form):
+    # The same token with the disclosure presented: the shape of Example 4.
+    result = run(form(_mint(_vcdm(), disclose=["type"])), None)
+    assert result.claims["type"] == ["VerifiableCredential", "ExampleAlumniCredential"]
+    assert result.raw.typ is None
+    assert result.raw.vcdm is True
+
+
+def test_a_presented_type_disclosure_that_says_presentation_is_refused(run, form):
+    sd_jwt = _mint(_vcdm_presentation(), disclose=["type"])
+    with pytest.raises(SdJwtError, match=NO_TYP_NEEDS_CREDENTIAL_TYPE) as excinfo:
+        run(form(sd_jwt), None)
+    assert excinfo.type is SdJwtError
+
+
+@pytest.mark.parametrize("typ", ["vc+sd-jwt", DRAFT_TYP], ids=["vc-sd-jwt", "draft-typ"])
+@pytest.mark.parametrize("how", ["absent", "withheld"])
+def test_the_type_rule_is_for_a_token_with_no_typ_only(run, form, typ, how):
+    # `vc+sd-jwt` and `vc+ld+json+sd-jwt` name a credential themselves, so they do not need
+    # the payload to: a `type` that is missing or withheld is not their defect.
+    if how == "absent":
+        sd_jwt = _mint(_with_type(ABSENT), typ=typ)
+    else:
+        sd_jwt = _without(_mint(_vcdm(), typ=typ, disclose=["type"]), "type")
+    result = run(form(sd_jwt), None)
+    assert result.raw.typ == typ
+    assert result.raw.vcdm is True
+    assert "type" not in result.claims
+
+
+# --------------------------------------------------------------------------- #
+# K. no typ and the draft typ hold the claim rules vc+sd-jwt holds
+# --------------------------------------------------------------------------- #
+# Every rule below runs after the typ gate, and none of them reads the typ. A token that gets
+# through the gate by leaving its typ out, or by naming the draft one, must not get round
+# one: whoever signs it would otherwise choose, by what the header says, which rules apply.
+
+# (claim, a value that verifies in plaintext, the VCDM @context that names it)
+VALIDITY_ROWS = [
+    ("validFrom", PAST, V2),
+    ("validUntil", FUTURE, V2),
+    ("issuanceDate", PAST, V1),
+    ("expirationDate", FUTURE, V1),
+]
+VALIDITY_CLAIMS = pytest.mark.parametrize(
+    "name, value, context", VALIDITY_ROWS, ids=[row[0] for row in VALIDITY_ROWS])
+
+# (claim, a value it could carry): every claim the suite refuses to see disclosed except `iss`,
+# which never gets that far (see the test on it below).
+UNDISCLOSABLE_ROWS = [
+    ("exp", FUTURE_EPOCH),
+    ("nbf", PAST_EPOCH),
+    ("cnf", {"jwk": KEY.public_jwk()}),
+    ("status", {"status_list": {"idx": 3, "uri": "https://status.example/lists/1"}}),
+    ("credentialStatus", {"id": "https://status.example/lists/1#3",
+                          "type": "BitstringStatusListEntry", "statusPurpose": "revocation",
+                          "statusListIndex": "3",
+                          "statusListCredential": "https://status.example/lists/1"}),
+    ("aka_vcts", [ALIAS_VCT]),
+    ("vct#integrity", "sha256-n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg="),
+    ("vct", VCT),
+    ("@context", [V2, EXAMPLES_V2]),
+]
+UNDISCLOSABLE_VALUES = dict(UNDISCLOSABLE_ROWS)
+UNDISCLOSABLE_CLAIMS = pytest.mark.parametrize(
+    "name, value", UNDISCLOSABLE_ROWS, ids=[row[0] for row in UNDISCLOSABLE_ROWS])
+
+# The sub-claims of the objects among them: (claim, the member of it that is disclosed).
+UNDISCLOSABLE_SUB_CLAIMS = pytest.mark.parametrize("claim, member", [
+    pytest.param("cnf", "jwk", id="cnf"),
+    pytest.param("status", "status_list", id="status"),
+    pytest.param("credentialStatus", "statusListIndex", id="credentialStatus"),
+])
+
+BAD_AKA_VCTS = pytest.mark.parametrize("aka, message", [
+    pytest.param([], AKA_SHAPE, id="empty-array"),
+    pytest.param(ALIAS_VCT, AKA_SHAPE, id="string"),
+    pytest.param({"vct": ALIAS_VCT}, AKA_SHAPE, id="object"),
+    pytest.param([1], AKA_SHAPE, id="non-string-entry"),
+    pytest.param([ALIAS_VCT, 1], AKA_SHAPE, id="one-non-string-entry"),
+    pytest.param([""], AKA_SHAPE, id="empty-string-entry"),
+    pytest.param([VCT], AKA_HAS_VCT, id="the-vct"),
+    pytest.param([ALIAS_VCT, VCT], AKA_HAS_VCT, id="the-vct-among-others"),
+])
+
+# `expected_vct` is VCT; what the token carries instead, and what the refusal names.
+WRONG_VCTS = pytest.mark.parametrize("doc, got", [
+    pytest.param(_vcdm(vct=OTHER_VCT), OTHER_VCT, id="another-vct"),
+    pytest.param(_vcdm(), None, id="no-vct"),
+])
+
+
+def _with_validity(name, value, context):
+    doc = _vcdm(**{"@context": [context]})
+    del doc["validFrom"]
+    doc[name] = value
+    return doc
+
+
+def _vct_mismatch(got):
+    return re.escape(f"vct {got!r} != expected {VCT!r}")
+
+
+def test_the_table_of_validity_claims_is_the_suites_own():
+    assert {row[0] for row in VALIDITY_ROWS} == _VCDM_VALIDITY_CLAIMS
+
+
+def test_the_table_of_undisclosable_claims_is_the_suites_own():
+    # `iss` is the one left out: see the test on it below.
+    assert ({row[0] for row in UNDISCLOSABLE_ROWS} | {"iss"}
+            == _SD_JWT_VC_NON_DISCLOSABLE | _OPENVC_NON_DISCLOSABLE)
+
+
+@VCDM_TYPS
+@VALIDITY_CLAIMS
+def test_a_presented_validity_claim_disclosure_is_refused_whatever_the_vcdm_typ(
+        run, form, typ, name, value, context):
+    # The suite enforces these claims as the credential's validity window, so a disclosable one
+    # could be left out by its holder and the window with it (RFC 9901 §9.7): once presented, it
+    # is refused. The same claim in plaintext is the control.
+    doc = _with_validity(name, value, context)
+    assert run(form(_mint(doc, typ=typ)), None).raw.vcdm is True
+    refusal = rf"'{name}' is selectively disclosed \({VALIDITY_DISCLOSED}\)"
+    with pytest.raises(SdJwtError, match=refusal) as excinfo:
+        run(form(_mint(doc, typ=typ, disclose=[name])), None)
+    assert excinfo.type is SdJwtError
+
+
+@VCDM_TYPS
+@UNDISCLOSABLE_CLAIMS
+def test_a_presented_disclosure_of_an_undisclosable_claim_is_refused_whatever_the_vcdm_typ(
+        run, form, typ, name, value):
+    doc = {**_vcdm_vct(), name: value}
+    assert _suite_verify(_mint(doc, typ=typ)).vcdm is True               # the control
+    refusal = rf"claim '{re.escape(name)}' is selectively disclosed"
+    with pytest.raises(SdJwtError, match=refusal) as excinfo:
+        run(form(_mint(doc, typ=typ, disclose=[name])), None)
+    assert excinfo.type is SdJwtError
+
+
+@VCDM_TYPS
+@UNDISCLOSABLE_SUB_CLAIMS
+def test_a_presented_sub_claim_disclosure_of_an_undisclosable_claim_is_refused_too(
+        run, form, typ, claim, member):
+    doc = {**_vcdm_vct(), claim: UNDISCLOSABLE_VALUES[claim]}
+    assert member in doc[claim]
+    refusal = rf"a sub-claim of '{claim}' is selectively disclosed"
+    with pytest.raises(SdJwtError, match=refusal) as excinfo:
+        run(form(_mint(doc, typ=typ, disclose_in=[(claim, member)])), None)
+    assert excinfo.type is SdJwtError
+
+
+@VCDM_TYPS
+@pytest.mark.parametrize("name, value", [("exp", PAST_EPOCH), ("nbf", FUTURE_EPOCH)])
+def test_a_presented_exp_or_nbf_disclosure_is_refused_as_a_disclosure_not_by_the_clock(
+        run, form, typ, name, value):
+    # Were it plaintext, this `exp` would have expired and this `nbf` not yet begun, and the
+    # verdict would be a ClaimsInvalid from the clock. Presented in a disclosure, it is the
+    # disclosure that is refused, with SdJwtError, before the processed payload is dated.
+    with pytest.raises(SdJwtError, match=rf"claim '{name}' is selectively disclosed") as excinfo:
+        run(form(_mint(_vcdm_vct(**{name: value}), typ=typ, disclose=[name])), None)
+    assert excinfo.type is SdJwtError
+
+
+@VCDM_TYPS
+def test_a_disclosed_iss_never_gets_as_far_as_the_disclosure_rule(run, form, typ):
+    # `iss` is on the suite's list, but a token whose `iss` is in a disclosure is out before
+    # that rule runs: the pipeline finds no issuer to select a key with, and the suite no `iss`
+    # claim to verify. A holder cannot present it either way.
+    sd_jwt = _mint(_vcdm_vct(), typ=typ, disclose=["iss"])
+    with pytest.raises(MalformedToken, match=NO_ISS_TO_PEEK) as excinfo:
+        run(form(sd_jwt), None)
+    assert excinfo.type is MalformedToken
+    with pytest.raises(ClaimsInvalid, match=NO_ISS_CLAIM) as excinfo:
+        _suite_verify(sd_jwt)
+    assert excinfo.type is ClaimsInvalid
+
+
+@VCDM_TYPS
+def test_a_presented_iat_disclosure_is_checked_on_the_processed_payload(run, form, typ):
+    # `iat` MAY be disclosable (draft-19 §2.2.2.3), so the issuer JWT's own claims do not show
+    # it. Only the check of the processed payload sees it, and a token with no typ gets it too.
+    past = _mint(_vcdm(iat=PAST_EPOCH), typ=typ, disclose=["iat"])
+    assert run(form(past), None).raw.vcdm is True
+    with pytest.raises(ClaimsInvalid, match=IAT_IN_FUTURE) as excinfo:
+        run(form(_mint(_vcdm(iat=FUTURE_EPOCH), typ=typ, disclose=["iat"])), None)
+    assert excinfo.type is ClaimsInvalid
+
+
+@VCDM_TYPS
+@pytest.mark.parametrize("iat", [None, "2021-01-01T00:00:00Z", True, [PAST_EPOCH], 10**400],
+                         ids=["null", "string", "true", "array", "bignum"])
+def test_a_presented_iat_disclosure_that_is_not_a_number_is_refused(run, form, typ, iat):
+    with pytest.raises(ClaimsInvalid, match=IAT_NOT_A_NUMBER) as excinfo:
+        run(form(_mint(_vcdm(iat=iat), typ=typ, disclose=["iat"])), None)
+    assert excinfo.type is ClaimsInvalid
+
+
+@VCDM_TYPS
+@WRONG_VCTS
+def test_expected_vct_pins_a_vcdm_token_whatever_its_typ(run, form, typ, doc, got):
+    policy = VerificationPolicy(expected_vct=VCT)
+    assert run(form(_mint(_vcdm_vct(), typ=typ)), policy).raw.vct == VCT
+    with pytest.raises(ClaimsInvalid, match=_vct_mismatch(got)) as excinfo:
+        run(form(_mint(doc, typ=typ)), policy)
+    assert excinfo.type is ClaimsInvalid
+
+
+@VCDM_TYPS
+@WRONG_VCTS
+def test_the_suite_pins_a_vcdm_token_by_expected_vct_whatever_its_typ(typ, doc, got):
+    assert _suite_verify(_mint(_vcdm_vct(), typ=typ), expected_vct=VCT).vct == VCT
+    with pytest.raises(ClaimsInvalid, match=_vct_mismatch(got)) as excinfo:
+        _suite_verify(_mint(doc, typ=typ), expected_vct=VCT)
+    assert excinfo.type is ClaimsInvalid
+
+
+@VCDM_TYPS
+@BAD_AKA_VCTS
+def test_a_bad_aka_vcts_is_refused_whatever_the_vcdm_typ(run, form, typ, aka, message):
+    with pytest.raises(ClaimsInvalid, match=message) as excinfo:
+        run(form(_mint(_vcdm_vct(aka_vcts=aka), typ=typ)), None)
+    assert excinfo.type is ClaimsInvalid
+
+
+@VCDM_TYPS
+def test_a_good_aka_vcts_verifies_whatever_the_vcdm_typ(run, form, typ):
+    result = run(form(_mint(_vcdm_vct(aka_vcts=[ALIAS_VCT]), typ=typ)), None)
+    assert result.claims["aka_vcts"] == [ALIAS_VCT]
+    assert result.raw.vct == VCT
+
+
+@NOT_VCDM_CONTEXTS
+def test_a_foreign_context_does_not_rescue_a_vc_sd_jwt_token(run, form, context):
+    # The registered typ, where #264 started: the lookalikes of the table are not VCDM to it.
+    with pytest.raises(SdJwtError, match=VC_TYP_NEEDS_CONTEXT) as excinfo:
+        run(form(_mint(_vcdm_vct(**{"@context": context}), typ="vc+sd-jwt")), None)
+    assert excinfo.type is SdJwtError
+
+
+@NOT_VCDM_CONTEXTS
+def test_a_foreign_context_does_not_make_a_dc_sd_jwt_vcdm(run, form, context):
+    # The same entries under dc+sd-jwt, which needs no VCDM @context: nothing is refused, but
+    # the payload is not read as VCDM, so a `validUntil` in the past is an ordinary claim.
+    doc = _ietf(**{"@context": context, "validUntil": PAST})
+    assert run(form(_mint(doc, typ="dc+sd-jwt")), None).raw.vcdm is False
+
+
+# --------------------------------------------------------------------------- #
+# L. the typ is the header's typ alone, and the VC-JWT lane fences off every accepted one
+# --------------------------------------------------------------------------- #
+
+# Content types of the payload (RFC 7515 §4.1.10), among them every name a typ could take.
+CTYS = pytest.mark.parametrize("cty", [
+    "vc+sd-jwt", "dc+sd-jwt", "vc+ld+json+sd-jwt", "vc", "vc+ld+json", "JWT",
+], ids=["vc-sd-jwt", "dc-sd-jwt", "draft-typ", "vc", "vc-ld-json", "jwt"])
+
+
+@CTYS
+def test_a_cty_is_not_read_as_the_typ_of_a_token_with_no_typ(run, form, cty):
+    # Example 21 carries a `cty` beside its typ. A token with a `cty` and no `typ` is still a
+    # token with no typ: judged as one, and reported as one.
+    result = run(form(_mint(_vcdm(), cty=cty)), None)
+    assert result.raw.typ is None
+    assert result.raw.vcdm is True
+
+
+@CTYS
+@pytest.mark.parametrize("name", ["vc", "vp"])
+def test_a_cty_does_not_lift_the_vc_and_vp_ban_from_a_token_with_no_typ(run, form, cty, name):
+    with pytest.raises(SdJwtError, match=NO_TYP_NO_VC_CLAIM) as excinfo:
+        run(form(_mint(_vcdm_vct(**{name: EMBEDDED[name]}), cty=cty)), None)
+    assert excinfo.type is SdJwtError
+
+
+@CTYS
+def test_a_cty_does_not_make_an_ietf_payload_with_no_typ_an_sd_jwt_vc(run, form, cty):
+    with pytest.raises(SdJwtError, match=NO_TYP_NEEDS_CONTEXT) as excinfo:
+        run(form(_mint(_ietf(), cty=cty)), None)
+    assert excinfo.type is SdJwtError
+
+
+@CTYS
+def test_a_cty_does_not_turn_a_presentation_with_no_typ_into_a_credential(run, form, cty):
+    with pytest.raises(SdJwtError, match=NO_TYP_NEEDS_CREDENTIAL_TYPE) as excinfo:
+        run(form(_mint(_vcdm_presentation(), cty=cty)), None)
+    assert excinfo.type is SdJwtError
+
+
+@pytest.mark.parametrize("typ", sorted(_ACCEPTED_ISSUER_TYP))
+def test_every_accepted_issuer_typ_is_fenced_off_the_vc_jwt_lane(typ):
+    # The lanes divide the JWS space by typ: a JWS typed as an SD-JWT issuer JWT is never a
+    # VC-JWT, because its `~` tail dropped would verify there with no key binding (#189). A
+    # typ that verify() starts to accept has to be added to that filter too, or the
+    # tail-dropped form of its tokens verifies as a VC-JWT.
+    with pytest.raises(MalformedToken, match=NOT_A_VC_JWT) as excinfo:
+        _reject_sd_jwt_typ({"alg": "ES256", "typ": typ})
+    assert excinfo.type is MalformedToken
+
+
+@pytest.mark.parametrize("header", [
+    pytest.param({"alg": "ES256"}, id="no-typ"),
+    pytest.param({"alg": "ES256", "typ": None}, id="null"),
+    pytest.param({"alg": "ES256", "typ": "JWT"}, id="jwt"),
+    pytest.param({"alg": "ES256", "typ": "vc+jwt"}, id="vc-jwt"),
+    pytest.param({"alg": "ES256", "typ": "vc+ld+jwt"}, id="vc-ld-jwt"),
+    pytest.param({"alg": "ES256", "typ": "application/vc+ld+json+jwt"}, id="media-type"),
+])
+def test_control_the_vc_jwt_filter_lets_a_typ_that_is_not_an_sd_jwt_one_through(header):
+    # So the test above is not vacuous, and no typ of the VC-JWT lane can join the accepted set.
+    assert _reject_sd_jwt_typ(header) is None
+    assert header.get("typ") not in _ACCEPTED_ISSUER_TYP

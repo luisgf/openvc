@@ -37,7 +37,16 @@ All notable changes to **openvc** are documented here. The format follows
     a `vc` object it would be an SD-JWT VC here and, with its `~` tail dropped, a VC-JWT in
     the VC-JWT lane, which refuses only a typed SD-JWT issuer JWT (#189): the holder could
     shed key binding. A token accepted here has no `vc` claim, so that lane refuses its
-    stripped form ("no embedded `vc` object").
+    stripped form ("no embedded `vc` object");
+  - a token with no `typ` must say it is a credential: its `type` has to include
+    `VerifiableCredential` and not `VerifiablePresentation` (VCDM 2.0 §4.5, §4.13;
+    [#293](https://github.com/luisgf/openvc/issues/293)). The `typ` is what tells the two
+    apart, and a VCDM 2.0 presentation secured with SD-JWT has the same `@context` as a
+    credential and no `vp` claim to ban, so without this check a holder-signed
+    presentation with no `typ` would be read as a credential issued by the holder. The
+    check is positive: a `type`, or its `VerifiableCredential` entry, that is missing or
+    withheld is refused, and so is one that spells the term as a full IRI or a prefixed
+    name. It applies to a missing `typ` only.
 
   A `typ` that is present and anything else is still refused, `null` and any non-string
   included, and matching stays exact: no case folding, no `application/` prefix.
@@ -45,8 +54,8 @@ All notable changes to **openvc** are documented here. The format follows
   the OpenID4VP `dc+sd-jwt` lane still refuses both new cases (#272).
 
   This drops an explicit-typing guard (RFC 9901 §9.11) for VCDM payloads. What stands in
-  for it: the signed VCDM `@context`; the ban on `vc` and `vp`, which keeps a token
-  accepted here from also being a valid VC-JWT; and key binding (`require_key_binding`
+  for it: the signed VCDM `@context`; the `type` check; the ban on `vc` and `vp`, which
+  keeps a token accepted here from also being a valid VC-JWT; and key binding (`require_key_binding`
   still needs a KB-JWT). It does not touch an older gap in the VC-JWT lane: an issuer JWT
   with no `typ` and a `vc` object verifies there with its `~` tail dropped, on `main`
   today ([#291](https://github.com/luisgf/openvc/issues/291)). "VCDM" still means a VCDM
