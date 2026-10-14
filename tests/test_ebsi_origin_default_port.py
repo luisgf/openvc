@@ -215,6 +215,14 @@ def test_origin_explicit_zero_port_is_its_own_origin() -> None:
     assert zero != _origin("https://api-pilot.ebsi.eu:443")
 
 
+def test_origin_http_keeps_an_empty_port() -> None:
+    # Only https gets a default. The client refuses http anyway, so an http URL must not
+    # acquire one: it stays its own, port-less origin, never http's :80 nor :443.
+    assert _origin("http://api-pilot.ebsi.eu") == "http://api-pilot.ebsi.eu:"
+    assert _origin("http://api-pilot.ebsi.eu") != _origin("http://api-pilot.ebsi.eu:443")
+    assert _origin("http://api-pilot.ebsi.eu") != _origin("http://api-pilot.ebsi.eu:80")
+
+
 @pytest.mark.parametrize("origin_of", [
     pytest.param("https://api-pilot.ebsi.eu", id="origin-absent"),
     pytest.param("https://api-pilot.ebsi.eu:443", id="origin-443"),

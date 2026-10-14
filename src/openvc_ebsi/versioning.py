@@ -94,7 +94,8 @@ def _origin(url: str) -> str:
 
     An absent port is the scheme's default (RFC 3986 §6.2.3), so ``https://host`` and
     ``https://host:443`` are one origin, as they are to httpx (#253). Only an absent port
-    is filled in: an explicit ``:0`` stays port 0, never the default."""
+    is filled in: an explicit ``:0`` stays port 0, never the default. httpcore would
+    connect ``:0`` to 443, so refusing it is stricter than the client, and fails closed."""
     if len(url) > _MAX_URL_LENGTH:
         raise MalformedRegistryResponse("registry URL is too long")
     if not (url.isascii() and url.isprintable()) or " " in url:
