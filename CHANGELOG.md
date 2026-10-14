@@ -6,8 +6,39 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.32.1] — unreleased
 
-Tests and docs only: no behaviour change. The library side is a docstring and a
-comment in `rp_registration.py`.
+One behaviour change, in the status-list builders (below); otherwise tests and docs.
+The rest of the library side is a docstring and a comment in `rp_registration.py`.
+
+### Fixed
+
+- **The status-list builders no longer mint what openvc's own verifier refuses**
+  ([#230](https://github.com/luisgf/openvc/issues/230)). Found by the adversarial
+  review of #215, which gave the verifier one rule for a status index
+  (`status_index`: an `int`, never a `bool` or `float`, below 2^27) but left the
+  issuer side alone. `build_status_list_entry` and `build_token_status_reference`
+  emitted `True`, `3.7`, `NaN` and `2**27` as an index, and a string index raised a bare
+  `TypeError`; an issuer found out only when every credential pointing at it failed
+  verification. Now:
+  - both builders check `index` with the verifier's own `status_index` and raise
+    `StatusListError` at build time. The W3C entry still emits the base-10 string;
+  - `status_list_credential`, `status_purpose` (also on `build_status_list_credential`),
+    the IETF `uri` and the list credential `id` must be non-empty strings;
+  - `build_status_list_credential` and `build_status_list_token` refuse a list longer
+    than the 16 MiB the verifier inflates, or one that is not `bytes` / `bytearray`
+    (`bytes(1024)` used to be a silent zeroed list);
+  - `new_bitstring(size)` and `new_status_list(size, bits=...)` refuse a `size` that is
+    not an `int` (a `bool` or `float` too) or whose packed list would exceed those
+    16 MiB: 2^27 one-bit statuses, 2^24 at 8 bits;
+  - `get_status_bit`, `set_status_bit`, `get_status` and `set_status` refuse a `bool`
+    or non-`int` `index` (`get_status_bit(b"\x40", True)` returned bit 1; a `float` was
+    a bare `TypeError`), a non-`int` `value`, and a `bits` that is a `bool`, a `float`
+    or unhashable. Their error text no longer calls `repr()` on a huge int.
+
+  **Behaviour change.** Calls that used to succeed now raise `StatusListError`: a
+  `bool` or `float` index, an oversized list or `size`, an empty or non-string
+  `status_purpose` / `uri` / `statusListCredential`. All of them produced an artefact
+  the verifier refuses. Well-formed calls are unchanged, and the codec bound checks
+  (negative, past the end of the data) keep their messages.
 
 ### Fixed (docs)
 

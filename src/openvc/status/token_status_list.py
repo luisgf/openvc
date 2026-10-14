@@ -31,7 +31,7 @@ from typing import Any, Awaitable, Callable
 
 from ..observability import logger, span
 from ._decompress import DecompressionBomb, inflate_bounded
-from ._index import brief, status_index
+from ._index import brief, locate_status, packed_length, status_index
 from .bitstring import StatusListError
 
 # IETF status values (draft-ietf-oauth-status-list, "Status Types").
@@ -43,7 +43,8 @@ _VALID_BITS = frozenset({1, 2, 4, 8})
 
 
 def _check_bits(bits: int) -> None:
-    if bits not in _VALID_BITS:
+    # type first: `True in {1, ...}` and `1.0 in {1, ...}` hold, and a list is unhashable
+    if not isinstance(bits, int) or isinstance(bits, bool) or bits not in _VALID_BITS:
         raise StatusListError(f"bits must be one of 1, 2, 4, 8; got {brief(bits)}")
 
 
@@ -74,43 +75,41 @@ def encode_status_list(data: bytes) -> str:
 
 def new_status_list(size: int, *, bits: int = 1) -> bytearray:
     """A zeroed (all-VALID) packed list holding at least *size* statuses of
-    *bits* each."""
+    *bits* each.
+
+    *size* is an ``int`` (never a ``bool`` or ``float``), and the packed list may not
+    exceed the 16 MiB openvc decodes: at most
+    :data:`~openvc.status._index.MAX_STATUS_INDEX` statuses at 1 bit each, an eighth of
+    that at 8 bits. Otherwise :class:`StatusListError`."""
     _check_bits(bits)
-    if size < 0:
-        raise StatusListError(f"size must be non-negative, got {size}")
-    per_byte = 8 // bits
-    return bytearray((size + per_byte - 1) // per_byte)
+    return bytearray(packed_length(size, per_byte=8 // bits))
 
 
 def get_status(data: bytes, index: int, *, bits: int = 1) -> int:
     """Return the status value at *index* for a list packed *bits* per status
-    (LSB-first). Raises for a bad *bits* or an out-of-range index."""
+    (LSB-first). Raises :class:`StatusListError` for a bad *bits*, an *index* that is not
+    an ``int`` (a ``bool`` or ``float`` is refused, not read as some other status) or an
+    out-of-range one."""
     _check_bits(bits)
-    if index < 0:
-        raise StatusListError(f"status index must be non-negative, got {index}")
     per_byte = 8 // bits
-    byte_index, pos = divmod(index, per_byte)
-    if byte_index >= len(data):
-        raise StatusListError(
-            f"status index {index} out of range for a {len(data) * per_byte}-status list")
+    byte_index, pos = locate_status(
+        index, per_byte=per_byte, length=len(data), unit="status")
     mask = (1 << bits) - 1
     return (data[byte_index] >> (pos * bits)) & mask
 
 
 def set_status(data: bytearray, index: int, value: int, *, bits: int = 1) -> None:
     """Set the status value at *index* in-place (LSB-first). For issuers and
-    tests. Raises if *value* does not fit in *bits*."""
+    tests. *index* is held to the same rule as :func:`get_status`; raises if *value* is
+    not an ``int`` or does not fit in *bits*."""
     _check_bits(bits)
-    if index < 0:
-        raise StatusListError(f"status index must be non-negative, got {index}")
-    mask = (1 << bits) - 1
-    if not 0 <= value <= mask:
-        raise StatusListError(f"status value {value} does not fit in {bits} bit(s)")
     per_byte = 8 // bits
-    byte_index, pos = divmod(index, per_byte)
-    if byte_index >= len(data):
+    byte_index, pos = locate_status(
+        index, per_byte=per_byte, length=len(data), unit="status")
+    mask = (1 << bits) - 1
+    if not isinstance(value, int) or not 0 <= value <= mask:
         raise StatusListError(
-            f"status index {index} out of range for a {len(data) * per_byte}-status list")
+            f"status value {brief(value)} does not fit in {bits} bit(s)")
     shift = pos * bits
     data[byte_index] = (data[byte_index] & ~(mask << shift)) | (value << shift)
 
