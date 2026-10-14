@@ -798,8 +798,11 @@ def _processed(token):
 
 
 def _add_iss(payload):
-    # Example 5 names its issuer only in `issuer`, and this lane reads the verified issuer
-    # from `iss`: the one amendment that lets it verify at all (#290).
+    # Example 5 names its issuer only in `issuer` and carries no `iss`. It no longer needs
+    # this amendment to verify (#290: the VCDM `issuer` stands in, and the unamended token
+    # is pinned in test_sd_jwt_vcdm_typ_interop.py and test_sd_jwt_issuer_fallback.py). It
+    # stays so that these tests exercise the token with an `iss` equal to its `issuer`
+    # (VC-JOSE-COSE section 4.1.2), as Example 21 already has.
     payload.setdefault("iss", payload["issuer"])
 
 

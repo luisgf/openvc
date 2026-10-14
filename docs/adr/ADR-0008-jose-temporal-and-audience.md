@@ -141,6 +141,9 @@ Options considered:
   word for word. A KB-JWT whose `aud` names another verifier also still binds
   (`key_bound=True`) when the caller passes no audience. Both predate this ADR. They
   change SD-JWT VC verification for the EUDI ecosystem and need their own decision.
+  Since [#290](https://github.com/luisgf/openvc/issues/290) a W3C VC-JOSE-COSE JWS with no
+  `iss` and no `typ`, which the VC-JWT lane refuses, reaches this lane once a `~` is
+  appended, so an issuer's `aud` restriction on such a token is not enforced either.
 - **Other JOSE objects keep their own date handling.** The OpenID4VCI key-attestation
   JWT reads `null` as absent and its signature is not verified (ADR-0007). The WRPRC
   (`openvc.rp_registration`, ETSI TS 119 475) has its own profile rules.

@@ -69,7 +69,15 @@ already hold the key. Normally you let the pipeline resolve it from the
   null, empty or non-string one is rejected, not skipped. An object with no `id`
   identifies no one, and is accepted like an absent `issuer` (the VCDM 1.1 JWT
   encoding moves the id to `iss`). The SD-JWT lane applies the same rule to a W3C credential
-  ([SD-JWT VC](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt-vcsd-jwt)).
+  ([SD-JWT VC](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt-vcsd-jwt)), and takes the
+  issuer from `issuer` when the token has no `iss`
+  ([details](SD-JWT-VC#the-issuer-when-a-w3c-credential-has-no-iss)). This lane does not
+  work that way: its `peek_issuer` reads `iss`, or the issuer of the embedded `vc` when `iss`
+  is falsy (absent, `null` or `""`), and never a top-level `issuer`, and `verify()` still
+  requires a string `iss` on both lanes, so a VC-JWT with no `iss` is refused whatever its
+  `vc.issuer` says (`ClaimsInvalid`). The SD-JWT fallback is stricter than that peek in
+  every case: it applies only when `iss` is absent altogether, never for a `null` or empty
+  one, and it accepts an issuer object only when all of its `id` and `@id` members agree.
 - **Temporal checks fail closed.** `exp` / `nbf` / `iat` (with a small
   clock-skew leeway) and the credential's `validFrom` / `validUntil`; a
   present-but-unparseable timestamp rejects. `exp`, `nbf` and `iat` must each be

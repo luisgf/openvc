@@ -169,6 +169,14 @@ different domain.
   Trusted Lists) is the [Trust](Trust) page.
 - **`did:ebsi`** — via the read-only plugin; see [Trust](Trust).
 
+A W3C credential secured as SD-JWT whose issuer JWT has no `iss` member (and a W3C `typ`,
+or none) is resolved from its VCDM `issuer` instead, by the same lanes
+([details](SD-JWT-VC#the-issuer-when-a-w3c-credential-has-no-iss)). What this section says
+of `iss` then holds for that value: an https `issuer` goes through `jwt_vc_issuer_fetch` like
+an https `iss`, and the pipeline raises `KeyResolutionFailed` ("pass jwt_vc_issuer_fetch")
+when you did not pass one. The verified token has no `iss` among its claims; the identifier is
+`result.issuer`.
+
 The well-known and `x5c` lanes derive a host from an https `iss`, so they refuse
 any `iss` that lets Python and a browser name different hosts or paths. These are
 refused:
