@@ -204,7 +204,8 @@ def test_withheld_context_does_not_switch_the_window_off():
     # An issuer that (against VC-JOSE-COSE §3.2.1's SHOULD NOT) makes @context disclosable:
     # the holder withholds it. Without the @context nothing says VCDM, and the token is
     # refused, not read as a payload with no window: a vc+sd-jwt needs the @context (#264),
-    # a dc+sd-jwt needs a vct, which a VCDM payload does not carry.
+    # a dc+sd-jwt needs a vct, which this VCDM payload does not carry. One that does carry
+    # a vct is the known limit pinned below.
     for typ, error, message in [
         ("vc+sd-jwt", SdJwtError, "needs a W3C VCDM @context"),
         ("dc+sd-jwt", ClaimsInvalid, "needs a non-empty string vct"),
@@ -215,6 +216,21 @@ def test_withheld_context_does_not_switch_the_window_off():
         for pipeline in PIPELINES.values():
             with pytest.raises(error, match=message):
                 pipeline(issuer_jwt + "~", None)
+
+
+def test_withheld_context_on_a_vct_bearing_dc_sd_jwt_is_a_known_limit():
+    # The same third-party issuer error on a dc+sd-jwt that also carries a vct: with the
+    # @context withheld, the payload is a well-formed IETF SD-JWT VC, so its validUntil
+    # is not a validity bound. A withheld disclosure is indistinguishable from a decoy
+    # (RFC 9901 §9.7); openvc's issue() refuses a disclosable @context. Pinned as a
+    # limitation (threat model R7), as in test_sdjwt_non_disclosable.py.
+    sd_jwt = _mint(_vcdm(validUntil=PAST, vct="https://credentials.example/membership"),
+                   typ="dc+sd-jwt", disclose=["@context"])
+    issuer_jwt, context_disclosure, _ = sd_jwt.split("~")
+    assert context_disclosure
+    for pipeline in PIPELINES.values():
+        result = pipeline(issuer_jwt + "~", None)
+        assert result.raw.vcdm is False and result.raw.expired is False
 
 
 def test_valid_until_inside_the_leeway_verifies(run):

@@ -302,8 +302,10 @@ def _declares_vcdm(claims: Mapping[str, Any]) -> bool:
     """Whether a processed SD-JWT payload is a W3C VCDM credential (VC-JOSE-COSE §3.2.1),
     whose ``validFrom`` / ``validUntil`` (VCDM 1.1: ``issuanceDate`` / ``expirationDate``)
     are then enforced as on the VC-JWT lane: its ``@context`` names a VCDM base context
-    (as a string or anywhere in an array). ``@context`` is never disclosable, so the
-    verdict rests on issuer-signed plaintext.
+    (as a string or anywhere in an array). verify() refuses a presented ``@context``
+    disclosure, so the verdict never reads a holder-supplied one. It cannot see one a
+    third-party issuer made disclosable and the holder withheld (RFC 9901 §9.7): that
+    payload reads as not VCDM.
 
     The ``typ`` is not a signal. ``vc+sd-jwt`` without a VCDM ``@context`` used to count,
     which let a ``vct``-less (or ``vct``-withheld) token skip the REQUIRED ``vct`` of an
@@ -609,7 +611,8 @@ class SdJwtVcProofSuite:
             # VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload, and draft-19
             # dropped the transitional acceptance of it for an IETF SD-JWT VC. Read as VCDM
             # by its typ alone, a `vct`-less or `vct`-withheld token skipped the REQUIRED
-            # `vct` below (#264). The verdict rests on a `@context` refused as a disclosure.
+            # `vct` below (#264). A presented `@context` disclosure was refused above; a
+            # withheld one leaves the payload not VCDM, so it is refused here too.
             raise SdJwtError(
                 "issuer JWT typ 'vc+sd-jwt' needs a W3C VCDM @context; an IETF SD-JWT VC "
                 "is typed 'dc+sd-jwt'")

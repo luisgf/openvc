@@ -242,8 +242,8 @@ context into it, and only then:
 | The payload's `@context` names a VCDM base context, as a string or anywhere in the array | `"@context": ["https://www.w3.org/ns/credentials/v2", …]` (or `…/2018/credentials/v1`) |
 
 The `typ` is not a signal. `vc+sd-jwt` is the media type VC-JOSE-COSE §6.1.3
-registers for a VCDM payload, and `verify()` accepts it **only** for one: an issuer
-JWT typed `vc+sd-jwt` whose payload has no VCDM `@context` raises `SdJwtError`
+registers for a VCDM payload, and `verify()` accepts it **only** for a payload with a
+VCDM base `@context`: an issuer JWT typed `vc+sd-jwt` without one raises `SdJwtError`
 (`issuer JWT typ 'vc+sd-jwt' needs a W3C VCDM @context`). An IETF SD-JWT VC is typed
 `dc+sd-jwt`. The IETF drafts used `vc+sd-jwt` until draft-06 renamed it, but
 draft-ietf-oauth-sd-jwt-vc-19 dropped the transitional acceptance of it, so a

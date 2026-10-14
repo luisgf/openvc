@@ -8,7 +8,7 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
-- **`vc+sd-jwt` is accepted only for a W3C VCDM payload: one with a VCDM `@context`**
+- **`vc+sd-jwt` is accepted only for a payload with a VCDM base `@context`**
   ([#264](https://github.com/luisgf/openvc/issues/264)). Found by the spec-pin
   freshness check of 2026-10-14. **This is a behaviour change:** an SD-JWT that
   verified before can now be refused.
@@ -30,11 +30,19 @@ All notable changes to **openvc** are documented here. The format follows
   `SdJwtVcProofSuite.verify` now raises `SdJwtError` when the issuer `typ` is
   `vc+sd-jwt` and the payload carries no VCDM `@context`. That includes a
   `vct`-bearing IETF payload from a pre-draft-06 issuer: re-issue it as `dc+sd-jwt`.
-  VCDM classification reads only `@context`, which is never disclosable, so it rests
-  on issuer-signed plaintext. A `vc+sd-jwt` with a VCDM `@context`, with or without
-  `vct`, verifies as before, with the VCDM validity window and consistency checks.
-  `dc+sd-jwt` is unchanged here. Its other direction, that a `dc+sd-jwt` always
-  needs a `vct` even with a VCDM `@context`, is #272.
+  VCDM classification reads only `@context`. A presented `@context` disclosure is
+  refused, so the verdict never reads a holder-supplied one. A withheld one leaves the
+  payload not VCDM, and a `vc+sd-jwt` is then refused. A `vc+sd-jwt` with a VCDM
+  `@context`, with or without `vct`, verifies as before, with the VCDM validity window
+  and consistency checks.
+
+  Not changed here, and tracked:
+  - `dc+sd-jwt` keeps today's rules. That it always needs a `vct`, even with a VCDM
+    `@context`, and that the OpenID4VP `dc+sd-jwt` lane pins the issuer `typ`, so a
+    `vc+sd-jwt` with a VCDM `@context` no longer answers a `dc+sd-jwt` query, is #272.
+  - "VCDM" still means a VCDM base URL anywhere in `@context`. Requiring a conforming
+    payload (the base context first, and `type` containing `VerifiableCredential`) is
+    #275.
 
 ## [1.32.4] — 2026-10-14
 

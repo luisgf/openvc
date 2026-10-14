@@ -1,6 +1,6 @@
 """
 tests/test_sd_jwt_vc_typ_vcdm_only.py — the ``vc+sd-jwt`` issuer typ is accepted only for a
-W3C VCDM payload (#264).
+payload with a VCDM base ``@context`` (#264; a conforming VCDM payload is #275).
 
 draft-ietf-oauth-sd-jwt-vc-19 §2.2.1 types an IETF SD-JWT VC ``dc+sd-jwt`` and dropped the
 transitional acceptance of the ``vc+sd-jwt`` that drafts before 06 used. W3C VC-JOSE-COSE
