@@ -36,6 +36,7 @@ import enum
 import json
 import math
 import sys
+from fractions import Fraction
 
 import pytest
 from hypothesis import given, settings
@@ -74,6 +75,14 @@ ISSUER = "did:example:issuer"
 NAN = float("nan")
 INF = float("inf")
 HUGE = 10 ** 5000          # past sys.get_int_max_str_digits: str()/repr() raise ValueError
+
+
+class _HasBytes:
+    """Not a buffer, but ``bytes()`` takes it through ``__bytes__``: it built a list
+    before the builders asked for a buffer."""
+
+    def __bytes__(self) -> bytes:
+        return b"\xff" * 8
 
 
 def _released_view() -> memoryview:
@@ -201,6 +210,8 @@ BAD_INDEXES = [
 BAD_STRINGS = [
     pytest.param(None, id="None"),
     pytest.param(5, id="int"),
+    pytest.param(0, id="0"),               # falsy: the verifier skips a falsy list purpose
+    pytest.param(False, id="False"),
     pytest.param(True, id="bool"),
     pytest.param(3.5, id="float"),
     pytest.param("", id="empty"),
@@ -213,6 +224,8 @@ BAD_SIZES = [
     pytest.param(True, id="True"),
     pytest.param(2.5, id="2.5"),
     pytest.param(8.0, id="8.0"),
+    pytest.param(Fraction(8, 1), id="Fraction-8"),     # (8 + 7) // 8 worked by arithmetic
+    pytest.param(Fraction(3, 2), id="Fraction-3/2"),
     pytest.param(NAN, id="nan"),
     pytest.param(INF, id="inf"),
     pytest.param("8", id="str"),
@@ -310,6 +323,11 @@ def test_list_cap_counts_bytes_not_items():
     pytest.param("0000", id="str"),
     pytest.param(None, id="None"),
     pytest.param([0, 1], id="list"),
+    pytest.param((0, 1), id="tuple"),          # bytes() took each of these as a list
+    pytest.param(range(2), id="range"),
+    pytest.param((n for n in (0, 1)), id="generator"),
+    pytest.param({0: 1}, id="dict"),
+    pytest.param(_HasBytes(), id="__bytes__"),
     pytest.param(_released_view(), id="released-memoryview"),
 ])
 def test_list_credential_refuses_a_non_bytes_bitstring(bitstring):
@@ -342,6 +360,11 @@ def test_list_token_refuses_a_list_past_the_decompression_cap():
     pytest.param("0000", id="str"),
     pytest.param(None, id="None"),
     pytest.param([0, 1], id="list"),
+    pytest.param((0, 1), id="tuple"),          # bytes() took each of these as a list
+    pytest.param(range(2), id="range"),
+    pytest.param((n for n in (0, 1)), id="generator"),
+    pytest.param({0: 1}, id="dict"),
+    pytest.param(_HasBytes(), id="__bytes__"),
     pytest.param(_released_view(), id="released-memoryview"),
 ])
 def test_list_token_refuses_a_non_bytes_list(status_list):
@@ -360,6 +383,7 @@ def test_list_token_refuses_a_non_string_uri(uri):
 @pytest.mark.parametrize("bits", [
     pytest.param(True, id="True"),         # `True in {1, 2, 4, 8}` holds
     pytest.param(1.0, id="1.0"),           # ... and so does `1.0 in {...}`
+    pytest.param(Fraction(1, 1), id="Fraction-1"),     # ... and `Fraction(1) in {...}`
     pytest.param([1], id="list"),          # unhashable: a bare TypeError from `in`
     pytest.param({"b": 1}, id="dict"),
     pytest.param("1", id="str"),

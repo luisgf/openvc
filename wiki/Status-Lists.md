@@ -67,9 +67,10 @@ fails at build time with a `StatusListError` instead of in the field:
 - `status_list_credential`, `status_purpose` and the IETF `uri` are non-empty strings.
 - A list is a `bytes`, `bytearray`, `memoryview` or `array.array` (wrap any other
   buffer in `memoryview()`; an `int` is refused, where it used to become a zeroed
-  list, and so is a `list` or `tuple` of ints: pass `bytes(values)`). A non-contiguous
-  `memoryview` counts as the bytes it shows. It may not exceed the 16 MiB the
-  verifier decompresses: `build_status_list_credential` and `build_status_list_token`
+  list, and so is anything else `bytes()` would have taken, a `list` or `tuple` of
+  ints say: pass `bytes(values)`). A non-contiguous `memoryview` counts as the bytes
+  it shows. It may not exceed the 16 MiB the verifier decompresses:
+  `build_status_list_credential` and `build_status_list_token`
   refuse a longer one, and `new_bitstring(size)` / `new_status_list(size, bits=...)`
   refuse a `size` that would need it: 2^27 one-bit statuses, but only 2^24 at 8 bits.
 - The time inputs (`issued_at`, `expires`, `valid_from`) and `ttl` are not checked
@@ -86,10 +87,12 @@ field, or raised a bare `TypeError` (a `bool`, `float` or oversized index, a lis
 16 MiB, a `bits` of `True`). Some built an artefact that worked and are refused only
 because they were never the documented types. Pass these instead:
 
-- a `list` or `tuple` of ints as the list: `bytes(values)`;
+- anything `bytes()` accepted as the list that is not a buffer (a `list`, `tuple`,
+  `range`, generator, `dict` or an object with `__bytes__`): `bytes(values)`;
 - an integral `Decimal` or `Fraction` as the index: `int(index)`;
-- a `bool` `bits` or `size`: the `int` (`1`);
-- an empty `status_purpose`: the purpose (`"revocation"` is the default).
+- a `bool` or `Fraction` `bits` or `size`: the `int` (`1`);
+- a falsy `status_purpose` (`""`, `None`, `0`) or an empty `id` on the list credential:
+  the purpose (`"revocation"` is the default) and the URL.
 
 The [CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for
 1.32.3 lists every case.

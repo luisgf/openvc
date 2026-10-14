@@ -57,26 +57,34 @@ One behaviour change, in the status-list builders and codec (below).
     `int`: 1, 2, 4 or 8);
   - a list longer than 16 MiB (split the statuses across lists);
   - a non-string or empty `statusListCredential` or `status_purpose` on
-    `build_status_list_entry`, and `uri` on `build_token_status_reference` (pass the
-    string); the check side refuses an empty or non-string one, and an empty
-    `status_purpose` never matches a normal list's.
+    `build_status_list_entry`, a truthy non-string `status_purpose` (`5`) on
+    `build_status_list_credential` (the verifier compares it with the entry's and
+    refuses the list: `status-list purpose 5 != entry purpose 'revocation'`), and a
+    non-string or empty `uri` on `build_token_status_reference` (pass the string); the
+    check side refuses an empty or non-string one, and an empty `status_purpose` never
+    matches a normal list's.
 
   Inputs that built a working artefact but fall outside the documented types:
-  - a `list` or `tuple` of ints as the list on `build_status_list_credential` or
-    `build_status_list_token`: pass `bytes(values)`;
+  - anything `bytes()` accepted that is not a buffer, as the list on
+    `build_status_list_credential` or `build_status_list_token`: a `list`, `tuple`,
+    `range`, generator, `dict` (its keys) or an object with `__bytes__`. Pass
+    `bytes(values)`;
   - an integral `Decimal` or `Fraction` (a database `NUMERIC` column, say) as the
     `index` of `build_status_list_entry`: pass `int(index)`. On
     `build_token_status_reference` it put an object into the claim that `json.dumps`
     cannot serialise;
   - a `bool` `bits` on `get_status`, `set_status` and `new_status_list`, and a `bool`
     `size` on `new_bitstring` and `new_status_list` (each read as 1): pass `1`. A
-    `size` past the 16 MiB cap allocated a list the verifier cannot read back;
-  - an empty `status_purpose` on `build_status_list_credential`: the verifier skips the
-    purpose match against an empty list purpose, so entries still revoked off it, and
-    an entry with an empty purpose too could never revoke. Pass the purpose
-    (`"revocation"` is the default);
+    `Fraction` `size` on those two, and `Fraction(1)` as `bits` on `new_status_list`,
+    worked by comparing equal to the number: pass the `int`. A `size` past the 16 MiB
+    cap allocated a list the verifier cannot read back;
+  - a falsy `status_purpose` (`""`, `None`, `0`) on `build_status_list_credential`: the
+    verifier skips the purpose match against a falsy list purpose, so entries still
+    revoked off it, and an entry with an empty purpose too could never revoke. Pass the
+    purpose (`"revocation"` is the default);
   - an `int` as the list, a zeroed list of that many bytes (pass `bytes(n)` if that is
-    what you meant), and a non-string list credential `id` (pass the URL string);
+    what you meant), and an empty or non-string list credential `id` (pass the URL
+    string);
   - a non-string or empty `uri` on `build_status_list_token`: the token verifies, but
     no reference can name it, because the check side refuses an empty or non-string
     `uri`. Pass the URL string.
