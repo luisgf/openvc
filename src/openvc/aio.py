@@ -73,6 +73,7 @@ from .verify import (
     _as_str,
     _bind_issuer_to_verification_method,
     _bytes_to_credential,
+    _check_di_types,
     _check_sd_jwt_types,
     _check_types,
     _enforce_status_issuer,
@@ -323,7 +324,7 @@ async def _verify_data_integrity_async(
             now=policy.now, extra_contexts=extra_contexts,
             check_temporal=policy.require_not_expired)
     _bind_issuer_to_verification_method(verified)
-    _check_types(verified.credential, policy.expected_types)
+    _check_di_types(verified.credential, policy.expected_types, fmt, extra_contexts)
     status = await _check_status_async(verified.credential, verified.credential, policy,
                                        resolve_status_list, resolve_status_list_token,
                                        credential_issuer=verified.issuer)

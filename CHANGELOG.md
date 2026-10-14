@@ -4,15 +4,17 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.33.0] — 2026-10-14
+## [1.33.1] — unreleased
 
 ### Security
 
 - **The RDF Data Integrity suites refuse an array nested in an array, a member a
-  trusted context defines that is not spelled by its term, and a status entry described
-  outside `credentialStatus`** (GHSA-h9rq-wxcw-4rjc). All are wrong-accepts left by the
-  context validation of 1.30.2, on `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and
-  `ecdsa-sd-2023`, sync and async.
+  trusted context defines that is not spelled by its term, a status entry described
+  outside `credentialStatus` (an exact copy aside) and an `ecdsa-sd-2023` derived proof
+  that merges blank nodes, and match `expected_types` by IRI** (GHSA-h9rq-wxcw-4rjc).
+  All are wrong-accepts left by the context validation of 1.30.2, on `eddsa-rdfc-2022`,
+  `ecdsa-rdfc-2019` and `ecdsa-sd-2023`, sync and async. Affected: every release up to
+  and including 1.33.0.
   - **A holder could hide a revoked status entry.** JSON-LD expansion flattens an
     array nested directly in an array (outside `@list`), so `credentialStatus:
     [S1, [S2]]` signs the same dataset as `[S1, S2]`. The compacted-form comparison
@@ -33,6 +35,22 @@ All notable changes to **openvc** are documented here. The format follows
     could be left behind with only that type, and the destination could be another
     node's own `credentialStatus` (a subject typed `VerifiableCredential`, or a context
     defining the term at the top level), which the status check never reads either.
+  - **On `ecdsa-sd-2023`, a holder could make two JSON nodes one signed node.** The
+    verifier took blank-node identity for the signature from the holder's label map,
+    which it never required to be injective, and it turned every `urn:bnid:` IRI in the
+    presented document into a blank node. Everything after the signature reads the
+    JSON, where those are separate nodes. VCDM 2.0 makes a status entry's `id`
+    optional, so an issuer that also names its entry from another property labels it
+    (`_:s`). The holder mapped two JSON blank nodes to that entry's one HMAC label, or
+    wrote the left-behind node as `urn:bnid:b0` (pyld's own label for the other node).
+    Then it described the entry under `relatedResource` and left only its unrelated
+    type under `credentialStatus`. The move check above saw two different ids, so the
+    move went through, and with `require_status=False` and a status resolver the
+    revoked credential verified. The default policy failed closed with
+    `StatusUnavailable`. The same deskolemization let a holder put an IRI id of its
+    choosing (`urn:bnid:` plus anything) on any node the issuer signed as a blank
+    node. On the W3C reference vectors the verified subject became `urn:bnid:alice`.
+    That part affects every release with `ecdsa-sd-2023`, from 0.3.0.
   - **A holder could drop a context the verifier serves and spell its terms through an
     inline `@vocab`.** Only the contexts the document listed were checked for term
     spelling, and that list is the holder's to edit. On the issuer's genuine credential,
@@ -45,6 +63,21 @@ All notable changes to **openvc** are documented here. The format follows
     policy while the other entry was revoked. A verifier that also serves the VC 1.1
     context was exposed the same way with a plain `BitstringStatusListEntry`: the holder
     moved the credential onto the 1.1 base, which has no term for it.
+  - **A holder could re-compact a credential onto the bundled VC 2.0 base alone.** The
+    term rule covered only IRIs a served context defines a term for. `issuanceDate` and
+    `expirationDate` have a term only in the VC 1.1 context, and `StatusList2021Entry`
+    and its members only in the StatusList2021 context, and openvc serves neither by
+    default. A holder expanded an issuer's VC 1.1 credential and re-compacted it under
+    `["https://www.w3.org/ns/credentials/v2"]`. The dataset and the signature stayed the
+    same, compaction wrote both dates under their full IRIs (or as
+    `cred:expirationDate` beside a served `cred` prefix), and a default verifier, which
+    could not even load the original, verified an expired or not-yet-valid credential,
+    on all three RDF suites, sync and async. Dropping an unserved StatusList2021 context
+    the same way left the entry's type and members as full IRIs, and with
+    `require_status=False` the revoked entry was skipped. A served context that gave one
+    of those IRIs a term of its own (`"expiry"` for `…/credentials#expirationDate`) hid
+    it too, whether or not the verifier also served VC 1.1, because the base-context
+    rule applied only to IRIs the base context defines.
   - **An issuer could sign a credential that never expired.** A term that coerces a
     datatype (`validFrom` / `validUntil`: `xsd:dateTime`; the proof's `expires`) or
     takes a node (`credentialStatus`) cannot carry a value that does not match. JSON-LD
@@ -60,6 +93,18 @@ All notable changes to **openvc** are documented here. The format follows
     `credentialStatus` but shorter was what compaction itself chose, so the status was
     never checked. openvc's own `add_proof` and `add_base_proof` ran the same check, so
     they signed these documents too.
+  - **A holder could make `expected_types` match a type the issuer never signed.** The
+    term rule asked only which defined IRIs a spelling may stand for, and the policy
+    compared `type` as JSON text. An issuer typed its credential through its own
+    published context (`"AlumniDegreeCredential"` for
+    `https://vendor.example/vocab#AlumniDegreeCredential`). The holder replaced that
+    context with `{"@vocab": "https://vendor.example/vocab#Alumni"}`, an inline `@vocab`
+    ending inside the signed IRI, and wrote the type as `"DegreeCredential"`. The
+    dataset, the signature and the compacted round trip stayed the same, and
+    `VerificationPolicy(expected_types=["DegreeCredential"])` passed: on a default
+    verifier, which could not even load the original, and on one serving a context that
+    defines `"DegreeCredential"` as another IRI. Any suffix of a signed type IRI could be
+    written this way.
 
   Now a one-element array folds into its element only as a member's value, never inside
   another array, so any array directly in an array that compaction does not emit is
@@ -69,10 +114,25 @@ All notable changes to **openvc** are documented here. The format follows
   That covers the bundled contexts and `extra_contexts`, whether or not the document
   lists them, at the top level or in a type- or property-scoped context. When the VC
   base context defines a term for the IRI, it must be the base context's term, so an
-  injected alias is refused. A node under the top-level `credentialStatus` whose `@id`
-  is also described anywhere else in the document, another node's `credentialStatus`
-  included, is refused. The keys inside an `@json` value (`_sd`, `cnf.jwk`) are data and
-  are not checked, and an IRI no served context defines a term for is left alone. A term
+  injected alias is refused. An IRI the policy reads after the proof (`validFrom`,
+  `validUntil`, `issuanceDate`, `expirationDate`, the proof's `expires`,
+  `credentialStatus`, `credentialSchema`, and the entry types and members of
+  `BitstringStatusListEntry` and `StatusList2021Entry`) must be the one key the policy
+  reads it under, whatever the loader serves and whatever term another context gives
+  it. Those IRIs are indexed, not the contexts: VC 1.1 and StatusList2021 are still not
+  served by default. A node under the top-level `credentialStatus` whose `@id` is also
+  described anywhere else in the document, another node's `credentialStatus` included,
+  is refused, unless that description is an exact copy of an entry with that `@id`
+  (equal expanded node objects). An embedded credential, such as an OB 3.0
+  endorsement, may repeat the outer `credentialStatus` verbatim, and RDF merges a copy
+  into the entry's own statements. Moving any member out of the entry makes the two
+  differ. On `ecdsa-sd-2023`, `decode_derived_proof` refuses a label map that gives two
+  blank nodes one label (`ProofValueMalformed`). `verify` canonicalizes the document as
+  presented, as VC-DI-ECDSA's verifier does, and no longer turns `urn:bnid:` IRIs into
+  blank nodes; `derive_proof` computes its label map the same way. Blank-node identity
+  for the signature is then the identity the JSON-LD checks see, which the move check
+  and its exact-copy exception rely on. The keys inside an `@json` value (`_sd`, `cnf.jwk`) are data and are not
+  checked, and any other IRI no served context defines a term for is left alone. A term
   with no `@id` is indexed under the vocabularies the served contexts set and the inline
   `@vocab` in effect where the document lists a context (and the last one), so piling up
   inline `@vocab` objects grows neither the index nor the work per key. The loader
@@ -86,17 +146,39 @@ All notable changes to **openvc** are documented here. The format follows
   `parse_status_entries` / `check_credential_status`, where only an issuer could produce
   the shape.
 
+  A top-level `type` value that is a term a served context defines must stand, in the
+  document, for one of the IRIs that term is defined as (`ProofMalformed`, when
+  verifying and when signing). On the three RDF suites `expected_types` is now matched
+  by IRI against the expanded types of the credential (or presentation), never as JSON
+  text: a name a served context defines stands for its IRIs, any other bare name for
+  each served `@vocab` plus it, and a full or compact IRI for itself. The credential's
+  own `@context` never resolves a name. The JCS suites, VC-JWT and SD-JWT still compare
+  the strings the issuer signed. A missing type is still `TypeMismatch`, and its message
+  names the remedies below.
+
   **What this rejects that used to be accepted.** A document with an array nested in an
   array outside a `@list` term, including an `@json` value whose top-level array holds
   arrays (pyld compacts that lossily: `[["x"]]` comes back as `"x"`). A defined property
   keyed by its IRI, a compact IRI or an `@vocab` suffix because its value does not fit
   the term. A term an injected context defines for an IRI the VC base context has its
-  own term for. A status entry also described under another property, a nested
-  `credentialStatus` included, and a `credentialStatus` member that is not an object or
-  has no `type`. The term rule is a deliberate superset. It does not track which served
-  contexts a document uses, so a full IRI, compact IRI or `@vocab` suffix (as a key or a
-  `type` value) for an IRI any served context defines a term for is refused even in a
-  document that never lists that context. A verifier with a large `extra_contexts` set
+  own term for. An issuance or expiry date, or a `StatusList2021Entry` type or member,
+  spelled by full IRI, compact IRI or `@vocab` suffix, even where no served context
+  defines a term for it, and a term any served context gives one of the IRIs the policy
+  reads, in a VC 1.1-based document too. A `StatusList2021Entry` spelled by its IRIs
+  under `require_status` now fails with `ProofMalformed` instead of the
+  `StatusUnavailable` of "no recognised entry". A status entry also described under
+  another property, a nested `credentialStatus` included, other than as an exact copy
+  of the entry, and a `credentialStatus` member that is not an object or has no `type`.
+  On `ecdsa-sd-2023`, a derived proof whose label map repeats a label, and a reveal
+  document that writes as a `urn:bnid:` IRI a node the issuer signed as a blank node.
+  openvc's own `derive_proof` wrote such an IRI in one case: a blank node the issuer
+  labelled `_:bN` and also referenced from a second property, with both disclosed. It
+  now refuses that selection with `EcdsaSdError` instead of emitting a proof only the
+  old verifier accepted. The term rule is a deliberate
+  superset. It does not track which served contexts a document uses, so a full IRI,
+  compact IRI or `@vocab` suffix (as a key or a `type` value) for an IRI any served
+  context defines a term for is refused even in a document that never lists that
+  context. A verifier with a large `extra_contexts` set
   may see new refusals of such extension spellings. Every served context is now read on
   every validation, so one in `extra_contexts` that cannot be read (JSON text that does
   not parse, or scoped contexts nested past the walk's bound of 16) refuses every RDF
@@ -109,6 +191,144 @@ All notable changes to **openvc** are documented here. The format follows
   context defines, add a term of your own for it to `extra_contexts`. An IRI the VC base
   context defines has no other accepted spelling, so use another property. The W3C
   vectors are unaffected.
+
+  **A behaviour change for `expected_types` on the RDF suites.** A type that only an
+  inline `@vocab` names (`"ExampleDegreeCredential"` under `{"@vocab":
+  "https://www.w3.org/ns/credentials/examples#"}`) no longer meets a bare-name pin,
+  because the holder can move that `@vocab` boundary. Serve a context that gives it
+  that name (the published one, or one holding just that `@vocab`) through
+  `extra_contexts`, which the credential need not list, or pin the full type IRI. A
+  top-level type written with the name of a term a served context defines, while it
+  stands for another IRI, is refused outright. Not changed: code that reads `type` from
+  the JSON, for a name no served context defines, can still be shown such a suffix;
+  compare expanded IRIs there, or let `expected_types` do it.
+
+- **A hostile `ecdsa-sd-2023` derived proof value raises `ProofValueMalformed`, not a
+  bare `TypeError` / `AttributeError`.** Found by the adversarial review of
+  GHSA-h9rq-wxcw-4rjc. Pre-existing: `decode_derived_proof` checked only that the CBOR
+  was a five-element array. A text-string, integer or map `public_key` raised
+  `TypeError` before the issuer's key was resolved, so it needed no key and no
+  signature; an array or text-string label map raised `AttributeError`, which the
+  `except` around the decode did not list; an integer `signatures` raised `TypeError`
+  once the genuine base signature verified. Each escaped the suite's `verify`,
+  `verify_credential` and `verify_credential_async`, and aborted a whole `verify_many` /
+  `verify_many_async` batch (threat model I14, I15): the #279 / #208 class. No
+  wrong-accept: every case failed closed, untyped. `decode_derived_proof` now requires
+  `base_signature` and `public_key` byte strings, `signatures` an array of byte
+  strings, the label map a map of unsigned integers to byte strings and
+  `mandatory_indexes` an array of unsigned integers, and raises `ProofValueMalformed`
+  otherwise, before anything is hashed; `AttributeError` joined the backstop around it.
+  Shapes that were already typed later (a text-string base signature, statement
+  signature or index) now fail the same way, at decode, and a label map with a text
+  key, which no genuine proof writes and which used to be ignored, is refused. So is a
+  label map that repeats a label, which was a wrong-accept (see above).
+
+### Tests
+
+- **Nested arrays and term spelling are pinned on every RDF suite**
+  (GHSA-h9rq-wxcw-4rjc). Sections 11 and 12 of `test_di_context_validation.py` drive
+  `verify_credential` and `verify_credential_async` with a status-list resolver whose
+  second list has the entry's bit set: `credentialStatus` re-spelled as `[S1, [S2]]`,
+  `[[S1, S2]]`, `[[S1], [S2]]` and `[[S]]`, under `require_status` on and off, on
+  `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and a derived `ecdsa-sd-2023` credential, each
+  with a control that is `CredentialRevoked`; the suites' own `verify` is checked too.
+  `validate_document` refuses an array in an array at `credentialSubject`, `type`,
+  nested objects and literals, `validUntil`, `credentialSchema`, `issuer` and the proof,
+  still folds a one-element member array, and a `@list` of lists from an injected
+  context still signs and verifies. A low-level issuer signs an untyped `validUntil` /
+  `validFrom` (full IRI, IRI under `@vocab`, `@vocab` suffix, compact IRI,
+  language-tagged), a literal `credentialStatus` and an untyped proof `expires`; each is
+  refused when verifying and by `add_proof` / `add_base_proof`, and extension IRIs and
+  `@json` content still verify. Section 13 moves a revoked entry the issuer also named
+  from `relatedResource` there, leaving `{"id": X}`, the bare `X` or only an unrelated
+  type under `credentialStatus` (both RDF suites and a derived `ecdsa-sd-2023`
+  credential), shows the status parser alone still refuses what is left when the
+  structural rule is switched off, and re-spells an issuer-signed bare reference as
+  `{"id": X}`. It also moves the entry under another node's `credentialStatus` (a
+  subject typed `VerifiableCredential`, a nested node typed so, and a context defining
+  the term at the top level, plus a derived `ecdsa-sd-2023` credential), leaving only
+  its unrelated type behind, and checks that a nested node's own distinct status entry
+  still verifies. Section 14 injects contexts that alias `validUntil`, `validFrom`,
+  `credentialStatus` and the proof's `expires`, and checks that a context restating a
+  core term still verifies. Section 15 pins the intended refusals of the superset: a
+  base-context IRI at a subject (compact IRI, full IRI, alias) and an `@json` array of
+  arrays. Section 16 drops an injected status-list context in favour of an inline
+  `@vocab` on the issuer's genuine credential (a mixed and a single
+  `StatusList2021Entry`, both RDF suites and a derived `ecdsa-sd-2023` credential,
+  `require_status` on and off), moves a v2 credential onto a VC 1.1 base the verifier
+  also serves, respells a credential type the same way, checks that a loader which does
+  not list what it serves is refused, and that the index does not grow with inline
+  `@vocab` objects. Section 17 re-compacts an issuer's VC 1.1 credential (expired, or
+  not yet valid) onto the VC 2.0 base alone, by full IRI and by compact IRI, on both RDF
+  suites and a derived `ecdsa-sd-2023` credential; drops an unserved StatusList2021
+  context from a credential with a revoked entry (`require_status` on and off, both RDF
+  suites and a derived `ecdsa-sd-2023` credential); renames both dates through a served
+  alias context, with and without VC 1.1 served; checks that each IRI the policy reads
+  is refused by full IRI, alias and `@vocab` suffix under the default loader while its
+  key is not, that no other VC 1.1 term is indexed and VC 1.1 is still not served, and
+  that an unexpired VC 1.1 credential and a clear `StatusList2021Entry` still verify
+  where their contexts are served. `test_status.py` pins `StatusListError` for each
+  non-object array member and each typeless entry, with the resolver never called, and
+  `test_contexts.py` the loader's read-only `contexts`. On v1.33.0, 201 of these tests
+  fail: 177 on the attack (it verifies or is signed, or `StatusUnavailable` stands in
+  for the refusal), 4 on the issuer-signed bare reference of section 13, which pins the
+  status parser change itself, and 20 that read internals this fix adds. Every other
+  control passes.
+- **A signed type re-spelled through an inline `@vocab` boundary is pinned on every RDF
+  suite** (GHSA-h9rq-wxcw-4rjc). Section 18 of `test_di_context_validation.py` re-spells
+  an issuer's vendor-typed credential with an inline `@vocab` that ends inside the
+  signed type IRI, on `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and a derived
+  `ecdsa-sd-2023` credential, sync and async: as a term a served context defines for
+  another IRI (`ProofMalformed`, with or without a pin, and from the suite's own
+  `verify`), and as a suffix no served context names (`TypeMismatch` under the pin; it
+  still verifies without one, and by its full IRI). Controls show the original is an
+  `AlumniDegreeCredential`, not a `DegreeCredential`, and cannot be loaded without its
+  context. It also pins the behaviour change (an inline-`@vocab` type meets a bare name
+  only when the verifier serves a context naming it, or by full IRI), the remedy in the
+  `TypeMismatch` message, the unchanged JCS lane, `missing_types` (served terms,
+  compact IRIs, served `@vocab` only, a presentation's own node), and that a served type
+  term spelling its own IRI, under either of two served definitions, still validates
+  while `add_proof` refuses one standing for another IRI. On v1.33.0, 13 of its 14 tests
+  fail; the JCS control passes.
+- **Blank-node merges on `ecdsa-sd-2023` and exact status copies are pinned**
+  (GHSA-h9rq-wxcw-4rjc). Section 19 of `test_di_context_validation.py` signs a base
+  proof whose revoked status entry is a blank node also named from `relatedResource`,
+  and has the holder craft a full-disclosure derived proof the old verifier accepted.
+  The left-behind node is id-less or `_:a` with both JSON nodes mapped to the issuer's
+  one label (`ProofValueMalformed`), or `urn:bnid:bN` (`SignatureInvalid`), under
+  `require_status` on and off, sync and async, and from the suite's own `verify`. A
+  control with one JSON label in both places is `ProofMalformed`, an honest reveal is
+  `CredentialRevoked`, a genuine derived id-less entry still verifies, and
+  `derive_proof` never yields a proof the verifier refuses. Section 20 repeats a status
+  entry verbatim in an embedded credential and under `relatedResource`, signed by
+  openvc and by a third-party signer, on both RDF suites: a clear entry verifies and a
+  revoked one is `CredentialRevoked` under either `require_status`. A derived
+  `ecdsa-sd-2023` credential with the embedded copy does the same. A copy that is no
+  longer exact (a member deleted from the top-level entry, or the section-13 shape) is
+  still `ProofMalformed`. `test_ecdsa_sd_interop.py` gives the W3C reference reveal's
+  blank-node credential and subject a `urn:bnid:alice` id (`SignatureInvalid`). On
+  v1.33.0, 17 of these 27 tests fail: the eight section-19 attacks, the four
+  inexact-copy tests and the derived-copy test (v1.33.0 had no move check at all), and
+  the four interop cases. The eight exact-copy cases pass there; they fail on the
+  stricter move check this release first drafted.
+- **`tests/test_ecdsa_sd_derived_proof_shape.py`**. `decode_derived_proof` gets a wrong
+  CBOR type for each part, or a label map that repeats a label (19 cases). A genuine
+  derived credential carries eight of them through the suite's `verify` (with the
+  issuer's key and with an unrelated one),
+  `verify_credential`, `verify_credential_async`, and `verify_many` /
+  `verify_many_async` between two genuine credentials that still verify; a decode
+  monkeypatched to raise each of five exception types checks the backstop. On v1.33.0,
+  28 of its 34 tests fail; the six that pass are the genuine shapes and the backstop for
+  the four exception types the `except` already listed.
+- **`tests/test_docs_claims.py`** checks that the unreleased CHANGELOG section names a
+  version with no release link, no dated heading and above `openvc.__version__`, and
+  that the audit docs file each advisory that section names under that version. The
+  GHSA-h9rq-wxcw-4rjc write-up had been filed under 1.33.0, which shipped without it.
+
+## [1.33.0] — 2026-10-14
+
+### Security
+
 - **`vc+sd-jwt` is accepted only for a payload with a VCDM base `@context`**
   ([#264](https://github.com/luisgf/openvc/issues/264)). Found by the spec-pin
   freshness check of 2026-10-14. **This is a behaviour change:** an SD-JWT that
@@ -613,45 +833,6 @@ That is a separate question; this only stops the builder from producing such a l
 
 ### Tests
 
-- **Nested arrays and term spelling are pinned on every RDF suite**
-  (GHSA-h9rq-wxcw-4rjc). Sections 11 and 12 of `test_di_context_validation.py` drive
-  `verify_credential` and `verify_credential_async` with a status-list resolver whose
-  second list has the entry's bit set: `credentialStatus` re-spelled as `[S1, [S2]]`,
-  `[[S1, S2]]`, `[[S1], [S2]]` and `[[S]]`, under `require_status` on and off, on
-  `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and a derived `ecdsa-sd-2023` credential, each
-  with a control that is `CredentialRevoked`; the suites' own `verify` is checked too.
-  `validate_document` refuses an array in an array at `credentialSubject`, `type`,
-  nested objects and literals, `validUntil`, `credentialSchema`, `issuer` and the proof,
-  still folds a one-element member array, and a `@list` of lists from an injected
-  context still signs and verifies. A low-level issuer signs an untyped `validUntil` /
-  `validFrom` (full IRI, IRI under `@vocab`, `@vocab` suffix, compact IRI,
-  language-tagged), a literal `credentialStatus` and an untyped proof `expires`; each is
-  refused when verifying and by `add_proof` / `add_base_proof`, and extension IRIs and
-  `@json` content still verify. Section 13 moves a revoked entry the issuer also named
-  from `relatedResource` there, leaving `{"id": X}`, the bare `X` or only an unrelated
-  type under `credentialStatus` (both RDF suites and a derived `ecdsa-sd-2023`
-  credential), shows the status parser alone still refuses what is left when the
-  structural rule is switched off, and re-spells an issuer-signed bare reference as
-  `{"id": X}`. It also moves the entry under another node's `credentialStatus` (a
-  subject typed `VerifiableCredential`, a nested node typed so, and a context defining
-  the term at the top level, plus a derived `ecdsa-sd-2023` credential), leaving only
-  its unrelated type behind, and checks that a nested node's own distinct status entry
-  still verifies. Section 14 injects contexts that alias `validUntil`, `validFrom`,
-  `credentialStatus` and the proof's `expires`, and checks that a context restating a
-  core term still verifies. Section 15 pins the intended refusals of the superset: a
-  base-context IRI at a subject (compact IRI, full IRI, alias) and an `@json` array of
-  arrays. Section 16 drops an injected status-list context in favour of an inline
-  `@vocab` on the issuer's genuine credential (a mixed and a single
-  `StatusList2021Entry`, both RDF suites and a derived `ecdsa-sd-2023` credential,
-  `require_status` on and off), moves a v2 credential onto a VC 1.1 base the verifier
-  also serves, respells a credential type the same way, checks that a loader which does
-  not list what it serves is refused, and that the index does not grow with inline
-  `@vocab` objects. `test_status.py` pins `StatusListError` for each non-object array
-  member and each typeless entry, with the resolver never called, and `test_contexts.py`
-  the loader's read-only `contexts`. On v1.32.4, 169 of these tests fail: 159 on the
-  attack (it verifies or is signed, or `StatusUnavailable` stands in for the refusal), 4
-  on the issuer-signed bare reference of section 13, which pins the status parser change
-  itself, and 6 that read internals this fix adds. Every other control passes.
 - **`tests/test_dcql_multiple_boolean.py`** (#268). Negatives first, each pinning the
   query it names and the exact class, so none can pass on the "single-valued" message
   or on a later failure: the fourteen non-booleans (`"false"`, `"true"`, `""`, `"0"`,

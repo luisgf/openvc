@@ -87,7 +87,7 @@ boundary is attacker-controlled until a signature verifies.
 |---|---|---|
 | Present a forged / tampered credential | Wrong-accept | Signature verified through the matching suite; the `{ES256, ES384, EdDSA, Ed25519}` allow-list runs **before any crypto** — `src/openvc/proof/vc_jwt.py:55,198`, `src/openvc/proof/_jws.py:84` (rejects `alg:none`, RS\*, HS\* by exclusion → alg-confusion defence). ES256 must be raw R‖S 64 bytes, never DER — `src/openvc/keys.py:575-589` |
 | Name issuer A but sign with key B | Impersonation | **Issuer binding**: a DI proof's `verificationMethod` must be controlled by the credential `issuer` DID — `src/openvc/verify.py:628-641`; VC-JWT reconciles the JWT envelope (`iss`/`sub`/`jti`) with the embedded `vc` — `src/openvc/proof/vc_jwt.py:360-381`; x5c binds the leaf SAN to `iss` — `src/openvc/x5c.py:56-70`; a W3C `vc+sd-jwt` credential is reconciled the same way, and every identifier a present `issuer` carries must be `iss` — `issuer_identifiers` (#221); an https `iss` that Python and a WHATWG parser read as different hosts is refused before the `/.well-known/jwt-vc-issuer` fetch and never binds an x5c `dNSName` — `_parse_https_issuer` in `jwt_vc_issuer.py` (#236) |
-| Re-spell a signed RDF Data Integrity credential's JSON while keeping its signed dataset (IRI-keyed or aliased member, inline `@context` re-mapping a term, undefined term, `@included`) | Wrong-accept: the policy reads JSON the signature does not cover (expiry/status/schema skipped, `credentialSubject` spoofed past holder binding, unsigned claims) | **Context validation** (VC-DI §2.4.1) after the proof verifies and before any policy read — `src/openvc/proof/_context_validation.py:67-80`, called at `src/openvc/proof/data_integrity.py:233`, `src/openvc/proof/di_ecdsa_rdfc.py:205`, `src/openvc/proof/ecdsa_sd.py:683` (and on the signing side). VC base context first, then only loader-served URLs or absolute-IRI `@vocab`-only objects (`:83-100`); the document and proof must equal the compaction of their own expansion (`:109-132`), with no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, and nothing the RDF conversion drops — every node id, type and property a well-formed absolute IRI, no blank-node property (`:144-175`) |
+| Re-spell a signed RDF Data Integrity credential's JSON while keeping its signed dataset (IRI-keyed or aliased member, inline `@context` re-mapping a term, undefined term, `@included`) | Wrong-accept: the policy reads JSON the signature does not cover (expiry/status/schema skipped, `credentialSubject` spoofed past holder binding, unsigned claims) | **Context validation** (VC-DI §2.4.1) after the proof verifies and before any policy read — `src/openvc/proof/_context_validation.py` (`validate_document`), called at `src/openvc/proof/data_integrity.py:236`, `src/openvc/proof/di_ecdsa_rdfc.py:205`, `src/openvc/proof/ecdsa_sd.py:749` (and on the signing side). VC base context first, then only loader-served URLs or absolute-IRI `@vocab`-only objects (`_check_context`); the document and proof must equal the compaction of their own expansion (`_check_compacted`), with no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, and nothing the RDF conversion drops — every node id, type and property a well-formed absolute IRI, no blank-node property (`_check_expanded`) |
 | Serve a malicious document at a fetched URL | **SSRF** (internal hosts / cloud metadata) | `src/openvc/fetch.py`: https-only (`:126`), blocks private/loopback/link-local/reserved/multicast/unspecified (`:49-55`) and, since v1.25.0, any other address that is not `is_global` (RFC 6598 CGNAT, #156), rejects the host if **any** resolved address is forbidden (`:58-72`), refuses redirects (`:143-144`), and **pins the socket to the validated IP** (`:75-92`) closing DNS-rebinding |
 | Ship a tiny highly-compressible status list | **Decompression bomb** (OOM DoS) | Status decode caps the *decompressed* output at 16 MiB and reads incrementally so a bomb is never materialised — `src/openvc/status/_decompress.py:23,38-40,54-66` |
 | Swap / replay a status list or presentation | Stale-status / replay accept | Status token `sub` must equal the fetched URI (anti-swap) — `src/openvc/resolvers.py:122-123`; presentations bind `aud` + one-time `nonce`/`challenge`; a fetched status list is **verified before trust** — `src/openvc/resolvers.py:92-98`; optional status-issuer binding (ADR-0006) — `src/openvc/verify.py:654-669`, and the default status-list resolvers refuse a verified list whose body names an issuer other than its signer (#221); a nested SD-JWT VC's KB-JWT is held to the enclosing presentation's `aud` / `nonce`, and `VcJwtProofSuite` refuses a JWS typed `sd-jwt` / `*+sd-jwt` / `kb+jwt` before key load (explicit typing, RFC 8725 §3.11 — `_reject_sd_jwt_typ`), so a tail-stripped SD-JWT issuer JWT cannot verify as a VC-JWT and sidestep `require_key_binding=True` (#189); with `require_key_binding=True` the KB-JWT is verified before the issuer JWT's `exp` / `nbf`, so an `expired` verdict never stands in for holder binding (#182) |
@@ -266,13 +266,13 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I11 | Status decompression bounded at 16 MiB, incremental | `status/_decompress.py:23,38-66` | `test_status_decompress.py:46-82` |
 | I12 | CBOR depth ≤ 64; JCS depth ≤ 100; duplicate map key rejected | `cbor.py:69,229-232`; `proof/_jcs.py:18` | `test_cbor.py:104,152`; `test_di_jcs.py:388` |
 | I13 | Trust-list XML refuses DOCTYPE (XXE + expansion closed) | `trustlist/parse.py:108-120` | `test_trustlist.py:104,121` |
-| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_did_document_shape_typed.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`), `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_kb_freshness.py`, `test_ebsi_verifier.py` (`test_verify_ebsi_badge_unparseable_attributes_url_is_openvc_error`, `test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request`), `test_ebsi_http.py`, `test_lone_surrogate_typed.py` |
-| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch. A hostile DID-document shape — valid JSON, wrong structure — served for an unsigned token's own `did:web` issuer used to abort the batch; `parse_did_document` now raises `DidResolutionError` (#219, fixed in v1.32.3) | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`; `test_did_document_shape_typed.py` (`test_verify_many_isolates_every_hostile_document`, `test_verify_many_async_isolates_every_hostile_document`); `test_vc_jwt_numeric_dates.py` (`test_verify_many_isolates_malformed_numeric_date`); `test_lone_surrogate_typed.py` (`test_rdf_batch_isolates_the_hostile_item`, `test_status_list_second_hop_raises_data_integrity_error`, `test_ecdsa_sd_row2_attacker_chosen_mandatory_indexes_raise_proof_malformed`, `test_ecdsa_sd_row3_edited_disclosed_statement_raises_proof_malformed`, `test_webvh_update_key_surrogate_through_the_pipeline`) |
+| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_did_document_shape_typed.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`), `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_kb_freshness.py`, `test_ebsi_verifier.py` (`test_verify_ebsi_badge_unparseable_attributes_url_is_openvc_error`, `test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request`), `test_ebsi_http.py`, `test_lone_surrogate_typed.py`, `test_ecdsa_sd_derived_proof_shape.py` |
+| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch. A hostile DID-document shape — valid JSON, wrong structure — served for an unsigned token's own `did:web` issuer used to abort the batch; `parse_did_document` now raises `DidResolutionError` (#219, fixed in v1.32.3) | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`; `test_did_document_shape_typed.py` (`test_verify_many_isolates_every_hostile_document`, `test_verify_many_async_isolates_every_hostile_document`); `test_vc_jwt_numeric_dates.py` (`test_verify_many_isolates_malformed_numeric_date`); `test_lone_surrogate_typed.py` (`test_rdf_batch_isolates_the_hostile_item`, `test_status_list_second_hop_raises_data_integrity_error`, `test_ecdsa_sd_row2_attacker_chosen_mandatory_indexes_raise_proof_malformed`, `test_ecdsa_sd_row3_edited_disclosed_statement_raises_proof_malformed`, `test_webvh_update_key_surrogate_through_the_pipeline`); `test_ecdsa_sd_derived_proof_shape.py` (`test_hostile_derived_proof_value_is_a_typed_proof_error`) |
 | I16 | Hostile deeply-nested input fails closed **pipeline-wide**: every untrusted JSON parse goes through one loader that refuses nesting past **100** (`openvc._json`; 3.14's `json.loads` parses ~116k levels while `repr()` / `==` overflow far sooner), objects handed over already parsed (credential / `vp_token` dicts, DI suite input, injected-fetch DID documents and issuer metadata, RP DCQL) are held to the same bound, the pipeline maps any residual `RecursionError` to a typed error, and SD-JWT `_unpack` / JCS / did:webvh SCID walk stay capped at 100 | `_json.py`; `proof/sd_jwt.py:66,129`; `verify.py`, `aio.py`, `openid4vp.py`, `proof/vc_jwt.py`, `proof/_jws.py`, `proof/_verify_common.py`, `jwe.py`, `did/base.py`, `did/did_jwk.py`, `did/did_webvh.py`, `jwt_vc_issuer.py`, `fetch.py`, `resolvers.py` | `test_hostile_input.py`, `test_did_webvh.py`, `test_typed_error_deep_nesting.py`, `test_typed_error_vc_shape.py` (`test_deeply_nested_cryptosuite_is_typed`) |
 | I17 | An OID4VCI key proof is pinned to `typ: openid4vci-proof+jwt` and must carry **exactly one** of `jwk`/`kid`/`x5c`/`trust_chain`, with the key bound to the header `alg`'s (kty, crv) | `openid4vci.py:676,752,855` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
 | I18 | Key-proof `iat` freshness is enforced in **both** directions (stale *and* future-dated, non-finite rejected), and the nonce is consumed **exactly once per request, after every signature verifies** | `openid4vci.py:915,917,655` | `test_openid4vci.py`, `test_openid4vci_vectors.py`, `test_sd_jwt_kb_freshness.py` (the freshness helper, `check_iat_freshness`, is shared with the SD-JWT KB-JWT) |
 | I19 | A key proof carrying a `key_attestation` must be signed by one of its `attested_keys` (OID4VCI App. D), compared by RFC 7638 thumbprint. **Not an attacker control** — the attestation's signature is never checked here, so a forger attests their own key; this catches an honest wallet, or the caller's own `resolve_proof_key*`, yielding a key the wallet never claimed, and can only reject, never accept | `openid4vci.py:833` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
-| I20 | An RDF Data Integrity document is accepted, and signed, only in the compacted form of its own expansion under the VC base context plus loader-served URLs or absolute-IRI `@vocab`-only objects — no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, no array directly inside an array (outside a `@list` of lists, which compaction emits nested too), every key or `type` value that stands for an IRI any loader-served context (bundled or `extra_contexts`, listed by the document or not, so a dropped context cannot be respelled through an inline `@vocab`) defines a term for spelled as that term (as the VC base context's own term when it defines one, so an injected alias is refused), no entry of the top-level `credentialStatus` also described anywhere else (a nested node's `credentialStatus` included), and nothing the RDF conversion drops (safe mode: every node id, type and property a well-formed absolute IRI, no blank-node property) — so every JSON member the policy reads is one the signature covers. The status check refuses a non-object `credentialStatus` array member and a typeless entry rather than skip them (GHSA-h9rq-wxcw-4rjc, v1.33.0) | `proof/_context_validation.py` (`validate_document`, `_check_compacted`, `_normalize`, `_term_index`, `_inline_vocabs`, `_misspelled_key`, `_is_misspelled`, `_check_status_in_place`); `proof/contexts/__init__.py` (`document_loader`'s `contexts`); `status/status_list.py` (`_as_entry_list`, `parse_status_entries`); `proof/data_integrity.py:181,233`; `proof/di_ecdsa_rdfc.py:149,205`; `proof/ecdsa_sd.py:512,683` | `test_di_context_validation.py`, `test_status.py` (`test_non_object_status_member_is_refused_not_skipped`, `test_typeless_status_entry_is_refused_not_skipped`), `test_contexts.py` (`test_loader_lists_what_it_serves_read_only`) |
+| I20 | An RDF Data Integrity document is accepted, and signed, only in the compacted form of its own expansion under the VC base context plus loader-served URLs or absolute-IRI `@vocab`-only objects — no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, no array directly inside an array (outside a `@list` of lists, which compaction emits nested too), every key or `type` value that stands for an IRI any loader-served context (bundled or `extra_contexts`, listed by the document or not, so a dropped context cannot be respelled through an inline `@vocab`) defines a term for spelled as that term (as the VC base context's own term when it defines one, so an injected alias is refused), every top-level `type` value that is a served term standing for one of that term's IRIs, no entry of the top-level `credentialStatus` also described anywhere else other than as an exact copy (a nested node's `credentialStatus` included), on `ecdsa-sd-2023` the same blank-node identity for the signature as for the JSON (an injective derived-proof label map, and the presented document canonicalized without deskolemizing `urn:bnid:` IRIs), and nothing the RDF conversion drops (safe mode: every node id, type and property a well-formed absolute IRI, no blank-node property) — so every JSON member the policy reads is one the signature covers. The status check refuses a non-object `credentialStatus` array member and a typeless entry rather than skip them, and `expected_types` is matched by IRI against the expanded types, each name resolved through the served contexts only (GHSA-h9rq-wxcw-4rjc, v1.33.1) | `proof/_context_validation.py` (`validate_document`, `_check_compacted`, `_normalize`, `_term_index`, `_inline_vocabs`, `_misspelled_key`, `_is_misspelled`, `_hijacked_type`, `_check_status_in_place`, `missing_types`, `_trusted_iris`); `verify.py` / `aio.py` (`_check_di_types`); `proof/contexts/__init__.py` (`document_loader`'s `contexts`); `status/status_list.py` (`_as_entry_list`, `parse_status_entries`); `proof/data_integrity.py:184,236`; `proof/di_ecdsa_rdfc.py:149,205`; `proof/ecdsa_sd.py:563,749` (`decode_derived_proof`, `verify`, `_reveal_view`) | `test_di_context_validation.py`, `test_ecdsa_sd_interop.py` (`test_an_iri_id_on_a_signed_blank_node_is_rejected`), `test_ecdsa_sd_derived_proof_shape.py`, `test_status.py` (`test_non_object_status_member_is_refused_not_skipped`, `test_typeless_status_entry_is_refused_not_skipped`), `test_contexts.py` (`test_loader_lists_what_it_serves_read_only`) |
 | I21 | WRPRC authorization fails closed: the WRPRC `sub` must equal the WRPAC entity identifier (absent on either side is a failure, never a match), and a DCQL request is authorized only if every credential query (a) has at least one registered entry with the same non-blank string `format` and a `meta` that covers the query's, (b) names at least one claim — a query naming none asks for every attribute and is always refused — and (c) has every requested claim path inside the union of the grants of the entries so matched; an entry with an empty grant, or registered for a different `meta`, contributes nothing. Grant-side spelling precedence is narrow and decided by key presence (`claim` over `claims`, never their union), while the request side reads the union | `check_matches_access_certificate`, `check_request_within_registration`, `_registered_paths` (`rp_registration.py`) | `test_rp_registration.py` |
 
 ## 9. Residual risks & known limitations
@@ -382,7 +382,7 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
     dropped from the dataset and so never signed.
 
   **Fixed:** context validation plus JSON-LD safe mode (I20).
-  **Follow-up, resolved in v1.33.0 (GHSA-h9rq-wxcw-4rjc), also a wrong-accept.** The
+  **Follow-up, resolved in v1.33.1 (GHSA-h9rq-wxcw-4rjc), also a wrong-accept.** The
   comparison folded a one-element array into its element at any depth, so an array
   nested directly in an array — which expansion flattens — passed:
   `credentialStatus: [S1, [S2]]` on the issuer's genuine credential skipped S2's
@@ -403,14 +403,53 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   edits: dropping an injected status-list context (or moving a v2 credential onto a
   VC 1.1 base the verifier also serves) and spelling the entry through an inline
   `@vocab` kept the dataset and the compacted round trip, and the status parser
-  skipped the entry as an unrelated type, under the default policy.
+  skipped the entry as an unrelated type, under the default policy. Even indexing every
+  served context left the IRIs a default verifier serves no term for: re-compacting an
+  issuer's VC 1.1 credential onto the bundled v2 base alone spelled `issuanceDate` /
+  `expirationDate` by IRI (an expired credential verified), and dropping the
+  StatusList2021 context did the same to a `StatusList2021Entry` (skipped under
+  `require_status=False`); a served context that gave one of those IRIs a term of its
+  own hid it too, since the base-context rule covered only IRIs the base defines.
+  And `expected_types` compared `type` as JSON text, while the signature covers each
+  type's IRI: a holder replaced an issuer's published context with an inline `@vocab`
+  ending inside the signed type IRI (`"…/vocab#Alumni"` for
+  `…/vocab#AlumniDegreeCredential`) and wrote the type as `"DegreeCredential"`, which
+  met a pin on that name on a default verifier and on one serving a context that
+  defines it as another IRI. On `ecdsa-sd-2023` the move check itself could be
+  bypassed: the verifier took blank-node identity for the signature from the holder's
+  label map, never required to be injective, and deskolemized every `urn:bnid:` IRI in
+  the presented document, while the check reads the JSON. Two JSON nodes the
+  signature saw as the issuer's one id-less status entry (`_:s`, named from
+  `relatedResource` too) let the holder move it and verify a revoked credential under
+  `require_status=False`; the same deskolemization put a holder-chosen `urn:bnid:` IRI
+  id on any node the issuer signed as a blank node (the reported subject, on the W3C
+  vectors).
   **Fixed:** the fold applies to a property value only and never to an array element;
   every key or `type` value that stands for an IRI any context the loader serves
   (bundled or `extra_contexts`, listed by the document or not) defines a term for must
-  be the term, and the VC base context's own term when it defines one; an entry under
+  be the term, and the VC base context's own term when it defines one; an IRI the
+  policy reads (the validity window, the proof's `expires`, `credentialStatus`,
+  `credentialSchema`, and both status-list families' entry types and members) must be
+  the one key the policy reads it under, whatever the loader serves; an entry under
   the top-level `credentialStatus` described anywhere else in the document, a nested
-  `credentialStatus` included, is refused; and the status parser refuses a non-object
-  array member and an entry with no `type` (I20).
+  `credentialStatus` included, is refused unless that description is an exact copy of
+  the entry (equal expanded node objects, which RDF merges into the entry's own
+  statements: an OB 3.0 endorsement may repeat the outer `credentialStatus`); on
+  `ecdsa-sd-2023` a derived proof's label map must be injective and the presented
+  document is canonicalized as is, so blank-node identity is the same for the
+  signature and for that check; and the status parser refuses a non-object
+  array member and an entry with no `type`; a top-level `type` value that is a served
+  term must stand for one of that term's IRIs; and on the RDF suites `expected_types`
+  is matched by IRI, each name resolved through the served contexts, never the
+  document's own `@context` (I20). A type only an inline `@vocab` names now meets a
+  bare-name pin only when the verifier serves a context naming it, or by full IRI.
+  **Residual:** code that reads `type` from the JSON, for a name no served context
+  defines, can still be shown a suffix of a signed type IRI; `expected_types` is not.
+  **Residual:** `ecdsa-sd-2023` relabels blank nodes by text substitution over each
+  N-Quad, as the reference implementation does, so a `_:c14nN`-shaped substring inside
+  a signed literal or IRI is relabeled too, and the label map's keys, which the holder
+  writes, decide its spelling. Such text is not bound to its exact spelling. It needs
+  an issuer to sign a value that contains such a substring.
   **Residual:** a node the issuer's own graph references from several places may be
   described in any of them (RDF semantics). Only the document node is pinned to the
   top level, and a top-level `credentialStatus` entry to it; any other node may
@@ -436,16 +475,18 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   context (and the last one); one an issuer's inline `@vocab` gave it, which the holder
   has since dropped, is not. No IRI the policy reads is defined that way.
   Caller-supplied `extra_contexts` are otherwise trusted: a term one defines for an IRI
-  the VC base context does not define is taken as that IRI's spelling.
+  the VC base context does not define, and the policy does not read, is taken as that
+  IRI's spelling.
   They are scoped to the call, though: since v1.27.1 only the bundled contexts are
   tagged `static` in pyld's process-global cache, so one caller's injected document
   never governs another caller's canonicalization through a URL it serves (#185). An
   inline context that `@import`s a URL is still resolved once into that cache and
   reused by later calls (#225, open); on the verify path the v1.30.2 inline-context
   rule refuses such a document, so it is not reachable there today.
-- **R10 — Untyped exits at the verification boundary. ✅ Resolved in v1.33.0
-  ([#219](https://github.com/luisgf/openvc/issues/219) in v1.32.3, then
-  [#279](https://github.com/luisgf/openvc/issues/279)).** In v1.32.3 these were the last
+- **R10 — Untyped exits at the verification boundary. ✅ Resolved in v1.33.1
+  ([#219](https://github.com/luisgf/openvc/issues/219) in v1.32.3,
+  [#279](https://github.com/luisgf/openvc/issues/279) in v1.33.0, then the
+  `ecdsa-sd-2023` derived proof value in v1.33.1).** In v1.32.3 these were the last
   known attacker-controlled inputs that escaped `OpenvcError`, so that I14 did not hold for
   them; that claim was too strong, and a second class is listed below. (Caller
   configuration is a separate class: a string or `None`
@@ -492,6 +533,19 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   issuer signed, as the verified bytes are what was signed; refusing it where the JSON is
   parsed was weighed and left out (a behaviour change on those lanes, and it would not cover
   a dict a caller parsed with plain `json.loads`).
+
+  **A third site, found after v1.33.0 and resolved in v1.33.1.** `decode_derived_proof`
+  checked only that an `ecdsa-sd-2023` derived proof value was a five-element CBOR array,
+  so a part of another CBOR type reached the verifier: a text-string, integer or map
+  `public_key` was a bare `TypeError` before the issuer's key was resolved (no key, no
+  signature), an array or text-string label map an `AttributeError` the surrounding
+  `except` did not list, and an integer `signatures` a `TypeError` after the genuine base
+  signature. Each escaped `verify_credential` / `verify_credential_async` and aborted a
+  `verify_many` / `verify_many_async` batch; none was a wrong-accept. **Fixed:** each part
+  is typed at decode (byte strings, an array of byte strings, a map of unsigned integers
+  to byte strings, an array of unsigned integers) and anything else is
+  `ProofValueMalformed`; `AttributeError` joined the backstop (I14, I15;
+  `test_ecdsa_sd_derived_proof_shape.py`).
 
 ## 10. Out of scope
 

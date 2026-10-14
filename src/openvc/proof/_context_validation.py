@@ -59,23 +59,47 @@ compacted round trip, and would otherwise spell a status entry's type and member
 of the status check's sight. The base-context rule refuses an alias an injected context
 gives a core IRI (``"until": ".../credentials#validUntil"``, uncoerced, or coerced like
 the core term but shorter so compaction prefers it): the policy reads only the core
-term. The rule is a superset on purpose: it does not track which contexts are in play
-or where a scoped term is in effect, so an IRI some served context defines anywhere
-(``created``, ``nonce`` and ``challenge`` are terms only inside the base context's
-``DataIntegrityProof`` scope) is refused under any other spelling everywhere, even at a
-node where no term for it is active and that spelling is what compaction emits. An IRI
-no served context defines a term for is left alone. A term defined without ``@id`` is
-indexed under the ``@vocab`` values the served contexts set and those the document's
-own inline ``@vocab`` objects give it — never one per inline object, so the index does
-not grow with the document.
+term. Above both, an IRI the checks after the proof read (``_POLICY_TERMS``: the
+validity window, the proof's ``expires``, ``credentialStatus`` / ``credentialSchema``,
+and the status entry types and members of both status-list families) must be spelled by
+the one key they read it under, whatever the loader serves. ``issuanceDate`` /
+``expirationDate`` have a term only in the VC 1.1 context and ``StatusList2021Entry``
+only in its own; a default verifier serves neither, so a holder re-compacting an
+issuer's VC 1.1 (or StatusList2021) credential onto the bundled VC 2.0 base alone kept
+the dataset and the signature while compaction spelled those members by IRI, out of
+the policy's sight. The rule is a superset on purpose: it does not track which contexts
+are in play or where a scoped term is in effect, so an IRI some served context defines
+anywhere (``created``, ``nonce`` and ``challenge`` are terms only inside the base
+context's ``DataIntegrityProof`` scope) is refused under any other spelling everywhere,
+even at a node where no term for it is active and that spelling is what compaction
+emits. Any other IRI no served context defines a term for is left alone. A term defined
+without ``@id`` is indexed under the ``@vocab`` values the served contexts set and those
+the document's own inline ``@vocab`` objects give it — never one per inline object, so
+the index does not grow with the document.
 
 Third, a ``credentialStatus`` entry is described where the status check reads it: a node
 under the top-level ``credentialStatus`` whose ``@id`` is also described anywhere else
 in the document — a nested node's ``credentialStatus`` included, which the status check
-never reads — is refused. RDF lets a node referenced from two properties be described
+never reads — is refused, unless that description is an exact copy of the entry (equal
+expanded node objects). RDF lets a node referenced from two properties be described
 under either, so an issuer's entry also named by another property could otherwise be
 moved there and left under ``credentialStatus`` as ``{"id": X}`` or with only an
-unrelated type, its revocation bit never read.
+unrelated type, its revocation bit never read. A copy carries nothing the entry lacks
+(RDF merges the two into the same statements, so removing it leaves the same dataset and
+the same entry), and an embedded credential — an OB 3.0 endorsement — may repeat the
+outer ``credentialStatus`` verbatim; moving any member out of the entry makes the two
+differ. This relies on blank-node identity being the same for the signature as for the
+JSON-LD expansion, which ``ecdsa-sd-2023`` ensures by refusing a derived proof whose
+label map repeats a label and by not deskolemizing the presented document.
+
+Fourth, the second rule asks only which *defined* IRIs a spelling may stand for, and an
+IRI no served context defines is not indexed. So an inline ``@vocab`` that ends inside a
+signed type IRI (``"…/vocab#Alumni"`` for ``…/vocab#AlumniDegreeCredential``) writes
+that type as ``DegreeCredential``: the same dataset, signature and round trip. A
+top-level ``type`` value that is a served term must therefore stand, in the document,
+for one of the IRIs that term is defined as (:func:`_hijacked_type`). A suffix no served
+context names is still accepted here; the policy's ``expected_types`` is matched by IRI
+instead (:func:`missing_types`), each name resolved through the served contexts only.
 
 The suites run it on the signing side as well, so openvc never issues a credential whose
 JSON carries statements its signature does not cover.
@@ -84,7 +108,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import Any
 
 from .contexts import DocumentLoaderError
@@ -109,8 +134,39 @@ _RDF_IRI = re.compile(r"^([A-Za-z][A-Za-z0-9+-.]*|_):[^\s]*$")
 # verified one by one with their own validation; the presentation's check skips them.
 _EMBEDDED_CREDENTIALS = "verifiableCredential"
 
+_CRED = "https://www.w3.org/2018/credentials#"
+
 # The predicate of `credentialStatus` in both VC base contexts.
-_CREDENTIAL_STATUS = "https://www.w3.org/2018/credentials#credentialStatus"
+_CREDENTIAL_STATUS = _CRED + "credentialStatus"
+
+_STATUS = "https://www.w3.org/ns/credentials/status#"
+_STATUS_LIST_2021 = "https://w3id.org/vc/status-list#"
+
+# The IRIs the checks after the proof read, each with the one key (or `type` value) they
+# read it under: the validity window and the proof's expiry (`_verify_common`), the
+# status entries of both status-list families (`openvc.status`), and `credentialSchema`.
+# In the compacted form such an IRI may only be spelled by that key, whatever the loader
+# serves and whatever another context names it: issuanceDate / expirationDate have a term
+# only in the VC 1.1 context and StatusList2021Entry only in its own, which a default
+# verifier serves neither of, and an alias a served context gives one of them is a
+# spelling the check never reads.
+_POLICY_TERMS: Mapping[str, str] = MappingProxyType({
+    _CRED + "validFrom": "validFrom",
+    _CRED + "validUntil": "validUntil",
+    _CRED + "issuanceDate": "issuanceDate",                 # VC 1.1
+    _CRED + "expirationDate": "expirationDate",             # VC 1.1
+    _CRED + "credentialStatus": "credentialStatus",
+    _CRED + "credentialSchema": "credentialSchema",
+    "https://w3id.org/security#expiration": "expires",
+    _STATUS + "BitstringStatusListEntry": "BitstringStatusListEntry",
+    _STATUS + "statusPurpose": "statusPurpose",
+    _STATUS + "statusListIndex": "statusListIndex",
+    _STATUS + "statusListCredential": "statusListCredential",
+    _STATUS_LIST_2021 + "StatusList2021Entry": "StatusList2021Entry",
+    _STATUS_LIST_2021 + "statusPurpose": "statusPurpose",
+    _STATUS_LIST_2021 + "statusListIndex": "statusListIndex",
+    _STATUS_LIST_2021 + "statusListCredential": "statusListCredential",
+})
 
 # Bound on the walk of a document's trusted contexts (a context URL that imports another,
 # scoped contexts inside scoped contexts, a term defined by another term). Real contexts
@@ -177,7 +233,7 @@ def _check_compacted(document: dict[str, Any], loader: Any, *, what: str,
         same = _canonical(compacted) == _canonical(document)
         where = "" if same else _first_difference(
             _normalize(document), _normalize(compacted), "")[:200]
-        misspelled = None
+        misspelled = hijacked = None
         if same:
             # The content of an @json literal compacts to raw JSON whose keys are data,
             # not properties: stub it out first (rare, so a second compaction only then).
@@ -188,6 +244,7 @@ def _check_compacted(document: dict[str, Any], loader: Any, *, what: str,
             if context_key not in indexes:
                 indexes[context_key] = _term_index(document["@context"], loader)
             misspelled = _misspelled_key(compacted, "", indexes[context_key])
+            hijacked = _hijacked_type(document, node, indexes[context_key])
     except ProofError:
         raise
     except Exception as exc:         # pyld's JsonLdError, a non-JSON value, ...
@@ -203,10 +260,16 @@ def _check_compacted(document: dict[str, Any], loader: Any, *, what: str,
             f"the {what} spells a property (or a type) a trusted context defines other "
             f"than by its term (at {misspelled[:200]}): its value does not match the "
             f"term's definition (an untyped date, a literal for a node, ...), the context "
-            f"defining the term was left out of the @context, the term is an alias an "
-            f"injected context gives a VC base context IRI, or the IRI is used where its "
-            f"term is not in scope — the member the policy reads would not carry what was "
-            f"signed")
+            f"defining the term was left out of the @context (or is one the verifier "
+            f"does not serve), the term is an alias an injected context gives a VC base "
+            f"context IRI or one the policy reads, or the IRI is used where its term is "
+            f"not in scope — the member the policy reads would not carry what was signed")
+    if hijacked is not None:
+        raise ProofMalformed(
+            f"the {what}'s type {_brief(hijacked)} is a term a trusted context defines, "
+            f"but here it stands for another IRI (an inline @vocab spells a signed type "
+            f"with that term's name): a reader of `type` would take it for a type the "
+            f"signature does not carry")
     _check_status_in_place(node, what=what)
 
 
@@ -255,45 +318,68 @@ def _check_expanded(value: Any, top_id: Any, *, what: str, top: bool = False) ->
 
 def _check_status_in_place(node: dict[str, Any], *, what: str) -> None:
     """Refuse a ``credentialStatus`` entry (expanded form) of the top-level node whose
-    node is also described — given any member besides ``@id`` — anywhere else: the
-    status check reads only what sits under the top-level ``credentialStatus``, and RDF
-    lets the issuer's entry be described under any property that references it (see the
-    module docstring), a ``credentialStatus`` of a nested node included."""
-    in_status: set[str] = set()
-    described: set[str] = set()
-    _collect_status_nodes(node, False, in_status, described, top=True)
-    moved = in_status & described
+    node is also described — given any member besides ``@id`` — anywhere else, other
+    than as an exact copy of an entry with that ``@id``: the status check reads only what
+    sits under the top-level ``credentialStatus``, and RDF lets the issuer's entry be
+    described under any property that references it (see the module docstring), a
+    ``credentialStatus`` of a nested node included. An exact copy adds no statement the
+    entry lacks; anything moved out of the entry makes the two differ."""
+    entries: dict[str, set[str]] = {}
+    _collect_status_entries(node.get(_CREDENTIAL_STATUS), entries)
+    if not entries:
+        return
+    moved: set[str] = set()
+    _collect_described_elsewhere(node, entries, moved, top=True)
     if moved:
         raise ProofMalformed(
             f"the {what}'s credentialStatus entry {_brief(min(moved))} is described "
             f"outside credentialStatus, where the status check does not read it")
 
 
-def _collect_status_nodes(value: Any, under_status: bool, in_status: set[str],
-                          described: set[str], *, top: bool = False) -> None:
-    """Add to *in_status* the ``@id`` of every node object directly under the *top*
-    node's ``credentialStatus``, and to *described* the ``@id`` of every other node
-    object that carries a member besides ``@id`` — one under a nested node's
-    ``credentialStatus`` too, which the status check never reads."""
+def _collect_status_entries(value: Any, entries: dict[str, set[str]]) -> None:
+    """Map the ``@id`` of every node object directly under the top-level
+    ``credentialStatus`` (an ``@list``'s items included) to the canonical forms of its
+    descriptions there."""
     if isinstance(value, list):
         for item in value:
-            _collect_status_nodes(item, under_status, in_status, described)
+            _collect_status_entries(item, entries)
         return
     if not isinstance(value, dict) or "@value" in value:
         return                          # a literal (even an @json one) is data
     if "@list" in value:
-        _collect_status_nodes(value["@list"], under_status, in_status, described)
+        _collect_status_entries(value["@list"], entries)
         return
     node_id = value.get("@id")
     if isinstance(node_id, str):
-        if under_status:
-            in_status.add(node_id)
-        elif set(value) - {"@id"}:
-            described.add(node_id)
+        entries.setdefault(node_id, set()).add(_canonical(value))
+
+
+def _collect_described_elsewhere(value: Any, entries: dict[str, set[str]],
+                                 moved: set[str], *, top: bool = False,
+                                 in_status: bool = False) -> None:
+    """Add to *moved* the ``@id`` of every node object outside the top-level
+    ``credentialStatus`` that describes one of *entries* (it carries a member besides
+    ``@id``) other than as an exact copy of one of that ``@id``'s entries — one under a
+    nested node's ``credentialStatus`` too, which the status check never reads.
+    *in_status* marks the entries themselves, which are not checked but are walked: a
+    description nested inside one is elsewhere too."""
+    if isinstance(value, list):
+        for item in value:
+            _collect_described_elsewhere(item, entries, moved, in_status=in_status)
+        return
+    if not isinstance(value, dict) or "@value" in value:
+        return                          # a literal (even an @json one) is data
+    if "@list" in value:
+        _collect_described_elsewhere(value["@list"], entries, moved, in_status=in_status)
+        return
+    node_id = value.get("@id")
+    if (not in_status and isinstance(node_id, str) and node_id in entries
+            and set(value) - {"@id"} and _canonical(value) not in entries[node_id]):
+        moved.add(node_id)
     for key, item in value.items():
         if key not in ("@id", "@type"):
-            _collect_status_nodes(item, top and key == _CREDENTIAL_STATUS, in_status,
-                                  described)
+            _collect_described_elsewhere(
+                item, entries, moved, in_status=top and key == _CREDENTIAL_STATUS)
 
 
 def _brief(value: Any) -> str:
@@ -360,7 +446,8 @@ class _TermIndex:
     terms aliased to it), *base* (IRI -> the terms the VC base context alone defines as
     it) and *verdicts* (a memo of :func:`_is_misspelled` per spelling). A union over the
     top level and every scoped context of every served context, so a superset: the check
-    built on it fails closed."""
+    built on it fails closed. *spellings* also carries the ``_POLICY_TERMS`` IRIs, served
+    or not, so their ``@vocab`` suffixes are indexed too."""
 
     def __init__(self) -> None:
         self.spellings: dict[str, set[str]] = {}
@@ -383,7 +470,12 @@ def _term_index(context: Any, loader: Any) -> _TermIndex:
     trusted context dropped and an inline ``@vocab`` spelling its IRIs instead, the
     dataset, the signature and the compacted round trip all stay the same, while the
     IRIs would leave an index built from the document's own ``@context`` — so a status
-    entry's type and members could be respelled out of the status check's sight."""
+    entry's type and members could be respelled out of the status check's sight.
+
+    Nor only the contexts the loader serves: the IRIs in ``_POLICY_TERMS`` are indexed
+    whether a served context defines them or not (a default verifier serves no term for
+    ``issuanceDate`` / ``expirationDate`` or ``StatusList2021Entry``), without serving
+    anything new."""
     served = getattr(loader, "contexts", None)
     if not isinstance(served, Mapping):
         raise TypeError("context validation needs the loader from "
@@ -396,6 +488,8 @@ def _term_index(context: Any, loader: Any) -> _TermIndex:
     _gather_contexts(sorted(served), loader, objects, seen, 0)
     index = _index_definitions(objects, _inline_vocabs(entries))
     index.base = _index_definitions(base_objects, set()).spellings
+    for iri, term in _POLICY_TERMS.items():        # served or not (see _is_misspelled)
+        index.spellings.setdefault(iri, set()).add(term)
     # A bare key may stand for @vocab + key. Index every defined IRI once by each suffix
     # that follows one of the vocabularies, so the check then costs one lookup per key.
     cuts = sorted({len(vocab) for vocab in index.vocabs if vocab})
@@ -551,7 +645,8 @@ def _misspelled_key(value: Any, path: str, index: _TermIndex) -> str | None:
     """Path of the first key — or ``type`` value — of the compacted form *value* that
     stands for an IRI a trusted context defines a term for without being one of those
     terms — or, for an IRI the VC base context defines a term for, without being one of
-    the base context's terms — or None."""
+    the base context's terms, or for an IRI the policy reads, without being the key it
+    reads — or None."""
     if isinstance(value, list):
         for position, item in enumerate(value):
             where = _misspelled_key(item, f"{path}/{position}", index)
@@ -582,18 +677,46 @@ def _misspelled_key(value: Any, path: str, index: _TermIndex) -> str | None:
 def _is_misspelled(spelling: str, index: _TermIndex) -> bool:
     """Whether *spelling* (a non-keyword key or type of the compacted form) may stand for
     an IRI some trusted context defines a term for without being one of those terms (the
-    VC base context's own, when it has one). Memoized per spelling, so a key repeated
-    across the document costs one lookup."""
+    VC base context's own, when it has one) — or for an IRI in ``_POLICY_TERMS`` without
+    being the one key the policy reads it under, whatever any context defines. Memoized
+    per spelling, so a key repeated across the document costs one lookup."""
     verdict = index.verdicts.get(spelling)
     if verdict is None:
         verdict = False
         for iri in _key_iris(spelling, index):
-            terms = index.base.get(iri) or index.spellings.get(iri)
+            policy_term = _POLICY_TERMS.get(iri)
+            terms = ({policy_term} if policy_term is not None
+                     else index.base.get(iri) or index.spellings.get(iri))
             if terms and spelling not in terms:
                 verdict = True
                 break
         index.verdicts[spelling] = verdict
     return verdict
+
+
+def _hijacked_type(document: dict[str, Any], node: dict[str, Any],
+                   index: _TermIndex) -> str | None:
+    """The first ``type`` value of *document*'s top-level node that is a term a trusted
+    context defines while the node (*node*, its expanded form) carries none of the IRIs
+    that term is defined as — or None.
+
+    :func:`_is_misspelled` asks only which defined IRIs a spelling *may* stand for; an
+    IRI no served context defines is not indexed. So a holder who replaces the issuer's
+    published context with an inline ``@vocab`` ending inside the signed type IRI
+    (``"…/vocab#Alumni"`` for ``…/vocab#AlumniDegreeCredential``) spells that type as
+    ``DegreeCredential`` — a term a served context defines as something else — and the
+    dataset, the signature and the round trip stay the same. This compares the spelling
+    with what it stands for in this document. Only the top-level node: its expanded
+    ``@type`` is at hand, and it is the type every reader checks."""
+    signed = node.get("@type", ())
+    signed = set(signed) if isinstance(signed, list) else {signed}
+    for key in index.type_keys:
+        values = document.get(key)
+        for value in values if isinstance(values, list) else [values]:
+            if (isinstance(value, str) and value in index.iris
+                    and not index.iris[value] & signed):
+                return value
+    return None
 
 
 def _key_iris(key: str, index: _TermIndex) -> list[str]:
@@ -611,4 +734,72 @@ def _key_iris(key: str, index: _TermIndex) -> list[str]:
     return iris
 
 
-__all__ = ["VC_BASE_CONTEXTS", "validate_document"]
+# --------------------------------------------------------------------------- #
+# Policy types by IRI
+# --------------------------------------------------------------------------- #
+
+def missing_types(document: dict[str, Any], expected: Sequence[str],
+                  loader: Any) -> list[str]:
+    """The names in *expected* (``VerificationPolicy.expected_types``) that the top-level
+    node of *document* — a credential or presentation whose proof and JSON-LD form
+    already verified — does not carry, compared by IRI.
+
+    The JSON ``type`` of an RDF-canonicalized document is a spelling the holder can
+    shift: the signature covers each type IRI, not its compacted form, and an inline
+    ``@vocab`` that ends inside a signed IRI (``"…/vocab#Alumni"``) turns
+    ``…/vocab#AlumniDegreeCredential`` into ``"DegreeCredential"``, a suffix the issuer
+    never wrote. So each expected name is resolved through what the verifier trusts —
+    every context *loader* serves, never the document's own ``@context`` — and must name
+    an IRI the node is typed with: a term any served context defines stands for the
+    IRIs it is defined as, another bare name for each served ``@vocab`` plus it, and an
+    absolute or compact IRI (over a served prefix) for itself. A type spelled through an
+    inline ``@vocab`` therefore matches a bare name only when the verifier serves a
+    context giving it that name (a published context, or one holding just that
+    ``@vocab``); otherwise pin its full IRI."""
+    from pyld import jsonld          # the suite already canonicalized with pyld
+
+    unsecured = {k: v for k, v in document.items() if k != "proof"}
+    if _is_presentation(unsecured):
+        unsecured.pop(_EMBEDDED_CREDENTIALS, None)
+    try:
+        expanded = jsonld.expand(unsecured, {"documentLoader": loader})
+    except Exception as exc:         # pyld's JsonLdError, ... — validated already
+        raise ProofMalformed(f"cannot expand the document's types: {exc}") from exc
+    node = expanded[0] if isinstance(expanded, list) and len(expanded) == 1 else None
+    signed = node.get("@type", ()) if isinstance(node, dict) else ()
+    signed = set(signed) if isinstance(signed, list) else {signed}
+    trusted = _trusted_index(loader)
+    return [name for name in expected if not _trusted_iris(name, trusted) & signed]
+
+
+def _trusted_index(loader: Any) -> _TermIndex:
+    """The term definitions and ``@vocab`` values of every context *loader* serves (with
+    their imports and scoped contexts), and nothing a document contributes."""
+    served = getattr(loader, "contexts", None)
+    if not isinstance(served, Mapping):
+        raise TypeError("type matching needs the loader from "
+                        "openvc.proof.contexts.document_loader (it lists what it serves)")
+    objects: list[dict[str, Any]] = []
+    _gather_contexts(sorted(served), loader, objects, set(), 0)
+    return _index_definitions(objects, set())
+
+
+def _trusted_iris(name: Any, index: _TermIndex) -> set[str]:
+    """The IRIs the verifier's own *name* for a type may mean under *index*
+    (:func:`_trusted_index`): a defined term's IRIs; else, for a bare name, each served
+    ``@vocab`` plus it; for a name with a colon, itself when it is an absolute IRI and
+    the expansion over a served prefix term. A keyword names no type."""
+    if not isinstance(name, str) or not name or name.startswith("@"):
+        return set()
+    if name in index.iris:
+        return set(index.iris[name])
+    prefix, colon, suffix = name.partition(":")
+    if not colon:
+        return {vocab + name for vocab in index.vocabs}
+    iris = {name} if suffix.startswith("//") or prefix not in index.iris else set()
+    if not suffix.startswith("//"):
+        iris |= {base + suffix for base in index.iris.get(prefix, ())}
+    return iris
+
+
+__all__ = ["VC_BASE_CONTEXTS", "missing_types", "validate_document"]

@@ -83,3 +83,22 @@ def test_tampering_a_reference_proof_is_rejected(example, extra_contexts):
     reveal["proof"]["created"] = "1999-01-01T00:00:00Z"      # part of the signed proof config
     with pytest.raises(SignatureInvalid):
         EcdsaSdProofSuite().verify(reveal, extra_contexts=extra_contexts)
+
+
+@pytest.mark.parametrize("member", [("credentialSubject", "id"), ("id",)],
+                         ids=["subject", "credential"])
+@pytest.mark.parametrize("example", EXAMPLES)
+def test_an_iri_id_on_a_signed_blank_node_is_rejected(example, member, extra_contexts):
+    # The reference credential and its subject are blank nodes. The verifier used to
+    # deskolemize `urn:bnid:X` in the presented document into `_:X`, which signs exactly
+    # as the id-less node, so a holder could give either an IRI id of its choosing and
+    # it was reported (`result.subject == "urn:bnid:alice"`). VC-DI-ECDSA canonicalizes
+    # the reveal document as presented, where that is an IRI the issuer never signed.
+    reveal = _load(example, "derivedRevealDocument.json")
+    node = reveal
+    for key in member[:-1]:
+        node = node[key]
+    assert member[-1] not in node                                         # control
+    node[member[-1]] = "urn:bnid:alice"
+    with pytest.raises(SignatureInvalid):
+        EcdsaSdProofSuite().verify(reveal, now=AS_OF, extra_contexts=extra_contexts)

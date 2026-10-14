@@ -11,7 +11,7 @@ an inline ``@context`` that aliases a term or re-maps ``credentialSubject``, a t
 context defines (dropped from the dataset, so never signed), or ``@included`` / a nested
 re-description moving signed statements out of the object the policy reads.
 
-Sections 11 to 16 pin the follow-ups that survived v1.30.2 (GHSA-h9rq-wxcw-4rjc): an
+Sections 11 to 20 pin the follow-ups that survived v1.30.2 (GHSA-h9rq-wxcw-4rjc): an
 array nested in an array, which expansion flattens (``credentialStatus: [S1, [S2]]``
 hid S2's revocation bit); a defined member spelled by its IRI because its value does
 not fit the term (an issuer-signed untyped ``validUntil`` never expired); a status entry
@@ -19,10 +19,19 @@ moved under another property that names it — a nested node's ``credentialStatu
 included — leaving ``{"id": X}`` or an unrelated type behind; an injected context
 aliasing a core IRI; the refusals the fail-closed superset implies; and a served context
 dropped from the document's ``@context`` in favour of an inline ``@vocab``, which took
-its IRIs out of a term index built from that ``@context``.
+its IRIs out of a term index built from that ``@context``; and a VC 1.1 (or
+StatusList2021) credential re-compacted onto the bundled VC 2.0 base alone, which spelled
+``expirationDate`` / ``issuanceDate`` (or the status entry) by IRIs no served context
+defines a term for; and a signed type re-spelled through an inline ``@vocab`` that ends
+inside its IRI, which met an ``expected_types`` pin on a name the issuer never wrote.
+Section 19 is the status move on ``ecdsa-sd-2023`` through two JSON nodes the signature
+saw as one (a non-injective label map, a deskolemized ``urn:bnid:`` IRI); section 20 the
+exact copy of a status entry that must still verify (an OB 3.0 endorsement).
 
 Every attack here keeps the signature valid — that is the point — and must now fail with
-a typed :class:`ProofMalformed` on the sync and the async pipeline alike; each has a
+a typed :class:`ProofMalformed` (``TypeMismatch`` for a section 18 pin no served context
+names; ``ProofValueMalformed`` or ``SignatureInvalid`` for a section 19 merge the
+signature itself now refuses) on the sync and the async pipeline alike; each has a
 control showing the policy rejects the plain spelling. Helpers are self-contained
 (tests/ is not a package — no cross-import); ``asyncio.run`` drives the coroutines.
 """
@@ -46,10 +55,14 @@ from openvc.keys import Ed25519SigningKey, P256SigningKey  # noqa: E402
 from openvc.multibase import encode_multibase  # noqa: E402
 from openvc.openid4vp import verify_vp_token  # noqa: E402
 from openvc.proof import data_integrity as di  # noqa: E402
-from openvc.proof.contexts import bundled_contexts, document_loader  # noqa: E402
+from openvc.proof.contexts import (  # noqa: E402
+    DocumentLoaderError,
+    bundled_contexts,
+    document_loader,
+)
 from openvc.proof.data_integrity import DataIntegrityProofSuite  # noqa: E402
 from openvc.proof.di_ecdsa_rdfc import EcdsaRdfcProofSuite  # noqa: E402
-from openvc.proof.ecdsa_sd import EcdsaSdProofSuite  # noqa: E402
+from openvc.proof.ecdsa_sd import EcdsaSdProofSuite, ProofValueMalformed  # noqa: E402
 from openvc.proof.errors import (  # noqa: E402
     CredentialExpired,
     CredentialNotYetValid,
@@ -1451,6 +1464,41 @@ def test_injected_status_context_swapped_for_vocab_is_rejected(suite_id, status,
 
 _V1 = "https://www.w3.org/2018/credentials/v1"
 _DI_V2 = "https://w3id.org/security/data-integrity/v2"
+_DI_V2_DOC = {"@context": {
+    "id": "@id", "type": "@type", "@protected": True,
+    "proof": {"@id": SEC + "proof", "@type": "@id", "@container": "@graph"},
+    "DataIntegrityProof": {"@id": SEC + "DataIntegrityProof", "@context": {
+        "@protected": True, "id": "@id", "type": "@type",
+        "challenge": SEC + "challenge",
+        "created": {"@id": "http://purl.org/dc/terms/created", "@type": XSD_DT},
+        "domain": SEC + "domain",
+        "expires": {"@id": SEC + "expiration", "@type": XSD_DT},
+        "nonce": SEC + "nonce",
+        "previousProof": {"@id": SEC + "previousProof", "@type": "@id"},
+        "proofPurpose": {"@id": SEC + "proofPurpose", "@type": "@vocab", "@context": {
+            "@protected": True, "id": "@id", "type": "@type",
+            "assertionMethod": {"@id": SEC + "assertionMethod", "@type": "@id",
+                                "@container": "@set"},
+            "authentication": {"@id": SEC + "authenticationMethod",
+                               "@type": "@id", "@container": "@set"}}},
+        "cryptosuite": {"@id": SEC + "cryptosuite", "@type": SEC + "cryptosuiteString"},
+        "proofValue": {"@id": SEC + "proofValue", "@type": SEC + "multibase"},
+        "verificationMethod": {"@id": SEC + "verificationMethod", "@type": "@id"}}}}}
+
+
+def _v1_extra():
+    """What a verifier that also accepts VC 1.1 serves: the VC 1.1 base context and the
+    Data Integrity v2 context (openvc bundles neither)."""
+    import json
+    from pathlib import Path
+
+    import pyld
+
+    bundled = Path(pyld.__file__).parent / "documentloader" / "frozen" / "bundled"
+    if not (bundled / "credentials-v1.jsonld").exists():
+        pytest.skip("this pyld does not bundle the VC 1.1 context")
+    return {_V1: json.loads((bundled / "credentials-v1.jsonld").read_text()),
+            _DI_V2: _DI_V2_DOC}
 
 
 @pytest.mark.parametrize("require_status", [True, False], ids=["require", "optional"])
@@ -1458,40 +1506,9 @@ _DI_V2 = "https://w3id.org/security/data-integrity/v2"
 def test_base_context_swapped_to_v1_cannot_hide_a_bitstring_entry(suite_id, require_status):
     # A verifier that also accepts VC 1.1 serves v1 + data-integrity/v2. A holder moves a
     # v2 credential onto v1 (same dataset), where BitstringStatusListEntry is no term.
-    import json
-    from pathlib import Path
-
-    import pyld
     from openvc.status import CredentialRevoked
 
-    bundled = Path(pyld.__file__).parent / "documentloader" / "frozen" / "bundled"
-    if not (bundled / "credentials-v1.jsonld").exists():
-        pytest.skip("this pyld does not bundle the VC 1.1 context")
-    extra = {
-        _V1: json.loads((bundled / "credentials-v1.jsonld").read_text()),
-        _DI_V2: {"@context": {
-            "id": "@id", "type": "@type", "@protected": True,
-            "proof": {"@id": SEC + "proof", "@type": "@id", "@container": "@graph"},
-            "DataIntegrityProof": {"@id": SEC + "DataIntegrityProof", "@context": {
-                "@protected": True, "id": "@id", "type": "@type",
-                "challenge": SEC + "challenge",
-                "created": {"@id": "http://purl.org/dc/terms/created", "@type": XSD_DT},
-                "domain": SEC + "domain",
-                "expires": {"@id": SEC + "expiration", "@type": XSD_DT},
-                "nonce": SEC + "nonce",
-                "previousProof": {"@id": SEC + "previousProof", "@type": "@id"},
-                "proofPurpose": {"@id": SEC + "proofPurpose", "@type": "@vocab", "@context": {
-                    "@protected": True, "id": "@id", "type": "@type",
-                    "assertionMethod": {"@id": SEC + "assertionMethod", "@type": "@id",
-                                        "@container": "@set"},
-                    "authentication": {"@id": SEC + "authenticationMethod",
-                                       "@type": "@id", "@container": "@set"}}},
-                "cryptosuite": {"@id": SEC + "cryptosuite",
-                                "@type": SEC + "cryptosuiteString"},
-                "proofValue": {"@id": SEC + "proofValue", "@type": SEC + "multibase"},
-                "verificationMethod": {"@id": SEC + "verificationMethod",
-                                       "@type": "@id"}}}}},
-    }
+    extra = _v1_extra()
     doc = _vc(credentialStatus=STATUS_2)
     doc["credentialSubject"] = {"id": "did:example:alice"}      # v1 has no schema.org name
     secured, registry = _sign(suite_id, doc)
@@ -1559,7 +1576,10 @@ def test_status_type_spelled_by_vocab_is_rejected_by_validate_document():
               credentialStatus={"id": STATUS_2["id"], "type": "status-list#StatusList2021Entry"})
     with pytest.raises(ProofMalformed, match="spells a property .*/credentialStatus/type"):
         _validate(doc, extra_contexts={_SL_URL: _SL_CONTEXT})
-    _validate(doc)                       # no served context defines that IRI: left alone
+    # No served context defines that IRI, but the status check reads it as the type
+    # StatusList2021Entry, so it is refused whatever the loader serves (section 17).
+    with pytest.raises(ProofMalformed, match="spells a property .*/credentialStatus/type"):
+        _validate(doc)
 
 
 def test_validation_needs_a_loader_that_lists_what_it_serves():
@@ -1621,3 +1641,758 @@ def test_many_inline_vocabs_still_validate():
     doc = _vc(**{"@context": [V2, _VOCAB_TERMS_URL, *vocabs]},
               credentialSubject={"id": "did:example:alice", "bar": ["x"], "note": "y"})
     _validate(doc, extra_contexts=_VOCAB_TERMS)
+
+
+# --------------------------------------------------------------------------- #
+# 17. An IRI the policy reads, defined only by a context the verifier does not serve
+#     (GHSA-h9rq-wxcw-4rjc)
+# --------------------------------------------------------------------------- #
+# The term rule of sections 12 and 16 refused an IRI spelling only for an IRI some
+# *served* context defines a term for. expirationDate / issuanceDate are VC 1.1 terms
+# with no VC 2.0 term, and StatusList2021Entry and its members have a term only in the
+# StatusList2021 context, so a default verifier serves none of them. A holder who
+# re-compacts the issuer's genuine credential onto the bundled VC 2.0 base alone keeps
+# the dataset and the signature, compaction spells those members by IRI, and the policy
+# — which reads only the term — saw no expiry, no not-before and no status entry. The
+# IRIs the policy reads are now refused under any spelling but the key it reads them
+# under, whatever the loader serves, and an alias a served context gives one is refused
+# too.
+
+
+def _vc11(**members):
+    doc = {"@context": [_V1, _DI_V2], "id": VC_ID, "type": ["VerifiableCredential"],
+           "issuer": DID, "issuanceDate": "2020-01-01T00:00:00Z",
+           "credentialSubject": {"id": "did:example:alice"}}
+    doc.update(members)
+    return doc
+
+
+def _rebased_onto_v2(secured, *, prefixed):
+    """*secured* (VC 1.1) re-compacted under [v2] (plus a `cred:` prefix context when
+    *prefixed*) — the same signed dataset, the v1-only members spelled by (compact) IRI."""
+    out = {k: v for k, v in secured.items()
+           if k not in ("@context", "issuanceDate", "expirationDate")}
+    out["@context"] = [V2, _PREFIX_CONTEXT_URL] if prefixed else [V2]
+    for name in ("issuanceDate", "expirationDate"):
+        if name in secured:
+            spelled = ("cred:" if prefixed else CRED) + name
+            out[spelled] = {"type": XSD_DT, "@value": secured[name]}
+    return out
+
+
+@pytest.mark.parametrize("prefixed", [False, True], ids=["iri", "compact-iri"])
+@pytest.mark.parametrize("member, value, plain_error", [
+    ("expirationDate", PAST, CredentialExpired),
+    ("issuanceDate", FUTURE, CredentialNotYetValid),
+], ids=["expirationDate", "issuanceDate"])
+@pytest.mark.parametrize("suite_id", SUITE_IDS)
+def test_vc11_credential_rebased_onto_v2_cannot_hide_its_validity(
+        suite_id, member, value, plain_error, prefixed):
+    extra = _v1_extra()
+    suite_cls, key_cls = _SUITES[suite_id]
+    key = key_cls.generate(kid=VM)
+    secured = suite_cls().add_proof(_vc11(**{member: value}), signing_key=key,
+                                    verification_method=VM, extra_contexts=extra)
+    registry = _registry(key.public_jwk())
+    assert _status_outcomes(secured, registry, extra_contexts=extra) == [
+        plain_error, plain_error]                                              # control
+
+    attacked = _rebased_onto_v2(secured, prefixed=prefixed)
+    served = {_PREFIX_CONTEXT_URL: _PREFIX_CONTEXT} if prefixed else None
+    # Before the fix: [None, None] — verified as never expiring / already valid
+    assert _status_outcomes(attacked, registry, extra_contexts=served) == [
+        ProofMalformed, ProofMalformed]
+    with pytest.raises(ProofMalformed, match="spells a property"):
+        suite_cls().verify(attacked, resolver=registry, extra_contexts=served)
+
+
+def test_ecdsa_sd_vc11_credential_rebased_onto_v2_cannot_hide_its_expiry():
+    extra = _v1_extra()
+    key = P256SigningKey.generate(kid=VM)
+    suite = EcdsaSdProofSuite()
+    base = suite.add_base_proof(
+        _vc11(expirationDate=PAST, credentialSubject={
+            "id": "did:example:alice", "https://vocab.example/#name": "Alice"}),
+        signing_key=key, verification_method=VM, extra_contexts=extra,
+        mandatory_pointers=["/issuer", "/issuanceDate", "/expirationDate"])
+    derived = suite.derive_proof(base, selective_pointers=["/credentialSubject/id"],
+                                 extra_contexts=extra)
+    registry = _registry(key.public_jwk())
+    assert _status_outcomes(derived, registry, extra_contexts=extra) == [
+        CredentialExpired, CredentialExpired]                                  # control
+    attacked = _rebased_onto_v2(derived, prefixed=False)
+    assert _status_outcomes(attacked, registry) == [ProofMalformed, ProofMalformed]
+    with pytest.raises(ProofMalformed, match="spells a property"):
+        suite.verify(attacked, public_key_jwk=key.public_jwk())
+
+
+def _sl2021_by_iri(secured):
+    """*secured* with the StatusList2021 context dropped: the entry's type and members
+    come out of compaction under [v2] by their full IRIs — the same signed dataset."""
+    attacked = copy.deepcopy(secured)
+    attacked["@context"] = [V2]
+    entry = attacked["credentialStatus"]
+    attacked["credentialStatus"] = {
+        "id": entry["id"], "type": _SL + "StatusList2021Entry",
+        _SL + "statusPurpose": entry["statusPurpose"],
+        _SL + "statusListIndex": entry["statusListIndex"],
+        _SL + "statusListCredential": {"id": entry["statusListCredential"]}}
+    return attacked
+
+
+@pytest.mark.parametrize("require_status", [True, False], ids=["require", "optional"])
+@pytest.mark.parametrize("suite_id", SUITE_IDS)
+def test_status_entry_of_an_unserved_status_context_is_not_skipped(suite_id,
+                                                                   require_status):
+    # Same root cause on the status check: with the StatusList2021 context not served,
+    # the entry's type and members come out by IRI, and with require_status=False the
+    # "unrecognised type" branch skipped the revoked entry.
+    from openvc.status import CredentialRevoked
+
+    extra = {_SL_URL: _SL_CONTEXT}
+    suite_cls, key_cls = _SUITES[suite_id]
+    key = key_cls.generate(kid=VM)
+    secured = suite_cls().add_proof(
+        _vc(**{"@context": [V2, _SL_URL]}, credentialStatus=dict(_SL_STATUS_2)),
+        signing_key=key, verification_method=VM, extra_contexts=extra)
+    registry = _registry(key.public_jwk())
+    assert _status_outcomes(secured, registry, require_status=require_status,
+                            extra_contexts=extra) == [CredentialRevoked] * 2   # control
+
+    # Before the fix: [None, None] when optional; StatusUnavailable when required, only
+    # by the "declared but no recognised entry" branch
+    assert _status_outcomes(_sl2021_by_iri(secured), registry,
+                            require_status=require_status) == [ProofMalformed] * 2
+
+
+def test_ecdsa_sd_status_entry_of_an_unserved_status_context_is_not_skipped():
+    from openvc.status import CredentialRevoked
+
+    extra = {_SL_URL: _SL_CONTEXT}
+    key = P256SigningKey.generate(kid=VM)
+    suite = EcdsaSdProofSuite()
+    base = suite.add_base_proof(
+        _vc(**{"@context": [V2, _SL_URL]}, credentialStatus=dict(_SL_STATUS_2)),
+        signing_key=key, verification_method=VM, extra_contexts=extra,
+        mandatory_pointers=["/issuer", "/validFrom", "/credentialStatus"])
+    derived = suite.derive_proof(base, selective_pointers=["/credentialSubject/name"],
+                                 extra_contexts=extra)
+    registry = _registry(key.public_jwk())
+    assert _status_outcomes(derived, registry, require_status=False,
+                            extra_contexts=extra) == [CredentialRevoked] * 2   # control
+    assert _status_outcomes(_sl2021_by_iri(derived), registry, require_status=False) == [
+        ProofMalformed, ProofMalformed]
+
+
+_VALIDITY_ALIAS_URL = "https://context.example/validity-alias/v1"
+_VALIDITY_ALIAS = {"@context": {
+    "since": {"@id": CRED + "issuanceDate", "@type": XSD_DT},
+    "expiry": {"@id": CRED + "expirationDate", "@type": XSD_DT}}}
+
+
+@pytest.mark.parametrize("serves_v1", [False, True], ids=["v2-only", "v1-too"])
+@pytest.mark.parametrize("suite_id", SUITE_IDS)
+def test_vc11_credential_rebased_onto_an_injected_alias_cannot_hide_its_expiry(
+        suite_id, serves_v1):
+    # Indexing the VC 1.1 terms like those of any served context is not enough: a served
+    # context that gives cred:expirationDate a term of its own makes that term an
+    # accepted spelling, compaction chooses it, and the policy reads only
+    # `expirationDate`. The VC 2.0 base context has no term for these IRIs, so the
+    # base-context rule of section 14 never applied to them.
+    extra = _v1_extra()
+    suite_cls, key_cls = _SUITES[suite_id]
+    key = key_cls.generate(kid=VM)
+    secured = suite_cls().add_proof(_vc11(expirationDate=PAST), signing_key=key,
+                                    verification_method=VM, extra_contexts=extra)
+    registry = _registry(key.public_jwk())
+
+    attacked = {k: v for k, v in secured.items()
+                if k not in ("@context", "issuanceDate", "expirationDate")}
+    attacked["@context"] = [V2, _VALIDITY_ALIAS_URL]
+    attacked["since"] = secured["issuanceDate"]
+    attacked["expiry"] = secured["expirationDate"]
+    served = {**(extra if serves_v1 else {}), _VALIDITY_ALIAS_URL: _VALIDITY_ALIAS}
+    assert _status_outcomes(attacked, registry, extra_contexts=served) == [
+        ProofMalformed, ProofMalformed]
+
+
+@pytest.mark.parametrize("suite_id", SUITE_IDS)
+def test_vc11_and_status_list_2021_credentials_still_verify(suite_id):
+    # What a verifier that serves those contexts accepts is unchanged: the terms
+    # themselves, an unexpired VC 1.1 credential and a clear StatusList2021Entry.
+    from openvc.status import CredentialRevoked
+
+    suite_cls, key_cls = _SUITES[suite_id]
+    key = key_cls.generate(kid=VM)
+    registry = _registry(key.public_jwk())
+    extra = _v1_extra()
+    secured = suite_cls().add_proof(_vc11(expirationDate=FUTURE), signing_key=key,
+                                    verification_method=VM, extra_contexts=extra)
+    assert _status_outcomes(secured, registry, extra_contexts=extra) == [None, None]
+
+    extra = {_SL_URL: _SL_CONTEXT}
+    for index, expected in (("3", None), ("7", CredentialRevoked)):   # bit 7 is set
+        secured = suite_cls().add_proof(
+            _vc(**{"@context": [V2, _SL_URL]},
+                credentialStatus=dict(_SL_STATUS_2, statusListIndex=index)),
+            signing_key=key, verification_method=VM, extra_contexts=extra)
+        assert _status_outcomes(secured, registry, extra_contexts=extra) == [expected] * 2
+
+
+def test_vc11_context_is_still_not_served_by_default():
+    # The fix indexes the IRIs the policy reads; it does not start serving VC 1.1.
+    with pytest.raises(DocumentLoaderError):
+        document_loader()("https://www.w3.org/2018/credentials/v1")
+
+
+_POLICY_IRIS = [
+    (CRED + "issuanceDate", "issuanceDate"),
+    (CRED + "expirationDate", "expirationDate"),
+    (CRED + "validFrom", "validFrom"),
+    (CRED + "validUntil", "validUntil"),
+    (CRED + "credentialStatus", "credentialStatus"),
+    (CRED + "credentialSchema", "credentialSchema"),
+    (SEC + "expiration", "expires"),
+    ("https://www.w3.org/ns/credentials/status#BitstringStatusListEntry",
+     "BitstringStatusListEntry"),
+    ("https://www.w3.org/ns/credentials/status#statusPurpose", "statusPurpose"),
+    (_SL + "StatusList2021Entry", "StatusList2021Entry"),
+    (_SL + "statusPurpose", "statusPurpose"),
+    (_SL + "statusListIndex", "statusListIndex"),
+    (_SL + "statusListCredential", "statusListCredential"),
+]
+
+
+@pytest.mark.parametrize("iri, term", _POLICY_IRIS, ids=[t[0] for t in _POLICY_IRIS])
+def test_policy_iris_are_refused_under_any_other_spelling(iri, term):
+    from openvc.proof import _context_validation as cv
+
+    # whatever the loader serves: the default, and one that aliases the IRI
+    alias = {"https://context.example/policy-alias/v1": {"@context": {"alias": iri}}}
+    for loader in (document_loader(), document_loader(alias)):
+        index = cv._term_index([V2], loader)
+        assert cv._is_misspelled(iri, index)                         # its full IRI
+        assert not cv._is_misspelled(term, index)                    # the key read
+        assert term in index.spellings[iri]       # what an @vocab suffix is looked up in
+    assert cv._is_misspelled("alias", index)
+    namespace, _, local = iri.rpartition("#")
+    vocab = cv._term_index([V2, {"@vocab": namespace + "#" + local[:2]}], document_loader())
+    assert cv._is_misspelled(local[2:], vocab)                       # an @vocab suffix
+
+
+def test_policy_iris_index_no_other_vc11_term():
+    # Not the VC 1.1 context: its `cred` / `sec` prefixes and other terms stay out.
+    from openvc.proof import _context_validation as cv
+
+    index = cv._term_index([V2], document_loader())
+    assert CRED not in index.spellings
+    assert "issuanceDate" not in index.iris and "cred" not in index.iris
+
+
+# --------------------------------------------------------------------------- #
+# 18. A signed type re-spelled through an inline @vocab boundary (GHSA-h9rq-wxcw-4rjc)
+# --------------------------------------------------------------------------- #
+# The issuer types its credential through its published context, which the verifier
+# does not serve: "AlumniDegreeCredential" -> vendor#AlumniDegreeCredential. The holder
+# swaps that context for {"@vocab": ".../vocab#Alumni"} and writes the type as
+# "DegreeCredential": the same dataset, the same signature, the same compacted round
+# trip. The term rule only asks which DEFINED IRIs a spelling may stand for, and
+# expected_types compared JSON strings, so a pin on "DegreeCredential" passed (a) on a
+# default verifier, which cannot even load the original, and (b) on one serving a
+# context that defines "DegreeCredential" as another IRI. Now a served type term must
+# stand for one of its own IRIs (b), and expected_types is matched by IRI, resolved
+# through the served contexts only (a).
+
+_VENDOR_URL = "https://vendor.example/ctx/v1"
+_VENDOR_VOCAB = "https://vendor.example/vocab#"
+_VENDOR = {_VENDOR_URL: {"@context": {
+    "@protected": True,
+    "AlumniDegreeCredential": _VENDOR_VOCAB + "AlumniDegreeCredential"}}}
+_SERVED_URL = "https://served.example/ctx/v1"
+_SERVED_TYPE = "https://served.example/vocab#DegreeCredential"
+_SERVED = {_SERVED_URL: {"@context": {"@protected": True, "DegreeCredential": _SERVED_TYPE}}}
+_EXAMPLES_URL = "https://www.w3.org/ns/credentials/examples/v2"
+_EXAMPLES = {_EXAMPLES_URL: {"@context": EXAMPLES_VOCAB}}
+_EXAMPLE_TYPE = EXAMPLES_VOCAB["@vocab"] + "ExampleDegreeCredential"
+RDF_SUITE_IDS = [*SUITE_IDS, "ecdsa-sd-2023"]
+
+
+def _issued(suite_id, doc, extra):
+    """*doc* secured by *suite_id* with *extra* served to the issuer — derived, for
+    ecdsa-sd-2023 — and a registry resolving its key."""
+    if suite_id == "ecdsa-sd-2023":
+        key = P256SigningKey.generate(kid=VM)
+        suite = EcdsaSdProofSuite()
+        base = suite.add_base_proof(doc, signing_key=key, verification_method=VM,
+                                    mandatory_pointers=["/issuer", "/validFrom"],
+                                    extra_contexts=extra)
+        secured = suite.derive_proof(base, selective_pointers=["/credentialSubject/name"],
+                                     extra_contexts=extra)
+    else:
+        suite_cls, key_cls = _SUITES[suite_id]
+        key = key_cls.generate(kid=VM)
+        secured = suite_cls().add_proof(doc, signing_key=key, verification_method=VM,
+                                        extra_contexts=extra)
+    return secured, _registry(key.public_jwk())
+
+
+def _typed_outcomes(secured, registry, expected=None, extra=None):
+    """The (sync, async) outcome of verifying *secured* under ``expected_types`` =
+    *expected* with *extra* served: the exception type raised, or None."""
+    policy = VerificationPolicy(expected_types=expected)
+    out = []
+    try:
+        verify_credential(copy.deepcopy(secured), resolver=registry, policy=policy,
+                          extra_contexts=extra)
+        out.append(None)
+    except OpenvcError as exc:
+        out.append(type(exc))
+    try:
+        asyncio.run(verify_credential_async(
+            copy.deepcopy(secured), resolver=as_async_resolver(registry), policy=policy,
+            extra_contexts=extra))
+        out.append(None)
+    except OpenvcError as exc:
+        out.append(type(exc))
+    return out
+
+
+def _alumni(suite_id):
+    return _issued(suite_id, _vc(**{"@context": [V2, _VENDOR_URL]},
+                                 type=["VerifiableCredential", "AlumniDegreeCredential"]),
+                   _VENDOR)
+
+
+def _unloadable(suite_id):
+    # an unserved context: the RDFC suites surface the loader's refusal, ecdsa-sd-2023
+    # wraps it while canonicalizing the derived credential
+    return ProofMalformed if suite_id == "ecdsa-sd-2023" else DocumentLoaderError
+
+
+def _suffix_respelled(secured):
+    """*secured* with its vendor type spelled as a suffix through an inline @vocab that
+    ends inside the signed IRI — the same signed dataset."""
+    out = copy.deepcopy(secured)
+    out["@context"] = [V2, {"@vocab": _VENDOR_VOCAB + "Alumni"}]
+    out["type"] = ["VerifiableCredential", "DegreeCredential"]
+    return out
+
+
+@pytest.mark.parametrize("suite_id", RDF_SUITE_IDS)
+def test_signed_type_respelled_as_a_served_term_is_rejected(suite_id):
+    from openvc.verify import TypeMismatch
+
+    secured, registry = _alumni(suite_id)
+    both = {**_VENDOR, **_SERVED}
+    # controls: the issuer's own spelling is an AlumniDegreeCredential, not a
+    # DegreeCredential, and a verifier serving only the served context cannot load it
+    assert _typed_outcomes(secured, registry, ["AlumniDegreeCredential"], both) == [
+        None, None]
+    assert _typed_outcomes(secured, registry, ["DegreeCredential"], both) == [
+        TypeMismatch, TypeMismatch]
+    assert _typed_outcomes(secured, registry, ["DegreeCredential"], _SERVED) == [
+        _unloadable(suite_id)] * 2
+
+    attacked = _suffix_respelled(secured)
+    # Before the fix: [None, None] under the pin, though "DegreeCredential" stood for
+    # vendor#AlumniDegreeCredential here and for served#DegreeCredential to the verifier.
+    for expected in (["DegreeCredential"], None):
+        assert _typed_outcomes(attacked, registry, expected, _SERVED) == [
+            ProofMalformed, ProofMalformed]
+    suite = EcdsaSdProofSuite() if suite_id == "ecdsa-sd-2023" else _SUITES[suite_id][0]()
+    with pytest.raises(ProofMalformed, match="type 'DegreeCredential' is a term"):
+        suite.verify(copy.deepcopy(attacked), resolver=registry, extra_contexts=_SERVED)
+
+
+@pytest.mark.parametrize("suite_id", RDF_SUITE_IDS)
+def test_signed_type_respelled_as_a_suffix_does_not_meet_expected_types(suite_id):
+    from openvc.verify import TypeMismatch
+
+    secured, registry = _alumni(suite_id)
+    assert _typed_outcomes(secured, registry, ["DegreeCredential"]) == [
+        _unloadable(suite_id)] * 2                                         # control
+    attacked = _suffix_respelled(secured)
+    # Before the fix: [None, None] — a default verifier accepted the re-spelled credential
+    # under a pin it never met. It is still the issuer's dataset, so it verifies without
+    # the pin; only reading its JSON `type` for a name no served context defines would be
+    # fooled, which is what expected_types no longer does.
+    assert _typed_outcomes(attacked, registry, ["DegreeCredential"]) == [
+        TypeMismatch, TypeMismatch]
+    assert _typed_outcomes(attacked, registry, None) == [None, None]
+    assert _typed_outcomes(attacked, registry,
+                           [_VENDOR_VOCAB + "AlumniDegreeCredential"]) == [None, None]
+    # Serving the vendor context makes the suffix a misspelling of its term (section 16)
+    assert _typed_outcomes(attacked, registry, ["DegreeCredential"], _VENDOR) == [
+        ProofMalformed, ProofMalformed]
+
+
+@pytest.mark.parametrize("suite_id", RDF_SUITE_IDS)
+def test_expected_types_match_by_iri_through_served_contexts(suite_id):
+    # Behaviour change: a type an inline @vocab spells matches a bare name only when the
+    # verifier serves a context giving it that name (here the one-line examples context,
+    # which the credential does not even list), or by its full IRI.
+    from openvc.verify import TypeMismatch
+
+    secured, registry = _issued(
+        suite_id, _vc(**{"@context": [V2, EXAMPLES_VOCAB]},
+                      type=["VerifiableCredential", "ExampleDegreeCredential"]), None)
+    assert _typed_outcomes(secured, registry, ["ExampleDegreeCredential"]) == [
+        TypeMismatch, TypeMismatch]
+    assert _typed_outcomes(secured, registry, ["ExampleDegreeCredential"], _EXAMPLES) == [
+        None, None]
+    assert _typed_outcomes(secured, registry, "ExampleDegreeCredential", _EXAMPLES) == [
+        None, None]                                     # a bare string is one type
+    assert _typed_outcomes(secured, registry, [_EXAMPLE_TYPE]) == [None, None]
+    assert _typed_outcomes(secured, registry, ["VerifiableCredential"]) == [None, None]
+    assert _typed_outcomes(secured, registry, ["VerifiableCredential", "Other"],
+                           _EXAMPLES) == [TypeMismatch, TypeMismatch]
+
+
+def test_typed_mismatch_names_the_remedy():
+    from openvc.verify import TypeMismatch
+
+    secured, registry = _issued(
+        "eddsa-rdfc-2022", _vc(**{"@context": [V2, EXAMPLES_VOCAB]},
+                               type=["VerifiableCredential", "ExampleDegreeCredential"]),
+        None)
+    with pytest.raises(TypeMismatch, match="pin the full type IRI"):
+        verify_credential(secured, resolver=registry,
+                          policy=VerificationPolicy(expected_types=["ExampleDegreeCredential"]))
+
+
+def test_jcs_lane_still_compares_type_strings():
+    # A JCS proof signs the JSON itself, so its `type` strings are what the issuer
+    # wrote and stay compared as strings (unchanged).
+    from openvc.proof.di_jcs import EddsaJcsProofSuite
+
+    key = Ed25519SigningKey.generate(kid=VM)
+    secured = EddsaJcsProofSuite().add_proof(
+        _vc(**{"@context": [V2, EXAMPLES_VOCAB]},
+            type=["VerifiableCredential", "ExampleDegreeCredential"]),
+        signing_key=key, verification_method=VM)
+    assert _typed_outcomes(secured, _registry(key.public_jwk()),
+                           ["ExampleDegreeCredential"]) == [None, None]
+
+
+def test_missing_types_resolves_names_through_the_served_contexts_only():
+    from openvc.proof._context_validation import missing_types
+
+    prefix = {"https://served.example/prefix/v1": {"@context": {
+        "sv": "https://served.example/vocab#"}}}
+    doc = _vc(**{"@context": [V2, _SERVED_URL]},
+              type=["VerifiableCredential", "DegreeCredential"])
+    loader = document_loader({**_SERVED, **prefix})
+    names = ["DegreeCredential", _SERVED_TYPE, "sv:DegreeCredential",
+             "VerifiableCredential", CRED + "VerifiableCredential", "@type", "", 5, "Other",
+             "https://served.example/vocab#Other"]
+    assert missing_types(doc, names, loader) == [
+        "@type", "", 5, "Other", "https://served.example/vocab#Other"]
+
+    # the document's own inline @vocab never resolves a name; a served one does
+    own = _vc(**{"@context": [V2, {"@vocab": "https://own.example/#"}]},
+              type=["VerifiableCredential", "Own"])
+    assert missing_types(own, ["Own"], document_loader()) == ["Own"]
+    served_vocab = {"https://own.example/ctx": {"@context": {"@vocab": "https://own.example/#"}}}
+    assert missing_types(own, ["Own"], document_loader(served_vocab)) == []
+
+    # a presentation is typed by its own node; its embedded credentials are not read
+    vp = {"@context": [V2], "type": ["VerifiablePresentation"],
+          "verifiableCredential": [{"@context": [V2, "https://unserved.example/v1"]}]}
+    assert missing_types(vp, ["VerifiablePresentation"], document_loader()) == []
+
+
+def test_served_type_term_must_stand_for_its_own_iri():
+    hijack = _vc(**{"@context": [V2, {"@vocab": _VENDOR_VOCAB + "Alumni"}]},
+                 type=["VerifiableCredential", "DegreeCredential"])
+    with pytest.raises(ProofMalformed, match="type 'DegreeCredential' is a term"):
+        _validate(hijack, extra_contexts=_SERVED)
+    _validate(hijack)                     # no served context names it: the policy's job
+    # the term spelling its own IRI, under either of two served definitions, still passes
+    other = {"https://other.example/ctx/v1": {"@context": {
+        "DegreeCredential": "https://other.example/vocab#DegreeCredential"}}}
+    for url in (_SERVED_URL, "https://other.example/ctx/v1"):
+        _validate(_vc(**{"@context": [V2, url]},
+                      type=["VerifiableCredential", "DegreeCredential"]),
+                  extra_contexts={**_SERVED, **other})
+    # an inline @vocab that lands on the served IRI itself is the term's own meaning
+    _validate(_vc(**{"@context": [V2, {"@vocab": "https://served.example/vocab#"}]},
+                  type=["VerifiableCredential", "DegreeCredential"]),
+              extra_contexts=_SERVED)
+
+
+def test_add_proof_refuses_a_served_type_term_standing_for_another_iri():
+    suite_cls, key_cls = _SUITES["eddsa-rdfc-2022"]
+    with pytest.raises(ProofMalformed, match="type 'DegreeCredential' is a term"):
+        suite_cls().add_proof(
+            _vc(**{"@context": [V2, {"@vocab": _VENDOR_VOCAB + "Alumni"}]},
+                type=["VerifiableCredential", "DegreeCredential"]),
+            signing_key=key_cls.generate(kid=VM), verification_method=VM,
+            extra_contexts=_SERVED)
+
+
+# --------------------------------------------------------------------------- #
+# 19. ecdsa-sd-2023: a derived proof cannot merge blank nodes the JSON keeps apart
+#     (GHSA-h9rq-wxcw-4rjc)
+# --------------------------------------------------------------------------- #
+# The section-13 move on a derived ecdsa-sd-2023 credential whose status entry is a
+# blank node (VCDM 2.0 makes an entry's `id` optional, so an issuer that names it from a
+# second property labels it `_:s`). The verifier took blank-node identity for the
+# signature from the holder's label map, which it never required to be injective, and
+# from `urn:bnid:` IRIs it deskolemized into blank nodes; context validation takes it
+# from the JSON. Two JSON blank nodes mapped to the issuer's one label, or
+# `urn:bnid:bN` (an IRI to JSON-LD) turned into pyld's own `_:bN`, were one node to the
+# signature and two to _check_status_in_place: the holder described the entry under
+# relatedResource and left only its unrelated type under credentialStatus, and with
+# require_status=False the revoked bit was never read.
+
+def _sd_full_reveal(base, reveal, label_for):
+    """*reveal* (the holder's JSON) with a holder-crafted derived proof disclosing every
+    statement of *base*. *label_for(c14n_label, hmac_labels)* gives the issuer HMAC label
+    (no ``_:``) for each canonical blank-node label of *reveal*, given the issuer's HMAC
+    labels. The canonical labels are computed as the verifier did before this fix
+    (deskolemizing ``urn:bnid:`` IRIs), so the proof is one that verifier accepted."""
+    import re
+
+    from openvc.proof import ecdsa_sd as m
+
+    loader = document_loader()
+    parts = m.decode_base_proof(base["proof"]["proofValue"])
+    transform = m._transform({k: v for k, v in base.items() if k != "proof"},
+                             parts["hmac_key"], loader)
+    mandatory = m._selection_lines(
+        m.select_json_ld(parts["mandatory_pointers"], transform.skolemized_compact) or {},
+        transform.skolem_to_hmac, loader)
+    signature_of = dict(zip([ln for ln in transform.relabeled if ln not in mandatory],
+                            parts["signatures"]))
+    hmac_labels = sorted({x[2:] for ln in transform.relabeled
+                          for x in re.findall(r"_:u[A-Za-z0-9_-]+", ln)})
+    unsecured = {k: v for k, v in reveal.items() if k != "proof"}
+    lines, id_map = m._canonicalize(m._deskolemize_nquads(m._to_nquads(unsecured, loader)))
+    label_map = {c[2:]: label_for(c[2:], hmac_labels) for c in sorted(set(id_map.values()))}
+    relabeled = m._relabel(lines, {"_:" + k: "_:" + v for k, v in label_map.items()})
+    mandatory_idx = [i for i, ln in enumerate(relabeled) if ln in mandatory]
+    signatures = [signature_of[ln] for i, ln in enumerate(relabeled) if i not in mandatory_idx]
+    out = copy.deepcopy(reveal)
+    out["proof"] = {k: v for k, v in base["proof"].items() if k != "proofValue"}
+    out["proof"]["proofValue"] = m.encode_derived_proof(
+        base_signature=parts["base_signature"], public_key=parts["public_key"],
+        signatures=signatures, label_map=label_map, mandatory_indexes=mandatory_idx)
+    return out
+
+
+def _sd_blank_status_base():
+    """An issuer-signed ecdsa-sd-2023 base proof whose (revoked) STATUS_2 entry is a
+    blank node, also of an unrelated type, named from relatedResource too: the
+    section-13 shape with an id-less entry. Everything is mandatory."""
+    entry = {k: v for k, v in STATUS_2.items() if k != "id"}
+    entry.update(id="_:s", type=["BitstringStatusListEntry", _OTHER_STATUS_TYPE])
+    key = P256SigningKey.generate(kid=VM)
+    base = EcdsaSdProofSuite().add_base_proof(
+        _vc(**{"@context": [V2, EXAMPLES_VOCAB]}, credentialStatus=entry,
+            relatedResource={"id": "_:s"}),
+        signing_key=key, verification_method=VM,
+        mandatory_pointers=["/issuer", "/validFrom", "/credentialStatus",
+                            "/relatedResource"])
+    return base, entry, _registry(key.public_jwk())
+
+
+def _sd_moved(base, entry, status_id):
+    """The base's JSON with the entry described under relatedResource and only its
+    unrelated type left under credentialStatus, as node *status_id* (None: id-less)."""
+    moved = {k: v for k, v in base.items() if k != "proof"}
+    moved["credentialStatus"] = {"type": _OTHER_STATUS_TYPE}
+    if status_id is not None:
+        moved["credentialStatus"]["id"] = status_id
+    moved["relatedResource"] = dict(entry, type="BitstringStatusListEntry")
+    return moved
+
+
+def _skolem_iri_moved(base, entry):
+    """:func:`_sd_moved` with the left-behind type on `urn:bnid:bN`, N being the label
+    pyld gives the relatedResource node, so the pre-fix verifier merged the two and the
+    label map stays injective."""
+    from openvc.proof import ecdsa_sd as m
+
+    for n in range(8):
+        moved = _sd_moved(base, entry, f"urn:bnid:b{n}")
+        _, id_map = m._canonicalize(m._deskolemize_nquads(m._to_nquads(
+            moved, document_loader())))
+        if len(set(id_map.values())) == 1:
+            return moved
+    raise AssertionError("no urn:bnid:bN collides with pyld's label")     # pragma: no cover
+
+
+def _only(c14n, hmac_labels):
+    assert len(hmac_labels) == 1             # the entry is the only blank node signed
+    return hmac_labels[0]
+
+
+# variant -> (the holder's JSON, what verifying it now raises)
+_SD_MERGES = {
+    # two JSON blank nodes, both mapped to the issuer's one entry
+    "non-injective-label-map": (lambda b, e: _sd_moved(b, e, "_:a"), ProofValueMalformed),
+    "non-injective-label-map-idless": (lambda b, e: _sd_moved(b, e, None),
+                                       ProofValueMalformed),
+    # an IRI to JSON-LD, the issuer's blank node to the deskolemizing verifier
+    "skolem-iri": (_skolem_iri_moved, SignatureInvalid),
+    # control: one JSON label in both places is one node to both, and context validation
+    # refuses the move as in section 13
+    "same-blank-label": (lambda b, e: _sd_moved(b, e, "_:s"), ProofMalformed),
+}
+
+
+@pytest.mark.parametrize("require_status", [True, False], ids=["require", "optional"])
+@pytest.mark.parametrize("variant", sorted(_SD_MERGES))
+def test_ecdsa_sd_cannot_merge_blank_nodes_to_move_a_status_entry(variant, require_status):
+    from openvc.status import CredentialRevoked
+
+    base, entry, registry = _sd_blank_status_base()
+    honest = _sd_full_reveal(base, {k: v for k, v in base.items() if k != "proof"}, _only)
+    assert _status_outcomes(honest, registry, require_status=require_status) == [
+        CredentialRevoked, CredentialRevoked]                                  # control
+
+    build, raised = _SD_MERGES[variant]
+    attacked = _sd_full_reveal(base, build(base, entry), _only)
+    assert _status_outcomes(attacked, registry, require_status=require_status) == [
+        raised, raised]
+    with pytest.raises(raised):
+        EcdsaSdProofSuite().verify(attacked, resolver=registry)
+
+
+def test_ecdsa_sd_genuine_derived_blank_node_status_still_verifies():
+    # openvc's own derive_proof labels the disclosed blank nodes `_:bN` and writes an
+    # injective label map: an id-less status entry, disclosed or withheld, still works.
+    from openvc.status import CredentialRevoked
+
+    entry = {k: v for k, v in STATUS_2.items() if k != "id"}
+    derived, key = _ecdsa_sd_derived(
+        _vc(credentialStatus=entry), ["/issuer", "/validFrom", "/credentialStatus"])
+    assert derived["credentialStatus"]["id"].startswith("_:")
+    registry = _registry(key.public_jwk())
+    for require_status in (True, False):
+        assert _status_outcomes(derived, registry, require_status=require_status) == [
+            CredentialRevoked, CredentialRevoked]
+
+
+def test_ecdsa_sd_derive_never_relies_on_a_deskolemizing_verifier():
+    # derive_proof computes the label map as verify canonicalizes the reveal. When a
+    # blank node the issuer named from a second property reaches the reveal as a
+    # `urn:bnid:` IRI (a compacted reference), the pre-fix derive deskolemized it and so
+    # produced a proof only the pre-fix verifier accepted. Now it either fails closed at
+    # derive or yields a proof that verifies; never one the verifier refuses.
+    from openvc.proof.ecdsa_sd import EcdsaSdError
+
+    key = P256SigningKey.generate(kid=VM)
+    suite = EcdsaSdProofSuite()
+    entry = dict(STATUS_2, id="_:b0")
+    for related in ("_:b0", {"id": "_:b0"}):
+        base = suite.add_base_proof(
+            _vc(credentialStatus=entry, relatedResource=related),
+            signing_key=key, verification_method=VM,
+            mandatory_pointers=["/issuer", "/validFrom"])
+        try:
+            derived = suite.derive_proof(
+                base, selective_pointers=["/credentialStatus", "/relatedResource"])
+        except EcdsaSdError:
+            continue
+        suite.verify(derived, public_key_jwk=key.public_jwk())
+
+
+# --------------------------------------------------------------------------- #
+# 20. An exact copy of a status entry elsewhere still verifies (GHSA-h9rq-wxcw-4rjc)
+# --------------------------------------------------------------------------- #
+# A credential embedded in another (an OB 3.0 EndorsementCredential, say) may repeat the
+# outer credentialStatus verbatim. RDF merges the two descriptions into the same
+# statements, so the copy carries nothing the entry lacks: removing it leaves the same
+# dataset and the same top-level entry. Section 13's rule refused any description
+# elsewhere, so such a credential failed on every RDF suite. Now a description elsewhere
+# is refused only when it is not an exact copy (equal expanded node objects) of a
+# top-level entry with that id; moving any member out of the entry makes them differ.
+
+def _with_endorsement_copy(status):
+    inner = {"id": "urn:uuid:inner", "type": ["VerifiableCredential"],
+             "issuer": "did:example:accreditor", "validFrom": "2020-01-01T00:00:00Z",
+             "credentialSubject": {"id": DID}, "credentialStatus": dict(status)}
+    return _vc(**{"@context": [V2, EXAMPLES_VOCAB]}, credentialStatus=dict(status),
+               credentialSubject={"id": "did:example:alice", "name": "Alice",
+                                  "endorsement": inner})
+
+
+def _with_related_copy(status):
+    return _vc(credentialStatus=dict(status), relatedResource=dict(status))
+
+
+_STATUS_COPIES = {
+    # placement -> (the credential, the copy of its status entry in it)
+    "endorsement": (_with_endorsement_copy,
+                    lambda doc: doc["credentialSubject"]["endorsement"]["credentialStatus"]),
+    "related-resource": (_with_related_copy, lambda doc: doc["relatedResource"]),
+}
+
+
+@pytest.mark.parametrize("signer", ["openvc", "third-party"])
+@pytest.mark.parametrize("placement", sorted(_STATUS_COPIES))
+@pytest.mark.parametrize("suite_id", SUITE_IDS)
+def test_exact_status_copy_elsewhere_verifies(suite_id, placement, signer):
+    from openvc.status import CredentialRevoked
+
+    build, _ = _STATUS_COPIES[placement]
+    sign = _sign if signer == "openvc" else _sign_raw
+    clear, clear_registry = sign(suite_id, build(STATUS))
+    revoked, revoked_registry = sign(suite_id, build(STATUS_2))
+    assert _status_outcomes(clear, clear_registry) == [None, None]
+    assert _status_outcomes(revoked, revoked_registry) == [CredentialRevoked] * 2
+    for require_status in (True, False):
+        assert _status_outcomes(revoked, revoked_registry,
+                                require_status=require_status) == [CredentialRevoked] * 2
+
+
+@pytest.mark.parametrize("placement", sorted(_STATUS_COPIES))
+@pytest.mark.parametrize("suite_id", SUITE_IDS)
+def test_a_copy_that_is_no_longer_exact_is_still_refused(suite_id, placement):
+    # The holder moves a member out of the top-level entry (the copy keeps it, so the
+    # dataset and the signature are unchanged), or out of the copy, or drops the
+    # unrelated type from one side: either way the two descriptions now differ.
+    build, copy_of = _STATUS_COPIES[placement]
+    entry = dict(STATUS_2, type=["BitstringStatusListEntry", _OTHER_STATUS_TYPE])
+    doc = build(entry)
+    doc["@context"] = [V2, EXAMPLES_VOCAB]
+    secured, registry = _sign(suite_id, doc)
+    attacks = []
+    for member in ("statusPurpose", "statusListIndex", "statusListCredential"):
+        moved = copy.deepcopy(secured)
+        del moved["credentialStatus"][member]
+        attacks.append(moved)
+    left_behind = copy.deepcopy(secured)                     # the section-13 shape
+    left_behind["credentialStatus"] = {"id": STATUS_2["id"], "type": _OTHER_STATUS_TYPE}
+    copy_of(left_behind)["type"] = "BitstringStatusListEntry"
+    attacks.append(left_behind)
+    for attacked in attacks:
+        for require_status in (True, False):
+            assert _status_outcomes(attacked, registry, require_status=require_status) == [
+                ProofMalformed, ProofMalformed]
+    suite_cls, _ = _SUITES[suite_id]
+    with pytest.raises(ProofMalformed, match="described outside credentialStatus"):
+        suite_cls().verify(attacks[0], resolver=registry)
+
+
+def test_ecdsa_sd_exact_status_copy_in_an_embedded_credential_verifies():
+    # An OB 3.0 library that verifies eddsa-rdfc-2022 itself, tolerating this copy, and
+    # delegates ecdsa-sd-2023 to this suite verified one badge there and refused it here.
+    from openvc.status import CredentialRevoked
+
+    derived, key = _ecdsa_sd_derived(
+        _with_endorsement_copy(STATUS_2),
+        ["/issuer", "/validFrom", "/credentialStatus", "/credentialSubject"])
+    registry = _registry(key.public_jwk())
+    for require_status in (True, False):
+        assert _status_outcomes(derived, registry, require_status=require_status) == [
+            CredentialRevoked, CredentialRevoked]
+
+    moved = copy.deepcopy(derived)
+    del moved["credentialStatus"]["statusPurpose"]
+    for require_status in (True, False):
+        assert _status_outcomes(moved, registry, require_status=require_status) == [
+            ProofMalformed, ProofMalformed]
+    with pytest.raises(ProofMalformed, match="described outside credentialStatus"):
+        EcdsaSdProofSuite().verify(moved, public_key_jwk=key.public_jwk())

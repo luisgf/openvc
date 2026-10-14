@@ -278,3 +278,58 @@ def test_stale_version_scanner(sample: str, stale: bool) -> None:
 def test_docs_do_not_state_a_current_version(page: str) -> None:
     claims = _stale_version_claims(_doc_text(page))
     assert not claims, f"{page} states a version as current: {claims}"
+
+
+# --------------------------------------------------------------------------- #
+# An unreleased fix is filed under a version that has not shipped
+# --------------------------------------------------------------------------- #
+# GHSA-h9rq-wxcw-4rjc was written up as fixed in 1.33.0 after v1.33.0 had shipped
+# without it: an advisory built from that text would have told 1.33.0 users they were
+# safe. The unreleased CHANGELOG section must name a version that is not released, and
+# the audit docs must file every advisory that section names under that version.
+
+_AUDIT_DOCS = ["docs/audit/threat-model.md", "docs/audit/assurance.md"]
+_GHSA_ID = r"GHSA(?:-[0-9a-z]{4}){3}"
+_X_Y_Z = r"\d+\.\d+\.\d+"
+
+
+def _changelog() -> str:
+    return _doc_text("CHANGELOG.md")
+
+
+def _unreleased_section() -> tuple[str, str]:
+    text = _changelog()
+    match = re.search(rf"^## \[({_X_Y_Z})\] — unreleased$", text, re.M)
+    if match is None:
+        pytest.skip("no unreleased CHANGELOG section (a release commit)")
+    end = text.find("\n## [", match.end())
+    return match.group(1), text[match.end():end if end != -1 else None]
+
+
+def _as_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def test_unreleased_changelog_section_names_an_unshipped_version() -> None:
+    import openvc
+
+    version, _ = _unreleased_section()
+    text = _changelog()
+    released = set(re.findall(rf"^\[({_X_Y_Z})\]: \S+/releases/tag/v\1$", text, re.M))
+    assert version not in released, f"{version} has a release link: it already shipped"
+    assert not re.search(rf"^## \[{re.escape(version)}\] — \d{{4}}-", text, re.M)
+    assert _as_tuple(version) > _as_tuple(openvc.__version__), (
+        f"the unreleased {version} is not after the package's {openvc.__version__}")
+
+
+def test_audit_docs_file_unreleased_advisories_under_the_unreleased_version() -> None:
+    version, section = _unreleased_section()
+    for ghsa in sorted(set(re.findall(_GHSA_ID, section))):
+        found = []
+        for doc in _AUDIT_DOCS:
+            text = _doc_text(doc)
+            labels = (re.findall(rf"{ghsa}\W{{1,3}}v({_X_Y_Z})", text)
+                      + re.findall(rf"v({_X_Y_Z})\W{{1,3}}{ghsa}", text))
+            assert set(labels) <= {version}, f"{doc} files {ghsa} under {labels}"
+            found += labels
+        assert found, f"no audit doc says which version fixes {ghsa}"

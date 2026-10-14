@@ -198,7 +198,15 @@ raises `ProofMalformed`:
   term for the IRI, it must be the base context's term: a context you pass in
   `extra_contexts` that gives `validUntil`'s IRI another name (`until`), or a shorter
   one compaction would prefer over `credentialStatus`, is refused rather than allowed
-  to hide the member. The keys inside an `@json` value such as `_sd` are not checked.
+  to hide the member. The IRIs the checks after the proof read are pinned to the one
+  key they read, whatever the loader serves: `validFrom`, `validUntil`, `issuanceDate`,
+  `expirationDate`, the proof's `expires`, `credentialStatus`, `credentialSchema`, and
+  the entry types and members of both `BitstringStatusListEntry` and
+  `StatusList2021Entry`. openvc does not serve the VC 1.1 or StatusList2021 contexts by
+  default, so without this a holder could re-compact an issuer's VC 1.1 credential onto
+  the VC 2.0 base alone and spell `expirationDate` by its IRI, out of the expiry
+  check's sight. A term your own context gives one of those IRIs is refused for the
+  same reason. The keys inside an `@json` value such as `_sd` are not checked.
 
   The rule does not track which of your contexts a credential uses, nor where a scoped
   term is in effect. An IRI that any served context defines a term for, in any scope,
@@ -212,7 +220,7 @@ raises `ProofMalformed`:
   own context defines, add a term for it to that context (in `extra_contexts`) and
   write the term. An IRI the VC base context defines has no other accepted spelling,
   so use a different property. An IRI no served context names a term for (your own
-  extension property) is not affected.
+  extension property) is not affected, unless it is one of the IRIs the policy reads.
 - **A `credentialStatus` entry is described under `credentialStatus`.** RDF lets a
   node be described under any property that references it, so an entry the issuer also
   names from, say, `relatedResource` could otherwise be moved there, leaving only
@@ -220,6 +228,16 @@ raises `ProofMalformed`:
   credential's own, top-level `credentialStatus`, so an entry there whose `id` is
   described anywhere else in the document is refused, including under the
   `credentialStatus` of a nested node (a subject typed `VerifiableCredential`, say).
+  An exact copy of the entry is the exception. An embedded credential, such as an OB
+  3.0 endorsement, may repeat the outer `credentialStatus` verbatim, and RDF merges
+  the two into the same statements. A copy that differs in any member is refused.
+- **On `ecdsa-sd-2023`, one signed blank node is one node in the JSON.** A derived
+  proof's label map, which the holder writes, must give each blank node its own
+  label, and the verifier canonicalizes the document as presented, as VC-DI-ECDSA's
+  verifier does. A `urn:bnid:` IRI there is an IRI, not a blank node. Otherwise two
+  JSON nodes could be the issuer's one node, which would let a holder move an id-less
+  status entry past the rule above, or give a node the issuer signed without an `id`
+  one of its own choosing.
 - **Nothing about the document is stated outside it.** `@included`, `@reverse`, a
   top-level `@graph`, and a second description of the document's own node nested
   inside it are all refused.
@@ -228,6 +246,26 @@ raises `ProofMalformed`:
   well-formed absolute IRI, such as an `id` containing whitespace or a property from a
   blank-node `@vocab`. It also leaves out `@index` and `@direction` annotations. All of
   these are refused, because their values would not be signed.
+- **A type named like a term you serve is that term.** A top-level `type` value that
+  is a term a served context defines must stand, in the credential, for one of the
+  IRIs that term is defined as. Otherwise a holder could swap the issuer's context for
+  an inline `@vocab` that ends inside the signed type IRI (`"…/vocab#Alumni"` for
+  `…/vocab#AlumniDegreeCredential`) and show that type as `"DegreeCredential"`.
+
+**`expected_types` is matched by IRI on these suites.** The signature covers each
+type's IRI, not how the JSON spells it, and the holder chooses where an inline `@vocab`
+ends. So each name in `VerificationPolicy.expected_types` is resolved through the
+contexts the verifier serves (bundled or `extra_contexts`), never through the
+credential's own `@context`, and must name one of the credential's expanded types. A
+name a served context defines stands for its IRIs, any other name for each served
+`@vocab` plus it, and a full or compact IRI for itself. A type only an inline `@vocab`
+names therefore needs one of two things: serve a context that names it (the published
+one, or one that holds just that `@vocab`, such as
+`{"https://www.w3.org/ns/credentials/examples/v2": {"@context": {"@vocab":
+"https://www.w3.org/ns/credentials/examples#"}}}`), which the credential need not list,
+or pin the full type IRI. If your own code reads `type` from the JSON, compare expanded
+IRIs, or let `expected_types` do it. The JCS suites, VC-JWT and SD-JWT compare the
+strings the issuer signed, as before.
 
 The bundled v2 context has no `@vocab`, so a custom claim needs a definition. Use an
 inline `{"@vocab": "…"}`, as in the selective-disclosure example above, or your own

@@ -221,6 +221,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
+- *`ecdsa-sd-2023` derived proof value* — *batch abort, untyped error, no key needed* — `decode_derived_proof` checked only that the CBOR was a five-element array, so a text-string, integer or map `public_key` was a bare `TypeError` before the issuer's key was resolved, an array or text-string label map an `AttributeError` the surrounding `except` did not list, and an integer `signatures` a `TypeError` after the genuine base signature; each escaped `verify_credential` / `verify_credential_async` and aborted a `verify_many` / `verify_many_async` batch. Pre-existing, found by the adversarial review of the GHSA-h9rq-wxcw-4rjc fix; no wrong-accept. Each part is now typed at decode and anything else is `ProofValueMalformed`, and `AttributeError` joined the backstop (v1.33.1; `test_ecdsa_sd_derived_proof_shape.py`)
 - `#279` — *batch abort, untyped error, no key needed* — JSON allows `"\ud800"`, an escape for a lone UTF-16 surrogate, and `json.loads` / `openvc._json.loads` return a `str` no UTF-8 form exists for; `.encode("utf-8")` on one outside a guarded block was a bare `UnicodeEncodeError`, which `verify_many` / `verify_many_async` do not isolate. Eight sites, found by the adversarial review of #273: the Data Integrity canonicaliser (`eddsa-rdfc-2022` and `ecdsa-rdfc-2019`, since v0.1.0; reached with no valid signature because the hash is computed before the key is resolved, and again through `verify_vp_token`, a VP-JWT carrying an `ldp_vc`, `default_status_list_resolver` and the issuer side), `ecdsa-sd-2023` verify and `add_base_proof`, a `did:webvh` `updateKeys` entry under pre-rotation (since #90), the OpenID4VCI `proofs` entry, `peek_proof_header` and `peek_key_attestation` (since #144), and `jwk_thumbprint_bytes`. Only a *named* node's statement reaches the encode (pyld hashes a blank node's inside the guarded `normalize`), so a fixture on a subject without `id` passed on `main` and proved nothing. Each site raises its lane's own class (`DataIntegrityError`, `ProofMalformed`, `DidWebvhError`, `CredentialRequestMalformed` / `MalformedToken`, `InvalidKey`), the message names the code point and its index and never the text, and the string is never repaired. The JOSE lanes still accept a surrogate the issuer signed (v1.33.0; `test_lone_surrogate_typed.py`)
 - `#253` — *false negative, fail-closed* — the TIR v5 origin pin compared ports as written, so `https://host` and `https://host:443` were different origins although httpx sends both to 443: a resolver whose `base` carried `:443` skipped every revision `href` the registry wrote without a port (and refused its `attributes` URL, and stopped at its `links.next`), and the reverse with the default base, so the issuer appeared to hold no accreditation. An absent https port is now 443 (RFC 3986 §6.2.3); only an absent one, so `:0` stays off-origin, and `:8443` too. It widens nothing httpx would not already reach (v1.33.0; `test_ebsi_origin_default_port.py`)
 - `#268` — *fail-safe gap, no wrong-accept (defence in depth)* — a Credential Query's `multiple` was read in one place, `_presentation_list`, by truthiness: a truthy non-boolean (`"false"`, `"true"`, `"0"`, `1`, `1.0`, `2`, `[0]`, `{"a": 1}`) opened the query to several Presentations, all verified and returned, while a falsy one (`null`, `""`, `0`, `0.0`, `[]`, `{}`) was read as `false` by accident and never reported, and a query the wallet did not answer (allowed by `credential_sets`) never had it read at all; the query is the verifier's own input and every Presentation still went through the full pipeline, so nothing unverified was accepted, but the single-valued contract of OpenID4VP 1.0 §8.1 was not enforced and a consumer written for one Presentation per query got several. `_index_dcql` now requires `multiple` to be a JSON boolean (an absent one is still `false`; `0`, `1` and `1.0` are not booleans) on every query, answered or not, right after the same check on `require_cryptographic_holder_binding` and before any Presentation is read: `VpTokenMalformed` naming the query; a `dcql_query` with a non-boolean `multiple` verified before and now raises on every response, in both directions (a truthy value used to return several Presentations, a falsy one used to read as `false`). Found while probing for the review of #249 and left out of #254 (v1.33.0; `test_dcql_multiple_boolean.py`)
@@ -311,7 +312,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
   side: the policy reads only JSON the signature covers (threat model I20, R9). Pinned
   by `tests/test_di_context_validation.py`. The attack tests fail on v1.30.1 and pass
   here; the W3C golden vectors are unaffected.
-- GHSA-h9rq-wxcw-4rjc (v1.33.0) — **wrong-accept** — the same check folded a one-element
+- GHSA-h9rq-wxcw-4rjc (v1.33.1) — **wrong-accept** — the same check folded a one-element
   array into its element at any depth, so an array nested in an array (which JSON-LD
   expansion flattens) passed: a holder re-spelled the issuer's `credentialStatus: [S1,
   S2]` as `[S1, [S2]]` and S2's revocation bit was never read, on `eddsa-rdfc-2022`,
@@ -323,17 +324,29 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
   inline `@vocab`, so the parser skipped the entry as an unrelated type. And a value its
   term cannot carry (an untyped `validUntil` / `validFrom` / proof `expires`) compacts
   under its IRI, so an issuer-signed credential with that spelling verified as never
-  expiring; an injected context aliasing a core IRI did the same. Now an array element
+  expiring; an injected context aliasing a core IRI did the same. And `expected_types`
+  compared JSON text: an inline `@vocab` ending inside a signed type IRI turned
+  `…/vocab#AlumniDegreeCredential` into `"DegreeCredential"`, which met a pin on that
+  name. On `ecdsa-sd-2023` a non-injective label map, or a `urn:bnid:` IRI the verifier
+  deskolemized, made two JSON nodes one signed node, which bypassed the move check for
+  an id-less entry (a revoked credential verified under `require_status=False`) and put
+  a holder-chosen IRI id on a blank-node subject. Now an array element
   never folds; a key or `type` value standing for an IRI any served context (bundled or
   `extra_contexts`, listed by the document or not) defines a term for must be the term
   (the VC base context's own term when it defines one); an entry under the top-level
-  `credentialStatus` described anywhere else is refused; and the status parser refuses a
-  non-object array member and a typeless entry (threat model I20, R9). Pinned by
-  sections 11–16 of `tests/test_di_context_validation.py`,
+  `credentialStatus` described anywhere else is refused unless that description is an
+  exact copy of it; on `ecdsa-sd-2023` the label map must be injective and the presented
+  document is canonicalized without deskolemizing; and the status parser refuses a
+  non-object array member and a typeless entry; a top-level `type` value that is a
+  served term must stand for one of its IRIs, and on the RDF suites `expected_types` is
+  matched by IRI through the served contexts (threat model I20, R9). Pinned by
+  sections 11–20 of `tests/test_di_context_validation.py`,
+  `test_an_iri_id_on_a_signed_blank_node_is_rejected` in
+  `tests/test_ecdsa_sd_interop.py`,
   `test_non_object_status_member_is_refused_not_skipped` /
   `test_typeless_status_entry_is_refused_not_skipped` in `tests/test_status.py` and
   `test_loader_lists_what_it_serves_read_only` in `tests/test_contexts.py`; the attack
-  tests fail on v1.32.4 and pass here.
+  tests fail on v1.33.0 and pass here.
 - `#185` — *cross-caller bleed* — only the bundled, read-only contexts are tagged pyld-`static`: an injected `extra_contexts` document reached pyld's process-global cache keyed by URL, so two callers injecting different documents under one URL collided and a valid proof failed to verify (v1.27.1, follow-up to #183; `test_contexts.py`)
 
 **X.509 / trust anchoring**

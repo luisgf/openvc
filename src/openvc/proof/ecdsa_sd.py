@@ -243,7 +243,22 @@ def encode_derived_proof(
 
 
 def decode_derived_proof(proof_value: str) -> dict[str, Any]:
-    """Parse an ecdsa-sd-2023 derived proof value into its parts."""
+    """Parse an ecdsa-sd-2023 derived proof value into its parts.
+
+    Each part must have the type VC-DI-ECDSA's ``parseDerivedProofValue`` gives it:
+    ``base_signature`` and ``public_key`` byte strings, ``signatures`` an array of byte
+    strings, the compressed label map a map of unsigned integers to byte strings and
+    ``mandatory_indexes`` an array of unsigned integers. Anything else raises
+    :class:`ProofValueMalformed` here, before :meth:`EcdsaSdProofSuite.verify` uses it.
+    The holder chooses these bytes, and no key is needed to send them, so a wrong type
+    would otherwise surface as a bare ``TypeError`` / ``AttributeError`` that aborts a
+    whole ``verify_many`` batch.
+
+    The label map must also be injective. Two blank nodes of the disclosed document
+    mapped to one HMAC label are one node to the signature and two to the JSON that
+    every check after it reads, so a holder could describe one signed node (a status
+    entry) in two places. A genuine derived proof never repeats a label: the disclosed
+    blank nodes are distinct nodes of the issuer's document."""
     raw = _mb_decode(proof_value)
     if not raw.startswith(DERIVED_PROOF_HEADER):
         raise ProofValueMalformed("not an ecdsa-sd-2023 derived proof (bad header)")
@@ -251,10 +266,34 @@ def decode_derived_proof(proof_value: str) -> dict[str, Any]:
     if not isinstance(parts, list) or len(parts) != 5:
         raise ProofValueMalformed("derived proof must decode to a 5-element array")
     base_signature, public_key, signatures, compressed_map, mandatory_indexes = parts
+    if not isinstance(base_signature, bytes):
+        raise ProofValueMalformed("derived proof base signature must be a byte string")
+    if not isinstance(public_key, bytes):
+        raise ProofValueMalformed("derived proof public key must be a byte string")
+    if not isinstance(signatures, list) or not all(
+            isinstance(sig, bytes) for sig in signatures):
+        raise ProofValueMalformed("derived proof signatures must be an array of byte strings")
+    if not isinstance(compressed_map, dict) or not all(
+            _is_index(key) and isinstance(value, bytes)
+            for key, value in compressed_map.items()):
+        raise ProofValueMalformed(
+            "derived proof label map must map unsigned integers to byte strings")
+    if not isinstance(mandatory_indexes, list) or not all(
+            _is_index(index) for index in mandatory_indexes):
+        raise ProofValueMalformed(
+            "derived proof mandatory indexes must be an array of unsigned integers")
+    if len(set(compressed_map.values())) != len(compressed_map):
+        raise ProofValueMalformed(
+            "derived proof label map gives two blank nodes the same label")
     return {"base_signature": base_signature, "public_key": public_key,
             "signatures": signatures,
             "label_map": decompress_label_map(compressed_map),
             "mandatory_indexes": mandatory_indexes}
+
+
+def _is_index(value: Any) -> bool:
+    """An unsigned CBOR integer (``bool`` is an ``int`` in Python, and not one)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 # The post-signature policy failures verify() may raise beyond signature/format
@@ -307,6 +346,9 @@ def _skolemize(node: Any, counter: list[int]) -> Any:
 
 
 def _deskolemize_nquads(nquads: str) -> str:
+    """Turn the ``urn:bnid:`` IRIs :func:`_skolemize` gave back into blank nodes. Only
+    for the N-Quads of a document this module skolemized itself; never for a document
+    as presented, where a ``urn:bnid:`` IRI is an IRI (see :meth:`EcdsaSdProofSuite.verify`)."""
     return re.sub("<" + re.escape(_SKOLEM_PREFIX) + r"([^>]+)>", r"_:\1", nquads)
 
 
@@ -599,8 +641,10 @@ class EcdsaSdProofSuite:
         combined_selection: dict[str, Any], mandatory_set: set[str], loader: Any,
     ) -> tuple[list[str], dict[str, str], list[int]]:
         """The HMAC-relabeled reveal N-Quads (as the verifier will canonicalize them),
-        the label map {c14nN -> u<b64>}, and the mandatory indexes."""
-        c14n_lines, id_map = _canonicalize(_deskolemize_nquads(_to_nquads(reveal, loader)))
+        the label map {c14nN -> u<b64>}, and the mandatory indexes. Like the verifier,
+        this does not deskolemize: a ``urn:bnid:`` IRI left in the reveal is an IRI, and
+        its statement has no base signature."""
+        c14n_lines, id_map = _canonicalize(_to_nquads(reveal, loader))
         # Chain reveal-c14n -> skolem -> HMAC label, keyed by the reveal's own bnodes.
         relabel_map = {c14n: skolem_to_hmac[bn] for bn, c14n in id_map.items()}
         label_map = {c14n[len("_:"):]: relabel_map[c14n][len("_:"):] for c14n in relabel_map}
@@ -646,13 +690,23 @@ class EcdsaSdProofSuite:
             parsed = decode_derived_proof(proof_value)
         except ProofError:
             raise
-        except (ValueError, KeyError, TypeError, IndexError) as exc:
+        except (ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
+            # decode_derived_proof types every part; this is the backstop for a shape
+            # it does not foresee, so the error never leaves the ProofError family.
             raise ProofValueMalformed(f"malformed derived proof value: {exc}") from exc
 
         loader = document_loader(extra_contexts)
         try:
             unsecured = {k: v for k, v in derived.items() if k != "proof"}
-            c14n_lines, _ = _canonicalize(_deskolemize_nquads(_to_nquads(unsecured, loader)))
+            # The document as presented, as VC-DI-ECDSA's verifier canonicalizes it: no
+            # deskolemization. A `urn:bnid:` IRI here is an IRI. Turning it into a blank
+            # node would let the holder merge it with one of the document's own blank
+            # nodes (pyld labels them `_:bN`), which context validation, reading the
+            # JSON, still sees as two nodes, or put an IRI id of its choosing on a node
+            # the issuer signed as a blank node. With an injective label map
+            # (decode_derived_proof), blank-node identity on the signature side is the
+            # JSON-LD identity the checks after it rely on.
+            c14n_lines, _ = _canonicalize(_to_nquads(unsecured, loader))
             relabel_map = {"_:" + k: "_:" + v for k, v in parsed["label_map"].items()}
             relabeled = _relabel(c14n_lines, relabel_map)
 

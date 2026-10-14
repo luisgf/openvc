@@ -146,7 +146,10 @@ class VerificationPolicy:
     does not make the KB-JWT required — ``require_key_binding`` does.
     ``expected_types`` pins a W3C credential's ``type`` (a bare string is one type); an
     IETF SD-JWT VC is typed by ``vct``, so a policy that sets it rejects one — pin those
-    with ``expected_vct``."""
+    with ``expected_vct``. On the RDF Data Integrity suites a name matches by IRI,
+    resolved through the contexts the verifier serves (bundled or ``extra_contexts``),
+    never the credential's own ``@context``: a type only an inline ``@vocab`` names
+    needs a served context naming it, or its full IRI."""
     leeway_s: int = DEFAULT_LEEWAY_S
     expected_types: Sequence[str] | None = None
     expected_vct: str | None = None
@@ -647,7 +650,7 @@ def _verify_data_integrity(
             now=policy.now, extra_contexts=extra_contexts,
             check_temporal=policy.require_not_expired)
     _bind_issuer_to_verification_method(verified)
-    _check_types(verified.credential, policy.expected_types)
+    _check_di_types(verified.credential, policy.expected_types, fmt, extra_contexts)
     # DI credentials use W3C credentialStatus, but pass the doc as the IETF source
     # too so a (non-conformant) token `status` on one is not silently skipped
     status = _check_status(verified.credential, verified.credential, policy,
@@ -747,6 +750,37 @@ def _check_types(credential: dict[str, Any], expected: Sequence[str] | None) -> 
     missing = [t for t in expected if t not in types]
     if missing:
         raise TypeMismatch(f"credential is missing required type(s): {missing}")
+
+
+# The Data Integrity formats whose proof covers the RDF dataset, not the JSON.
+_RDF_DI_FORMATS = frozenset({FORMAT_DI_EDDSA, FORMAT_DI_ECDSA_RDFC, FORMAT_DI_ECDSA_SD})
+
+
+def _check_di_types(credential: dict[str, Any], expected: Sequence[str] | None, fmt: str,
+                    extra_contexts: Any) -> None:
+    """``expected_types`` on the Data Integrity lane. A JCS proof signs the JSON, so its
+    ``type`` strings are compared as on VC-JWT. An RDF proof signs each type's IRI, and
+    the holder can re-spell an IRI with an inline ``@vocab`` that ends inside it, so
+    there each name is resolved through the contexts the verifier serves and compared
+    with the expanded types (``missing_types``, GHSA-h9rq-wxcw-4rjc)."""
+    if fmt not in _RDF_DI_FORMATS:
+        _check_types(credential, expected)
+        return
+    if not expected:
+        return
+    if isinstance(expected, str):                     # one type, not its characters
+        expected = [expected]
+    from .proof._context_validation import missing_types
+    from .proof.contexts import document_loader
+
+    missing = missing_types(credential, list(expected), document_loader(extra_contexts))
+    if missing:
+        raise TypeMismatch(
+            f"credential is missing required type(s): {missing}. An RDF Data Integrity "
+            f"credential is typed by IRI: a name matches only through a context the "
+            f"verifier serves (bundled or extra_contexts), never the credential's own "
+            f"@context, so serve the context (or @vocab) that defines it, or pin the "
+            f"full type IRI")
 
 
 def _check_sd_jwt_types(verified: Any, expected: Sequence[str] | None) -> None:
