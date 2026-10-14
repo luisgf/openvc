@@ -637,7 +637,7 @@ def test_the_document_id_is_checked_once_per_lookup(monkeypatch, lane, granted):
         monkeypatch.setattr(did_base, "_DID_SYNTAX", counter)
         _long_lane(lane, references, decoys, granted)
         calls.append(counter.calls)
-    assert calls[0] == calls[1] <= 2
+    assert 1 <= calls[0] == calls[1] <= 2           # the premise: the lookup ran through it
 
 
 class _CountingId(str):
