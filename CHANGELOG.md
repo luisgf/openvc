@@ -4,6 +4,18 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.2] — 2026-10-15
+
+### Fixed
+
+- **1.33.1 was tagged but never published to PyPI; 1.33.2 ships its fixes
+  unchanged** (GHSA-h9rq-wxcw-4rjc). The CI leg pinned to the oldest supported pyld
+  (2.0.4) failed on `test_injected_alias_for_a_core_iri_is_rejected[statusRef-*]`,
+  which pinned the refusal *message*: pyld 2.x compacts the injected alias so that
+  the compacted-form check fires before the term-spelling one. The credential was
+  refused with `ProofMalformed` on every pyld version; only the message differed.
+  The test now accepts either message. No library code changed.
+
 ## [1.33.1] — 2026-10-15
 
 ### Security
@@ -4948,6 +4960,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.33.2]: https://github.com/luisgf/openvc/releases/tag/v1.33.2
 [1.33.1]: https://github.com/luisgf/openvc/releases/tag/v1.33.1
 [1.33.0]: https://github.com/luisgf/openvc/releases/tag/v1.33.0
 [1.32.4]: https://github.com/luisgf/openvc/releases/tag/v1.32.4
