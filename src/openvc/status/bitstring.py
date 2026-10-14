@@ -88,7 +88,9 @@ def get_status_bit(bits: bytes, index: int) -> int:
 
 def set_status_bit(bits: bytearray, index: int, value: int) -> None:
     """Set/clear the bit at *index* (MSB-first) in-place. For issuers and tests.
-    *index* is held to the same rule as :func:`get_status_bit`."""
+    *index* is held to the same rule as :func:`get_status_bit`. *value* is read for its
+    truthiness, as it always was: a truthy one sets the bit, a falsy one clears it (only
+    :func:`~openvc.status.token_status_list.set_status` insists on an ``int``)."""
     from ._index import locate_status
     byte_index, bit_index = locate_status(index, per_byte=8, length=len(bits), unit="bit")
     mask = 1 << (7 - bit_index)

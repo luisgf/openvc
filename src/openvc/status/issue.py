@@ -26,7 +26,8 @@ The builders hold the pointer and the list to the rules the verifier applies, so
 never mints one that its own check side then refuses: an index follows
 :func:`~openvc.status._index.status_index` (an ``int``, never a ``bool`` or ``float``,
 below ``MAX_STATUS_INDEX``), the pointer strings are non-empty strings, and a list is
-bytes-like and may not exceed the 16 MiB the verifier inflates. Anything else is a
+a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap any other buffer in
+``memoryview()``) of at most the 16 MiB the verifier inflates. Anything else is a
 :class:`~openvc.status.bitstring.StatusListError`, raised at build time. The time inputs
 (*issued_at*, *expires*, *valid_from*) and *ttl* are not covered by this.
 
@@ -35,6 +36,7 @@ sign/verify the token); the codecs and the check side stay pure stdlib.
 """
 from __future__ import annotations
 
+import array
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -68,21 +70,28 @@ def _text(value: Any, *, field: str) -> str:
 
 
 def _packed(value: Any, *, field: str) -> bytes:
-    """The list bytes of *value*, refused when it is not bytes-like (``bytes``,
-    ``bytearray``, ``memoryview``, ``array.array``...) or longer than the verifier
-    inflates (``MAX_DECOMPRESSED_BYTES``) — checked before compressing it, so a list
-    that cannot be decoded is never even built."""
+    """The list bytes of *value*, refused when it is not a buffer or longer than the
+    verifier inflates (``MAX_DECOMPRESSED_BYTES``) — checked before compressing it, so a
+    list that cannot be decoded is never even built.
+
+    Any object with a buffer is read through ``memoryview`` and contributes exactly the
+    bytes ``view.tobytes()`` returns: its elements in C order, so a non-contiguous
+    ``memoryview`` (``view[::2]``) gives the bytes it shows, not the memory behind it."""
     try:
         # memoryview refuses an int, a str, None and a list; ``bytes(int)`` would be a
         # silent zeroed list. It counts bytes, where ``len()`` of an array counts items.
         view = memoryview(value)
     except (TypeError, ValueError):                  # ValueError: a released memoryview
         raise StatusListError(f"{field} must be bytes-like, got {brief(value)}") from None
+    except Exception as exc:                         # a ``__buffer__`` (3.12+) that raises
+        raise StatusListError(
+            f"{field} could not be read as bytes: exporting its buffer raised "
+            f"{type(exc).__name__}") from None
     if view.nbytes > MAX_DECOMPRESSED_BYTES:
         raise StatusListError(
             f"{field} is {view.nbytes} bytes, past the {MAX_DECOMPRESSED_BYTES} the "
             f"verifier decodes: openvc would refuse to read the list back")
-    return bytes(view)
+    return view.tobytes()
 
 
 def _epoch(value: datetime | int) -> int:
@@ -100,7 +109,7 @@ def build_status_list_credential(
     *,
     id: str,
     issuer: str | dict[str, Any],
-    bitstring: bytes | bytearray | memoryview,
+    bitstring: bytes | bytearray | memoryview | array.array,
     status_purpose: str = "revocation",
     valid_from: datetime | None = None,
     valid_until: datetime | None = None,
@@ -116,10 +125,12 @@ def build_status_list_credential(
     list. The result is a plain VC — **sign it** with any suite before publishing.
     The inputs are not mutated.
 
+    *bitstring* is a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap
+    any other buffer in ``memoryview()``); it contributes the bytes it exposes
+    (``view.tobytes()``), so a non-contiguous ``memoryview`` is read as it shows.
     Raises :class:`~openvc.status.bitstring.StatusListError` for an *id* or
     *status_purpose* that is not a non-empty string, and for a *bitstring* that is not
-    bytes-like (``bytes``, ``bytearray``, ``memoryview``...) or is longer than the
-    16 MiB the verifier inflates.
+    a buffer or is longer than the 16 MiB the verifier inflates.
     """
     _text(id, field="status list credential id")
     _text(status_purpose, field="statusPurpose")
@@ -187,7 +198,7 @@ def build_status_list_token(
     *,
     signing_key: SigningKey,
     uri: str,
-    status_list: bytes | bytearray | memoryview,
+    status_list: bytes | bytearray | memoryview | array.array,
     bits: int = 1,
     issued_at: datetime | int | None = None,
     expires: datetime | int | None = None,
@@ -202,11 +213,14 @@ def build_status_list_token(
     ``set_status``). Signed via the allow-listed ``{ES256, ES384, EdDSA, Ed25519}`` path, so an
     HSM/Vault key works. *issued_at* / *expires* accept a datetime or epoch int.
 
-    Raises :class:`~openvc.status.bitstring.StatusListError` for a *uri* that is not a
-    non-empty string, a bad *bits*, and a *status_list* that is not bytes-like or is
+    *status_list* is a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap
+    any other buffer in ``memoryview()``), read as in
+    :func:`build_status_list_credential`. Raises
+    :class:`~openvc.status.bitstring.StatusListError` for a *uri* that is not a
+    non-empty string, a bad *bits*, and a *status_list* that is not a buffer or is
     longer than the 16 MiB the verifier inflates."""
     _text(uri, field="status list token uri")
-    _check_bits(bits)
+    bits = _check_bits(bits)
     packed = _packed(status_list, field="status_list")
     payload: dict[str, Any] = {
         "sub": uri,

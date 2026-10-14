@@ -18,6 +18,12 @@ field, and in two cases raised a bare ``TypeError``::
 The codec (``get_status_bit`` ...) had the same looseness: ``get_status_bit(b"\\x40",
 True)`` read the bool as index 1, and a float died with a bare ``TypeError``.
 
+An ``int`` subclass is an ``int`` to ``isinstance``, so it passes the type check, and it
+can then say a different number from the one it holds (``__int__``, ``__index__``,
+``__str__``, ``__repr__``, ``__format__``, the comparisons, the arithmetic). The
+builders and the codec check ONE value and use that same value; the ``_LIARS`` below
+pin it through the builders, the parsers and the codec.
+
 Every case below is asserted against the EXACT class ``StatusListError`` (it has no
 subclasses), never ``TypeError`` / ``ValueError`` / ``OverflowError``; the controls show
 that well-formed inputs still build and round-trip through the verifier. Helpers are
@@ -27,7 +33,9 @@ from __future__ import annotations
 
 import array
 import enum
+import json
 import math
+import sys
 
 import pytest
 from hypothesis import given, settings
@@ -45,6 +53,7 @@ from openvc.status import (
     check_credential_status,
     check_token_status,
     decode_bitstring,
+    decode_status_list,
     encode_bitstring,
     get_status,
     get_status_bit,
@@ -86,6 +95,73 @@ class _Odd(int):
 
 class _Slot(enum.IntEnum):
     FIVE = 5
+
+
+def _hostile(*_args, **_kwargs):
+    raise RuntimeError("a hostile dunder was called")
+
+
+_COMPARE = ("__lt__", "__le__", "__gt__", "__ge__")
+_ARITH = (
+    "__add__", "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__", "__floordiv__",
+    "__rfloordiv__", "__mod__", "__rmod__", "__divmod__", "__rdivmod__", "__lshift__",
+    "__rlshift__", "__rshift__", "__rrshift__", "__and__", "__rand__", "__or__", "__ror__",
+)
+_LIE = {                       # what each dunder says in place of the integer it holds
+    "__int__": lambda self: -1,
+    "__index__": lambda self: -1,
+    "__str__": lambda self: "-1",
+    "__repr__": lambda self: "-1",
+    "__format__": lambda self, spec: "-1",
+}
+# comparisons that are False whatever the operands (`v < 0` and `v >= 2**27` both pass,
+# `0 <= v` fails) and arithmetic that answers 10**9
+_LIE.update({name: (lambda self, other: False) for name in _COMPARE})
+_LIE.update({name: (lambda self, other: 10 ** 9) for name in _ARITH})
+
+
+def _int_subclass(name: str, members) -> type:
+    return type(name, (int,), dict(members))
+
+
+def _lying(*names: str) -> type:
+    return _int_subclass("Lies_" + "_".join(n.strip("_") for n in names),
+                         {n: _LIE[n] for n in names})
+
+
+# An int subclass per way of saying the wrong thing, then one that does all of it, and
+# one whose every dunder raises: whatever the builder or the codec checks, it must be
+# the integer the object holds, and nothing may call back into the object.
+_LIARS = [
+    pytest.param(_lying("__int__"), id="__int__"),
+    pytest.param(_lying("__index__"), id="__index__"),
+    pytest.param(_lying("__str__"), id="__str__"),
+    pytest.param(_lying("__repr__"), id="__repr__"),
+    pytest.param(_lying("__format__"), id="__format__"),
+    pytest.param(_lying(*_COMPARE), id="comparisons"),
+    pytest.param(_lying(*_ARITH), id="arithmetic"),
+    pytest.param(_lying(*_LIE), id="all-lies"),
+    pytest.param(
+        _int_subclass("Raises", {name: _hostile for name in _LIE}), id="all-raise"),
+]
+
+
+class _EqLiar(int):
+    """Equal to anything and hashed as 1, so `bits in {1, 2, 4, 8}` holds for any value."""
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __hash__(self) -> int:
+        return 1
+
+
+class _BufferRaises:
+    """Python 3.12+ (PEP 688) lets a class export a buffer; this one's export raises
+    something other than TypeError/ValueError. Before 3.12 it is simply not a buffer."""
+
+    def __buffer__(self, flags: int) -> memoryview:
+        raise RuntimeError("boom")
 
 
 def _refused(call) -> StatusListError:
@@ -398,6 +474,166 @@ def test_codec_error_texts_are_unchanged_for_ordinary_indexes():
 
 
 # --------------------------------------------------------------------------- #
+# an int subclass: check one value, use that value
+# --------------------------------------------------------------------------- #
+
+ENTRY_TYPE = "BitstringStatusListEntry"
+
+
+def _w3c_pointer(index) -> dict:
+    return {"type": ENTRY_TYPE, "statusPurpose": "revocation",
+            "statusListIndex": index, "statusListCredential": LIST_URL}
+
+
+@pytest.mark.parametrize("liar", _LIARS)
+@pytest.mark.parametrize("capped", [True, False])
+def test_status_index_returns_the_integer_it_checked(liar, capped):
+    value = status_index(liar(5), field="i", allow_string=False, capped=capped)
+    assert type(value) is int and value == 5
+
+
+@pytest.mark.parametrize("liar", _LIARS)
+def test_builders_emit_the_integer_they_checked(liar):
+    entry = build_status_list_entry(status_list_credential=LIST_URL, index=liar(5))
+    assert entry["statusListIndex"] == "5"
+    assert [e.index for e in parse_status_entries({"credentialStatus": entry})] == [5]
+    ref = build_token_status_reference(uri=TOKEN_URI, index=liar(5))
+    idx = ref["status"]["status_list"]["idx"]
+    assert type(idx) is int and idx == 5
+    assert json.loads(json.dumps(ref))["status"]["status_list"]["idx"] == 5
+    parsed = parse_token_status_ref(ref)
+    assert parsed is not None and parsed.index == 5
+
+
+@pytest.mark.parametrize("liar", _LIARS)
+def test_parsers_read_the_integer_they_checked(liar):
+    # a pre-parsed document can carry an int subclass (JSON parsing never yields one)
+    entries = parse_status_entries({"credentialStatus": _w3c_pointer(liar(5))})
+    assert [type(e.index) for e in entries] == [int] and entries[0].index == 5
+    token_claims = {"status": {"status_list": {"idx": liar(5), "uri": TOKEN_URI}}}
+    parsed = parse_token_status_ref(token_claims)
+    assert parsed is not None and type(parsed.index) is int and parsed.index == 5
+
+
+@pytest.mark.parametrize("liar", _LIARS)
+def test_parsers_refuse_a_lying_subclass_by_its_integer(liar):
+    for bad in (-1, MAX_STATUS_INDEX):
+        _refused(lambda: parse_status_entries({"credentialStatus": _w3c_pointer(liar(bad))}))
+        _refused(lambda: parse_token_status_ref(
+            {"status": {"status_list": {"idx": liar(bad), "uri": TOKEN_URI}}}))
+
+
+@pytest.mark.parametrize("liar", _LIARS)
+def test_builders_refuse_a_lying_subclass_by_its_integer(liar):
+    # the lie would pass `< 0` / `>= 2**27` (comparisons), or mint the wrong digits
+    # (__int__ -> a valid number, __str__ -> '5'): the integer it holds is what is checked
+    for bad in (-1, -2, MAX_STATUS_INDEX, MAX_STATUS_INDEX + 1):
+        _refused(lambda: build_status_list_entry(
+            status_list_credential=LIST_URL, index=liar(bad)))
+        _refused(lambda: build_token_status_reference(uri=TOKEN_URI, index=liar(bad)))
+
+
+@pytest.mark.parametrize("liar", _LIARS)
+def test_codec_addresses_the_integer_it_checked(liar):
+    # two bytes: if the object's lie (-1) were used, index 5 would read data[-1]
+    assert get_status_bit(b"\x04\x00", liar(5)) == 1
+    assert get_status(bytes([0x20, 0x00]), liar(5), bits=1) == 1
+    assert get_status(bytes([0x00, 0x00]), liar(5), bits=1) == 0
+    flags = bytearray(2)
+    set_status_bit(flags, liar(5), 1)
+    assert flags == bytearray(b"\x04\x00")
+    statuses = bytearray(2)
+    set_status(statuses, liar(5), 1, bits=1)
+    assert statuses == bytearray([0x20, 0x00])
+    wide = bytearray(4)                              # 2 bits each: index 5 is byte 1
+    set_status(wide, liar(5), 3, bits=2)
+    assert wide == bytearray([0x00, 0x0C, 0x00, 0x00])
+
+
+@pytest.mark.parametrize("liar", _LIARS)
+def test_codec_refuses_a_lying_subclass_by_its_integer(liar):
+    data = bytearray(2)
+    for bad in (-1, 16, 17):                         # negative, and past the 16-bit list
+        _refused(lambda: get_status_bit(bytes(data), liar(bad)))
+        _refused(lambda: set_status_bit(data, liar(bad), 1))
+        _refused(lambda: get_status(bytes(data), liar(bad), bits=1))
+        _refused(lambda: set_status(data, liar(bad), 1, bits=1))
+    assert data == bytearray(2)
+
+
+@pytest.mark.parametrize("liar", _LIARS)
+def test_set_status_writes_the_value_it_checked(liar):
+    data = bytearray(2)
+    set_status(data, 1, liar(2), bits=2)
+    assert data == bytearray([0x08, 0x00])           # 2 << (1 * 2), not whatever the lie says
+    _refused(lambda: set_status(data, 0, liar(4), bits=2))      # does not fit in 2 bits
+    _refused(lambda: set_status(data, 0, liar(-1), bits=2))
+    assert data == bytearray([0x08, 0x00])
+
+
+@pytest.mark.parametrize("liar", _LIARS)
+def test_sizes_and_bits_use_the_integer_they_checked(liar):
+    assert len(new_bitstring(liar(64))) == 8
+    assert len(new_status_list(liar(64), bits=liar(2))) == 16
+    _refused(lambda: new_bitstring(liar(-1)))
+    _refused(lambda: new_status_list(liar(MAX_STATUS_INDEX + 1)))
+    _refused(lambda: new_status_list(8, bits=liar(3)))
+    data = bytearray(4)
+    set_status(data, 1, 3, bits=liar(2))
+    assert get_status(bytes(data), 1, bits=liar(2)) == 3
+    sk = Ed25519SigningKey.generate(kid="did:key:zStatus#zStatus")
+    token = build_status_list_token(
+        signing_key=sk, uri=TOKEN_URI, status_list=bytes(data), bits=liar(2))
+    claims = verify_status_list_token(
+        token, public_key_jwk=sk.public_jwk(), expected_uri=TOKEN_URI)
+    assert claims["status_list"]["bits"] == 2 and type(claims["status_list"]["bits"]) is int
+
+
+def test_bits_that_claims_to_equal_a_valid_width_is_still_refused():
+    # `3 in {1, 2, 4, 8}` consults the object's own __eq__ and __hash__
+    sk = Ed25519SigningKey.generate(kid="k")
+    _refused(lambda: new_status_list(8, bits=_EqLiar(3)))
+    _refused(lambda: get_status(bytes(8), 0, bits=_EqLiar(3)))
+    _refused(lambda: set_status(bytearray(8), 0, 1, bits=_EqLiar(3)))
+    _refused(lambda: build_status_list_token(
+        signing_key=sk, uri=TOKEN_URI, status_list=bytes(8), bits=_EqLiar(3)))
+
+
+# --------------------------------------------------------------------------- #
+# the order the codec reports problems in
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize(("index", "value", "needle"), [
+    pytest.param(32, -1, "status value -1 does not fit in 1 bit(s)", id="value-before-range"),
+    pytest.param(32, 2.5, "status value 2.5 does not fit in 1 bit(s)", id="float-value"),
+    pytest.param(32, "x", "status value 'x' does not fit in 1 bit(s)", id="str-value"),
+    pytest.param(-1, -1, "status index must be non-negative, got -1", id="negative-first"),
+    pytest.param(-1, "x", "status index must be non-negative, got -1", id="negative-str-value"),
+    pytest.param(99, 1, "status index 99 out of range for a 32-status list", id="range"),
+    pytest.param(0, 2, "status value 2 does not fit in 1 bit(s)", id="value"),
+])
+def test_set_status_reports_the_same_problem_first_as_before(index, value, needle):
+    # bits, then a bad / negative index, then the value, then an index past the data:
+    # the order v1.32.1 reported them in. Each message is the one it had.
+    err = _refused(lambda: set_status(bytearray(4), index, value, bits=1))
+    assert str(err) == needle
+
+
+def test_set_status_bit_still_reads_its_value_for_truthiness():
+    # unlike set_status, it never insisted on an int; only its INDEX is held to the rule
+    for truthy in (1, True, 2, "x", 1.5, [0]):
+        bits = bytearray(1)
+        set_status_bit(bits, 3, truthy)
+        assert bits == bytearray(b"\x10")
+    bits = bytearray(b"\x10")
+    for falsy in (0, False, 0.0, "", None):
+        set_status_bit(bits, 3, falsy)
+        assert bits == bytearray(1)
+        set_status_bit(bits, 3, 1)
+    assert bits == bytearray(b"\x10")
+
+
+# --------------------------------------------------------------------------- #
 # controls: well-formed input still builds and the verifier accepts it
 # --------------------------------------------------------------------------- #
 
@@ -442,10 +678,24 @@ def test_list_credential_accepts_bytes_and_bytearray_and_does_not_mutate():
     assert decode_bitstring(as_bytes["credentialSubject"]["encodedList"]) == snapshot
 
 
+def _interleaved(raw: bytes) -> bytes:
+    """*raw* with a 0xFF between its bytes: `memoryview(...)[::2]` shows exactly *raw*,
+    over memory that holds twice as much."""
+    return b"".join(bytes([byte, 0xFF]) for byte in raw)
+
+
+def _two_d(raw: bytes) -> memoryview:
+    return memoryview(raw).cast("B", shape=[len(raw) // 2, 2])
+
+
 BYTES_LIKE = [
     pytest.param(memoryview, id="memoryview"),
-    pytest.param(lambda raw: memoryview(raw)[::1], id="sliced-memoryview"),
+    pytest.param(lambda raw: memoryview(raw)[::1], id="contiguous-slice"),
     pytest.param(lambda raw: array.array("B", raw), id="array-B"),
+    # non-contiguous: the list is the bytes the view exposes, not the memory behind it
+    pytest.param(lambda raw: memoryview(_interleaved(raw))[::2], id="strided-memoryview"),
+    pytest.param(lambda raw: memoryview(raw[::-1])[::-1], id="reversed-memoryview"),
+    pytest.param(_two_d, id="2-D-memoryview"),
 ]
 
 
@@ -476,6 +726,54 @@ def test_list_token_accepts_any_bytes_like_list(wrap):
     reference = build_token_status_reference(uri=TOKEN_URI, index=3)
     result = check_token_status(reference, resolve_status_list_token=lambda _u: claims)
     assert result is not None and result.revoked
+
+
+def test_the_non_contiguous_params_really_are_non_contiguous():
+    # guards the fixtures above: a "strided" case that is contiguous pins nothing
+    raw = bytes(range(8))
+    for wrap in (lambda r: memoryview(_interleaved(r))[::2], lambda r: memoryview(r[::-1])[::-1]):
+        view = wrap(raw)
+        assert not view.contiguous and view.tobytes() == raw
+    assert memoryview(raw)[::1].contiguous
+    assert _two_d(raw).ndim == 2 and _two_d(raw).tobytes() == raw
+
+
+def test_a_non_contiguous_view_is_the_bytes_it_exposes():
+    raw = bytearray(b"\xb9\xa3")
+    view = memoryview(_interleaved(bytes(raw)))[::2]
+    assert not view.contiguous
+    vc = build_status_list_credential(id=LIST_URL, issuer=ISSUER, bitstring=view)
+    assert decode_bitstring(vc["credentialSubject"]["encodedList"]) == bytes(raw)
+    sk = Ed25519SigningKey.generate(kid="k")
+    token = build_status_list_token(signing_key=sk, uri=TOKEN_URI, status_list=view)
+    claims = verify_status_list_token(
+        token, public_key_jwk=sk.public_jwk(), expected_uri=TOKEN_URI)
+    assert decode_status_list(claims["status_list"]["lst"]) == bytes(raw)
+
+
+def test_the_cap_counts_the_bytes_a_strided_view_exposes():
+    # 32 MiB of memory behind a view that shows 16 MiB + 1: over the cap
+    view = memoryview(bytes(2 * (MAX_DECOMPRESSED_BYTES + 1)))[::2]
+    assert view.nbytes == MAX_DECOMPRESSED_BYTES + 1 and not view.contiguous
+    _refused(lambda: build_status_list_credential(id=LIST_URL, issuer=ISSUER, bitstring=view))
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 688 __buffer__ needs 3.12+")
+def test_a_buffer_export_that_raises_is_a_typed_error():
+    # a bare RuntimeError used to escape; the message names what fired
+    sk = Ed25519SigningKey.generate(kid="k")
+    err = _refused(lambda: build_status_list_credential(
+        id=LIST_URL, issuer=ISSUER, bitstring=_BufferRaises()))
+    assert "RuntimeError" in str(err)
+    err = _refused(lambda: build_status_list_token(
+        signing_key=sk, uri=TOKEN_URI, status_list=_BufferRaises()))
+    assert "RuntimeError" in str(err)
+
+
+def test_a_class_that_would_export_a_buffer_is_typed_on_every_version():
+    # before 3.12 it is not a buffer at all (TypeError); from 3.12 its export raises
+    _refused(lambda: build_status_list_credential(
+        id=LIST_URL, issuer=ISSUER, bitstring=_BufferRaises()))
 
 
 @pytest.mark.parametrize("index", [
@@ -577,6 +875,8 @@ _any_index = st.one_of(
     st.integers(min_value=MAX_STATUS_INDEX - 3, max_value=MAX_STATUS_INDEX + 3),
     st.sampled_from([0, 1, 7, 8, MAX_STATUS_INDEX - 1, MAX_STATUS_INDEX, HUGE, -HUGE]),
     st.integers(min_value=-2, max_value=40).map(_Odd),      # an int subclass is an int
+    st.integers(min_value=-2, max_value=40).map(_lying("__int__", "__str__")),
+    st.integers(min_value=-2, max_value=40).map(_lying(*_COMPARE)),
     st.booleans(),
     st.floats(allow_nan=True, allow_infinity=True),
     st.text(max_size=12),
@@ -594,10 +894,11 @@ def test_property_w3c_builder_accepts_only_what_the_verifier_reads_back(index):
         return
     # accepted, so it must be an in-range int that parses back to the same index
     assert isinstance(index, int) and not isinstance(index, bool)
-    assert 0 <= index < MAX_STATUS_INDEX
-    assert entry["statusListIndex"] == str(int(index))
+    held = int.__index__(index)          # the integer it holds; int(index) may be a lie
+    assert 0 <= held < MAX_STATUS_INDEX
+    assert entry["statusListIndex"] == str(held)
     parsed = parse_status_entries({"credentialStatus": entry})
-    assert [e.index for e in parsed] == [index]
+    assert [e.index for e in parsed] == [held]
 
 
 @settings(max_examples=300, deadline=None)
@@ -608,10 +909,12 @@ def test_property_ietf_builder_accepts_only_what_the_verifier_reads_back(index):
     except StatusListError:
         return
     assert isinstance(index, int) and not isinstance(index, bool)
-    assert 0 <= index < MAX_STATUS_INDEX
+    held = int.__index__(index)
+    assert 0 <= held < MAX_STATUS_INDEX
     assert type(ref["status"]["status_list"]["idx"]) is int
+    assert ref["status"]["status_list"]["idx"] == held
     parsed = parse_token_status_ref(ref)
-    assert parsed is not None and parsed.index == index
+    assert parsed is not None and parsed.index == held
     assert not (isinstance(index, float) and math.isnan(index))
 
 

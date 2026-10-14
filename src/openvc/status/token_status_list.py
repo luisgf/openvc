@@ -31,7 +31,7 @@ from typing import Any, Awaitable, Callable
 
 from ..observability import logger, span
 from ._decompress import DecompressionBomb, inflate_bounded
-from ._index import brief, locate_status, packed_length, status_index
+from ._index import brief, locate_status, packed_length, plain_int, status_index
 from .bitstring import StatusListError
 
 # IETF status values (draft-ietf-oauth-status-list, "Status Types").
@@ -42,10 +42,15 @@ STATUS_SUSPENDED = 0x02      # temporarily invalid — "suspended"
 _VALID_BITS = frozenset({1, 2, 4, 8})
 
 
-def _check_bits(bits: int) -> None:
+def _check_bits(bits: int) -> int:
+    """*bits* as a plain ``int`` if it is one of 1, 2, 4, 8, else a typed error. Callers
+    use the returned value: it is the one that was checked."""
     # type first: `True in {1, ...}` and `1.0 in {1, ...}` hold, and a list is unhashable
-    if not isinstance(bits, int) or isinstance(bits, bool) or bits not in _VALID_BITS:
-        raise StatusListError(f"bits must be one of 1, 2, 4, 8; got {brief(bits)}")
+    if isinstance(bits, int) and not isinstance(bits, bool):
+        bits = plain_int(bits)        # an int subclass's own __eq__/__hash__ decide `in`
+        if bits in _VALID_BITS:
+            return bits
+    raise StatusListError(f"bits must be one of 1, 2, 4, 8; got {brief(bits)}")
 
 
 # --------------------------------------------------------------------------- #
@@ -81,7 +86,7 @@ def new_status_list(size: int, *, bits: int = 1) -> bytearray:
     exceed the 16 MiB openvc decodes: at most
     :data:`~openvc.status._index.MAX_STATUS_INDEX` statuses at 1 bit each, an eighth of
     that at 8 bits. Otherwise :class:`StatusListError`."""
-    _check_bits(bits)
+    bits = _check_bits(bits)
     return bytearray(packed_length(size, per_byte=8 // bits))
 
 
@@ -90,7 +95,7 @@ def get_status(data: bytes, index: int, *, bits: int = 1) -> int:
     (LSB-first). Raises :class:`StatusListError` for a bad *bits*, an *index* that is not
     an ``int`` (a ``bool`` or ``float`` is refused, not read as some other status) or an
     out-of-range one."""
-    _check_bits(bits)
+    bits = _check_bits(bits)
     per_byte = 8 // bits
     byte_index, pos = locate_status(
         index, per_byte=per_byte, length=len(data), unit="status")
@@ -100,16 +105,21 @@ def get_status(data: bytes, index: int, *, bits: int = 1) -> int:
 
 def set_status(data: bytearray, index: int, value: int, *, bits: int = 1) -> None:
     """Set the status value at *index* in-place (LSB-first). For issuers and
-    tests. *index* is held to the same rule as :func:`get_status`; raises if *value* is
-    not an ``int`` or does not fit in *bits*."""
-    _check_bits(bits)
-    per_byte = 8 // bits
-    byte_index, pos = locate_status(
-        index, per_byte=per_byte, length=len(data), unit="status")
+    tests. *index* is held to the same rule as :func:`get_status` and *value* must be an
+    ``int`` (a ``bool`` is read as 0 or 1); raises if *value* does not fit in *bits*.
+    A bad *index* type or a negative one is reported first, then *value*, then an
+    *index* past the end of *data*."""
+    bits = _check_bits(bits)
+    index = status_index(index, field="status index", allow_string=False, capped=False)
     mask = (1 << bits) - 1
+    if isinstance(value, int):
+        value = plain_int(value)          # as for the index: write the number checked
     if not isinstance(value, int) or not 0 <= value <= mask:
         raise StatusListError(
             f"status value {brief(value)} does not fit in {bits} bit(s)")
+    per_byte = 8 // bits
+    byte_index, pos = locate_status(
+        index, per_byte=per_byte, length=len(data), unit="status")
     shift = pos * bits
     data[byte_index] = (data[byte_index] & ~(mask << shift)) | (value << shift)
 
