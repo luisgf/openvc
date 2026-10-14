@@ -4,6 +4,13 @@
 # plain string literal). The /release skill bumps this line.
 __version__ = "1.31.3"
 
+# Python 3.10 reached end-of-life on 2026-10-01: importing openvc there warns once (a
+# FutureWarning, so it is seen outside test runners). Deprecated, not removed — 1.x
+# keeps running on it; 2.0 requires 3.11+ (#74).
+from ._python_support import warn_if_python_deprecated as _warn_if_python_deprecated  # noqa: E402
+
+_warn_if_python_deprecated()
+
 # The one-call verification pipeline is the headline API (see openvc.verify); the
 # signing backends (Ed25519 / P256 / P384), the SigningKey protocol and the
 # KeyAgreementKey backend used for HAIP decryption are its signing/key counterpart,

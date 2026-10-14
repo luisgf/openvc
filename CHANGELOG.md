@@ -4,7 +4,28 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.31.4] — unreleased
+## [1.32.0] — unreleased
+
+### Added
+
+- **Python 3.15 is supported**
+  ([#241](https://github.com/luisgf/openvc/issues/241)). CPython 3.15.0 shipped on
+  2026-10-09. Since #126 it had been an *advisory* CI leg that installed only
+  `[ebsi,dev]`, because lxml had no cp315 wheel. lxml, rpds-py and cryptography now
+  publish one, so 3.15 is a regular, blocking leg with `[all]` and the full 85 %
+  coverage floor. A `Programming Language :: Python :: 3.15` classifier is added.
+
+### Deprecated
+
+- **Python 3.10** ([#241](https://github.com/luisgf/openvc/issues/241)). It reached
+  end-of-life upstream on 2026-10-01. Importing openvc on 3.10 now emits a
+  `FutureWarning` naming the end-of-life date and the removal in 2.0
+  ([#74](https://github.com/luisgf/openvc/issues/74)). It is a `FutureWarning`
+  because a `DeprecationWarning` raised during import is hidden by default outside
+  test runners. Nothing is removed: 1.x still installs and is still tested on 3.10.
+  `wiki/Versioning-and-Deprecation.md` gains a *Supported Python versions* section
+  with the rule: a version that reaches end-of-life is deprecated in the next MINOR
+  release and dropped at the next MAJOR.
 
 ### Fixed (docs)
 
@@ -30,6 +51,18 @@ All notable changes to **openvc** are documented here. The format follows
     in a tagged release; they now name the tests. The anchors are as of v1.24.0, not
     the never-tagged v1.24.1. The pack README's catalog span is I1–I21 and R1–R10, and its review ranking gains
     relying-party authorization.
+
+### Tests
+
+- **A flaky XAdES trust-list test is now deterministic.** signxml's *signer* drops
+  the leading zero byte of an EC public-key coordinate when it writes the
+  `ECKeyValue` (a 64-byte point instead of 65). For about 2 in 256 random P-256 keys
+  the test fixture therefore carried a `KeyValue` that did not match its certificate,
+  and verification rightly refused it. That was 2 failures in 600 signatures; it
+  failed this PR's py3.13 leg at random. The XAdES tests now draw keys whose
+  coordinates are full width: 0 failures in 600. openvc never signs XAdES, so trust-list
+  verification is unaffected.
+
 
 ## [1.31.3] — 2026-10-13
 
