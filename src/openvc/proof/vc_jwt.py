@@ -152,7 +152,7 @@ def _reject_sd_jwt_typ(header: dict[str, Any]) -> None:
     if media.startswith("application/"):           # RFC 7515 §4.1.9 allows the prefix
         media = media[len("application/"):]
     if media == "sd-jwt" or media.endswith("+sd-jwt") or media == "kb+jwt":
-        raise MalformedToken(f"a JWS typed {typ!r} is not a VC-JWT")
+        raise MalformedToken(f"a JWS typed {safe_repr(typ)} is not a VC-JWT")
 
 
 def _carries_sd_jwt_marker(node: Any) -> bool:

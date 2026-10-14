@@ -46,6 +46,21 @@ already hold the key. Normally you let the pipeline resolve it from the
   processes no JWS extension parameters, so a token that marks any as critical
   fails closed — on the VC-JWT, SD-JWT, KB-JWT and status-list-token lanes
   alike (the COSE and JWE paths already take the same stance).
+- **An SD-JWT issuer JWT is not a VC-JWT** (explicit typing, RFC 8725 §3.11). A JWS
+  typed `sd-jwt`, `*+sd-jwt` or `kb+jwt` (any case, with or without the `application/`
+  prefix) is a `MalformedToken` before the signature is checked. So is one whose payload
+  carries an SD-JWT marker at any depth: a member named `_sd` or `_sd_alg`, or an
+  array-element digest object `{"...": …}` (RFC 9901 §4.2.4, §4.1.1). The second test
+  does not read the header, so it covers an issuer JWT with no `typ`, or one the
+  first test does not know, whose `vc` object keeps its disclosable claims inside it:
+  with its `~` tail dropped it would otherwise verify here with no key binding. Before
+  1.34.0 only the typed case was refused (#291). No real VC-JWT carries these members,
+  so a payload that does is refused whatever you meant it to be (a JSON Schema that
+  describes an SD-JWT payload, used as a claim, is refused too). **Limit:** a
+  zero-disclosure SD-JWT issuer JWT with no `typ`, a `vc` object and a `cnf` carries
+  none of them (an `_sd_alg` alone, or a decoy digest, is already refused), so it cannot be told from a VC-JWT that carries a `cnf`, and this lane never
+  enforces `cnf`: do not read a `cnf` on a VC-JWT as holder binding. The VP-JWT lane
+  applies both tests to the presentation ([Presentations](Presentations#vp-jwt)).
 - **Envelope ↔ credential reconciliation.** The JWT claims (`iss`, `sub`,
   `jti`, `exp`, `nbf`) must agree with the embedded credential (`issuer`,
   `credentialSubject.id`, `id`, validity window) — a token cannot smuggle a

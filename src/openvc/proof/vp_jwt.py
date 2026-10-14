@@ -25,11 +25,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ._jws import parse_compact, sign_compact, verify_compact
-from ._verify_common import check_jwt_temporal, safe_repr
+from ._verify_common import check_jwt_temporal, reject_unknown_crit, safe_repr
 from .vc_jwt import (
+    ALLOWED_ALGS,
     ClaimsInvalid,
     MalformedToken,
     SigningKey,
+    UnsupportedAlgorithm,
     _reject_sd_jwt_payload,
     _reject_sd_jwt_typ,
 )
@@ -59,6 +61,12 @@ class VpJwtProofSuite:
         """Return (holder, kid) WITHOUT verifying. UNTRUSTED — use only to select
         which key to resolve."""
         header, payload, _, _ = parse_compact(vp_jwt)
+        return self._holder_and_kid(header, payload)
+
+    @staticmethod
+    def _holder_and_kid(
+        header: dict[str, Any], payload: dict[str, Any],
+    ) -> tuple[str | None, str | None]:
         vp = payload.get("vp")
         holder = payload.get("iss") or (vp.get("holder") if isinstance(vp, dict) else None)
         kid = header.get("kid")
@@ -156,9 +164,15 @@ class VpJwtProofSuite:
         if not audience or not nonce:
             raise ClaimsInvalid("VP-JWT verify requires a non-empty audience and nonce")
 
-        # Explicit typing, as the VC-JWT lane: a JWS typed (or built) as an SD-JWT issuer JWT
-        # is not a VP-JWT. Before any key is resolved, and typed (#291).
+        # As the VC-JWT lane, in the same order: algorithm allow-list, `crit`, then explicit
+        # typing — a JWS typed (or built) as an SD-JWT issuer JWT is not a VP-JWT (#291).
+        # All before any key is resolved; verify_compact repeats the first two on the
+        # signature path.
         header_peek, payload_peek, _, _ = parse_compact(vp_jwt)
+        alg = header_peek.get("alg")
+        if not isinstance(alg, str) or alg not in ALLOWED_ALGS:
+            raise UnsupportedAlgorithm(f"algorithm {safe_repr(alg)} is not permitted")
+        reject_unknown_crit(header_peek)
         _reject_sd_jwt_typ(header_peek)
         _reject_sd_jwt_payload(payload_peek)
 
@@ -171,7 +185,7 @@ class VpJwtProofSuite:
 
         pinned = holder_key_jwk is not None
         if holder_key_jwk is None:
-            holder_key_jwk = self._resolve_holder_key(vp_jwt, resolver)
+            holder_key_jwk = self._resolve_holder_key(header_peek, payload_peek, resolver)
         header, claims = verify_compact(vp_jwt, public_key_jwk=holder_key_jwk)
 
         self._check_temporal(claims)
@@ -243,8 +257,10 @@ class VpJwtProofSuite:
 
     # -- internals --------------------------------------------------------- #
 
-    def _resolve_holder_key(self, vp_jwt: str, resolver: Any) -> dict[str, Any]:
-        holder, kid = self.peek_holder(vp_jwt)
+    def _resolve_holder_key(
+        self, header: dict[str, Any], payload: dict[str, Any], resolver: Any,
+    ) -> dict[str, Any]:
+        holder, kid = self._holder_and_kid(header, payload)
         if not holder:
             raise MalformedToken("VP-JWT has no holder (iss / vp.holder) to resolve")
         from ..verify import KeyResolutionFailed, _resolve_jose_key
