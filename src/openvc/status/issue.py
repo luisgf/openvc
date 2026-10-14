@@ -28,8 +28,17 @@ never mints one that its own check side then refuses: an index follows
 below ``MAX_STATUS_INDEX``), the pointer strings are non-empty strings, and a list is
 a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap any other buffer in
 ``memoryview()``) of at most the 16 MiB the verifier inflates. Anything else is a
-:class:`~openvc.status.bitstring.StatusListError`, raised at build time. The time inputs
-(*issued_at*, *expires*, *valid_from*) and *ttl* are not covered by this.
+:class:`~openvc.status.bitstring.StatusListError`, raised at build time.
+
+The time inputs and *ttl* follow the verifier's shape rules too. *valid_from* and
+*valid_until* are a ``datetime`` or ``None``; *issued_at* and *expires* are a
+``datetime`` or a finite number of epoch seconds (the NumericDate rule
+:func:`~openvc.proof._verify_common.is_numeric_date`, so never a ``bool``, a digit
+string, ``NaN`` or a bignum). A ``datetime`` is read the one way every openvc clock
+check reads it: **a naive value is UTC**, never the host's local time, and a value with
+no UTC equivalent is refused. *ttl* is ``None`` or a positive ``int``, never a ``bool``.
+The ordering of a window (``expires`` before ``issued_at``, a past ``valid_until``) is the
+verifier's call at read time and is not checked here.
 
 This is the only :mod:`openvc.status` module that touches :mod:`openvc.proof` (to
 sign/verify the token); the codecs and the check side stay pure stdlib.
@@ -38,15 +47,20 @@ from __future__ import annotations
 
 import array
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from ..proof._jws import sign_compact, verify_compact
-from ..proof._verify_common import check_jwt_temporal, is_numeric_date, utc_epoch
+from ..proof._verify_common import (
+    check_jwt_temporal,
+    is_numeric_date,
+    utc_epoch,
+    utc_instant,
+)
 from ..proof.errors import ClaimsInvalid
 from ..proof.vc_jwt import SigningKey
 from ._decompress import MAX_DECOMPRESSED_BYTES
-from ._index import brief, status_index
+from ._index import brief, plain_int, status_index
 from .bitstring import StatusListError, encode_bitstring
 from .token_status_list import _check_bits, encode_status_list
 
@@ -57,8 +71,19 @@ BITSTRING_ENTRY_TYPE = "BitstringStatusListEntry"
 STATUS_LIST_JWT_TYP = "statuslist+jwt"
 
 
-def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _iso(value: Any, *, name: str) -> str:
+    """*value*, a ``datetime``, as the UTC ``YYYY-MM-DDTHH:MM:SSZ`` a status list carries.
+
+    Read by :func:`~openvc.proof._verify_common.utc_instant`, the rule every openvc clock
+    check uses: a naive value is UTC (``astimezone`` would read it as the host's local
+    time, so the same call minted a different ``validFrom`` per host), and a value that
+    is not a ``datetime``, whose ``tzinfo`` raises, or that has no UTC equivalent is a
+    :class:`~openvc.status.bitstring.StatusListError`. Rendered with ``isoformat`` rather
+    than ``strftime("%Y")``, which does not pad a year below 1000 on glibc."""
+    if not isinstance(value, datetime):
+        raise StatusListError(f"{name} must be a datetime or None, got {brief(value)}")
+    aware = utc_instant(value, error=StatusListError, name=name)
+    return aware.replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
 
 
 def _text(value: Any, *, field: str) -> str:
@@ -94,11 +119,51 @@ def _packed(value: Any, *, field: str) -> bytes:
     return view.tobytes()
 
 
-def _epoch(value: datetime | int) -> int:
+def _epoch(value: Any, *, name: str) -> int:
+    """*value* as the integer epoch seconds of a JWT ``iat`` / ``exp``.
+
+    A ``datetime`` is read by :func:`~openvc.proof._verify_common.utc_instant`, the same
+    call :func:`_iso` makes (a naive one is UTC, one with no UTC equivalent is refused),
+    and the epoch is taken from the plain aware ``datetime`` that returns, never from the
+    caller's object: a ``datetime`` subclass cannot answer ``timestamp()`` with a bignum, a
+    string or an instant of its own, and both builders accept and refuse the same values.
+    Anything else must pass the verifier's own NumericDate gate,
+    :func:`~openvc.proof._verify_common.is_numeric_date`: an ``int`` or finite ``float``,
+    never a ``bool``, a digit string, ``NaN``, ``±inf`` or an integer no float holds, so
+    openvc never signs a token its own ``verify_status_list_token`` then refuses. The
+    number is truncated to whole seconds. An ``int`` or ``float`` subclass is first
+    reduced to the plain number it holds (:func:`~openvc.status._index.plain_int`,
+    ``float.__float__``), which the subclass cannot override, so the value checked is the
+    value signed."""
     if isinstance(value, datetime):
-        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp())
+        return int(utc_instant(value, error=StatusListError, name=name).timestamp())
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = plain_int(value)
+    elif isinstance(value, float):
+        value = float.__float__(value)
+    if not is_numeric_date(value):
+        raise StatusListError(
+            f"{name} must be a datetime or a finite number of epoch seconds, "
+            f"got {brief(value)}")
     return int(value)
+
+
+def _ttl(value: Any) -> int | None:
+    """*value* if it is ``None`` or a positive ``int``, else a typed error.
+
+    The signature says ``int``, and the IETF draft makes ``ttl`` a positive number (a CWT
+    one is an unsigned integer), so ``0``, a negative, a ``bool`` and a ``float`` have no
+    reading. An integer no float holds (``10**400``) is refused as a NumericDate is: it is
+    not a number a JSON reader round-trips. ``NaN`` and ``inf`` are floats, so they never
+    reach a signed payload (they are not JSON, and the Data Integrity suites refuse them).
+    The result is the exact built-in ``int``."""
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        held = plain_int(value)          # the integer it holds, whatever the subclass says
+        if held >= 1 and is_numeric_date(held):
+            return held
+    raise StatusListError(f"ttl must be a positive integer or None, got {brief(value)}")
 
 
 # --------------------------------------------------------------------------- #
@@ -128,13 +193,27 @@ def build_status_list_credential(
     *bitstring* is a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap
     any other buffer in ``memoryview()``); it contributes the bytes it exposes
     (``view.tobytes()``), so a non-contiguous ``memoryview`` is read as it shows.
+
+    *valid_from* and *valid_until* are a ``datetime`` or ``None``, written as a UTC
+    ``...Z`` string. A **naive** ``datetime`` is UTC, as on every openvc clock check, not
+    the host's local time; an aware one is converted. *ttl* is ``None`` or a positive
+    ``int`` (the W3C list gives it in milliseconds).
+
     Raises :class:`~openvc.status.bitstring.StatusListError` for an *id* or
-    *status_purpose* that is not a non-empty string, and for a *bitstring* that is not
-    a buffer or is longer than the 16 MiB the verifier inflates.
+    *status_purpose* that is not a non-empty string, for a *bitstring* that is not
+    a buffer or is longer than the 16 MiB the verifier inflates, for a *valid_from* /
+    *valid_until* that is not a ``datetime`` (a string, an epoch number, a ``date``), has
+    a ``tzinfo`` that raises or has no UTC equivalent (year 1 at ``+01:00``), and for a
+    *ttl* that is a ``bool``, a ``float`` (``NaN`` included), a string, zero, negative
+    or an integer no float holds.
     """
     _text(id, field="status list credential id")
     _text(status_purpose, field="statusPurpose")
     raw_bits = _packed(bitstring, field="bitstring")
+    ttl = _ttl(ttl)
+    valid_from_iso = _iso(valid_from, name="valid_from") if valid_from is not None else None
+    valid_until_iso = (
+        _iso(valid_until, name="valid_until") if valid_until is not None else None)
     subject: dict[str, Any] = {
         "id": subject_id or f"{id}#list",
         "type": BITSTRING_SUBJECT_TYPE,
@@ -150,10 +229,10 @@ def build_status_list_credential(
         "issuer": issuer,
         "credentialSubject": subject,
     }
-    if valid_from is not None:
-        credential["validFrom"] = _iso(valid_from)
-    if valid_until is not None:
-        credential["validUntil"] = _iso(valid_until)
+    if valid_from_iso is not None:
+        credential["validFrom"] = valid_from_iso
+    if valid_until_iso is not None:
+        credential["validUntil"] = valid_until_iso
     return credential
 
 
@@ -200,8 +279,8 @@ def build_status_list_token(
     uri: str,
     status_list: bytes | bytearray | memoryview | array.array,
     bits: int = 1,
-    issued_at: datetime | int | None = None,
-    expires: datetime | int | None = None,
+    issued_at: datetime | int | float | None = None,
+    expires: datetime | int | float | None = None,
     ttl: int | None = None,
     issuer: str | None = None,
 ) -> str:
@@ -211,26 +290,40 @@ def build_status_list_token(
     ``status.status_list.uri`` points at; *status_list* is the packed multi-bit
     list (from :func:`~openvc.status.token_status_list.new_status_list` +
     ``set_status``). Signed via the allow-listed ``{ES256, ES384, EdDSA, Ed25519}`` path, so an
-    HSM/Vault key works. *issued_at* / *expires* accept a datetime or epoch int.
+    HSM/Vault key works.
+
+    *issued_at* (``iat``, default the current time) and *expires* (``exp``, default
+    none) take a ``datetime`` or a finite number of epoch seconds, such as
+    ``time.time()``, truncated to whole seconds. A **naive** ``datetime`` is UTC, as on
+    every openvc clock check, not the host's local time. *ttl* is ``None`` or a positive
+    ``int`` of seconds.
 
     *status_list* is a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap
     any other buffer in ``memoryview()``), read as in
     :func:`build_status_list_credential`. Raises
     :class:`~openvc.status.bitstring.StatusListError` for a *uri* that is not a
-    non-empty string, a bad *bits*, and a *status_list* that is not a buffer or is
-    longer than the 16 MiB the verifier inflates."""
+    non-empty string, a bad *bits*, a *status_list* that is not a buffer or is
+    longer than the 16 MiB the verifier inflates, an *issued_at* / *expires* that is
+    neither a ``datetime`` nor a finite number (a ``bool``, a string, a ``date``, ``NaN``,
+    ``inf``, an integer no float holds), a ``datetime`` whose ``tzinfo`` raises or that has
+    no UTC equivalent (year 1 at ``+01:00``, as for *valid_from*), and a
+    *ttl* that is a ``bool``, a ``float`` (``NaN`` included), a string, zero, negative or
+    an integer no float holds. Every input is checked before anything is signed."""
     _text(uri, field="status list token uri")
     bits = _check_bits(bits)
     packed = _packed(status_list, field="status_list")
+    iat = _epoch(issued_at, name="issued_at") if issued_at is not None else int(time.time())
+    exp = _epoch(expires, name="expires") if expires is not None else None
+    ttl = _ttl(ttl)
     payload: dict[str, Any] = {
         "sub": uri,
-        "iat": _epoch(issued_at) if issued_at is not None else int(time.time()),
+        "iat": iat,
         "status_list": {"bits": bits, "lst": encode_status_list(packed)},
     }
     if issuer is not None:
         payload["iss"] = issuer
-    if expires is not None:
-        payload["exp"] = _epoch(expires)
+    if exp is not None:
+        payload["exp"] = exp
     if ttl is not None:
         payload["ttl"] = ttl
     header = {"typ": STATUS_LIST_JWT_TYP, "alg": signing_key.alg, "kid": signing_key.kid}

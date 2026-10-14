@@ -164,6 +164,10 @@ with for_ebsi("pilot") as http:
   refused as `HttpForbiddenHost` before any request.
   Never resolve `did:web` through it — `did:web` has its own guarded fetch
   (see [Resolving issuer keys](Resolving-Issuer-Keys)).
+- **The document must be for the DID asked**: `DidEbsiResolver.resolve(did)` raises
+  `DidResolutionError` unless the registry document's `id` is exactly `did`, as `did:web`
+  does (a missing, empty, non-string or differently-cased `id`, and a DID URL such as
+  `did:ebsi:zX#key-1`, are refused).
 - **Environment-aware**: `for_ebsi("pilot" | "conformance" | "production")` seeds
   the allow-list from the chosen EBSI environment — `production` (`api.ebsi.eu`) is
   registered for EBSI's Q4 2026 business launch. Pass `extra_hosts` to also permit an

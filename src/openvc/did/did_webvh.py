@@ -22,6 +22,9 @@ For each log entry (one JSON object per line) this checks, fail-closed:
   the *active* ``updateKeys``; the same JCS hashData + Ed25519 verify the DI suites use.
 * **key pre-rotation** — once ``nextKeyHashes`` is set, the next entry's ``updateKeys``
   must hash into it, so a compromised current key cannot rotate to an attacker key.
+* **state** — the state of the last entry *is* the DID document (v1.0, "The DID Log File"),
+  so its ``id`` must be the requested DID and a ``didDocument`` member in it is refused, not
+  unwrapped: the ``id`` that was checked is the ``id`` of the document that is returned.
 
 Verify-side only: this resolves and validates a log; it does NOT create, update, rotate
 or witness one (issuer-side tooling is out of scope). A log that declares a **witness
@@ -371,11 +374,26 @@ class _WebvhReplay:
 
         if state.get("id") != did:
             raise DidWebvhError(f"resolved document id {state.get('id')!r} != requested {did!r}")
+        if "didDocument" in state:
+            # In did:webvh the log state IS the DID document (v1.0, "The DID Log File"; Read
+            # step 6): the spec defines no `didDocument` member in it. parse_did_document
+            # unwraps one (it tolerates the resolution envelope the EBSI registry and
+            # did:web may serve, ADR-0001), which would return a document other than the
+            # state whose `id` was just compared. The controller signs the wrapper too, so
+            # it passes every log check above; refuse it here, in the returned (last) state
+            # only (the earlier states are never parsed). A present-but-null member counts.
+            raise DidWebvhError(
+                f"did:webvh {safe_repr(did)}: the log state carries a 'didDocument' member; "
+                "the state is the DID document itself, so a wrapper is refused")
         if deactivated:
             # A deactivated DID resolves, but its keys must not be handed back for
             # verification — fail closed so a caller cannot trust a retired identity.
             raise DidWebvhError(f"did:webvh {did!r} is deactivated")
-        return parse_did_document(state)
+        doc = parse_did_document(state)
+        if doc.id != did:       # defence in depth, as did:web: the document returned is the one
+            raise DidWebvhError(                    # for the DID asked for, whatever the parser
+                f"resolved document id {safe_repr(doc.id)} != requested {safe_repr(did)}")
+        return doc
 
     def _parse_lines(self, log: str) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []

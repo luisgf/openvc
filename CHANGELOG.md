@@ -8,6 +8,77 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
+- **The EBSI DID Registry document is bound to the DID that was asked for**
+  ([#257](https://github.com/luisgf/openvc/issues/257)). Found by the adversarial
+  review of [#251](https://github.com/luisgf/openvc/pull/251) (issue #219), where it was
+  listed as a follow-up. Hardening and contract consistency; no wrong-accept was found.
+
+  `DidEbsiResolver.resolve` returned whatever `parse_did_document` made of the registry
+  body and compared nothing, so a document whose `id` was another DID, a number, `null`,
+  a list, empty or absent still resolved, bare or inside a `didDocument` wrapper, and
+  `key_by_kid` found its keys. `did:web` and `did:webvh` reject the same document, and
+  `did:key` / `did:jwk` derive it from the DID, so the EBSI resolver was the only
+  built-in one that did not hold to the `DidResolver` contract: `resolve(did)` returns
+  the document of `did`. A consumer reading `DidDocument.id` got a document about
+  another subject, and a misrouted response (a registry bug, a cache keyed wrongly, a
+  `base` pointing at the wrong environment) was accepted silently.
+
+  `resolve` now compares the parsed document's `id`, after the `didDocument` wrapper is
+  unwrapped, with the requested DID, exactly and with no normalisation (a `did:ebsi`
+  method-specific id is case-sensitive base58btc), and raises
+  `openvc.did.base.DidResolutionError` on any difference. A missing, empty or
+  non-string `id` never matches, whatever was asked: the parser reads all three as `""`,
+  which is refused outright, so not even `resolve("")` accepts a document with no usable
+  `id`. The message shows both values through `safe_repr`, so a 60 KB DID is cut to 200
+  characters. The check is in the resolver, not in `DidRegistryV5`: it is
+  version-agnostic domain logic, so a future registry adapter inherits it. `DidResolutionError` is what every caller already
+  handles: `verify_ebsi_badge` wraps it in `EbsiVerificationError`,
+  `verify_trust_chain` in `AccreditationInvalid`, and the generic pipeline maps
+  `DidError` to `KeyResolutionFailed`. The golden registry fixture has `id` equal to its
+  DID, so the real registry is unaffected.
+
+  This also closes a reachable steering path, though not its cause. `identifiers_url`
+  puts the DID into the registry path unvalidated, so an unsigned token whose `iss` is
+  `did:ebsi:zA/../did:ebsi:zB` made the client request B's resource (httpx collapses
+  the dot segment) and B's document resolved. B's `id` is not the string that was asked
+  for, so it is now refused. No impersonation was possible before: B's key still had to
+  verify the token. Validating the DID before it is put in a URL is a separate gap and
+  is not changed here.
+- **`did:webvh` refuses a log state that carries a `didDocument` member**
+  ([#256](https://github.com/luisgf/openvc/issues/256), severity low). Found by the
+  adversarial review of [#251](https://github.com/luisgf/openvc/pull/251); the gap
+  predates it. The resolver compared `state["id"]` with the requested DID on the raw
+  log state, then returned `parse_did_document(state)`, and that parser unwraps a
+  `didDocument` member when there is one. The `id` that was checked was not the `id` of
+  the document that came back. The controller signs the whole state, wrapper included,
+  so such a log passes the SCID, entryHash, proof and pre-rotation checks. A state
+  `{"id": DID, "didDocument": {"id": "did:web:other.example", …}}` resolved to a
+  document whose `id`, `raw["id"]` and method ids were `did:web:other.example`, and a
+  state with its own `verificationMethod` beside a same-`id` `didDocument` resolved to
+  the inner methods only. `did:web` was not affected, since it compares the `id` after
+  parsing.
+
+  The wrapper does not cross the controller boundary: every key it yields is one the log
+  controller published, and no verification lane reads `doc.id`, `doc.raw` or a method's
+  `controller`. Each lane binds to the DID string it asked the resolver for. What it
+  broke is the resolver's own contract, for code that calls `DidWebvhResolver.resolve`
+  and trusts `doc.id`, and agreement with other did:webvh resolvers, for which the log
+  state *is* the DID document (did:webvh v1.0, "The DID Log File"). The spec defines no
+  `didDocument` member in it, so there is nothing to unwrap.
+
+  `_WebvhReplay._replay`, shared by `DidWebvhResolver` and `AsyncDidWebvhResolver`, now
+  raises `DidWebvhError` when the returned state carries a `didDocument` member, whatever
+  its value (a `null` counts), before the parser runs; the message names the member. It
+  also checks the parsed `doc.id` against the requested DID, as `did:web` does, as
+  defence in depth. Only the returned (last) state is looked at, because earlier states
+  are never parsed. A credential whose issuer is such a DID fails with
+  `KeyResolutionFailed` on the JOSE lanes and on the async API, and with
+  `KeyResolutionError` on the synchronous Data Integrity lane, the cause being the
+  `DidWebvhError`; a good neighbour in a `verify_many` / `verify_many_async` batch still
+  verifies. A state with no wrapper resolves exactly as before, and every
+  `tests/fixtures/didwebvh` golden log resolves unchanged. `did:web` and the EBSI DID
+  Registry keep tolerating the `didDocument` envelope, which is what the shared parser's
+  unwrapping is for.
 - **A Data Integrity key is selected, and authorized for its purpose, by exact DID
   URL** ([#258](https://github.com/luisgf/openvc/issues/258)). Found by the
   adversarial review of [#251](https://github.com/luisgf/openvc/pull/251); the gap
@@ -57,6 +128,137 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Changed
 
+- **A DID URL passed to `DidEbsiResolver.resolve` is now refused.** `did:ebsi:zX#key-1`,
+  for example as a token's `iss`, resolved by accident: httpx drops the fragment, so the
+  registry answered with `zX`'s own document. It now raises `DidResolutionError`, as
+  `did:web` does, and `verify_ebsi_badge` reports `EbsiVerificationError`. `iss` and
+  `accreditedBy` are DIDs, not DID URLs, so a conforming credential is unaffected. The
+  same applies to any other input whose registry document `id` is not that exact string.
+- **`resolve("")` against a document with no usable `id` is now refused.** An absent,
+  empty or non-string `id` is read as `""`, so a bare `doc.id != did` accepted it for the
+  empty DID. It now raises `DidResolutionError`. The shipped callers already reject an
+  empty `iss` before they resolve, so only a direct call with `""` is affected.
+- **Every Credential Query's `meta` is validated up front, answered or not**
+  ([#254](https://github.com/luisgf/openvc/issues/254)). Found by the review of the
+  fix for [#224](https://github.com/luisgf/openvc/issues/224) (see its `### Security`
+  entry under 1.32.3). A `dcql_query` that carries a malformed `meta` on a query the
+  wallets never answer used to verify and now raises `VpTokenMalformed` on every
+  response. Defence in depth: nothing was ever accepted under a malformed constraint,
+  and the `dcql_query` is the verifier's own input, so no attacker can reach this.
+
+  #224 made a malformed `meta.vct_values`, `meta.doctype_value` or `meta.type_values`
+  fail safe, but `verify_vp_token` read a query's `meta` only when that query's own
+  Presentation came up. So a query the wallet did not answer (allowed by
+  `credential_sets`) was never checked. An earlier query's presentation failure was
+  reported before a later query's malformed `meta`. And the order inside one query
+  depended on the format: `dc+sd-jwt` read the constraint before the "must be a
+  compact string" check, `mso_mdoc` read it after `expected_origins`,
+  `trust_anchors` and the "must be a base64url string" check. A verifier with one
+  broken alternative passed every test whose wallet answered the other one, and
+  failed in production the day a wallet answered the broken one.
+
+  `_index_dcql` now checks every query's constraint, after the per-query checks it
+  already made (`id`, `format`, duplicate ids, `require_cryptographic_holder_binding`)
+  and before any Presentation is read: `vct_values` for `dc+sd-jwt`, `doctype_value`
+  for `mso_mdoc`, the shape of `type_values` for `jwt_vc_json` and `ldp_vc`. The
+  readers are unchanged and still run when a Presentation is verified. The 1.32.3
+  wording "whatever the wallet sent for that query" is now stronger: it holds for
+  every query of the `dcql_query`, answered or not.
+
+  What changes for a caller:
+  - An unanswered query with a malformed `meta`, or an earlier failure ahead of
+    one, is `VpTokenMalformed: Credential Query 'b': meta …`, naming the query.
+  - For `mso_mdoc` the constraint comes first. A malformed `doctype_value` beside a
+    missing `expected_origins` was `UnsupportedPresentationFormat`, beside a missing
+    `trust_anchors` was `ClaimsInvalid`, and now both are `VpTokenMalformed`. With a
+    presentation that is not a string and a `meta` that is not an object, both
+    formats now give the same message; a malformed `doctype_value` and a malformed
+    `vct_values` keep their own messages.
+  - A malformed `meta` also wins over a missing required query id, an unknown
+    `vp_token` key and a presentation list that is not an array or is empty. These
+    run after `_index_dcql` and are `VpTokenMalformed` already, so only the message
+    changes.
+  - The `pyld` requirement of `type_values` moved from the shape parser to the point
+    of use. A well-formed `type_values` on an unanswered query needs no `pyld`, as
+    before; an answered one still raises `OpenID4VPError` before its Presentation is
+    verified. Nothing else about `pyld` changes.
+
+  Unchanged: an absent `meta`, or one without the key, is still no constraint; the
+  match against the verified `vct` / `docType` / types; a query of a format openvc
+  does not know is `UnsupportedPresentationFormat` when answered and ignored when
+  not, its `meta` unread; and the keys of another format are not read (a
+  `vct_values` on an `mso_mdoc` query is ignored). The `verify_vp_token` docstring
+  and the wiki ("Type constraints in the query") state the rule.
+  `verify_encrypted_vp_response` delegates to `verify_vp_token`, so it follows. The
+  `multiple` flag is still read by truthiness, which is a separate gap.
+- **A `did:webvh` log whose last state has a `didDocument` member no longer resolves**
+  (#256). It used to resolve, to the inner document. No golden log and no known
+  implementation produces one. A wrapper that was not an object (`null`, a list, a
+  string, a number) was already a plain `DidResolutionError` from the parser; it is now
+  a `DidWebvhError`, which is a `DidResolutionError`, so code that catches the parent is
+  unaffected. The wrapper is refused where the state's `id` is checked, before the
+  `deactivated` flag: a deactivated log whose last state is wrapped now fails with the
+  wrapper message, not "is deactivated". Both are a `DidWebvhError`, and a deactivated log
+  with a bare last state still reports the deactivation.
+
+- **A naive `datetime` is UTC in both status-list builders, so a non-UTC host now mints
+  a different `validFrom` / `validUntil`**
+  ([#255](https://github.com/luisgf/openvc/issues/255)). This is the one change in this
+  release that does not fail closed: the call still succeeds and signs a different
+  string. Decision: a naive value is *read as UTC* rather than refused, the one rule
+  every openvc clock check uses (the
+  [#187](https://github.com/luisgf/openvc/issues/187) precedent).
+
+  `build_status_list_credential` called `astimezone`, which reads a naive value as the
+  **host's local time**, while `build_status_list_token` already read it as UTC. The same
+  `datetime(2026, 1, 1, 12, 0)` minted `validFrom = 2026-01-01T03:00:00Z` under
+  `TZ=Asia/Tokyo` and `17:00:00Z` under `America/New_York`, and `iat = 12:00:00Z` in the
+  token on both: a host west of UTC kept a list valid for hours longer than intended, one
+  east of it expired the list early. Both builders now agree and the result no longer
+  depends on the host's zone: `12:00:00Z` everywhere. A caller that relied on the local
+  reading passes an aware `datetime` instead (`datetime(..., tzinfo=ZoneInfo("Asia/Tokyo"))`).
+  On a host already on UTC nothing changes, and neither does anything for an aware value:
+  `valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc)` is still `"2026-01-01T00:00:00Z"`,
+  byte for byte. Two edge inputs follow the same rule: a `tzinfo` whose `utcoffset()` is
+  `None` (naive by Python's own definition) is UTC in both builders, where it was a bare
+  `TypeError` in the token builder and local time in the credential one; and a naive
+  `datetime.min` / `datetime.max` builds (`0001-01-01T00:00:00Z`, `9999-12-31T23:59:59Z`),
+  where it was a bare `ValueError`.
+
+- **`ttl` is `None` or a positive `int`, on both builders**
+  ([#255](https://github.com/luisgf/openvc/issues/255)). Decision: an `int` only, never a
+  `bool`, rather than "also a finite float" (the IETF draft's "positive number"), which
+  matches the signature, and a CWT `ttl` is an unsigned integer. Anything else raises
+  `StatusListError`.
+  - `"5"`, `True`, `1.5`, `300.0`, `0`, `-1`, a `list`, a `dict` and `10**400` were
+    minted as given; `NaN` and `inf` were signed as non-JSON. Pass a positive `int`.
+  - a `timedelta`, a `Decimal`, a `Fraction` (pass `int(x)`) and `10**5000` were a bare
+    `TypeError` / `ValueError` in the token builder, and in the credential builder a
+    credential that failed later at `VcJwtProofSuite.sign`.
+  - `ttl=300` is unchanged. The IETF `ttl` is seconds and the W3C one milliseconds; the
+    builders do not convert.
+
+- **`issued_at` / `expires` take a `datetime` or a finite number**
+  ([#255](https://github.com/luisgf/openvc/issues/255)): the same NumericDate gate
+  (`is_numeric_date`) that `verify_status_list_token` applies to `iat` / `exp` / `nbf`.
+  A digit string (`"1700000000"`, which `int()` coerced), a `bool` (minted as `1` / `0`),
+  a `Decimal` or `Fraction` (pass `int(x)`) now raise `StatusListError`. `time.time()`
+  and any finite `float` still work and are truncated to whole seconds as before. A
+  `datetime` whose UTC form is outside years 1 to 9999 (year 1 at `+01:00`,
+  `9999-12-31T23:00` at `-05:00`) is refused too, as `valid_from` / `valid_until` already
+  refuse it; the token used to sign an epoch for it (see Fixed).
+
+- **`valid_from` / `valid_until` are a `datetime` or `None`**, as the signature says
+  ([#255](https://github.com/luisgf/openvc/issues/255)). A string, an epoch number or a
+  `date` was a bare `AttributeError` and is now a `StatusListError`.
+
+- **Callers that caught a builtin exception around a builder catch `OpenvcError`.** The
+  inputs that already raised now raise `StatusListError` (an `OpenvcError`) instead of
+  `ValueError` / `TypeError` / `OverflowError` / `AttributeError`.
+
+- `openvc.proof._verify_common.utc_instant` and `utc_epoch` gain an add-only `name=`
+  keyword (default `"now"`), so a caller that reads some other datetime the same way gets
+  an error that names its parameter. The default messages are unchanged.
 - **Behaviour change: DID documents that relied on the fragment match now fail**
   ([#258](https://github.com/luisgf/openvc/issues/258)), on the Data Integrity lanes
   only. Each fails closed with a typed error, and in `verify_many` /
@@ -82,8 +284,194 @@ All notable changes to **openvc** are documented here. The format follows
     (`did:web:example.com:~alice#key-1`); a `#key-1` in them selects and grants
     nothing (`KeyResolutionError`, or `ProofPurposeMismatch` for a reference).
 
+### Fixed
+
+- **The EBSI verifier's error messages no longer echo an attacker-sized DID or `kid`
+  in full** (#257). `verify_ebsi_badge` and `verify_trust_chain` wrap the resolver's
+  error in a message of their own, and those interpolated the token's `iss`, the
+  accreditation's `iss` and `accreditedBy`, and the JWS `kid` with a bare `!r`. They are
+  read before any signature is checked, so a 60 KB `iss` made a 60 KB exception message
+  even when the resolver's own text was cut. Five messages now go through `safe_repr`
+  (a `str` past 200 characters is cut and its length shown; shorter values read as
+  before): `could not resolve issuer DID` and `no verification method for kid` in
+  `verify_ebsi_badge`, and `accreditation issuer`, `cannot resolve accreditor` and
+  `no verification method` for an accreditor in `verify_trust_chain`. The other messages
+  in those two modules name a DID taken from a verified credential or from the
+  registry's own response, and are unchanged.
+
+- **The status-list builders' time inputs and `ttl` fail at build time, typed, and the
+  one signed value they could get wrong is fixed**
+  ([#255](https://github.com/luisgf/openvc/issues/255)). Found by the review of
+  [#250](https://github.com/luisgf/openvc/pull/250); #250 had narrowed its docs to say
+  these inputs were not covered. 140 builder calls probed on `main`: 66 raised a bare
+  exception and none a `StatusListError`.
+  - `build_status_list_token(issued_at=…, expires=…)`: a string, `NaN`, `±inf`, a
+    `date`, a `timedelta`, a list, a `bool` and an integer no float holds all raise
+    `StatusListError`. `10**400` was the one pure "minted what the verifier rejects" row
+    (`verify_status_list_token` refuses the token as not a finite numeric timestamp), and
+    `10**5000` died with a bare `ValueError` from `json.dumps` inside `sign_compact` (the
+    4300-digit limit). A `datetime` whose `tzinfo` raises is typed too.
+  - `build_status_list_token` reads a `datetime` the way the credential builder does:
+    `utc_instant` rebuilds a plain aware `datetime`, and the epoch is taken from that,
+    never from the caller's object. Before, the token asked the object for `timestamp()`,
+    so a `datetime` subclass answering a 5000-digit integer died with the same bare
+    `ValueError`, one answering `10**400` was minted as a 1329-bit `iat` / `exp` (which
+    `verify_status_list_token` refuses as not a finite NumericDate), and one answering the
+    string `"1700000000"` was coerced by `int()`. All three now mint the instant the
+    object holds, and `timestamp()` is not called. A naive subclass whose `utcoffset()`
+    answers something that is not a `timedelta` was read in the host's local zone (an
+    hour off on a UTC+1 host) and is now a `StatusListError`.
+  - Both builders now refuse the same `datetime`s: exactly those with no UTC form in years
+    1 to 9999. The token used to mint year 1 at `+01:00` as `iat = -62135600400` and
+    `9999-12-31T23:00` at `-05:00` as `253402315200`, which the credential builder
+    refused. A caller that relied on those two edge values passes the UTC instant
+    (`datetime(1, 1, 1, tzinfo=timezone.utc)`) or the epoch number; no other `datetime`
+    changes, and an aware or naive value in years 1 to 9999 mints the same `iat` / `exp`
+    byte for byte.
+  - `build_status_list_credential(valid_from=…, valid_until=…)`: besides the non-`datetime`
+    values above, an aware value whose UTC form leaves years 1 to 9999 (year 1 at
+    `+01:00`, `9999-12-31T23:00` at `-05:00`) was a bare `OverflowError`; it and a
+    `datetime` whose `tzinfo` raises are now a `StatusListError`. The error names the
+    parameter (`valid_from cannot be read as an instant: date value out of range`).
+  - a non-finite `ttl` was signed as `"ttl":NaN` (not JSON, RFC 8259): the JOSE verifiers
+    accepted it while `eddsa-jcs-2022` and `eddsa-rdfc-2022` refused the same credential
+    at `add_proof`. The builder, the one place that can decide for every lane, now
+    refuses it before `sign_compact` is reached.
+  - `validFrom` / `validUntil` are rendered with `isoformat`, not `strftime("%Y")`, which
+    does not pad a year below 1000 on glibc (`999-01-01T00:00:00Z`, which the verifier
+    refuses as a `MalformedTimestamp`). The string for every aware-UTC input is the
+    same one the builder emitted before.
+  - An `int` or `float` subclass is reduced to the plain number it holds before it is
+    checked and signed (`int.__index__` / `float.__float__`), so the value checked is the
+    value emitted; the same rule #250 applies to an index.
+
+  Not changed, by design: the order of a window (a past `expires`, an `issued_at` in the
+  future, `expires` before `issued_at`, `valid_until` before `valid_from`) is still the
+  verifier's call at read time, and building such a list stays legitimate. `leeway_s` on
+  `verify_status_list_token` is [#228](https://github.com/luisgf/openvc/issues/228), and
+  the non-time string parameters (`contexts`, `issuer`, `subject_id`, an entry `id`) are
+  separate.
+
+### Fixed (docs)
+
+- **The Security Model wiki page names the "array where a string is expected" attack**
+  ([#208](https://github.com/luisgf/openvc/issues/208)). The attack table now has a
+  row for a JSON array or object in a JOSE `alg` or `typ`, an SD-JWT `_sd_alg`, a
+  KB-JWT `alg`, an `ldp_vc` `cryptosuite`, an OpenID4VCI key-proof `typ` or a Data
+  Integrity `proofPurpose`: formerly a bare `TypeError` that aborted a whole
+  `verify_many`, now the typed error a disallowed string gets on every lane but
+  `proofPurpose`, where a non-string is `ProofMalformed` (a wrong string is
+  `ProofPurposeMismatch`).
+- **The threat model's I1 row cites the allow-list checks where they are.** It still
+  pointed at `proof/_jws.py:84` and at `proof/vc_jwt.py:55,198`; the checks are at
+  `_jws.py:89` and `vc_jwt.py:243`, the constant at `vc_jwt.py:65`. I1 also lists the
+  tests that pin the type check (`test_typed_error_unhashable_header.py`,
+  `test_typed_error_deep_headers.py`), and I14 and I15 list the new file. The assurance case no longer calls #208 open.
+
 ### Tests
 
+- **`resolve("")` and the callers' messages are pinned** (#257).
+  `test_ebsi_verifier.py` asks for the empty DID against a document whose `id` is
+  absent, `""` or a number, bare and in a `didDocument` wrapper, and requires exactly
+  `DidResolutionError`; a control shows the route answered. The 60 KB cases go through
+  `verify_ebsi_badge` (the resolve wrapper, and a document without the token's `kid`)
+  and, in `test_trust_chain.py`, through an accreditation whose `iss`, `accreditedBy` or
+  `kid` is attacker-sized, each asserting the exact cut message and the exact class.
+  Mutation-checked: dropping the empty-`id` guard fails the six `resolve("")` rows, and
+  reverting any one of the eight `safe_repr` swaps fails the test for its message.
+- **The binding is pinned for every wrong `id`** (#257). `test_ebsi_verifier.py` serves
+  a registry document that is otherwise good (it holds the signing key under the right
+  `kid`) with `id` set to another DID, a number, `null`, a list, an object, a bool,
+  `""`, no `id` at all, a case-folded DID, a DID with a trailing space, a DID URL and
+  another method's DID, each bare and in a `didDocument` wrapper. `resolve` raises
+  exactly `DidResolutionError`, and `verify_ebsi_badge` exactly `EbsiVerificationError`
+  with that cause; each case is paired with a control carrying the right `id`, which
+  resolves and verifies. `test_trust_chain.py` serves the mismatched document as the
+  accreditor's, at the middle and the root hop, and requires exactly
+  `AccreditationInvalid`. The DID-URL and dot-segment cases go through the real
+  `EbsiHttpClient` on an `httpx.MockTransport`, so httpx does the URL handling, and
+  assert the registry was in fact asked. The recorded pilot document still resolves.
+  Mutation-checked: 59 of these cases fail against the previous code, each with
+  `DID NOT RAISE`, and the controls pass; a check that skips an empty `id`, and one
+  that ignores case or surrounding space, each fail their own rows.
+- **`tests/test_dcql_meta_upfront.py`** (#254). Negatives first, each pinning the
+  query it names and the exact class: an unanswered query with a malformed `meta`
+  in every format (the issue's shapes, plus falsy and non-string ones); the same
+  with an earlier junk presentation; the malformed query listed first; the
+  `mso_mdoc` order against a missing `expected_origins`, a missing `trust_anchors`
+  and a presentation that is not a string; both formats agreeing on a `null`
+  `meta`; and a malformed `meta` against each later shape check. Controls that pass
+  before and after: an unanswered query with an absent, empty or other-format-key
+  `meta` (malformed or not), an unknown format, a sound constraint, a well-formed
+  `type_values` with `pyld` hidden, an answered one without `pyld` still
+  `OpenID4VPError`, and the sound `mso_mdoc` order unchanged. Mutation-checked
+  against `origin/main` at 886774f: 95 negatives fail and the 44 controls pass;
+  removing the new call fails the same 95; putting the `pyld` check back in the
+  shape parser fails the two `pyld` controls.
+- **`test_did_webvh_state_envelope.py`** (#256). Ten wrapped states (a foreign `id`, a
+  same-`id` wrapper that replaces the state's own methods, one beside the same methods,
+  one alone, and a `null`, empty, list, string, number and `false` member) are refused
+  by the sync and async resolvers with the exact class. Each is also run through
+  `verify_credential`, `verify_credential_async`, `verify_many` and
+  `verify_many_async` with a VC-JWT and an `eddsa-jcs-2022` credential signed by the
+  log controller's own key, so before the fix the four rows whose wrapper holds a
+  document verified. A good neighbour in each batch still verifies, and the same
+  credentials verify against a log without the wrapper. The earlier states of a log are
+  not looked at and the last one is, and the `did:web` and EBSI envelope tolerance is
+  pinned as a control. A deactivated log with a wrapped last state reports the wrapper,
+  and one with a bare last state still reports the deactivation. Mutation-checked
+  against `origin/main`: 61 cases fail there, the 24 controls pass.
+- **A deep array where a string is expected now reaches each lane's own check**
+  ([#208](https://github.com/luisgf/openvc/issues/208)). Since #213 a header nested
+  past 100 levels is refused at the JSON parse as `MalformedToken`, so the existing
+  ~100k-level tests never got as far as the lane's allow-list check, or its message,
+  and on any interpreter but CPython 3.14 the shape does not even parse. The new
+  `test_typed_error_deep_headers.py` nests the array 90 levels, under the cap, on
+  every interpreter. For the SD-JWT VC issuer `alg` and `typ`, `_sd_alg` and the
+  KB-JWT `alg` (through the suite and `verify_vp_token`), VC-JWT `alg`,
+  `proof._jws.verify_compact` (directly, the VP-JWT suite, a `jwt_vc_json` response,
+  an embedded VC-JWT and the status-list token), the OpenID4VCI key-proof `typ` and
+  `alg`, and the `ldp_vc` holder-proof `cryptosuite`, each test asserts the exact
+  typed class and that the message names the value as `list` rather than quoting it
+  (`repr()` of 90 levels works, so the message is the only way to see `safe_repr` at
+  work). `test_unhashable_proof_purpose.py` gains the same for a Data Integrity
+  `proofPurpose` on all five suites. `verify_many` and `verify_many_async` are shown
+  to isolate one deep-array item per lane, with a control either side. Controls pin
+  that 90 levels parse, that one level past the cap is `MalformedToken`, and that a
+  well-formed token still verifies. The OpenID4VCI key-proof `alg` had no array or
+  object case at all; `test_typed_error_unhashable_header.py` now runs the array,
+  object and empty-array shapes it already ran for the other lanes against it.
+
+  Mutation-checked against an unmodified origin/main tree: with the tests overlaid,
+  all 60 pass. Removing the `isinstance` guard at any one of ten lanes fails that
+  lane's deep test, and the batch tests for the lanes they cover. Putting `repr()`
+  back in `safe_repr` fails 18 of the 21 tests in the new file (the other three are
+  the controls) and the two WRPRC `typ` message tests. The new key-proof `alg` cases
+  (array, object, empty array) fail with a bare `TypeError` when the `isinstance`
+  guard at `openid4vci.py:971` is removed.
+
+- **`tests/test_status_builders_time.py`** pins every row of the three tables in the issue
+  (the time inputs of each of `issued_at`, `expires`, `valid_from` and `valid_until`, and
+  every `ttl` on both builders) against the exact class `StatusListError`, with the token
+  negatives signing through a key whose `sign` raises. A naive `datetime` is
+  checked with `TZ` pinned to UTC, to a POSIX UTC+9 and UTC-5 (DST) zone and to
+  `Asia/Tokyo` and `America/New_York`, and the check is made to fail if the pin did not
+  take effect. Build, sign, verify round trips cover an aware UTC, `+09:00` and `-05:00`
+  value, a naive one and years 1 and 9999. Hypothesis properties cover the accepted
+  `datetime`s (exactly those with a UTC form in years 1 to 9999, for the token as for the
+  credential, with the edge values pinned as `@example`s), a window the builders accept and
+  the verifier reads inside it, the token's time inputs, and `ttl`. A `datetime` subclass
+  whose `timestamp()` raises, answers `10**5000`, `10**400`, a digit string, `NaN` or a
+  negative number is built for each of an aware UTC, an aware `+09:00` and a naive value,
+  in `issued_at` and `expires`, and must mint the instant it holds; a naive subclass whose
+  `utcoffset()` is not a `timedelta` is refused by both builders.
+  Mutation-checked in a scratch copy of `src`: 223 of the 256 cases fail against the code
+  before this PR (`a815089`). The 33 that pass are the controls, the naive-`datetime` cases
+  on a UTC host (the bug is invisible by construction) and the year-padding rows on a host
+  whose `strftime` pads, such as macOS (glibc fails them). The token's `datetime` reading
+  is checked separately: with `_epoch` back on `utc_epoch`, 49 cases fail (the 36
+  `timestamp()` rows, the 10 no-UTC-reading rows, the token control that used to expect
+  `iat = -62135600400`, the error-class test and the token property).
 - **`tests/test_did_reference_exact_match.py`** (#258). Every row of the issue's
   table on the `assertionMethod` lane through `verify_credential` and
   `verify_credential_async`, and on the `authentication` lane through the suite call
@@ -101,8 +489,8 @@ All notable changes to **openvc** are documented here. The format follows
   pin. For a 100 000-character `did:web` with 200 extra methods and 2 000 references,
   against one method and one reference, the DID syntax check runs the same fixed
   number of times (both lanes, the `assertionMethod` one sync and async), no entry
-  copies the document `id`, and the selected method's resolved `id` is prefix-compared
-  with the document `id` the same fixed number of times; with 10 000 references,
+  copies the document `id`, and the prefix checks made on the selected method's
+  resolved `id` stay the same fixed number; with 10 000 references,
   `verify_credential` stays under a loose wall-clock bound. The adversarial review of
   this fix found its first version re-checking the `id` once per reference: about 30 s
   for that document, and minutes near the 1 MiB fetch cap. Each hostile row uses a
