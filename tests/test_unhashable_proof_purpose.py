@@ -30,6 +30,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.x509.oid import NameOID
 
 from openvc import verify_credential, verify_many
+from openvc._json import MAX_DEPTH
 from openvc.aio import verify_many_async
 from openvc.did.did_key import DidKeyResolver
 from openvc.errors import OpenvcError
@@ -115,6 +116,20 @@ def test_deep_proof_purpose_is_typed(cryptosuite):
     # refused where it enters (#213), before any suite reads the purpose
     with pytest.raises(OpenvcError):
         verify_credential(_di_credential(cryptosuite, _deep_list()))
+
+
+@pytest.mark.parametrize("cryptosuite", DI_SUITES)
+def test_deep_proof_purpose_under_the_cap_is_named_by_type(cryptosuite):
+    # 98 levels is the deepest array the credential -> proof -> proofPurpose path holds
+    # under the loader cap on every interpreter: it reaches the purpose check, so the
+    # class is ProofMalformed (not the UnknownCredentialFormat of a refusal at entry)
+    deep: list = []
+    for _ in range(MAX_DEPTH - 2 - 1):
+        deep = [deep]
+    with pytest.raises(ProofMalformed) as caught:
+        verify_credential(_di_credential(cryptosuite, deep))
+    assert type(caught.value) is ProofMalformed
+    assert str(caught.value) == "proofPurpose must be a string, not list"
 
 
 @pytest.mark.parametrize("cryptosuite", DI_SUITES)

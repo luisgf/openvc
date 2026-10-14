@@ -44,6 +44,41 @@ All notable changes to **openvc** are documented here. The format follows
   for, so it is now refused. No impersonation was possible before: B's key still had to
   verify the token. Validating the DID before it is put in a URL is a separate gap and
   is not changed here.
+- **`did:webvh` refuses a log state that carries a `didDocument` member**
+  ([#256](https://github.com/luisgf/openvc/issues/256), severity low). Found by the
+  adversarial review of [#251](https://github.com/luisgf/openvc/pull/251); the gap
+  predates it. The resolver compared `state["id"]` with the requested DID on the raw
+  log state, then returned `parse_did_document(state)`, and that parser unwraps a
+  `didDocument` member when there is one. The `id` that was checked was not the `id` of
+  the document that came back. The controller signs the whole state, wrapper included,
+  so such a log passes the SCID, entryHash, proof and pre-rotation checks. A state
+  `{"id": DID, "didDocument": {"id": "did:web:other.example", …}}` resolved to a
+  document whose `id`, `raw["id"]` and method ids were `did:web:other.example`, and a
+  state with its own `verificationMethod` beside a same-`id` `didDocument` resolved to
+  the inner methods only. `did:web` was not affected, since it compares the `id` after
+  parsing.
+
+  The wrapper does not cross the controller boundary: every key it yields is one the log
+  controller published, and no verification lane reads `doc.id`, `doc.raw` or a method's
+  `controller`. Each lane binds to the DID string it asked the resolver for. What it
+  broke is the resolver's own contract, for code that calls `DidWebvhResolver.resolve`
+  and trusts `doc.id`, and agreement with other did:webvh resolvers, for which the log
+  state *is* the DID document (did:webvh v1.0, "The DID Log File"). The spec defines no
+  `didDocument` member in it, so there is nothing to unwrap.
+
+  `_WebvhReplay._replay`, shared by `DidWebvhResolver` and `AsyncDidWebvhResolver`, now
+  raises `DidWebvhError` when the returned state carries a `didDocument` member, whatever
+  its value (a `null` counts), before the parser runs; the message names the member. It
+  also checks the parsed `doc.id` against the requested DID, as `did:web` does, as
+  defence in depth. Only the returned (last) state is looked at, because earlier states
+  are never parsed. A credential whose issuer is such a DID fails with
+  `KeyResolutionFailed` on the JOSE lanes and on the async API, and with
+  `KeyResolutionError` on the synchronous Data Integrity lane, the cause being the
+  `DidWebvhError`; a good neighbour in a `verify_many` / `verify_many_async` batch still
+  verifies. A state with no wrapper resolves exactly as before, and every
+  `tests/fixtures/didwebvh` golden log resolves unchanged. `did:web` and the EBSI DID
+  Registry keep tolerating the `didDocument` envelope, which is what the shared parser's
+  unwrapping is for.
 
 ### Changed
 
@@ -110,6 +145,15 @@ All notable changes to **openvc** are documented here. The format follows
   and the wiki ("Type constraints in the query") state the rule.
   `verify_encrypted_vp_response` delegates to `verify_vp_token`, so it follows. The
   `multiple` flag is still read by truthiness, which is a separate gap.
+- **A `did:webvh` log whose last state has a `didDocument` member no longer resolves**
+  (#256). It used to resolve, to the inner document. No golden log and no known
+  implementation produces one. A wrapper that was not an object (`null`, a list, a
+  string, a number) was already a plain `DidResolutionError` from the parser; it is now
+  a `DidWebvhError`, which is a `DidResolutionError`, so code that catches the parent is
+  unaffected. The wrapper is refused where the state's `id` is checked, before the
+  `deactivated` flag: a deactivated log whose last state is wrapped now fails with the
+  wrapper message, not "is deactivated". Both are a `DidWebvhError`, and a deactivated log
+  with a bare last state still reports the deactivation.
 
 - **A naive `datetime` is UTC in both status-list builders, so a non-UTC host now mints
   a different `validFrom` / `validUntil`**
@@ -238,6 +282,22 @@ All notable changes to **openvc** are documented here. The format follows
   the non-time string parameters (`contexts`, `issuer`, `subject_id`, an entry `id`) are
   separate.
 
+### Fixed (docs)
+
+- **The Security Model wiki page names the "array where a string is expected" attack**
+  ([#208](https://github.com/luisgf/openvc/issues/208)). The attack table now has a
+  row for a JSON array or object in a JOSE `alg` or `typ`, an SD-JWT `_sd_alg`, a
+  KB-JWT `alg`, an `ldp_vc` `cryptosuite`, an OpenID4VCI key-proof `typ` or a Data
+  Integrity `proofPurpose`: formerly a bare `TypeError` that aborted a whole
+  `verify_many`, now the typed error a disallowed string gets on every lane but
+  `proofPurpose`, where a non-string is `ProofMalformed` (a wrong string is
+  `ProofPurposeMismatch`).
+- **The threat model's I1 row cites the allow-list checks where they are.** It still
+  pointed at `proof/_jws.py:84` and at `proof/vc_jwt.py:55,198`; the checks are at
+  `_jws.py:89` and `vc_jwt.py:243`, the constant at `vc_jwt.py:65`. I1 also lists the
+  tests that pin the type check (`test_typed_error_unhashable_header.py`,
+  `test_typed_error_deep_headers.py`), and I14 and I15 list the new file. The assurance case no longer calls #208 open.
+
 ### Tests
 
 - **`resolve("")` and the callers' messages are pinned** (#257).
@@ -278,6 +338,47 @@ All notable changes to **openvc** are documented here. The format follows
   against `origin/main` at 886774f: 95 negatives fail and the 44 controls pass;
   removing the new call fails the same 95; putting the `pyld` check back in the
   shape parser fails the two `pyld` controls.
+- **`test_did_webvh_state_envelope.py`** (#256). Ten wrapped states (a foreign `id`, a
+  same-`id` wrapper that replaces the state's own methods, one beside the same methods,
+  one alone, and a `null`, empty, list, string, number and `false` member) are refused
+  by the sync and async resolvers with the exact class. Each is also run through
+  `verify_credential`, `verify_credential_async`, `verify_many` and
+  `verify_many_async` with a VC-JWT and an `eddsa-jcs-2022` credential signed by the
+  log controller's own key, so before the fix the four rows whose wrapper holds a
+  document verified. A good neighbour in each batch still verifies, and the same
+  credentials verify against a log without the wrapper. The earlier states of a log are
+  not looked at and the last one is, and the `did:web` and EBSI envelope tolerance is
+  pinned as a control. A deactivated log with a wrapped last state reports the wrapper,
+  and one with a bare last state still reports the deactivation. Mutation-checked
+  against `origin/main`: 61 cases fail there, the 24 controls pass.
+- **A deep array where a string is expected now reaches each lane's own check**
+  ([#208](https://github.com/luisgf/openvc/issues/208)). Since #213 a header nested
+  past 100 levels is refused at the JSON parse as `MalformedToken`, so the existing
+  ~100k-level tests never got as far as the lane's allow-list check, or its message,
+  and on any interpreter but CPython 3.14 the shape does not even parse. The new
+  `test_typed_error_deep_headers.py` nests the array 90 levels, under the cap, on
+  every interpreter. For the SD-JWT VC issuer `alg` and `typ`, `_sd_alg` and the
+  KB-JWT `alg` (through the suite and `verify_vp_token`), VC-JWT `alg`,
+  `proof._jws.verify_compact` (directly, the VP-JWT suite, a `jwt_vc_json` response,
+  an embedded VC-JWT and the status-list token), the OpenID4VCI key-proof `typ` and
+  `alg`, and the `ldp_vc` holder-proof `cryptosuite`, each test asserts the exact
+  typed class and that the message names the value as `list` rather than quoting it
+  (`repr()` of 90 levels works, so the message is the only way to see `safe_repr` at
+  work). `test_unhashable_proof_purpose.py` gains the same for a Data Integrity
+  `proofPurpose` on all five suites. `verify_many` and `verify_many_async` are shown
+  to isolate one deep-array item per lane, with a control either side. Controls pin
+  that 90 levels parse, that one level past the cap is `MalformedToken`, and that a
+  well-formed token still verifies. The OpenID4VCI key-proof `alg` had no array or
+  object case at all; `test_typed_error_unhashable_header.py` now runs the array,
+  object and empty-array shapes it already ran for the other lanes against it.
+
+  Mutation-checked against an unmodified origin/main tree: with the tests overlaid,
+  all 60 pass. Removing the `isinstance` guard at any one of ten lanes fails that
+  lane's deep test, and the batch tests for the lanes they cover. Putting `repr()`
+  back in `safe_repr` fails 18 of the 21 tests in the new file (the other three are
+  the controls) and the two WRPRC `typ` message tests. The new key-proof `alg` cases
+  (array, object, empty array) fail with a bare `TypeError` when the `isinstance`
+  guard at `openid4vci.py:971` is removed.
 
 - **`tests/test_status_builders_time.py`** pins every row of the three tables in the issue
   (the time inputs of each of `issued_at`, `expires`, `valid_from` and `valid_until`, and
