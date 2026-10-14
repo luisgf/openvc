@@ -70,6 +70,22 @@ All notable changes to **openvc** are documented here. The format follows
   VCDM window; it used to raise `CredentialExpired`. Under
   `require_not_expired=False` it is refused instead of returned with `expired=True`.
 
+### Fixed
+
+- **The EBSI TIR origin pin reads an absent https port as 443**
+  ([#253](https://github.com/luisgf/openvc/issues/253)). Found by the adversarial
+  review of #244. The pin (#172) compared `scheme://host:port` with the port as
+  written, so `https://api-pilot.ebsi.eu` and `https://api-pilot.ebsi.eu:443` were
+  different origins, although httpx sends both to port 443. It failed closed, as a
+  false negative. A resolver whose `base` carried `:443` skipped every revision `href`
+  the registry wrote without a port, refused its `attributes` URL and stopped at its
+  `links.next`. With the default base, a registry that wrote `:443` hit the same
+  wall. Either way the issuer appeared to hold no accreditation (`IssuerNotTrusted`,
+  or `trusted=False`). An absent https port is now 443 (RFC 3986 §6.2.3). Only an
+  absent one is filled in, so an explicit `:0` stays off-origin, and so does any
+  other port. The `EBSI_BASE` hosts carry no port, so a default deployment was not
+  affected.
+
 ## [1.32.4] — 2026-10-14
 
 ### Security
