@@ -4,6 +4,102 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.4] — unreleased
+
+### Security
+
+- **The EBSI DID Registry document is bound to the DID that was asked for**
+  ([#257](https://github.com/luisgf/openvc/issues/257)). Found by the adversarial
+  review of [#251](https://github.com/luisgf/openvc/pull/251) (issue #219), where it was
+  listed as a follow-up. Hardening and contract consistency; no wrong-accept was found.
+
+  `DidEbsiResolver.resolve` returned whatever `parse_did_document` made of the registry
+  body and compared nothing, so a document whose `id` was another DID, a number, `null`,
+  a list, empty or absent still resolved, bare or inside a `didDocument` wrapper, and
+  `key_by_kid` found its keys. `did:web` and `did:webvh` reject the same document, and
+  `did:key` / `did:jwk` derive it from the DID, so the EBSI resolver was the only
+  built-in one that did not hold to the `DidResolver` contract: `resolve(did)` returns
+  the document of `did`. A consumer reading `DidDocument.id` got a document about
+  another subject, and a misrouted response (a registry bug, a cache keyed wrongly, a
+  `base` pointing at the wrong environment) was accepted silently.
+
+  `resolve` now compares the parsed document's `id`, after the `didDocument` wrapper is
+  unwrapped, with the requested DID, exactly and with no normalisation (a `did:ebsi`
+  method-specific id is case-sensitive base58btc), and raises
+  `openvc.did.base.DidResolutionError` on any difference. A missing, empty or
+  non-string `id` never matches, whatever was asked: the parser reads all three as `""`,
+  which is refused outright, so not even `resolve("")` accepts a document with no usable
+  `id`. The message shows both values through `safe_repr`, so a 60 KB DID is cut to 200
+  characters. The check is in the resolver, not in `DidRegistryV5`: it is
+  version-agnostic domain logic, so a future registry adapter inherits it. `DidResolutionError` is what every caller already
+  handles: `verify_ebsi_badge` wraps it in `EbsiVerificationError`,
+  `verify_trust_chain` in `AccreditationInvalid`, and the generic pipeline maps
+  `DidError` to `KeyResolutionFailed`. The golden registry fixture has `id` equal to its
+  DID, so the real registry is unaffected.
+
+  This also closes a reachable steering path, though not its cause. `identifiers_url`
+  puts the DID into the registry path unvalidated, so an unsigned token whose `iss` is
+  `did:ebsi:zA/../did:ebsi:zB` made the client request B's resource (httpx collapses
+  the dot segment) and B's document resolved. B's `id` is not the string that was asked
+  for, so it is now refused. No impersonation was possible before: B's key still had to
+  verify the token. Validating the DID before it is put in a URL is a separate gap and
+  is not changed here.
+
+### Changed
+
+- **A DID URL passed to `DidEbsiResolver.resolve` is now refused.** `did:ebsi:zX#key-1`,
+  for example as a token's `iss`, resolved by accident: httpx drops the fragment, so the
+  registry answered with `zX`'s own document. It now raises `DidResolutionError`, as
+  `did:web` does, and `verify_ebsi_badge` reports `EbsiVerificationError`. `iss` and
+  `accreditedBy` are DIDs, not DID URLs, so a conforming credential is unaffected. The
+  same applies to any other input whose registry document `id` is not that exact string.
+- **`resolve("")` against a document with no usable `id` is now refused.** An absent,
+  empty or non-string `id` is read as `""`, so a bare `doc.id != did` accepted it for the
+  empty DID. It now raises `DidResolutionError`. The shipped callers already reject an
+  empty `iss` before they resolve, so only a direct call with `""` is affected.
+
+### Fixed
+
+- **The EBSI verifier's error messages no longer echo an attacker-sized DID or `kid`
+  in full** (#257). `verify_ebsi_badge` and `verify_trust_chain` wrap the resolver's
+  error in a message of their own, and those interpolated the token's `iss`, the
+  accreditation's `iss` and `accreditedBy`, and the JWS `kid` with a bare `!r`. They are
+  read before any signature is checked, so a 60 KB `iss` made a 60 KB exception message
+  even when the resolver's own text was cut. Five messages now go through `safe_repr`
+  (a `str` past 200 characters is cut and its length shown; shorter values read as
+  before): `could not resolve issuer DID` and `no verification method for kid` in
+  `verify_ebsi_badge`, and `accreditation issuer`, `cannot resolve accreditor` and
+  `no verification method` for an accreditor in `verify_trust_chain`. The other messages
+  in those two modules name a DID taken from a verified credential or from the
+  registry's own response, and are unchanged.
+
+### Tests
+
+- **`resolve("")` and the callers' messages are pinned** (#257).
+  `test_ebsi_verifier.py` asks for the empty DID against a document whose `id` is
+  absent, `""` or a number, bare and in a `didDocument` wrapper, and requires exactly
+  `DidResolutionError`; a control shows the route answered. The 60 KB cases go through
+  `verify_ebsi_badge` (the resolve wrapper, and a document without the token's `kid`)
+  and, in `test_trust_chain.py`, through an accreditation whose `iss`, `accreditedBy` or
+  `kid` is attacker-sized, each asserting the exact cut message and the exact class.
+  Mutation-checked: dropping the empty-`id` guard fails the six `resolve("")` rows, and
+  reverting any one of the eight `safe_repr` swaps fails the test for its message.
+- **The binding is pinned for every wrong `id`** (#257). `test_ebsi_verifier.py` serves
+  a registry document that is otherwise good (it holds the signing key under the right
+  `kid`) with `id` set to another DID, a number, `null`, a list, an object, a bool,
+  `""`, no `id` at all, a case-folded DID, a DID with a trailing space, a DID URL and
+  another method's DID, each bare and in a `didDocument` wrapper. `resolve` raises
+  exactly `DidResolutionError`, and `verify_ebsi_badge` exactly `EbsiVerificationError`
+  with that cause; each case is paired with a control carrying the right `id`, which
+  resolves and verifies. `test_trust_chain.py` serves the mismatched document as the
+  accreditor's, at the middle and the root hop, and requires exactly
+  `AccreditationInvalid`. The DID-URL and dot-segment cases go through the real
+  `EbsiHttpClient` on an `httpx.MockTransport`, so httpx does the URL handling, and
+  assert the registry was in fact asked. The recorded pilot document still resolves.
+  Mutation-checked: 59 of these cases fail against the previous code, each with
+  `DID NOT RAISE`, and the controls pass; a check that skips an empty `id`, and one
+  that ignores case or surrounding space, each fail their own rows.
+
 ## [1.32.3] — 2026-10-14
 
 ### Security
