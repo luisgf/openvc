@@ -91,7 +91,10 @@ decision needs both cross-checks, and both fail closed:
   absent on either side is a failure, never a match.
 - `check_request_within_registration` requires every DCQL credential query to match a
   registered `format` whose `meta` covers the requested one, and every requested claim
-  `path` to fall inside the registered paths. A registered container (`["address"]`)
+  `path` to fall inside the paths those matching entries register. Two entries for the
+  same `vct`, one granting `name` and one `age`, pool their grants: a query for both is
+  in scope. An entry for another `vct`, or one whose `meta` covers only part of the
+  query's, contributes nothing. A registered container (`["address"]`)
   covers its members (`["address","locality"]`); a request naming *no* claims asks for
   everything and is refused. An entry that lists no claim paths grants nothing,
   including that unrestricted ask — an omitted `claim`/`claims` is not a blanket

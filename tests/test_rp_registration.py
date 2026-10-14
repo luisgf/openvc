@@ -877,7 +877,8 @@ def test_an_empty_grant_does_not_authorize_an_unrestricted_request():
 
 def test_scope_is_not_unioned_across_differently_scoped_entries():
     # Registered: vct A grants `name`, vct B grants `age`. Asking for A.age must fail —
-    # unioning claim paths across entries of the same format would escalate scope.
+    # pooling the grants of every entry of the same format, whatever its `meta`, would
+    # lend vct B's attributes to vct A.
     reg = _reg(credentials=[
         {"format": "dc+sd-jwt", "meta": {"vct_values": ["A"]}, "claim": [{"path": ["name"]}]},
         {"format": "dc+sd-jwt", "meta": {"vct_values": ["B"]}, "claim": [{"path": ["age"]}]},
@@ -889,6 +890,45 @@ def test_scope_is_not_unioned_across_differently_scoped_entries():
         check_request_within_registration(reg, _dcql({
             "id": "a", "format": "dc+sd-jwt", "meta": {"vct_values": ["A"]},
             "claims": [{"path": ["age"]}]}))
+
+
+def test_entries_registered_for_the_same_meta_pool_their_grants():
+    # Two entries for vct A, one granting `name` and one `age`. Both are registered for
+    # this very credential within the one intended use, so a query for both is in scope.
+    # Holding the query to a single entry would add nothing: the relying party could
+    # ask for `name` and `age` in two queries, each inside one entry.
+    reg = _reg(credentials=[
+        {"format": "dc+sd-jwt", "meta": {"vct_values": ["A"]}, "claim": [{"path": ["name"]}]},
+        {"format": "dc+sd-jwt", "meta": {"vct_values": ["A"]}, "claim": [{"path": ["age"]}]},
+    ])
+    check_request_within_registration(reg, _dcql({
+        "id": "a", "format": "dc+sd-jwt", "meta": {"vct_values": ["A"]},
+        "claims": [{"path": ["name"]}, {"path": ["age"]}]}))
+    with pytest.raises(RpRegistrationError, match=r"claim path \['address'\]"):
+        check_request_within_registration(reg, _dcql({
+            "id": "a", "format": "dc+sd-jwt", "meta": {"vct_values": ["A"]},
+            "claims": [{"path": ["name"]}, {"path": ["age"]}, {"path": ["address"]}]}))
+
+
+def test_only_entries_covering_the_whole_query_meta_are_pooled():
+    # Entry 1 covers vcts A and B with `name`; entry 2 covers A alone with `age`. For a
+    # query on A both apply. A query on A-or-B may be answered with a B credential, which
+    # entry 2 does not cover — so `age` is not granted there, and pooling must not lend it.
+    reg = _reg(credentials=[
+        {"format": "dc+sd-jwt", "meta": {"vct_values": ["A", "B"]},
+         "claim": [{"path": ["name"]}]},
+        {"format": "dc+sd-jwt", "meta": {"vct_values": ["A"]}, "claim": [{"path": ["age"]}]},
+    ])
+    check_request_within_registration(reg, _dcql({
+        "id": "a", "format": "dc+sd-jwt", "meta": {"vct_values": ["A"]},
+        "claims": [{"path": ["name"]}, {"path": ["age"]}]}))
+    check_request_within_registration(reg, _dcql({
+        "id": "ab", "format": "dc+sd-jwt", "meta": {"vct_values": ["A", "B"]},
+        "claims": [{"path": ["name"]}]}))
+    with pytest.raises(RpRegistrationError, match=r"claim path \['age'\]"):
+        check_request_within_registration(reg, _dcql({
+            "id": "ab", "format": "dc+sd-jwt", "meta": {"vct_values": ["A", "B"]},
+            "claims": [{"path": ["name"]}, {"path": ["age"]}]}))
 
 
 def test_a_request_spelling_claims_either_way_is_read(registrar):

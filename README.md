@@ -32,6 +32,11 @@ The PyPI distribution is **`openvc-core`** (the import package stays `openvc`):
 pip install openvc-core
 ```
 
+It supports CPython 3.11–3.15. Python 3.10 still works but is deprecated: it
+reached end-of-life on 2026-10-01, importing openvc on it emits a `FutureWarning`,
+and openvc 2.0 will require 3.11 or later
+([details](https://github.com/luisgf/openvc/wiki/Versioning-and-Deprecation#supported-python-versions)).
+
 The core needs only `cryptography` and `pyjwt`. Everything heavier is an extra:
 
 | Extra | Adds | Pulls in |
