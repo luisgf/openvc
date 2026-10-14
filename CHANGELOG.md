@@ -6,8 +6,65 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.32.1] — unreleased
 
-Tests and docs only: no behaviour change. The library side is a docstring and a
-comment in `rp_registration.py`.
+One security fix in the SD-JWT VC suite, which changes what issues and what
+verifies (see *Changed*). The rest is tests and docs: a docstring and a comment
+in `rp_registration.py`.
+
+### Security
+
+- **SD-JWT VC: the claims a verifier needs to judge validity are never
+  selectively disclosable** ([#229](https://github.com/luisgf/openvc/issues/229)).
+  `SdJwtVcProofSuite.issue(disclosable=…)` accepted any top-level claim. A holder
+  can withhold any disclosure, and a withheld one is indistinguishable from a
+  decoy (RFC 9901 §9.7), so the claim simply read as absent. An already-expired
+  credential with a disclosable `exp` verified, and so did a revoked one with a
+  disclosable `status` or `credentialStatus`, even under
+  `require_status=True, require_not_revoked=True`. A disclosable `cnf` made a
+  holder-bound credential a bearer one. Reproduced on v1.32.0.
+  - **Issuer side (the fix).** `issue()` raises `SdJwtError`, before it signs
+    anything, when `disclosable` names `iss`, `nbf`, `exp`, `cnf`, `vct`,
+    `vct#integrity`, `aka_vcts` or `status`. draft-ietf-oauth-sd-jwt-vc-19
+    §2.2.2.3 says these, "including any of their sub-claims", MUST NOT be
+    disclosed. openvc policy adds `credentialStatus`, which the pipeline
+    enforces on SD-JWT too, and `@context`, which switches the VCDM rules on.
+    When `@context` makes the payload VCDM, `validFrom`, `validUntil`,
+    `issuanceDate` and `expirationDate` are also refused. Every other name
+    (`sub` and `iat` included) issues byte-for-byte as before.
+  - **Verifier side (defence in depth).** `verify()` rejects (`SdJwtError`) a
+    presentation that *presents* a disclosure of one of those claims, at the top
+    level or anywhere beneath one: `cnf.jwk`, `status.status_list`, an element of
+    `aka_vcts` or `credentialStatus`. A third-party issuer that ignores the
+    profile now fails visibly instead of only failing open. The rule lives in
+    the SD-JWT VC profile layer. `_unpack`, the generic RFC 9901 step, only
+    records where each disclosure landed.
+  - **`vct` is REQUIRED on a `dc+sd-jwt`.** A `dc+sd-jwt` whose processed
+    payload is not VCDM and has no non-empty string `vct` is now `ClaimsInvalid`.
+    This is the one refused claim whose *withholding* is detectable, because
+    its absence is itself non-conformant.
+  - **Not closed, by design:** a *withheld* disclosure from a third-party
+    issuer. A credential whose issuer made `exp` or `status` disclosable still
+    verifies, as never-expiring or with no status, when the holder omits it. No
+    verifier can see a withheld digest. `tests/test_sdjwt_non_disclosable.py`
+    pins this as a limitation.
+  - **Deliberately not refused:** `credentialSchema` (schema validation is
+    opt-in data-shape checking, and `require_schema` fails closed only on a
+    missing resolver), and `aud` (the SD-JWT VC draft does not list it, and the
+    suite never reads the issuer JWT's `aud`).
+
+### Changed
+
+- **Behaviour change: calls and tokens that used to succeed now fail**
+  ([#229](https://github.com/luisgf/openvc/issues/229)). Each fails closed with
+  a typed error, and in `verify_many` / `verify_many_async` it fails only its
+  own item.
+  - `SdJwtVcProofSuite.issue()` with one of the refused names in `disclosable`
+    raises `SdJwtError`, alone or mixed with allowed names.
+  - An SD-JWT presentation that presents a disclosure of a refused claim, or of
+    a sub-claim of one, raises `SdJwtError` from the suite and from every
+    `verify_credential*` / `verify_many*` entry point. Before, a disclosed
+    expired `exp` or past `validUntil` failed as expired, and a disclosed `vct`,
+    `cnf`, `status` or `credentialStatus` verified.
+  - A `dc+sd-jwt` with no `vct` (and no VCDM `@context`) raises `ClaimsInvalid`.
 
 ### Fixed (docs)
 
@@ -24,6 +81,16 @@ comment in `rp_registration.py`.
 
 ### Tests
 
+- **`tests/test_sdjwt_non_disclosable.py`** (#229). Issue-time refusals: each name
+  alone and mixed, nothing signed, the VCDM window only on a VCDM payload. Each
+  presented refused disclosure, and each sub-claim shape, through the suite,
+  `verify_credential`, `verify_credential_async`, `verify_many` and
+  `verify_many_async`, with the good neighbours of a `[good, bad, good]` batch
+  still verifying. The withheld-disclosure limitation is pinned so it is never
+  mistaken for coverage. Run against v1.32.0: 130 fail, and the 40 that pass are
+  the controls and the limitation pins. Existing tests that issued or presented a
+  disclosable `exp`, `validUntil` or `@context`, or minted a `dc+sd-jwt` with no
+  `vct`, now assert the refusal.
 - **The pooling rule is pinned.** One test covers entries with identical `meta`:
   their grants pool, and an unregistered path is still refused. A second covers
   overlapping `meta`: an entry for `vct` A alone lends nothing to a query that a
