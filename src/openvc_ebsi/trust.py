@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from openvc.did.base import DidResolutionError
+from openvc.proof._verify_common import safe_repr
 from openvc.proof.errors import ProofError
 from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.status import ResolveStatusList, check_credential_status
@@ -101,17 +102,17 @@ def _verify_accreditation(
     iss, kid = proof_suite.peek_issuer(acc.credential_jwt)
     if iss != accreditor:
         raise AccreditationInvalid(
-            f"accreditation issuer {iss!r} != accreditedBy {accreditor!r}")
+            f"accreditation issuer {safe_repr(iss)} != accreditedBy {safe_repr(accreditor)}")
 
     try:
         doc = resolver.resolve(accreditor)
     except DidResolutionError as exc:
         raise AccreditationInvalid(
-            f"cannot resolve accreditor {accreditor!r}: {exc}") from exc
+            f"cannot resolve accreditor {safe_repr(accreditor)}: {exc}") from exc
     vm = doc.key_by_kid(kid)
     if vm is None:
         raise AccreditationInvalid(
-            f"no verification method {kid!r} for accreditor {accreditor!r}")
+            f"no verification method {safe_repr(kid)} for accreditor {safe_repr(accreditor)}")
 
     try:
         verified = proof_suite.verify(acc.credential_jwt, public_key_jwk=vm.public_key_jwk)

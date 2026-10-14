@@ -148,8 +148,9 @@ def _text(value: Any) -> str:
     """*value* if it is a string, else ``""`` — keeps the ``str`` fields of the model
     honest when a document gives ``id`` / ``type`` / ``controller`` some other JSON type.
     Nothing is selected on them (a method is chosen by its ``id``). A resolver that
-    compares the document ``id`` with the DID it asked for (``did:web`` does) never
-    matches an empty one; the parser itself compares nothing."""
+    compares the document ``id`` with the DID it asked for (``did:web``, ``did:webvh``
+    and the EBSI DID Registry resolver do) never matches an empty one; the parser
+    itself compares nothing."""
     return value if isinstance(value, str) else ""
 
 
