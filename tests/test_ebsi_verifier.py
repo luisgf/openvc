@@ -23,13 +23,16 @@ real bugs: a 406 from the DID Registry's content negotiation, and the v5
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 
 from openvc.did.base import parse_did_document
+from openvc.errors import OpenvcError
 from openvc.keys import P256SigningKey
 from openvc.proof.errors import CredentialExpired
 from openvc.proof.vc_jwt import VcJwtProofSuite
@@ -327,6 +330,151 @@ def test_tir_v5_href_off_origin_is_not_fetched() -> None:
     rec = resolver.issuer_record(did)
     assert evil not in fetch.calls
     assert len(rec.accreditations) == 2
+
+
+# #243. A URL with no origin to compare made `_origin` raise a bare ValueError, outside
+# OpenvcError. Each hop now treats it like an off-origin URL: `attributes` raises the
+# typed error, an `href` is skipped, a `links.next` ends the walk. #246: so does a URL
+# urlparse reads as same-origin but httpx would reject (a control character, a
+# leading space, over-long) and a non-ASCII one, refused before urlparse.
+UNPARSEABLE_URLS = [
+    pytest.param("https://api-pilot.ebsi.eu:99999/x", id="port-out-of-range"),
+    pytest.param("https://api-pilot.ebsi.eu:abc/x", id="port-not-numeric"),
+    pytest.param("https://[::1/x", id="broken-ipv6"),
+    pytest.param("https://api-pilot.ebsi.eu／x/y", id="non-ascii-host"),  # NFKC: '/'
+    pytest.param("https://api-pilot.ebsi.eu/x/é", id="non-ascii-path"),
+    pytest.param("https://api-pilot.ebsi.eu/x\ty", id="tab"),           # urlsplit drops it
+    pytest.param("https://api-pilot.ebsi.eu/x\x00y", id="nul"),
+    pytest.param("https://api-pilot.ebsi.eu/x\x7fy", id="del"),
+    pytest.param(" https://api-pilot.ebsi.eu/x", id="leading-space"),   # urlsplit strips it
+    pytest.param("https://api-pilot.ebsi.eu/" + "a" * 9000, id="over-long"),
+]
+
+
+def test_origin_refuses_non_ascii_before_urlparse(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The order matters on CPython <= 3.12, where urlparse NFKC-normalizes a non-ASCII
+    # netloc in quadratic time: the check must run before urlparse ever sees the URL.
+    from openvc_ebsi import versioning
+
+    def no_urlparse(url: str) -> None:
+        raise AssertionError("urlparse reached")
+    monkeypatch.setattr(versioning, "urlparse", no_urlparse)
+    with pytest.raises(MalformedRegistryResponse):
+        versioning._origin("https://api-pilot.ebsi.eú/x")      # short: not the cap
+
+
+@pytest.mark.parametrize("bad", UNPARSEABLE_URLS)
+def test_tir_v5_unparseable_attributes_url_is_typed_error(bad: str) -> None:
+    issuer = {**_load("tir_v5_issuer.json"), "attributes": bad}
+    did = issuer["did"]
+    issuer_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}"
+    fetch = StubFetch({issuer_url: issuer})
+    resolver = DidEbsiResolver(
+        fetch, decode_jwt=VcJwtProofSuite().peek_claims, tir=TirV5(), base=PILOT_BASE)
+    with pytest.raises(MalformedRegistryResponse) as exc_info:
+        resolver.issuer_record(did)
+    assert type(exc_info.value) is MalformedRegistryResponse
+    assert fetch.calls == [issuer_url]                     # nothing fetched past the issuer
+
+
+@pytest.mark.parametrize("bad", UNPARSEABLE_URLS)
+def test_tir_v5_unparseable_href_is_skipped(bad: str) -> None:
+    issuer = _load("tir_v5_issuer.json")
+    attributes = _load("tir_v5_attributes.json")
+    revisions = _load("tir_v5_revisions.json")
+    did = issuer["did"]
+    good = attributes["items"][1:]
+    listing = {"items": [{**attributes["items"][0], "href": bad}, *good], "total": 3}
+    issuer_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}"
+    routes: dict[str, dict] = {issuer_url: issuer, issuer["attributes"]: listing}
+    for item in good:
+        routes[item["href"]] = revisions[item["id"]]
+    fetch = StubFetch(routes)
+    resolver = DidEbsiResolver(
+        fetch, decode_jwt=VcJwtProofSuite().peek_claims, tir=TirV5(), base=PILOT_BASE)
+    rec = resolver.issuer_record(did)
+    assert bad not in fetch.calls
+    assert [a.attribute_id for a in rec.accreditations] == [i["id"] for i in good]
+
+
+@pytest.mark.parametrize("bad", UNPARSEABLE_URLS)
+def test_tir_v5_unparseable_next_ends_the_walk(bad: str) -> None:
+    issuer = _load("tir_v5_issuer.json")
+    attributes = _load("tir_v5_attributes.json")
+    revisions = _load("tir_v5_revisions.json")
+    did = issuer["did"]
+    page1 = attributes["items"][:2]
+    attrs_url = issuer["attributes"]
+    listing = {"items": page1, "total": 3, "links": {"next": bad}}  # claims a 2nd page
+    issuer_url = f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}"
+    routes: dict[str, dict] = {issuer_url: issuer, attrs_url: listing}
+    for item in page1:
+        routes[item["href"]] = revisions[item["id"]]
+    fetch = StubFetch(routes)
+    resolver = DidEbsiResolver(
+        fetch, decode_jwt=VcJwtProofSuite().peek_claims, tir=TirV5(), base=PILOT_BASE)
+    rec = resolver.issuer_record(did)
+    assert bad not in fetch.calls
+    assert [a.attribute_id for a in rec.accreditations] == [i["id"] for i in page1]  # kept
+    assert fetch.calls == [issuer_url, attrs_url, *(i["href"] for i in page1)]
+
+
+@pytest.mark.parametrize("bad", UNPARSEABLE_URLS)
+def test_verify_ebsi_badge_unparseable_attributes_url_is_openvc_error(bad: str) -> None:
+    # The boundary itself: through verify_ebsi_badge the failure is an OpenvcError.
+    did = "did:ebsi:zZeKyEJfUTGwajhNyNX928z"
+    kid = f"{did}#key-1"
+    sk = P256SigningKey.generate(kid=kid)
+    suite = VcJwtProofSuite()
+    token = suite.sign(
+        {"@context": ["https://www.w3.org/2018/credentials/v1"],
+         "id": "urn:uuid:2f8a1c30-0000-4000-8000-000000000243",
+         "type": ["VerifiableCredential", "VerifiableAttestation"], "issuer": did,
+         "credentialSubject": {"id": "did:key:z6Mkexample"}},
+        signing_key=sk)
+    did_doc = {"didDocument": {
+        "id": did,
+        "verificationMethod": [{"id": kid, "type": "JsonWebKey2020",
+                                "controller": did, "publicKeyJwk": sk.public_jwk()}],
+        "assertionMethod": [kid]}}
+    routes = {
+        f"{PILOT_BASE}/did-registry/v5/identifiers/{did}": did_doc,
+        f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{did}":
+            {"did": did, "hasAttributes": True, "attributes": bad},
+    }
+    resolver = DidEbsiResolver(StubFetch(routes), decode_jwt=suite.peek_claims, base=PILOT_BASE)
+    with pytest.raises(OpenvcError) as exc_info:
+        verify_ebsi_badge(token, resolver=resolver, proof_suite=suite, require_trust=False)
+    assert type(exc_info.value) is MalformedRegistryResponse
+
+
+@pytest.mark.parametrize("iss", [
+    pytest.param("did:ebsi:z\tx", id="tab"),
+    pytest.param("did:ebsi:z\x00x", id="nul"),
+    pytest.param("did:ebsi:z\x7fx", id="del"),
+    pytest.param("did:ebsi:" + "z" * 70_000, id="over-long"),   # httpx's own 64 KiB limit
+])
+def test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request(iss: str) -> None:
+    # #246. An unsigned token is enough: the issuer is peeked and put in the DID Registry
+    # URL, which httpx rejected with a bare `httpx.InvalidURL`. Uses the real client so
+    # the URL reaches httpx; the mock transport records any request that gets through.
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(404, json={})
+    client = EbsiHttpClient(allowed_hosts={"api-pilot.ebsi.eu"})
+    client._client = httpx.Client(transport=httpx.MockTransport(handler))
+    suite = VcJwtProofSuite()
+    resolver = DidEbsiResolver(client.get_json, decode_jwt=suite.peek_claims, base=PILOT_BASE)
+
+    def seg(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+    token = f"{seg({'alg': 'ES256', 'kid': iss + '#k'})}.{seg({'iss': iss, 'vc': {}})}.AAAA"
+    with pytest.raises(OpenvcError) as exc_info:
+        verify_ebsi_badge(token, resolver=resolver, proof_suite=suite)
+    assert type(exc_info.value) is HttpForbiddenHost
+    assert requests == []
 
 
 def test_tir_v5_malformed_registry_response_is_typed_error() -> None:

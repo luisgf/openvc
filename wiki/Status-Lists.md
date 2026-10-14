@@ -74,9 +74,9 @@ fails at build time with a `StatusListError` instead of in the field:
 the same type rule (the list's own length bounds it): a `bool` is no longer read as
 index 1, and a `float` is a `StatusListError`, not a `TypeError`.
 
-This is a behaviour change from 1.32.1. Before it, the builders accepted those values:
-they minted an entry or a list that the verifier then refused in the field, or raised a
-bare `TypeError`.
+This is a behaviour change from 1.32.2. Before 1.32.2, the builders accepted those
+values: they minted an entry or a list that the verifier then refused in the field, or
+raised a bare `TypeError`.
 
 ## Fail-closed by default in the pipeline
 

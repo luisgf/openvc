@@ -4,10 +4,9 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.32.1] — unreleased
+## [1.32.2] — unreleased
 
-One behaviour change, in the status-list builders (below); otherwise tests and docs.
-The rest of the library side is a docstring and a comment in `rp_registration.py`.
+One behaviour change, in the status-list builders and codec (below).
 
 ### Fixed
 
@@ -20,25 +19,99 @@ The rest of the library side is a docstring and a comment in `rp_registration.py
   `TypeError`; an issuer found out only when every credential pointing at it failed
   verification. Now:
   - both builders check `index` with the verifier's own `status_index` and raise
-    `StatusListError` at build time. The W3C entry still emits the base-10 string;
+    `StatusListError` at build time. The W3C entry still emits the base-10 string,
+    built from the plain `int` `status_index` returns, so an `int` subclass whose
+    `__str__` is not its digits (an `IntEnum` on Python 3.10) cannot leak into it;
   - `status_list_credential`, `status_purpose` (also on `build_status_list_credential`),
     the IETF `uri` and the list credential `id` must be non-empty strings;
   - `build_status_list_credential` and `build_status_list_token` refuse a list longer
-    than the 16 MiB the verifier inflates, or one that is not `bytes` / `bytearray`
-    (`bytes(1024)` used to be a silent zeroed list);
+    than the 16 MiB the verifier inflates, or one that is not bytes-like (an `int`, a
+    `str`, `None`, a `list`; `bytes(1024)` used to be a silent zeroed list). `bytes`,
+    `bytearray`, `memoryview` and `array.array("B")` are all accepted;
   - `new_bitstring(size)` and `new_status_list(size, bits=...)` refuse a `size` that is
     not an `int` (a `bool` or `float` too) or whose packed list would exceed those
     16 MiB: 2^27 one-bit statuses, 2^24 at 8 bits;
   - `get_status_bit`, `set_status_bit`, `get_status` and `set_status` refuse a `bool`
     or non-`int` `index` (`get_status_bit(b"\x40", True)` returned bit 1; a `float` was
     a bare `TypeError`), a non-`int` `value`, and a `bits` that is a `bool`, a `float`
-    or unhashable. Their error text no longer calls `repr()` on a huge int.
+    or unhashable. A huge index no longer escapes as a bare `ValueError`: the error
+    text does not render it.
 
-  **Behaviour change.** Calls that used to succeed now raise `StatusListError`: a
-  `bool` or `float` index, an oversized list or `size`, an empty or non-string
-  `status_purpose` / `uri` / `statusListCredential`. All of them produced an artefact
-  the verifier refuses. Well-formed calls are unchanged, and the codec bound checks
+  **Behaviour change.** Calls that used to succeed now raise `StatusListError`:
+  - an `index` that is a `bool` or `float` (builders), or a `bool` (codec);
+  - a `size` that is a `bool`, or a `size` / list past the 16 MiB cap;
+  - a `bits` that is a `bool`, or a `float` for `build_status_list_token`;
+  - an empty or non-string `status_purpose` / `uri` / `statusListCredential`, and a
+    list credential `id` that is not a non-empty string;
+  - an `int` passed as the list (a zeroed list of that many bytes).
+
+  All of them produced an artefact the verifier refuses, or read the wrong bit. What
+  else the bullets above name used to be a bare `TypeError` or `ValueError` and is now
+  the typed error. Well-formed calls are unchanged, and the codec bound checks
   (negative, past the end of the data) keep their messages.
+
+## [1.32.1] — 2026-10-14
+
+### Security
+
+- **A TIR v5 registry URL that does not parse is now a typed error or an
+  off-origin skip, never a bare `ValueError`**
+  ([#243](https://github.com/luisgf/openvc/issues/243)). Found by the audit-pack
+  catch-up in 1.32.0 (#240), which recorded it as an untracked residual.
+
+  The EBSI plugin pins three registry-supplied URLs to the listing's
+  `scheme://host:port` (#172): the HATEOAS `attributes` URL, each `links.next`
+  cursor and each revision `href`. The pin called `urlparse(url).port`. A port out
+  of range (`:99999`) or not numeric (`:abc`), a broken IPv6 literal
+  (`https://[::1/x`) or a character that NFKC folds into a delimiter made it raise a
+  bare `ValueError`. That is not an `OpenvcError`, so a compromised or broken
+  registry made `verify_ebsi_badge` fail closed but untyped, past code that catches
+  `EbsiError` / `OpenvcError`. It was never a wrong-accept.
+
+  A URL with no origin to compare is now handled like an off-origin one, hop by hop:
+  - an `attributes` URL raises `MalformedRegistryResponse`;
+  - an `href` is skipped and its revision never fetched;
+  - a `links.next` ends the walk and keeps the items already read.
+
+  So is a URL the HTTP client would read differently (#246, below): anything but
+  visible ASCII, or over 8 KiB. That check runs before `urlparse` reads the URL: on
+  CPython 3.12 and earlier, `urlparse` NFKC-normalizes a non-ASCII netloc in quadratic
+  time (see 1.31.2). The EBSI client's https host allow-list is unchanged.
+
+  `threat-model.md` §7 and R10 no longer list it as an open residual; R10 keeps the
+  hostile DID-document shape (#219).
+
+- **A URL the EBSI HTTP client cannot parse is refused, typed, before any request**
+  ([#246](https://github.com/luisgf/openvc/issues/246)). Found by the adversarial
+  review of [#244](https://github.com/luisgf/openvc/pull/244), the fix for #243.
+  Present before it.
+
+  `EbsiHttpClient.get_json` checked a URL with `urlparse` and fetched it with httpx.
+  `urlsplit` drops a tab or newline and ignores other control characters; httpx
+  rejects them, and a URL over 64 KiB, with `httpx.InvalidURL`. That is a plain
+  `Exception`, not an `httpx.TransportError`, so it escaped `get_json` untyped. No key
+  was needed: `verify_ebsi_badge` puts the issuer it peeks from an unsigned token
+  into the DID Registry URL, so an `iss` such as `did:ebsi:z\tx` aborted it with a bare
+  `httpx.InvalidURL`. A TIR `attributes`, `links.next` or `href` holding such a
+  character passed the origin pin the same way. The guard also left a broken IPv6
+  literal as a bare `ValueError`, and never read the port, so `:99999` went to the
+  transport.
+
+  The client now refuses, as `HttpForbiddenHost` and before any request, a URL that
+  is not visible ASCII (checked before `urlparse`) or that `urlparse` cannot read,
+  port included. `httpx.InvalidURL` is mapped to `HttpForbiddenHost` as a backstop
+  and is not retried.
+
+- **A registry body httpx cannot decompress is now `MalformedRegistryResponse`**
+  ([#248](https://github.com/luisgf/openvc/issues/248)). Found by the second
+  adversarial pass on #244. Present before it.
+
+  httpx decompresses a `gzip` / `deflate` body while streaming it, and the client
+  advertises both. A corrupt body raised `httpx.DecodingError`, a `RequestError` but
+  not a `TransportError`, so it escaped `get_json`, and `verify_ebsi_badge`, untyped.
+  It escaped from the capped read on a 200 and from the drain of any other status.
+  A broken or compromised allow-listed registry was enough. It is now a
+  `MalformedRegistryResponse` and is not retried.
 
 ### Fixed (docs)
 
@@ -3211,6 +3284,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.32.1]: https://github.com/luisgf/openvc/releases/tag/v1.32.1
 [1.32.0]: https://github.com/luisgf/openvc/releases/tag/v1.32.0
 [1.31.3]: https://github.com/luisgf/openvc/releases/tag/v1.31.3
 [1.31.2]: https://github.com/luisgf/openvc/releases/tag/v1.31.2
