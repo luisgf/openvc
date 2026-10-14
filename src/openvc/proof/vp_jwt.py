@@ -26,7 +26,13 @@ from typing import Any
 
 from ._jws import parse_compact, sign_compact, verify_compact
 from ._verify_common import check_jwt_temporal, safe_repr
-from .vc_jwt import ClaimsInvalid, MalformedToken, SigningKey
+from .vc_jwt import (
+    ClaimsInvalid,
+    MalformedToken,
+    SigningKey,
+    _reject_sd_jwt_payload,
+    _reject_sd_jwt_typ,
+)
 
 DEFAULT_LEEWAY_S = 60
 _VP_CONTEXT = "https://www.w3.org/ns/credentials/v2"
@@ -149,6 +155,12 @@ class VpJwtProofSuite:
         *require_holder_binding*."""
         if not audience or not nonce:
             raise ClaimsInvalid("VP-JWT verify requires a non-empty audience and nonce")
+
+        # Explicit typing, as the VC-JWT lane: a JWS typed (or built) as an SD-JWT issuer JWT
+        # is not a VP-JWT. Before any key is resolved, and typed (#291).
+        header_peek, payload_peek, _, _ = parse_compact(vp_jwt)
+        _reject_sd_jwt_typ(header_peek)
+        _reject_sd_jwt_payload(payload_peek)
 
         # the resolver serves the holder key (unless pinned) and the cascade, which
         # resolves every embedded credential's issuer even when the holder key IS
