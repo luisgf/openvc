@@ -28,13 +28,19 @@ class StatusListError(OpenvcError):
     """The encodedList could not be decoded, or an index is out of range."""
 
 
+# The index/size rule lives in ``_index``, which imports ``StatusListError`` from this
+# module; the helpers are therefore imported inside the functions that need them.
+
 def new_bitstring(size: int) -> bytearray:
     """A zeroed bitstring (every status clear) with room for at least *size*
     single-bit statuses — the issuer-side counterpart to
-    :func:`openvc.status.token_status_list.new_status_list`."""
-    if size < 0:
-        raise StatusListError(f"size must be non-negative, got {size}")
-    return bytearray((size + 7) // 8)
+    :func:`openvc.status.token_status_list.new_status_list`.
+
+    *size* is an ``int`` (never a ``bool`` or ``float``) of at most
+    :data:`~openvc.status._index.MAX_STATUS_INDEX`, the most statuses a list openvc
+    decodes can hold; otherwise :class:`StatusListError`."""
+    from ._index import packed_length
+    return bytearray(packed_length(size, per_byte=8))
 
 
 def decode_bitstring(encoded_list: str) -> bytes:
@@ -72,24 +78,21 @@ def encode_bitstring(bits: bytes) -> str:
 
 
 def get_status_bit(bits: bytes, index: int) -> int:
-    """Return the bit (0/1) at *index*, MSB-first. Raises for out-of-range."""
-    if index < 0:
-        raise StatusListError(f"status index must be non-negative, got {index}")
-    byte_index, bit_index = divmod(index, 8)
-    if byte_index >= len(bits):
-        raise StatusListError(
-            f"status index {index} out of range for a {len(bits) * 8}-bit list")
+    """Return the bit (0/1) at *index*, MSB-first. *index* is an ``int`` (a ``bool`` or
+    ``float`` is refused, not read as some other bit); :class:`StatusListError` for a
+    bad or out-of-range one."""
+    from ._index import locate_status
+    byte_index, bit_index = locate_status(index, per_byte=8, length=len(bits), unit="bit")
     return (bits[byte_index] >> (7 - bit_index)) & 1
 
 
 def set_status_bit(bits: bytearray, index: int, value: int) -> None:
-    """Set/clear the bit at *index* (MSB-first) in-place. For issuers and tests."""
-    if index < 0:
-        raise StatusListError(f"status index must be non-negative, got {index}")
-    byte_index, bit_index = divmod(index, 8)
-    if byte_index >= len(bits):
-        raise StatusListError(
-            f"status index {index} out of range for a {len(bits) * 8}-bit list")
+    """Set/clear the bit at *index* (MSB-first) in-place. For issuers and tests.
+    *index* is held to the same rule as :func:`get_status_bit`. *value* is read for its
+    truthiness, as it always was: a truthy one sets the bit, a falsy one clears it (only
+    :func:`~openvc.status.token_status_list.set_status` insists on an ``int``)."""
+    from ._index import locate_status
+    byte_index, bit_index = locate_status(index, per_byte=8, length=len(bits), unit="bit")
     mask = 1 << (7 - bit_index)
     if value:
         bits[byte_index] |= mask
