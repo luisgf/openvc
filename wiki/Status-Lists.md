@@ -57,6 +57,46 @@ print(check_credential_status(credential, resolve_status_list=lambda _u: dead).r
 In production, sign the status-list credential like any other credential and
 serve it at `LIST_URL`.
 
+The builders hold what they mint to the rules the verifier applies, so a bad value
+fails at build time with a `StatusListError` instead of in the field:
+
+- `index` is an `int` below 2^27, the same rule as the check side. A `bool`, a
+  `float` (`NaN` included), a string, a negative or an oversized index raises. The
+  W3C entry still *emits* it as the base-10 string the spec asks for, and the IETF
+  `idx` stays a JSON integer.
+- `status_list_credential`, `status_purpose` and the IETF `uri` are non-empty strings.
+- A list is a `bytes`, `bytearray`, `memoryview` or `array.array` (wrap any other
+  buffer in `memoryview()`; an `int` is refused, where it used to become a zeroed
+  list, and so is anything else `bytes()` would have taken, a `list` or `tuple` of
+  ints say: pass `bytes(values)`). A non-contiguous `memoryview` counts as the bytes
+  it shows. It may not exceed the 16 MiB the verifier decompresses:
+  `build_status_list_credential` and `build_status_list_token`
+  refuse a longer one, and `new_bitstring(size)` / `new_status_list(size, bits=...)`
+  refuse a `size` that would need it: 2^27 one-bit statuses, but only 2^24 at 8 bits.
+- The time inputs (`issued_at`, `expires`, `valid_from`) and `ttl` are not checked
+  by this; a bad value there still fails with the plain Python error.
+
+`get_status_bit`, `set_status_bit`, `get_status` and `set_status` hold their `index` to
+the same type rule (the list's own length bounds it): a `bool` is no longer read as
+index 1, and a `float` is a `StatusListError`, not a `TypeError`. `set_status` also
+wants an `int` `value`, while `set_status_bit` still reads its `value` for truthiness.
+
+This is a behaviour change in 1.32.3: some inputs that used to build something are
+now refused. Most minted an entry or a list that the verifier then refused in the
+field, or raised a bare `TypeError` (a `bool`, `float` or oversized index, a list past
+16 MiB, a `bits` of `True`). Some built an artefact that worked and are refused only
+because they were never the documented types. Pass these instead:
+
+- anything `bytes()` accepted as the list that is not a buffer (a `list`, `tuple`,
+  `range`, generator, `dict` or an object with `__bytes__`): `bytes(values)`;
+- an integral `Decimal` or `Fraction` as the index: `int(index)`;
+- a `bool` or `Fraction` `bits` or `size`: the `int` (`1`);
+- a falsy `status_purpose` (`""`, `None`, `0`) or an empty `id` on the list credential:
+  the purpose (`"revocation"` is the default) and the URL.
+
+The [CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for
+1.32.3 lists every case.
+
 ## Fail-closed by default in the pipeline
 
 `verify_credential` treats a **declared status it cannot check as a
@@ -93,6 +133,8 @@ and read `result.status.revoked`; suspension still rejects. See
 - **Decompression bomb cap**: lists decompress incrementally with a hard
   output bound, so a tiny malicious payload cannot OOM the verifier
   (fail-closed `StatusListError`).
+- **The issuer side obeys the same rules**: the builders never mint an index or a list
+  the check side would refuse (see [Issue a list](#issue-a-list-stamp-a-credential-revoke-it)).
 - **Strict index parsing**: a credential's `statusListIndex` must be a base-10
   string of ASCII digits (a JSON integer is tolerated); the IETF `idx` must be a
   JSON integer. A `bool`, any `float` (`NaN`, `Infinity`, `1e400`, `3.7`), a sign,
