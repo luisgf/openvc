@@ -359,14 +359,16 @@ class DidEbsiResolver:
         ``did:ebsi`` method-specific id is case-sensitive base58btc. It is the same
         contract ``did:web`` and ``did:webvh`` enforce, and it is version-agnostic, so
         it lives here and a new registry adapter inherits it. A missing, empty or
-        non-string ``id`` never matches (the parser reads it as ``""``), and a DID URL
-        (``did:ebsi:zX#key-1``) is not a DID, so it fails too, although the registry
-        would answer it with ``zX``'s document once httpx drops the fragment. The
+        non-string ``id`` never matches, whatever was asked: the parser reads all three
+        as ``""``, which is refused outright, so not even ``resolve("")`` accepts a
+        document with no usable ``id``. A DID URL (``did:ebsi:zX#key-1``) is not a DID,
+        so it fails too, although the registry would answer it with ``zX``'s document
+        once httpx drops the fragment. The
         message shows both values through :func:`~openvc.proof._verify_common.safe_repr`:
         the requested DID is a token's ``iss``, so it is attacker-sized."""
         raw = self._get(self._didr.identifiers_url(self._base, did))
         doc = self._didr.parse_did_document(raw)           # no version logic here
-        if doc.id != did:                                   # bind the document to the request
+        if not doc.id or doc.id != did:                     # bind the document to the request
             raise DidResolutionError(
                 f"document id {safe_repr(doc.id)} != requested {safe_repr(did)}")
         return doc

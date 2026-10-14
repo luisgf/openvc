@@ -229,6 +229,49 @@ def test_chain_accreditor_document_for_another_did_fails(accreditor, doc_id):
     assert type(bexc.value) is AccreditationInvalid
 
 
+BIG = "did:ebsi:z" + "B" * 60_000            # attacker-sized: 60,010 characters
+
+
+@pytest.mark.parametrize("case", ["issuer", "accreditor", "kid"])
+def test_chain_accreditation_failure_messages_are_bounded(case):
+    # The accreditation's `iss` and `kid` come from a JWT that is read before its signature
+    # is checked, and `accreditedBy` from the registry: all attacker-sized. The three
+    # `AccreditationInvalid` messages that name them cut each at 200 characters.
+    c = build_chain()
+    assert verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver, proof_suite=c.suite,
+                              anchors={ROOT}).anchor == ROOT                  # control
+    tir = f"{BASE}/trusted-issuers-registry/v5/issuers"
+    big_sk = P256SigningKey.generate(kid=f"{BIG}#key-1")
+    if case == "issuer":           # signed by BIG, but the TIR says MID accredited the leaf
+        signer, issuer, tao = big_sk, BIG, MID
+    elif case == "accreditor":     # BIG accredited the leaf, and BIG's document is not BIG's
+        signer, issuer, tao = big_sk, BIG, BIG
+        doc = _did_doc(BIG, big_sk)
+        doc["didDocument"]["id"] = "did:ebsi:zSomebodyElse"
+        c.routes[f"{BASE}/did-registry/v5/identifiers/{BIG}"] = doc
+    else:                          # MID accredited the leaf, under a `kid` MID's document lacks
+        signer, issuer, tao = P256SigningKey.generate(kid="k" * 60_000), MID, MID
+    token = _accreditation(c.suite, signer, subject=LEAF, accredited_by=issuer,
+                           accredited_for=TYPES)
+    c.routes.update(_tir_routes(f"{tir}/{LEAF}", token, "leaf",
+                                issuer_type="TI", tao=tao, subject=LEAF))
+
+    with pytest.raises(OpenvcError) as exc:
+        verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver, proof_suite=c.suite,
+                           anchors={ROOT})
+    assert type(exc.value) is AccreditationInvalid
+    shown = f"{BIG[:200]!r}... (60010 chars)"
+    if case == "issuer":
+        assert str(exc.value) == f"accreditation issuer {shown} != accreditedBy {MID!r}"
+    elif case == "accreditor":
+        assert type(exc.value.__cause__) is DidResolutionError
+        assert str(exc.value).startswith(f"cannot resolve accreditor {shown}: document id ")
+    else:
+        assert str(exc.value) == (f"no verification method {('k' * 200)!r}... (60000 chars) "
+                                  f"for accreditor {MID!r}")
+    assert len(str(exc.value)) < 1000
+
+
 def test_chain_revoked_mid_breaks_chain():
     c = build_chain(mid_issuer_type="revoked")   # MID's accreditation is revoked
     with pytest.raises(NoTrustedAnchor):

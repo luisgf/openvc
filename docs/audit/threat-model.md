@@ -205,9 +205,9 @@ finite input", with no explicit constant.
   document: `DidEbsiResolver.resolve` holds the parsed document's `id` (after a
   `didDocument` wrapper is unwrapped) to the DID it asked for, exactly, and raises
   `DidResolutionError` otherwise, as `did:web` and `did:webvh` do. A missing, non-string
-  or empty `id` never matches; neither does a DID URL (`did:ebsi:zX#key-1`), which
-  resolved by accident before v1.32.4 because httpx drops the fragment. Compromise of
-  the registry itself is still out of scope (§10): it can serve a matching `id` with its
+  or empty `id` never matches, whatever was asked (not even `resolve("")`); neither
+  does a DID URL (`did:ebsi:zX#key-1`), which resolved by accident before v1.32.4
+  because httpx drops the fragment. Compromise of the registry itself is still out of scope (§10): it can serve a matching `id` with its
   own key. What the check closes is a misrouted or steered response (a registry bug, a
   wrong `base`, an unsigned token's `iss` such as `did:ebsi:zA/../did:ebsi:zB`, which
   httpx turns into a request for B's resource) being accepted as the requested DID's

@@ -45,7 +45,11 @@ from openvc_ebsi.http import (
     HttpNotFound,
     for_ebsi,
 )
-from openvc_ebsi.verify import EbsiVerificationError, verify_ebsi_badge
+from openvc_ebsi.verify import (
+    EbsiVerificationError,
+    VerificationMethodNotFound,
+    verify_ebsi_badge,
+)
 from openvc_ebsi.versioning import DidEbsiResolver, TirV5
 
 PILOT_BASE = "https://api-pilot.ebsi.eu"
@@ -739,6 +743,39 @@ def test_resolve_refuses_a_document_that_is_not_for_the_requested_did(
 
 
 @pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "wrapper"])
+@pytest.mark.parametrize("doc_id", [
+    pytest.param("", id="empty"),
+    pytest.param(7, id="number"),
+    pytest.param(_ABSENT, id="absent"),
+])
+def test_resolve_refuses_a_document_without_a_usable_id_even_for_an_empty_did(
+        doc_id: object, wrapped: bool) -> None:
+    # The parser reads an absent, empty or non-string `id` as "". A bare `doc.id != did`
+    # would then accept it for `resolve("")`: "" == "". A document with no usable `id`
+    # is refused whatever was asked, so "never matches" holds without a caveat.
+    sk = P256SigningKey.generate(kid=BIND_KID)
+    suite = VcJwtProofSuite()
+    empty_url = f"{PILOT_BASE}/did-registry/v5/identifiers/"          # identifiers_url(base, "")
+    # control: the route for "" answers (the document is fetched and parsed, not a 404) and
+    # a document with a real `id` is still not the one that was asked for; the same
+    # document, asked for by its own DID, resolves
+    fetch = StubFetch({empty_url: _bind_doc(sk, BIND_DID, wrapped=wrapped)})
+    with pytest.raises(DidResolutionError, match="!= requested") as other:
+        DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, base=PILOT_BASE).resolve("")
+    assert type(other.value) is DidResolutionError
+    assert fetch.calls == [empty_url]
+    assert _bind_resolver(_bind_doc(sk, BIND_DID, wrapped=wrapped),
+                          suite).resolve(BIND_DID).id == BIND_DID
+    # the document with no usable `id` was fetched (the route answered) and refused
+    fetch = StubFetch({empty_url: _bind_doc(sk, doc_id, wrapped=wrapped)})
+    resolver = DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, base=PILOT_BASE)
+    with pytest.raises(DidResolutionError, match="!= requested") as exc_info:
+        resolver.resolve("")
+    assert type(exc_info.value) is DidResolutionError
+    assert fetch.calls == [empty_url]
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "wrapper"])
 @pytest.mark.parametrize("doc_id", WRONG_IDS)
 def test_verify_ebsi_badge_refuses_a_document_that_is_not_for_the_issuer(
         doc_id: object, wrapped: bool) -> None:
@@ -856,6 +893,72 @@ def test_resolve_mismatch_message_is_bounded() -> None:
     assert str(exc_info.value) == (                    # each cut at 200 characters
         f"document id {long_other[:200]!r}... (60009 chars) != "
         f"requested {long_did[:200]!r}... (60009 chars)")
+
+
+def _long_did_registry(doc: dict, did: str):
+    """A fetch that serves *doc* for any DID Registry URL and a no-attribute TIR entry
+    for *did*, so a token issued by *did* can run the whole of `verify_ebsi_badge`."""
+    def fetch(url: str) -> dict:
+        if "/did-registry/" in url:
+            return doc
+        if "/trusted-issuers-registry/" in url:
+            return {"did": did, "hasAttributes": False}
+        raise HttpNotFound("no stub route", url=url)
+    return fetch
+
+
+def _long_issuer_token(suite: VcJwtProofSuite, sk: P256SigningKey, issuer: str) -> str:
+    return suite.sign(
+        {"@context": ["https://www.w3.org/2018/credentials/v1"],
+         "id": "urn:uuid:2f8a1c30-0000-4000-8000-000000000259",
+         "type": ["VerifiableCredential", "VerifiableAttestation"], "issuer": issuer,
+         "credentialSubject": {"id": "did:key:z6Mkexample"}},
+        signing_key=sk)
+
+
+def test_verify_ebsi_badge_wrapper_messages_are_bounded() -> None:
+    # The resolver's own message is cut (above), but `verify_ebsi_badge` wraps it in a
+    # message of its own, and that one names the issuer (a token's `iss`, attacker-sized)
+    # and the `kid` (a header field, equally so). Each is cut at 200 characters too.
+    long_did = "did:ebsi:" + "z" * 60_000
+    long_other = "did:ebsi:" + "y" * 60_000
+    long_kid = f"{long_did}#key-1"
+    sk = P256SigningKey.generate(kid=long_kid)
+    suite = VcJwtProofSuite()
+    token = _long_issuer_token(suite, sk, long_did)
+
+    def doc_with(doc_id: str, vm_id: str) -> dict:
+        return {"id": doc_id, "verificationMethod": [{
+            "id": vm_id, "type": "JsonWebKey2020", "controller": doc_id,
+            "publicKeyJwk": sk.public_jwk()}], "assertionMethod": [vm_id]}
+
+    def resolver_for(doc: dict) -> DidEbsiResolver:
+        return DidEbsiResolver(_long_did_registry(doc, long_did),
+                               decode_jwt=suite.peek_claims, base=PILOT_BASE)
+
+    # control: the same sizes, a document that is for the issuer and holds the key, verify
+    ok = verify_ebsi_badge(token, resolver=resolver_for(doc_with(long_did, long_kid)),
+                           proof_suite=suite, require_trust=False)
+    assert ok.issuer == long_did
+
+    # the registry answers with another subject's document: the resolve wrapper
+    with pytest.raises(OpenvcError) as exc_info:
+        verify_ebsi_badge(token, resolver=resolver_for(doc_with(long_other, long_kid)),
+                          proof_suite=suite, require_trust=False)
+    assert type(exc_info.value) is EbsiVerificationError
+    assert type(exc_info.value.__cause__) is DidResolutionError
+    assert str(exc_info.value).startswith(
+        f"could not resolve issuer DID {long_did[:200]!r}... (60009 chars): ")
+    assert len(str(exc_info.value)) < 1000
+
+    # the document is the issuer's but holds no key under the token's `kid`
+    with pytest.raises(OpenvcError) as vm_info:
+        verify_ebsi_badge(token, resolver=resolver_for(doc_with(long_did, f"{long_did}#other")),
+                          proof_suite=suite, require_trust=False)
+    assert type(vm_info.value) is VerificationMethodNotFound
+    assert str(vm_info.value) == (
+        f"no verification method for kid {long_kid[:200]!r}... (60015 chars) in DID "
+        f"{long_did[:200]!r}... (60009 chars)")
 
 
 # --------------------------------------------------------------------------- #

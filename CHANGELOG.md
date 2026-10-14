@@ -26,11 +26,12 @@ All notable changes to **openvc** are documented here. The format follows
   `resolve` now compares the parsed document's `id`, after the `didDocument` wrapper is
   unwrapped, with the requested DID, exactly and with no normalisation (a `did:ebsi`
   method-specific id is case-sensitive base58btc), and raises
-  `openvc.did.base.DidResolutionError` on any difference. A missing or non-string `id`
-  never matches, because the parser reads it as `""`. The message shows both values
-  through `safe_repr`, so a 60 KB DID is cut to 200 characters. The check is in the
-  resolver, not in `DidRegistryV5`: it is version-agnostic domain logic, so a future
-  registry adapter inherits it. `DidResolutionError` is what every caller already
+  `openvc.did.base.DidResolutionError` on any difference. A missing, empty or
+  non-string `id` never matches, whatever was asked: the parser reads all three as `""`,
+  which is refused outright, so not even `resolve("")` accepts a document with no usable
+  `id`. The message shows both values through `safe_repr`, so a 60 KB DID is cut to 200
+  characters. The check is in the resolver, not in `DidRegistryV5`: it is
+  version-agnostic domain logic, so a future registry adapter inherits it. `DidResolutionError` is what every caller already
   handles: `verify_ebsi_badge` wraps it in `EbsiVerificationError`,
   `verify_trust_chain` in `AccreditationInvalid`, and the generic pipeline maps
   `DidError` to `KeyResolutionFailed`. The golden registry fixture has `id` equal to its
@@ -52,9 +53,37 @@ All notable changes to **openvc** are documented here. The format follows
   `did:web` does, and `verify_ebsi_badge` reports `EbsiVerificationError`. `iss` and
   `accreditedBy` are DIDs, not DID URLs, so a conforming credential is unaffected. The
   same applies to any other input whose registry document `id` is not that exact string.
+- **`resolve("")` against a document with no usable `id` is now refused.** An absent,
+  empty or non-string `id` is read as `""`, so a bare `doc.id != did` accepted it for the
+  empty DID. It now raises `DidResolutionError`. The shipped callers already reject an
+  empty `iss` before they resolve, so only a direct call with `""` is affected.
+
+### Fixed
+
+- **The EBSI verifier's error messages no longer echo an attacker-sized DID or `kid`
+  in full** (#257). `verify_ebsi_badge` and `verify_trust_chain` wrap the resolver's
+  error in a message of their own, and those interpolated the token's `iss`, the
+  accreditation's `iss` and `accreditedBy`, and the JWS `kid` with a bare `!r`. They are
+  read before any signature is checked, so a 60 KB `iss` made a 60 KB exception message
+  even when the resolver's own text was cut. Five messages now go through `safe_repr`
+  (a `str` past 200 characters is cut and its length shown; shorter values read as
+  before): `could not resolve issuer DID` and `no verification method for kid` in
+  `verify_ebsi_badge`, and `accreditation issuer`, `cannot resolve accreditor` and
+  `no verification method` for an accreditor in `verify_trust_chain`. The other messages
+  in those two modules name a DID taken from a verified credential or from the
+  registry's own response, and are unchanged.
 
 ### Tests
 
+- **`resolve("")` and the callers' messages are pinned** (#257).
+  `test_ebsi_verifier.py` asks for the empty DID against a document whose `id` is
+  absent, `""` or a number, bare and in a `didDocument` wrapper, and requires exactly
+  `DidResolutionError`; a control shows the route answered. The 60 KB cases go through
+  `verify_ebsi_badge` (the resolve wrapper, and a document without the token's `kid`)
+  and, in `test_trust_chain.py`, through an accreditation whose `iss`, `accreditedBy` or
+  `kid` is attacker-sized, each asserting the exact cut message and the exact class.
+  Mutation-checked: dropping the empty-`id` guard fails the six `resolve("")` rows, and
+  reverting any one of the eight `safe_repr` swaps fails the test for its message.
 - **The binding is pinned for every wrong `id`** (#257). `test_ebsi_verifier.py` serves
   a registry document that is otherwise good (it holds the signing key under the right
   `kid`) with `id` set to another DID, a number, `null`, a list, an object, a bool,
