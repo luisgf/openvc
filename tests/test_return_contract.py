@@ -44,7 +44,7 @@ CONTRACT = {
     VerifiedDataIntegrity: ["credential", "issuer", "subject", "proof", "expired"],
     VerifiedSdCredential: ["credential", "issuer", "subject", "proof", "expired"],
     VerifiedSdJwt: ["claims", "issuer", "vct", "key_bound", "confirmation", "expired",
-                    "vcdm"],
+                    "vcdm", "typ"],
     VerifiedPresentation: ["holder", "credentials", "claims", "vp"],
     VerifiedProof: ["public_jwk", "thumbprint", "alg", "key_source", "issued_at",
                     "nonce", "client_id", "key_attestation", "header", "claims"],

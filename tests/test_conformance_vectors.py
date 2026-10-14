@@ -51,7 +51,8 @@ def _p256(kid="did:example:issuer#k"):
 
 def test_sd_jwt_vc_wire_constants_match_the_draft():
     assert _ISSUER_TYP == "dc+sd-jwt"                     # current draft media type
-    assert "vc+sd-jwt" in _ACCEPTED_ISSUER_TYP            # older draft still accepted
+    # accepted for W3C VCDM payloads only (VC-JOSE-COSE §6.1.3; #264)
+    assert "vc+sd-jwt" in _ACCEPTED_ISSUER_TYP
     assert _KB_TYP == "kb+jwt"
 
 

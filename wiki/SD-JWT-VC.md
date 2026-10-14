@@ -234,29 +234,50 @@ key binding changes it.
 Integrity, and is required by §5.4 ("claims that are understood MUST be evaluated").
 A missing type raises `TypeMismatch`, and so does a withheld or malformed `type`.
 
-openvc treats the payload as a VCDM credential when the issuer signed either of
-these:
+openvc treats the payload as a VCDM credential when the issuer signed a VCDM base
+context into it, and only then:
 
 | Signal | Example |
 |---|---|
 | The payload's `@context` names a VCDM base context, as a string or anywhere in the array | `"@context": ["https://www.w3.org/ns/credentials/v2", …]` (or `…/2018/credentials/v1`) |
-| The `typ` is `vc+sd-jwt` and the payload has no `vct` (a non-empty string) | a W3C issuer that omitted `@context`, or a third-party issuer that made it disclosable (openvc refuses that) and the holder withheld it |
 
-An **IETF SD-JWT VC is not affected**: a `dc+sd-jwt` one, or one with the legacy
-`vc+sd-jwt` typ and a `vct`. Its claims are the issuer's own vocabulary, so a claim
-that happens to be named `validUntil` is not a validity bound: it is not enforced
-and not reported as `expired`. Its `exp` / `nbf` remain the temporal gate. The
-`vc+sd-jwt` typ alone is not enough, because the IETF drafts used it until draft-06
-renamed it `dc+sd-jwt`, and openvc still accepts it. The `data:` media type of an
-enveloping credential is not consulted either, because it sits outside the issuer's
-signature.
+The `typ` is not a signal. `vc+sd-jwt` is the media type VC-JOSE-COSE §6.1.3
+registers for a VCDM payload, and `verify()` accepts it **only** for a payload with a
+VCDM base `@context`: an issuer JWT typed `vc+sd-jwt` without one raises `SdJwtError`
+(`issuer JWT typ 'vc+sd-jwt' needs a W3C VCDM @context`). An IETF SD-JWT VC is typed
+`dc+sd-jwt`. The IETF drafts used `vc+sd-jwt` until draft-06 renamed it, but
+draft-ietf-oauth-sd-jwt-vc-19 dropped the transitional acceptance of it, so a
+`vct`-bearing IETF payload still typed `vc+sd-jwt` is refused too: re-issue it as
+`dc+sd-jwt`. Before 1.33.0 the typ alone made a payload with no `vct` VCDM, which let
+a token without the REQUIRED `vct`, or one whose `vct` the holder had withheld,
+verify as a W3C credential.
+
+A `dc+sd-jwt` always needs a non-empty string `vct` (`ClaimsInvalid` otherwise),
+**even when its payload carries a VCDM `@context`**. draft-ietf-oauth-sd-jwt-vc-19
+§2.2.1 says that typ means the payload follows the SD-JWT VC rules, and §2.2.2.3 makes
+`vct` REQUIRED. One that carries both a `vct` and a VCDM `@context` still verifies, and
+the VCDM validity window and the `issuer` / `id` / `sub` consistency checks above apply
+to it as well (`vcdm=True`). A `vc+sd-jwt` needs no `vct`: it is typed by `type`.
+Before 1.33.0 a VCDM `@context` waived the `vct` whatever the typ, so a `dc+sd-jwt`
+with no `vct`, or with one the holder had withheld, verified as `vcdm=True, vct=None`.
+
+A `dc+sd-jwt` with no VCDM `@context` is an IETF SD-JWT VC pure and simple. Its claims
+are the issuer's own vocabulary, so a claim that happens to be named `validUntil` is
+not a validity bound: it is not enforced and not reported as `expired`. Its `exp` /
+`nbf` remain the temporal gate. The `data:` media type of an enveloping credential is
+not consulted either, because it sits outside the issuer's signature.
 
 Likewise, an IETF SD-JWT VC's claims named `issuer`, `id` or `credentialSubject` are
 not reconciled with `iss`, `jti` or `sub`. Such a credential may legitimately name,
 say, the authority behind an underlying document. On every lane, the authenticated
 issuer is **`result.issuer`**, the verified `iss`. Never read it from
 `result.credential`. `result.raw.vcdm` (`VerifiedSdJwt.vcdm`) tells you which rules
-the suite applied.
+the suite applied. `result.raw.typ` (`VerifiedSdJwt.typ`) is the issuer JWT `typ` that
+was verified, `dc+sd-jwt` or `vc+sd-jwt`, and is `None` only on a result that did not
+come from `verify()`. Check it when you must tell an IETF SD-JWT VC from a W3C
+credential: `vcdm` alone does not, because a `dc+sd-jwt` with a VCDM `@context` is
+`vcdm=True` too. The OpenID4VP `dc+sd-jwt` lane reads it for you
+([Presentations](Presentations#openid4vp-10-verify_vp_token)).
 
 **`expected_types` rejects an IETF SD-JWT VC.** Such a credential is typed by `vct`,
 so a policy that sets `expected_types` raises `TypeMismatch` that points at
@@ -313,16 +334,20 @@ It cannot catch the disclosure a holder **withholds**. A credential whose issuer
 made `exp` or `status` disclosable still verifies as never-expiring, or with no
 status, when the holder leaves that disclosure out. The exceptions are `iss`,
 without which nothing verifies, and `vct`: it is REQUIRED, so a `dc+sd-jwt` that
-is not a VCDM payload and has no `vct` is rejected (`ClaimsInvalid`), whoever left
-it out. `issue()` likewise requires `vct` to be a non-empty string. If you accept SD-JWT VCs from
-issuers you do not control and rely on expiry or status, check that the verified
+has no `vct` is rejected (`ClaimsInvalid`), whoever left it out and whatever its
+`@context` (a `vc+sd-jwt` that is not a VCDM payload is refused outright, as above).
+`issue()` likewise requires `vct` to be a non-empty string. If you accept SD-JWT VCs
+from issuers you do not control and rely on expiry or status, check that the verified
 `claims` actually carry them.
 
 The same limit applies to a third-party W3C credential whose `@context` was
 disclosable and is withheld (including a VCDM entry that is itself an
-array-element disclosure). It then counts as VCDM only if it is typed `vc+sd-jwt`
-and has no `vct`. Otherwise its window and its `issuer` / `id` / `sub`
-consistency are not checked, and a policy that sets `expected_types` rejects it.
+array-element disclosure). It no longer counts as VCDM, since the `@context` is the
+only signal. If it is typed `vc+sd-jwt`, `verify()` raises `SdJwtError`, because that
+typ needs a VCDM `@context`. If it is typed `dc+sd-jwt`, it needs a `vct` whatever its
+`@context`, so one that carries none is rejected (`ClaimsInvalid`). Typed `dc+sd-jwt`
+with a `vct`, it verifies as an IETF SD-JWT VC: its window and its `issuer` / `id` /
+`sub` consistency are not checked, and a policy that sets `expected_types` rejects it.
 
 Two claims are deliberately **not** refused:
 

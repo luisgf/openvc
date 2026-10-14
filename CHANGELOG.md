@@ -4,10 +4,71 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.32.5] — unreleased
+## [1.33.0] — unreleased
 
 ### Security
 
+- **`vc+sd-jwt` is accepted only for a payload with a VCDM base `@context`**
+  ([#264](https://github.com/luisgf/openvc/issues/264)). Found by the spec-pin
+  freshness check of 2026-10-14. **This is a behaviour change:** an SD-JWT that
+  verified before can now be refused.
+
+  `draft-ietf-oauth-sd-jwt-vc-19` dropped the -18 sentence that let verifiers accept
+  both `vc+sd-jwt` and `dc+sd-jwt` "for a reasonable transitional period". An IETF
+  SD-JWT VC is typed `dc+sd-jwt` (§2.2.1). W3C VC-JOSE-COSE §6.1.3 registers
+  `vc+sd-jwt` for a payload conforming to the VCDM, and the VCDM requires `@context`.
+
+  openvc used to read `typ: vc+sd-jwt` with no `vct` as a VCDM payload on the typ
+  alone. That defeated the REQUIRED `vct` of draft-19 §2.2.2.3. A `vc+sd-jwt` with
+  no `vct` and no `@context` verified as `vcdm=True, vct=None`, and so did one whose
+  issuer made `vct` disclosable and whose holder withheld it. Typed `dc+sd-jwt`, the
+  same payload is refused. In OpenID4VP such a token answered a `dc+sd-jwt` DCQL query
+  with no `meta.vct_values`, labelled `format='dc+sd-jwt'`. No check the caller had
+  configured was bypassed: an `expected_vct`, `vct_values` or `expected_types` pin
+  refused it. Status, KB-JWT / `cnf` and the disclosure refusals still ran.
+
+  `SdJwtVcProofSuite.verify` now raises `SdJwtError` when the issuer `typ` is
+  `vc+sd-jwt` and the payload carries no VCDM `@context`. That includes a
+  `vct`-bearing IETF payload from a pre-draft-06 issuer: re-issue it as `dc+sd-jwt`.
+  VCDM classification reads only `@context`. A presented `@context` disclosure is
+  refused, so the verdict never reads a holder-supplied one. A withheld one leaves the
+  payload not VCDM, and a `vc+sd-jwt` is then refused. A `vc+sd-jwt` with a VCDM
+  `@context`, with or without `vct`, verifies as before, with the VCDM validity window
+  and consistency checks.
+
+  The other direction, that a `dc+sd-jwt` always means an IETF SD-JWT VC, is the next
+  entry (#272). "VCDM" still means a VCDM base URL anywhere in `@context`; requiring
+  a conforming payload (the base context first, and `type` containing
+  `VerifiableCredential`) is #275.
+
+- **A `dc+sd-jwt` always means an IETF SD-JWT VC: it needs a `vct`, and only it
+  answers an OpenID4VP `dc+sd-jwt` query**
+  ([#272](https://github.com/luisgf/openvc/issues/272)). The other direction of #264,
+  found by the same cross-check. **This is a behaviour change:** an SD-JWT that
+  verified before can now be refused.
+
+  draft-19 §2.2.1 says `typ: dc+sd-jwt` means the payload follows the SD-JWT VC rules,
+  and §2.2.2.3 makes `vct` REQUIRED. openvc skipped the `vct` gate for any payload
+  with a VCDM `@context`, whatever the `typ`. So a `dc+sd-jwt` with a VCDM `@context`
+  and no `vct`, or with a `vct` the holder withheld, verified as `vcdm=True,
+  vct=None`. Separately, the OpenID4VP `dc+sd-jwt` lane checked only that the
+  Presentation verified as an SD-JWT, and the pipeline calls every SD-JWT
+  `sd-jwt-vc`. A W3C VCDM credential secured as `vc+sd-jwt` therefore answered a
+  `dc+sd-jwt` DCQL query, reported as `format='dc+sd-jwt'`. With no
+  `meta.vct_values`, nothing refused it.
+
+  `SdJwtVcProofSuite.verify` now raises `ClaimsInvalid` for a `dc+sd-jwt` with no
+  non-empty string `vct`, whatever its `@context`. One that carries both a `vct` and
+  a VCDM `@context` still verifies, and the VCDM validity window and consistency
+  checks still apply to it. `VerifiedSdJwt` gains a `typ` field, the verified issuer
+  JWT `typ`: an additive field that defaults to `None`. `verify_vp_token` refuses a
+  `dc+sd-jwt` Presentation whose issuer JWT is not typed `dc+sd-jwt`, raising
+  `VpTokenMalformed`.
+
+  One exception class changes. A `vct`-less `dc+sd-jwt` with a VCDM `@context` past
+  its `validUntil` now raises `ClaimsInvalid`, because the `vct` gate runs before the
+  VCDM window; it used to raise `CredentialExpired`. Under
+  `require_not_expired=False` it is refused instead of returned with `expired=True`.
 - **The EBSI plugin validates the DID before it puts it in a registry URL**
   ([#266](https://github.com/luisgf/openvc/issues/266)). Found by the review of
   [#251](https://github.com/luisgf/openvc/pull/251) (issue #219) and listed as out of

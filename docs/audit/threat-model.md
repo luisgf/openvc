@@ -208,7 +208,7 @@ finite input", with no explicit constant.
   `MalformedRegistryResponse`; before v1.32.1 it escaped as a bare
   `httpx.DecodingError` (#248). The allow-list says which host answers, not which path
   or which document, and the rest of this paragraph is what stands behind it.
-  **The DID is validated before it is put in a registry URL** (#266, v1.32.5):
+  **The DID is validated before it is put in a registry URL** (#266, v1.33.0):
   `DidEbsiResolver.resolve` and `.issuer_record` accept only `did:ebsi:z` plus 22 or 23
   base58btc characters (the legal-entity form of the EBSI DID method: a version byte and
   16 random bytes, multibase-encoded), matched in full with an explicit ASCII class, and
@@ -226,7 +226,7 @@ finite input", with no explicit constant.
   `DidEbsiResolver.resolve` compares the parsed document's `id` (after a `didDocument`
   wrapper is unwrapped) with it, exactly, and raises `DidResolutionError` otherwise, as
   `did:web` and `did:webvh` do. A missing, non-string or empty `id` never matches.
-  **So is the TIR issuer response** (#267, v1.32.5): `DidEbsiResolver.issuer_record`
+  **So is the TIR issuer response** (#267, v1.33.0): `DidEbsiResolver.issuer_record`
   asks the adapter where the response names its DID (`TirAdapter.response_did`) and
   compares it with the requested DID, exactly, before the adapter follows any link, so a
   record that is not about the DID costs one request and no `attributes` page or revision
@@ -352,7 +352,12 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   `disclosable` (digests a caller writes into `claims` itself are signed as given).
   `verify()` rejects (`SdJwtError`) a
   presentation that presents such a disclosure, or one of its sub-claims, and a
-  `dc+sd-jwt` with no `vct` (`ClaimsInvalid`). What remains is the **withheld**
+  `dc+sd-jwt` that has no `vct` (`ClaimsInvalid`, whatever its `@context`, #272:
+  draft-19 §2.2.1 makes that typ mean the SD-JWT VC rules, so a VCDM `@context` does
+  not waive the REQUIRED `vct`). A `vc+sd-jwt` is accepted only with a VCDM
+  `@context`, so without one it is an `SdJwtError`, and the typ alone never makes a
+  payload VCDM (#264).
+  What remains is the **withheld**
   disclosure from a third-party issuer: a withheld digest is indistinguishable
   from a decoy (RFC 9901 §9.7), so no verifier can see it. Pinned as a limitation
   in `tests/test_sdjwt_non_disclosable.py`. `credentialSchema` is not refused:
