@@ -51,6 +51,34 @@ Currently deprecated (removable at the next MAJOR): the verb-last
 `serialize_derived_proof`/`parse_derived_proof` — each warns and forwards to its
 verb-first replacement (`encode_cbor`/`decode_cbor`, `encode_base_proof`/…).
 
+## Supported Python versions
+
+openvc supports every CPython release that is still supported upstream, and tests
+each one in CI. Python 3.11–3.15 are supported today.
+
+When a Python version reaches its upstream end-of-life, it is **deprecated, not
+removed**:
+
+1. The next MINOR release makes importing openvc on that version emit a
+   `FutureWarning`. The warning names the end-of-life date and the release that will
+   drop the version. It is a `FutureWarning` rather than the `DeprecationWarning` that
+   deprecated *names* get, because an import-time `DeprecationWarning` is hidden by
+   default outside test runners, so nobody running the old interpreter would see it.
+2. The version stays installable (`requires-python` unchanged) and stays in CI for
+   the rest of the current MAJOR line.
+3. The next MAJOR release raises `requires-python` and records the change under
+   **Removed** in the CHANGELOG.
+
+**Currently deprecated:** Python 3.10. It reached end-of-life on 2026-10-01 and has
+been deprecated since openvc 1.32.0. openvc 2.0 will require Python 3.11 or later
+([#74](https://github.com/luisgf/openvc/issues/74)). To silence the warning while you
+migrate, filter it by its message:
+
+```python
+import warnings
+warnings.filterwarnings("ignore", message="openvc: Python 3.10", category=FutureWarning)
+```
+
 ## Algorithm names (RFC 9864)
 
 [RFC 9864](https://www.rfc-editor.org/rfc/rfc9864) (Oct 2025) marks the polymorphic
