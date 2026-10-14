@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.32.4] — unreleased
+## [1.32.4] — 2026-10-14
 
 ### Security
 
@@ -190,7 +190,7 @@ All notable changes to **openvc** are documented here. The format follows
   `vct_values` on an `mso_mdoc` query is ignored). The `verify_vp_token` docstring
   and the wiki ("Type constraints in the query") state the rule.
   `verify_encrypted_vp_response` delegates to `verify_vp_token`, so it follows. The
-  `multiple` flag is still read by truthiness, which is a separate gap.
+  `multiple` flag is still read by truthiness, which is a separate gap (#268).
 - **A `did:webvh` log whose last state has a `didDocument` member no longer resolves**
   (#256). It used to resolve, to the inner document. No golden log and no known
   implementation produces one. A wrapper that was not an object (`null`, a list, a
@@ -204,8 +204,8 @@ All notable changes to **openvc** are documented here. The format follows
 - **A naive `datetime` is UTC in both status-list builders, so a non-UTC host now mints
   a different `validFrom` / `validUntil`**
   ([#255](https://github.com/luisgf/openvc/issues/255)). This is the one change in this
-  release that does not fail closed: the call still succeeds and signs a different
-  string. Decision: a naive value is *read as UTC* rather than refused, the one rule
+  release that alters what a successful call returns rather than refusing an input: the
+  call still succeeds and signs a different string. Decision: a naive value is *read as UTC* rather than refused, the one rule
   every openvc clock check uses (the
   [#187](https://github.com/luisgf/openvc/issues/187) precedent).
 
@@ -4019,6 +4019,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.32.4]: https://github.com/luisgf/openvc/releases/tag/v1.32.4
 [1.32.3]: https://github.com/luisgf/openvc/releases/tag/v1.32.3
 [1.32.2]: https://github.com/luisgf/openvc/releases/tag/v1.32.2
 [1.32.1]: https://github.com/luisgf/openvc/releases/tag/v1.32.1

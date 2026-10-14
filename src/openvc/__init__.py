@@ -2,7 +2,7 @@
 
 # Single source of truth for the version (pyproject reads it by AST — keep it a
 # plain string literal). The /release skill bumps this line.
-__version__ = "1.32.3"
+__version__ = "1.32.4"
 
 # Python 3.10 reached end-of-life on 2026-10-01: importing openvc there warns once (a
 # FutureWarning, so it is seen outside test runners). Deprecated, not removed — 1.x
