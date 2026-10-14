@@ -4,6 +4,54 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.4] — unreleased
+
+Tests and docs only; no behaviour changes. Closes the last open items of
+[#208](https://github.com/luisgf/openvc/issues/208): the fix itself shipped in 1.29.1
+and 1.30.3.
+
+### Fixed (docs)
+
+- **The Security Model wiki page names the "array where a string is expected" attack**
+  ([#208](https://github.com/luisgf/openvc/issues/208)). The attack table now has a
+  row for a JSON array or object in a JOSE `alg` or `typ`, an SD-JWT `_sd_alg`, a
+  KB-JWT `alg`, an `ldp_vc` `cryptosuite`, an OpenID4VCI key-proof `typ` or a Data
+  Integrity `proofPurpose`: formerly a bare `TypeError` that aborted a whole
+  `verify_many`, now the typed error a disallowed string gets.
+- **The threat model's I1 row cites the allow-list checks where they are.** It still
+  pointed at `proof/_jws.py:84` and at `proof/vc_jwt.py:55,198`; the checks are at
+  `_jws.py:89` and `vc_jwt.py:243`, the constant at `vc_jwt.py:65`. I1 also lists the
+  tests that pin the type check (`test_typed_error_unhashable_header.py`,
+  `test_typed_error_deep_headers.py`, `test_unhashable_proof_purpose.py`), and I14 and
+  I15 list the new file. The assurance case no longer calls #208 open.
+
+### Tests
+
+- **A deep array where a string is expected now reaches each lane's own check**
+  ([#208](https://github.com/luisgf/openvc/issues/208)). Since #213 a header nested
+  past 100 levels is refused at the JSON parse as `MalformedToken`, so the existing
+  ~100k-level tests never got as far as the lane's allow-list check, or its message,
+  and on any interpreter but CPython 3.14 the shape does not even parse. The new
+  `test_typed_error_deep_headers.py` nests the array 90 levels, under the cap, on
+  every interpreter. For the SD-JWT VC issuer `alg` and `typ`, `_sd_alg` and the
+  KB-JWT `alg` (through the suite and `verify_vp_token`), VC-JWT `alg`,
+  `proof._jws.verify_compact` (directly, the VP-JWT suite, a `jwt_vc_json` response,
+  an embedded VC-JWT and the status-list token), the OpenID4VCI key-proof `typ` and
+  `alg`, and the `ldp_vc` holder-proof `cryptosuite`, each test asserts the exact
+  typed class and that the message names the value as `list` rather than quoting it
+  (`repr()` of 90 levels works, so the message is the only way to see `safe_repr` at
+  work). `test_unhashable_proof_purpose.py` gains the same for a Data Integrity
+  `proofPurpose` on all five suites. `verify_many` and `verify_many_async` are shown
+  to isolate one deep-array item per lane, with a control either side. Controls pin
+  that 90 levels parse, that one level past the cap is `MalformedToken`, and that a
+  well-formed token still verifies.
+
+  Mutation-checked against an unmodified origin/main tree: with the tests overlaid,
+  all 60 pass. Removing the `isinstance` guard at any one of ten lanes fails that
+  lane's deep test, and the batch tests for the lanes they cover. Putting `repr()`
+  back in `safe_repr` fails 18 of the 21 tests in the new file (the other three are
+  the controls) and the two WRPRC `typ` message tests.
+
 ## [1.32.3] — unreleased
 
 ### Security
