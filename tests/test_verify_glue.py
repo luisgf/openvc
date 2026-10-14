@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from openvc.keys import P256SigningKey
+from openvc.multibase import b58btc_encode
 from openvc.proof.vc_jwt import SignatureInvalid, VcJwtProofSuite
 from openvc.status import CredentialRevoked, encode_bitstring, set_status_bit
 from openvc_ebsi.http import HttpNotFound
@@ -46,9 +47,18 @@ def _status_vc(*set_indices: int, purpose: str = "revocation") -> dict:
 
 
 BASE = "https://api-pilot.ebsi.eu"
-ISSUER = "did:ebsi:zIssuerAAAAAAAAAAAAAAAAA"
-TAO = "did:ebsi:zTAOBBBBBBBBBBBBBBBBBBB"
-ROOT = "did:ebsi:zRootCCCCCCCCCCCCCCCCCC"
+
+
+def _did(seed: int) -> str:
+    # A well-formed did:ebsi identifier (#266): `z` + base58btc(version byte 1 || 16 bytes).
+    # The resolver refuses anything else before it builds a registry URL, so a placeholder
+    # such as `did:ebsi:zIssuerAAAA` (`I`, `l`, `O`, `0` are not base58) no longer resolves.
+    return "did:ebsi:z" + b58btc_encode(bytes([1]) + bytes([seed]) * 16)
+
+
+ISSUER = _did(0xA1)
+TAO = _did(0xB2)
+ROOT = _did(0xC3)
 
 
 class StubFetch:

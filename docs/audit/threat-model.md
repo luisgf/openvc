@@ -121,7 +121,12 @@ boundary is attacker-controlled until a signature verifies.
   `ecdsa-sd-2023`. `verificationMethod`↔`issuer` binding (`src/openvc/verify.py:628-641`);
   cryptosuite chosen from the resolved key, never a proof field
   (`src/openvc/proof/_verify_common.py:289-303`); validity window + `proofPurpose`
-  enforced (`src/openvc/proof/data_integrity.py:235,238`). The RDF suites sign the
+  enforced (`src/openvc/proof/data_integrity.py:235,238`). The key is selected by the
+  exact absolute DID URL of its `id`, and granted the `proofPurpose` only by a
+  relationship entry that resolves to that same URL (DID Core 1.0 §3.2.2, CID 1.0 §3.3);
+  a same-fragment entry pointing at another DID, version, path or a bare name grants
+  nothing (#258, fixed in v1.32.4; `DidDocument.key_for_purpose`,
+  `resolve_verification_key`; `test_did_reference_exact_match.py`). The RDF suites sign the
   dataset but the policy reads the JSON, so context validation
   (`src/openvc/proof/_context_validation.py`, invariant I20) ties the two together
   first. The JCS suites sign the JSON itself. The JCS suites and
@@ -201,18 +206,42 @@ finite input", with no explicit constant.
   unsigned token whose `iss` held a control character escaped `verify_ebsi_badge` as
   a bare `httpx.InvalidURL` (#246). A body httpx cannot decompress is a
   `MalformedRegistryResponse`; before v1.32.1 it escaped as a bare
-  `httpx.DecodingError` (#248). The allow-list says which host answers, not which
-  document: `DidEbsiResolver.resolve` holds the parsed document's `id` (after a
-  `didDocument` wrapper is unwrapped) to the DID it asked for, exactly, and raises
-  `DidResolutionError` otherwise, as `did:web` and `did:webvh` do. A missing, non-string
-  or empty `id` never matches, whatever was asked (not even `resolve("")`); neither
-  does a DID URL (`did:ebsi:zX#key-1`), which resolved by accident before v1.32.4
-  because httpx drops the fragment. Compromise of the registry itself is still out of scope (§10): it can serve a matching `id` with its
-  own key. What the check closes is a misrouted or steered response (a registry bug, a
-  wrong `base`, an unsigned token's `iss` such as `did:ebsi:zA/../did:ebsi:zB`, which
-  httpx turns into a request for B's resource) being accepted as the requested DID's
-  document. The DID is still put into the registry path unvalidated, and the TIR issuer
-  response's own `did` is still not read; both are outside #257 (#257, v1.32.4).
+  `httpx.DecodingError` (#248). The allow-list says which host answers, not which path
+  or which document, and the rest of this paragraph is what stands behind it.
+  **The DID is validated before it is put in a registry URL** (#266, v1.33.0):
+  `DidEbsiResolver.resolve` and `.issuer_record` accept only `did:ebsi:z` plus 22 or 23
+  base58btc characters (the legal-entity form of the EBSI DID method: a version byte and
+  16 random bytes, multibase-encoded), matched in full with an explicit ASCII class, and
+  raise `DidResolutionError` otherwise, before any request. The URL builders in the
+  adapters interpolate the DID verbatim, and `verify_ebsi_badge` takes it from an
+  unsigned token (`iss`) and the trust walk from the registry (`accreditedBy`), so before
+  the check a `/`, a `..` segment (httpx collapses it, so any path on the host was
+  addressable), a `?`, a `#`, a percent escape, another DID method, a whole URL or a
+  60 KB string chose the path and query of a GET to an allow-listed host. A malformed
+  walk subject is `NoTrustedAnchor`, a hostile `accreditedBy` is `AccreditationInvalid`
+  (no request names it), and `verify_ebsi_badge` reports `EbsiVerificationError`. The
+  network-qualified form of the method (`did:ebsi:<network>:z...`) is not accepted: the
+  DID Registry and TIR APIs the plugin reads serve the EBSI blockchain's own form.
+  **The registry document is held to the DID asked** (#257, v1.32.4):
+  `DidEbsiResolver.resolve` compares the parsed document's `id` (after a `didDocument`
+  wrapper is unwrapped) with it, exactly, and raises `DidResolutionError` otherwise, as
+  `did:web` and `did:webvh` do. A missing, non-string or empty `id` never matches.
+  **So is the TIR issuer response** (#267, v1.33.0): `DidEbsiResolver.issuer_record`
+  asks the adapter where the response names its DID (`TirAdapter.response_did`) and
+  compares it with the requested DID, exactly, before the adapter follows any link, so a
+  record that is not about the DID costs one request and no `attributes` page or revision
+  `href` is fetched. Another DID, an absent, `null`, non-string or empty one, and a body
+  that is not a JSON object, are `MalformedRegistryResponse` on every API version: a
+  mismatched body is malformed input, not an untrusted issuer, so `require_trust=False`
+  does not suppress it. Single-level mode verifies no accreditation signature, so this
+  field is what says whose record it is; `IssuerRecord.did` is now the DID the registry
+  named. Compromise of the registry itself is still out of scope (§10): it can serve a
+  matching `id` or `did` with its own key. What the checks close is a misrouted or
+  steered response (a registry bug, a wrong `base`, a cache keyed on less than the URL, an
+  unsigned token's `iss`) being accepted as the requested DID's document or record.
+  **Residual:** the TIR `attributes` URL and each revision `href` are pinned to the
+  listing's origin (#172), not to `.../issuers/{did}/`, and a revision's own `did` is not
+  read; both are outside #266 and #267.
 
 ## 8. Fail-closed invariants catalog
 
@@ -222,7 +251,7 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 
 | # | Invariant | Enforced at | Pinned by |
 |---|---|---|---|
-| I1 | Alg allow-list `{ES256, ES384, EdDSA, Ed25519}` runs **before any crypto**; `alg:none`/RS\*/HS\* rejected | `proof/vc_jwt.py:55,198`; `proof/_jws.py:84` | `test_hostile_input.py`, `test_cose.py:94` |
+| I1 | Alg allow-list `{ES256, ES384, EdDSA, Ed25519}` runs **before any crypto**; `alg:none`/RS\*/HS\* rejected; the value is type-checked first, so a JSON array/object `alg` is a typed `UnsupportedAlgorithm`, not a bare `TypeError` | `proof/vc_jwt.py:65,243`; `proof/_jws.py:89` | `test_hostile_input.py`, `test_cose.py:94`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py` |
 | I2 | ES256/384 JOSE signature is raw R‖S (64/96 bytes), never DER | `keys.py:575-589` | `test_vc_jwt.py` |
 | I3 | PQ (ML-DSA) never in the default allow-list — opt-in only | `proof/vc_jwt.py:135` | `test_mldsa.py` |
 | I4 | DI `verificationMethod` bound to the credential `issuer` DID | `verify.py:628-641` | `test_di_*` |
@@ -235,8 +264,8 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I11 | Status decompression bounded at 16 MiB, incremental | `status/_decompress.py:23,38-66` | `test_status_decompress.py:46-82` |
 | I12 | CBOR depth ≤ 64; JCS depth ≤ 100; duplicate map key rejected | `cbor.py:69,229-232`; `proof/_jcs.py:18` | `test_cbor.py:104,152`; `test_di_jcs.py:388` |
 | I13 | Trust-list XML refuses DOCTYPE (XXE + expansion closed) | `trustlist/parse.py:108-120` | `test_trustlist.py:104,121` |
-| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_did_document_shape_typed.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`), `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_kb_freshness.py`, `test_ebsi_verifier.py` (`test_verify_ebsi_badge_unparseable_attributes_url_is_openvc_error`, `test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request`), `test_ebsi_http.py` |
-| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch. A hostile DID-document shape — valid JSON, wrong structure — served for an unsigned token's own `did:web` issuer used to abort the batch; `parse_did_document` now raises `DidResolutionError` (#219, fixed in v1.32.3) | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`; `test_did_document_shape_typed.py` (`test_verify_many_isolates_every_hostile_document`, `test_verify_many_async_isolates_every_hostile_document`); `test_vc_jwt_numeric_dates.py` (`test_verify_many_isolates_malformed_numeric_date`) |
+| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_did_document_shape_typed.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`), `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_kb_freshness.py`, `test_ebsi_verifier.py` (`test_verify_ebsi_badge_unparseable_attributes_url_is_openvc_error`, `test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request`), `test_ebsi_http.py` |
+| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch. A hostile DID-document shape — valid JSON, wrong structure — served for an unsigned token's own `did:web` issuer used to abort the batch; `parse_did_document` now raises `DidResolutionError` (#219, fixed in v1.32.3) | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`; `test_did_document_shape_typed.py` (`test_verify_many_isolates_every_hostile_document`, `test_verify_many_async_isolates_every_hostile_document`); `test_vc_jwt_numeric_dates.py` (`test_verify_many_isolates_malformed_numeric_date`) |
 | I16 | Hostile deeply-nested input fails closed **pipeline-wide**: every untrusted JSON parse goes through one loader that refuses nesting past **100** (`openvc._json`; 3.14's `json.loads` parses ~116k levels while `repr()` / `==` overflow far sooner), objects handed over already parsed (credential / `vp_token` dicts, DI suite input, injected-fetch DID documents and issuer metadata, RP DCQL) are held to the same bound, the pipeline maps any residual `RecursionError` to a typed error, and SD-JWT `_unpack` / JCS / did:webvh SCID walk stay capped at 100 | `_json.py`; `proof/sd_jwt.py:66,129`; `verify.py`, `aio.py`, `openid4vp.py`, `proof/vc_jwt.py`, `proof/_jws.py`, `proof/_verify_common.py`, `jwe.py`, `did/base.py`, `did/did_jwk.py`, `did/did_webvh.py`, `jwt_vc_issuer.py`, `fetch.py`, `resolvers.py` | `test_hostile_input.py`, `test_did_webvh.py`, `test_typed_error_deep_nesting.py`, `test_typed_error_vc_shape.py` (`test_deeply_nested_cryptosuite_is_typed`) |
 | I17 | An OID4VCI key proof is pinned to `typ: openid4vci-proof+jwt` and must carry **exactly one** of `jwk`/`kid`/`x5c`/`trust_chain`, with the key bound to the header `alg`'s (kty, crv) | `openid4vci.py:676,752,855` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
 | I18 | Key-proof `iat` freshness is enforced in **both** directions (stale *and* future-dated, non-finite rejected), and the nonce is consumed **exactly once per request, after every signature verifies** | `openid4vci.py:915,917,655` | `test_openid4vci.py`, `test_openid4vci_vectors.py`, `test_sd_jwt_kb_freshness.py` (the freshness helper, `check_iat_freshness`, is shared with the SD-JWT KB-JWT) |
@@ -323,7 +352,12 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   `disclosable` (digests a caller writes into `claims` itself are signed as given).
   `verify()` rejects (`SdJwtError`) a
   presentation that presents such a disclosure, or one of its sub-claims, and a
-  `dc+sd-jwt` with no `vct` (`ClaimsInvalid`). What remains is the **withheld**
+  `dc+sd-jwt` that has no `vct` (`ClaimsInvalid`, whatever its `@context`, #272:
+  draft-19 §2.2.1 makes that typ mean the SD-JWT VC rules, so a VCDM `@context` does
+  not waive the REQUIRED `vct`). A `vc+sd-jwt` is accepted only with a VCDM
+  `@context`, so without one it is an `SdJwtError`, and the typ alone never makes a
+  payload VCDM (#264).
+  What remains is the **withheld**
   disclosure from a third-party issuer: a withheld digest is indistinguishable
   from a decoy (RFC 9901 §9.7), so no verifier can see it. Pinned as a limitation
   in `tests/test_sdjwt_non_disclosable.py`. `credentialSchema` is not refused:

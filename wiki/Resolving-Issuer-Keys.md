@@ -53,9 +53,15 @@ the one before it, so resolving means **verifying history** — openvc replays t
 fail-closed: the **SCID** (the identifier is the hash of the genesis entry), the
 **entryHash chain** (an inserted / reordered / tampered entry breaks it), each entry's
 **`eddsa-jcs-2022` proof** by an authorized `updateKey`, and **key pre-rotation** (a
-rotated-in key must have been pre-committed). A deactivated log fails closed. It is
-registered in the default resolver, so no code change is needed to verify a credential
-from a `did:webvh` issuer — or resolve one directly:
+rotated-in key must have been pre-committed). A deactivated log fails closed. The resolved
+document is the final log state itself: its `id` must equal the requested DID, and a
+`didDocument` member in it is refused with `DidWebvhError` rather than unwrapped (the spec
+defines no such member, and unwrapping would return a document other than the one whose
+`id` was checked); on a deactivated log whose last state is wrapped, the error names the
+wrapper. A `did:web` document or an EBSI registry response may still carry the
+`didDocument` envelope. The `did:webvh` resolver is registered in the default resolver, so
+no code change is needed to verify a credential from a `did:webvh` issuer — or resolve one
+directly:
 
 <!-- docs: no-run -->
 ```python
@@ -97,6 +103,33 @@ In `verify_many` the credential fails with a typed error and the rest of the bat
 verifies: `KeyResolutionFailed` on the JOSE lanes and on `verify_many_async`,
 `KeyResolutionError` (a `ProofError`) on the synchronous Data Integrity lane. In both
 cases the cause is the `DidResolutionError`.
+
+### How a proof's key and purpose are matched
+
+A Data Integrity proof names its key with a full DID URL (`verificationMethod`), and its
+`proofPurpose` (`assertionMethod` for a credential, `authentication` for a presentation)
+must be one the document grants that key. openvc compares method ids and relationship
+entries as absolute DID URLs (DID Core 1.0 §3.2.2, CID 1.0 §3.3). A `did:` URL counts as
+written. A `#key-1` is resolved against the document `id`, when that `id` is a DID, so
+`#key-1` in `did:web:issuer.example` is `did:web:issuer.example#key-1`. Anything else
+resolves to nothing: a bare `key-1`, a `?versionId=…` or `/path` reference, an `https:`
+URL. The proof's `verificationMethod` must equal the `id` of exactly one method, else
+`KeyResolutionError`. If the document declares the relationship, one of its entries (a
+string, or the `id` of an embedded method) must resolve to that same `id`, compared as a
+case-sensitive string, else `ProofPurposeMismatch`. An entry for another DID, another
+version or a path grants nothing, even when its fragment matches. A relationship the
+document does not declare at all is not enforced. The JOSE lanes (VC-JWT, SD-JWT VC)
+look the key up by the JWS `kid` and still accept a bare or `#`-relative `kid`, since a
+`kid` is only a hint; they check no relationship.
+
+A `#key-1` resolves only against a document `id` that is a DID by the DID Core 1.0 §3.1
+syntax: `did:`, a method name of lower-case letters and digits, and a method-specific id
+of letters, digits, `.`, `-`, `_`, `:` and valid `%XX` escapes. `did:web` fetches some
+DIDs that fail it, such as a path segment with `~`, `+`, `!`, `@` or an invalid `%`-escape
+(`did:web:example.com:~alice`). Such a `did:web` must use absolute method ids and
+relationship entries (`did:web:example.com:~alice#key-1`): a `#key-1` in its document
+selects and grants nothing, so a proof fails closed with `KeyResolutionError` (or
+`ProofPurposeMismatch` when only the entry is relative).
 
 ## What the SSRF guard guarantees
 

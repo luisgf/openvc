@@ -15,6 +15,7 @@ import pytest
 from openvc.did.base import DidResolutionError
 from openvc.errors import OpenvcError
 from openvc.keys import P256SigningKey
+from openvc.multibase import b58btc_encode
 from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.status import encode_bitstring, set_status_bit
 from openvc_ebsi.http import HttpNotFound
@@ -49,9 +50,19 @@ def _acc_status_vc(*set_indices: int) -> dict:
 
 
 BASE = "https://api-pilot.ebsi.eu"
-LEAF = "did:ebsi:zLeafIssuerAAAAAAAAAA"
-MID = "did:ebsi:zMidTaoBBBBBBBBBBBBBB"
-ROOT = "did:ebsi:zRootTaoCCCCCCCCCCCC"
+
+
+def _did(seed: int) -> str:
+    # A well-formed did:ebsi identifier (#266): `z` + base58btc(version byte 1 || 16 bytes).
+    # The resolver refuses anything else before it builds a registry URL, so a placeholder
+    # such as `did:ebsi:zLeafIssuerAAAA` (`I`, `l`, `O`, `0` are not base58) no longer resolves.
+    return "did:ebsi:z" + b58btc_encode(bytes([1]) + bytes([seed]) * 16)
+
+
+LEAF = _did(0xA1)
+MID = _did(0xB2)
+ROOT = _did(0xC3)
+OTHER = _did(0xD4)                          # a well-formed DID that is nowhere in the chain
 TYPES = ("OpenBadgeCredential",)
 
 
@@ -103,7 +114,8 @@ def _tir_routes(base_issuer_url: str, body_token: str, tag: str, *,
     attrs = f"{base_issuer_url}/attributes"
     rev = f"{attrs}/{tag}/revisions/r1"
     return {
-        base_issuer_url: {"hasAttributes": True, "attributes": attrs},
+        # the recorded registry sends `did` (#267: the resolver refuses a response without it)
+        base_issuer_url: {"did": subject, "hasAttributes": True, "attributes": attrs},
         attrs: {"items": [{"id": tag, "href": rev}]},
         # v5 nests the signed body and the role metadata under `attribute`.
         rev: {"did": subject, "attribute": {
@@ -171,7 +183,7 @@ def test_chain_no_anchor_reached():
     c = build_chain()
     with pytest.raises(NoTrustedAnchor):
         verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
-                           proof_suite=c.suite, anchors={"did:ebsi:zSomeoneElse"})
+                           proof_suite=c.suite, anchors={OTHER})
 
 
 def test_chain_leaf_is_anchor_is_trivially_trusted():
@@ -196,7 +208,7 @@ _ABSENT = object()                          # the accreditor's document has no `
 
 
 @pytest.mark.parametrize("doc_id", [
-    pytest.param("did:ebsi:zSomebodyElse", id="another-did"),
+    pytest.param(OTHER, id="another-did"),
     pytest.param(None, id="null"),
     pytest.param("", id="empty"),
     pytest.param(_ABSENT, id="absent"),
@@ -244,11 +256,11 @@ def test_chain_accreditation_failure_messages_are_bounded(case):
     big_sk = P256SigningKey.generate(kid=f"{BIG}#key-1")
     if case == "issuer":           # signed by BIG, but the TIR says MID accredited the leaf
         signer, issuer, tao = big_sk, BIG, MID
-    elif case == "accreditor":     # BIG accredited the leaf, and BIG's document is not BIG's
+    elif case == "accreditor":     # BIG accredited the leaf; BIG is not a did:ebsi identifier
         signer, issuer, tao = big_sk, BIG, BIG
-        doc = _did_doc(BIG, big_sk)
-        doc["didDocument"]["id"] = "did:ebsi:zSomebodyElse"
-        c.routes[f"{BASE}/did-registry/v5/identifiers/{BIG}"] = doc
+        # (before #266 this case served BIG a document whose `id` was another DID; BIG is
+        # now refused by syntax before any request, so the document is never asked for)
+        c.routes[f"{BASE}/did-registry/v5/identifiers/{BIG}"] = _did_doc(BIG, big_sk)
     else:                          # MID accredited the leaf, under a `kid` MID's document lacks
         signer, issuer, tao = P256SigningKey.generate(kid="k" * 60_000), MID, MID
     token = _accreditation(c.suite, signer, subject=LEAF, accredited_by=issuer,
@@ -265,7 +277,9 @@ def test_chain_accreditation_failure_messages_are_bounded(case):
         assert str(exc.value) == f"accreditation issuer {shown} != accreditedBy {MID!r}"
     elif case == "accreditor":
         assert type(exc.value.__cause__) is DidResolutionError
-        assert str(exc.value).startswith(f"cannot resolve accreditor {shown}: document id ")
+        assert str(exc.value) == (
+            f"cannot resolve accreditor {shown}: not a did:ebsi identifier: {shown}")
+        assert all(BIG not in url for url in c.fetch.calls)        # BIG was never requested
     else:
         assert str(exc.value) == (f"no verification method {('k' * 200)!r}... (60000 chars) "
                                   f"for accreditor {MID!r}")
@@ -298,13 +312,13 @@ def test_verify_badge_untrusted_anchor_raises():
     c = build_chain()
     with pytest.raises(NoTrustedAnchor):
         verify_ebsi_badge(c.token, resolver=c.resolver, proof_suite=c.suite,
-                          trust_anchors={"did:ebsi:zNotTheRoot"})
+                          trust_anchors={OTHER})
 
 
 def test_verify_badge_untrusted_anchor_optional_returns_untrusted():
     c = build_chain()
     result = verify_ebsi_badge(c.token, resolver=c.resolver, proof_suite=c.suite,
-                               trust_anchors={"did:ebsi:zNotTheRoot"},
+                               trust_anchors={OTHER},
                                require_trust=False)
     assert result.trusted is False
     assert result.chain is None

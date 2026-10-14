@@ -769,6 +769,14 @@ def _verify_sd_jwt_vc(
         raise VpTokenMalformed(
             f"Presentation for {query_id!r} did not verify as an SD-JWT VC "
             f"(got {result.format!r})")
+    # The pipeline names every SD-JWT "sd-jwt-vc", a W3C VCDM credential secured as
+    # `vc+sd-jwt` (VC-JOSE-COSE) included. This format is the IETF SD-JWT VC, whose issuer
+    # JWT is typed `dc+sd-jwt` (draft-19 §2.2.1), the same string as the format (#272).
+    issuer_typ = getattr(result.raw, "typ", None)
+    if issuer_typ != FORMAT_SD_JWT_VC:
+        raise VpTokenMalformed(
+            f"a {FORMAT_SD_JWT_VC} Presentation for {query_id!r} must be an IETF SD-JWT VC "
+            f"(issuer JWT typ {FORMAT_SD_JWT_VC!r}, got {safe_repr(issuer_typ)})")
     _check_vct(query_id, vct_values, getattr(result.raw, "vct", None))
     holder = result.subject
     return VerifiedPresentation(

@@ -176,18 +176,62 @@ def test_vcdm_selectively_disclosed_issuer_is_reconciled(run, form):
         run(form(_mint(_vcdm(issuer=UNIVERSITY), disclose=["issuer"])), None)
 
 
-def test_vcdm_issuer_conflict_is_rejected_when_typed_only_by_vc_sd_jwt(run, form):
-    # VCDM by the second signal (vc+sd-jwt, no vct, no @context): reconciled all the same.
+def test_vc_sd_jwt_without_a_vcdm_context_is_refused_before_reconciliation(run, form):
+    # #264: `vc+sd-jwt` is the W3C VCDM typ (VC-JOSE-COSE §6.1.3) and the typ alone no
+    # longer makes a payload VCDM, so a vct-less, @context-less token is refused outright
+    # (it used to be reconciled as VCDM, and the issuer conflict below was what rejected it).
     doc = _vcdm(issuer=UNIVERSITY)
     del doc["@context"]
-    with pytest.raises(ClaimsInvalid, match="issuer"):
+    with pytest.raises(SdJwtError, match="needs a W3C VCDM @context"):
         run(form(_mint(doc)), None)
 
 
 def test_vcdm_issuer_conflict_is_rejected_under_a_dc_sd_jwt_typ(run, form):
-    # VCDM by its @context, whatever the typ says.
-    with pytest.raises(ClaimsInvalid, match="issuer"):
+    # VCDM by its @context, whatever the typ says. A dc+sd-jwt needs a vct whatever else it
+    # carries (#272), so this one has it: the conflict, not a missing vct, is what fails.
+    with pytest.raises(ClaimsInvalid, match="!= issuer"):
+        run(form(_mint(_vcdm(issuer=UNIVERSITY, vct=VCT), typ="dc+sd-jwt")), None)
+
+
+def test_a_vct_less_dc_sd_jwt_is_refused_for_its_vct_before_the_conflict_is_read(run, form):
+    # The same payload without the vct fails the IETF rule first (#272): what is checked
+    # is the missing vct, not the issuer conflict, which is never reached.
+    with pytest.raises(ClaimsInvalid, match="needs a non-empty string vct"):
         run(form(_mint(_vcdm(issuer=UNIVERSITY), typ="dc+sd-jwt")), None)
+
+
+def _vct_withheld(claims):
+    # the issuer made vct a disclosure and the holder presents the token without it
+    return _without(_mint(claims, typ="vc+sd-jwt", disclose=["vct"]), "vct")
+
+
+@pytest.mark.parametrize("make", [
+    lambda: _mint(_ietf(), typ="vc+sd-jwt"),                         # pre-draft-06 issuer
+    lambda: _mint({"iss": DID, "member_name": "Ada"}, typ="vc+sd-jwt"),
+    lambda: _mint(_ietf(vct=""), typ="vc+sd-jwt"),
+    lambda: _vct_withheld(_ietf()),
+], ids=["with-vct", "no-vct", "empty-vct", "vct-withheld"])
+def test_vc_sd_jwt_typ_refuses_an_ietf_payload(run, form, make):
+    # #264: draft-ietf-oauth-sd-jwt-vc-19 dropped the transitional acceptance of
+    # `vc+sd-jwt`; an IETF SD-JWT VC is typed `dc+sd-jwt`. Neither a vct-bearing payload
+    # nor one that reads as vct-less (the old typ-only VCDM signal, which skipped the
+    # REQUIRED vct) gets through on the W3C typ.
+    with pytest.raises(SdJwtError, match="needs a W3C VCDM @context"):
+        run(form(make()), None)
+
+
+def test_vc_sd_jwt_typ_refusal_is_the_suites():
+    # SdJwtVcProofSuite.verify itself, not only the pipelines.
+    with pytest.raises(SdJwtError, match="'dc\\+sd-jwt'"):
+        SdJwtVcProofSuite().verify(_mint(_ietf(), typ="vc+sd-jwt"),
+                                   public_key_jwk=KEY.public_jwk())
+
+
+@pytest.mark.parametrize("extra", [{}, {"vct": VCT}], ids=["no-vct", "with-vct"])
+def test_vc_sd_jwt_with_a_vcdm_context_still_verifies(run, form, extra):
+    # The W3C typ with a VCDM @context is the case it exists for, vct or not.
+    result = run(form(_mint(_vcdm(**extra))), None)
+    assert result.raw.vcdm is True
 
 
 def test_vcdm_jti_conflicting_with_id_is_rejected(run, form):
@@ -277,11 +321,10 @@ def test_vcdm_expected_types_present_verify(run, form):
 # IETF SD-JWT VC — typed by vct; its claim names are its own vocabulary
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("typ", ["dc+sd-jwt", "vc+sd-jwt"], ids=["dc", "legacy-vc"])
-def test_ietf_rejects_a_policy_that_sets_expected_types(run, typ):
+def test_ietf_rejects_a_policy_that_sets_expected_types(run):
     # A pin the lane cannot check is a rejection, not a silent pass: point at vct.
     with pytest.raises(TypeMismatch, match="expected_vct"):
-        run(_mint(_ietf(), typ=typ), _types("ExampleAlumniCredential"))
+        run(_mint(_ietf(), typ="dc+sd-jwt"), _types("ExampleAlumniCredential"))
 
 
 def test_ietf_type_claim_does_not_satisfy_expected_types(run):
@@ -319,15 +362,14 @@ def test_ietf_without_a_type_pin_still_verifies(run, expected):
     assert result.raw.vct == VCT
 
 
-@pytest.mark.parametrize("typ", ["dc+sd-jwt", "vc+sd-jwt"], ids=["dc", "legacy-vc"])
-def test_ietf_claims_named_like_vcdm_properties_are_not_reconciled(run, typ):
+def test_ietf_claims_named_like_vcdm_properties_are_not_reconciled(run):
     # An IETF SD-JWT VC may legitimately carry an `issuer` (say, the authority behind an
     # underlying document) that is not its `iss`. Unchanged: it verifies, and the
     # authenticated issuer is result.issuer — the verified iss — never the claim.
     claims = _ietf(issuer=UNIVERSITY, id="urn:uuid:other", jti="urn:uuid:jti",
                    sub="did:example:alice",
                    credentialSubject={"id": "did:example:mallory"})
-    result = run(_mint(claims, typ=typ), None)
+    result = run(_mint(claims, typ="dc+sd-jwt"), None)
     assert result.issuer == DID
     assert result.credential["issuer"] == UNIVERSITY
 
@@ -523,9 +565,9 @@ def test_string_type_pin_matches_the_whole_type(run):
 
 @pytest.mark.parametrize("sd_jwt, vcdm", [
     (_mint(_vcdm()), True),
+    (_mint(_vcdm(vct=VCT)), True),               # the @context decides, vct or not
     (_mint(_ietf(), typ="dc+sd-jwt"), False),
-    (_mint(_ietf(), typ="vc+sd-jwt"), False),
-], ids=["vcdm", "ietf-dc", "ietf-legacy-vc"])
+], ids=["vcdm", "vcdm-with-vct", "ietf-dc"])
 def test_vcdm_flag_is_the_suites_verdict(run, sd_jwt, vcdm):
     assert SdJwtVcProofSuite().verify(sd_jwt, public_key_jwk=KEY.public_jwk()).vcdm is vcdm
     assert run(sd_jwt, None).raw.vcdm is vcdm
