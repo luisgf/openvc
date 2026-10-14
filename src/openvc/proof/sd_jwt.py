@@ -332,6 +332,25 @@ def _declares_vcdm(claims: Mapping[str, Any]) -> bool:
     return any(isinstance(entry, str) and entry in _VCDM_CONTEXTS for entry in entries)
 
 
+def _declares_credential(claims: Mapping[str, Any]) -> bool:
+    """Whether a processed VCDM payload says it is a *credential*: its ``type`` (a string or
+    an array) includes ``VerifiableCredential`` (VCDM 2.0 §4.5) and not
+    ``VerifiablePresentation`` (§4.13).
+
+    Read only for an issuer JWT with no ``typ``. The ``typ`` is what tells a credential
+    from a presentation, and a VCDM 2.0 presentation secured with SD-JWT carries the same
+    ``@context`` as a credential, with no ``vp`` claim to ban: without this, a holder-signed
+    presentation with no ``typ`` would verify as a credential issued by the holder (#293,
+    found reviewing #292, before any release). It is a positive test, so a ``type`` that
+    is absent or withheld (the Recommendation's own Example 4 makes it selectively
+    disclosable) is refused, not waved through, and only the compact term counts: a full
+    IRI or a prefixed name is refused too."""
+    declared = claims.get("type")
+    names = {entry for entry in (declared if isinstance(declared, list) else [declared])
+             if isinstance(entry, str)}
+    return "VerifiableCredential" in names and "VerifiablePresentation" not in names
+
+
 # --------------------------------------------------------------------------- #
 # proof suite
 # --------------------------------------------------------------------------- #
@@ -650,6 +669,12 @@ class SdJwtVcProofSuite:
             raise SdJwtError(
                 "issuer JWT without a typ must not carry a `vc` or `vp` claim "
                 "(VC-JOSE-COSE §3.1.3)")
+        if typ is None and not _declares_credential(unpacked):
+            # No `typ` to tell a credential from a presentation, so the payload has to: a
+            # VCDM 2.0 presentation has the same `@context` and no `vp` claim to ban.
+            raise SdJwtError(
+                "issuer JWT without a typ needs a `type` that includes VerifiableCredential "
+                "and not VerifiablePresentation (VCDM 2.0 §4.5, §4.13)")
         vct = unpacked.get("vct")
         if typ == _ISSUER_TYP and not (isinstance(vct, str) and vct):
             # draft-19 §2.2.2.3: `vct` is REQUIRED and never disclosable, so a withheld
