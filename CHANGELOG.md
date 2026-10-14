@@ -86,11 +86,12 @@ All notable changes to **openvc** are documented here. The format follows
   and the `contexts` list are shallow-copied, the checks read the copy, and the copy is what
   is emitted (nested objects, such as an `image` member or an inline context, are still the
   caller's), so a `dict` or `list` subclass cannot be checked as one thing and signed as another.
-  A container that cannot be copied is a `StatusListError`: a `list` subclass whose
-  `__iter__` raises, or a `dict` subclass that overrides `__iter__` and whose `keys()`
-  raises. Any other `dict` subclass is copied from the entries it stores (an override of
-  `keys()` alone, of `__getitem__` alone or of `__iter__` alone is never consulted), and
-  what it holds is what is checked and emitted. The same holds for a string:
+  A container that cannot be copied is a `StatusListError`. `dict()` copies a `dict`
+  subclass straight from its storage unless it overrides `__iter__` (an override of
+  `keys()` alone or of `__getitem__` alone is never consulted); one that does is read
+  through its own `keys()` and `__getitem__`, which may raise or answer differently from
+  the storage, and a `list` is copied through its `__iter__`. Either way the copy is what
+  is checked and emitted. The same holds for a string:
   every string the builders test is copied to an exact `str` first (`plain_str` in
   `status/_index.py`, the counterpart of `plain_int`) and the copy is what is emitted, so a
   `str` subclass whose `__len__`, `__bool__`, `__getitem__`, `__eq__` or `__hash__` raises
@@ -161,14 +162,15 @@ That is a separate question; this only stops the builder from producing such a l
   the builder accepts is JSON and is accepted by the VC-JWT and `eddsa-jcs-2022` pipelines
   with a registry that serves the key for any `did:` string. Container subclasses (a
   `dict` / `list` that lies through its accessors or whose iteration raises, a `dict` that
-  overrides `keys()`, `__iter__` or `__getitem__` alone and is copied from its storage, an
-  `issuer` key whose hash hides an `@id`), `str` subclasses (every way a string reaches an
-  artefact, across this change's six parameters and #250's five: a `__len__`, `__bool__`,
+  overrides `keys()`, `__iter__` or `__getitem__` alone and is copied from its storage, one
+  that overrides `__iter__` and is read through its `keys()` and `__getitem__`, an
+  `issuer` key whose hash hides an `@id`), `str` subclasses (the eleven ways a string
+  reaches an artefact, six of this change and five of #250's: a `__len__`, `__bool__`,
   `__getitem__` or `__eq__` / `__hash__` that raises, one that lies about the characters,
   an empty string that claims a length, a `contexts` entry that claims to be the VC 2.0
   context) and the 60 KB message bound are covered.
   Mutation-checked in scratch copies, with `openvc.__file__` asserted inside each: against
-  the `ff59357` tree 243 of the 295 cases fail (the 52 that pass are the controls), and
+  the `ff59357` tree 244 of the 296 cases fail (the 52 that pass are the controls), and
   against the PR head before this round (`fb97dae`) 74 do (the string and key cases). On
   the fixed code, 38 mutants of `issue.py` and `_index.py`: 35 are killed, by 1 to 74
   cases each (a falsy `contexts` made the default again fails 11, decision (b) 18, `subject_id or …`

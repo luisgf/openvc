@@ -126,10 +126,11 @@ def _snapshot(value: Any, kind: type, *, field: str) -> Any:
     """``kind(value)`` (``dict`` or ``list``): the plain container the checks read and the
     artefact carries, so the value checked is the value emitted and the artefact does not
     alias the caller's object. A container that cannot be copied is a typed error, not the
-    exception it raised: a ``list`` subclass whose ``__iter__`` raises, or a ``dict``
-    subclass that overrides ``__iter__`` and whose ``keys()`` raises. Any other ``dict``
-    subclass is copied from the entries it stores (an override of ``keys()`` alone, of
-    ``__getitem__`` alone or of ``__iter__`` alone is never consulted)."""
+    exception it raised. ``dict()`` copies a ``dict`` subclass straight from its storage
+    unless it overrides ``__iter__`` (an override of ``keys()`` alone or of ``__getitem__``
+    alone is never consulted); one that does is read through its own ``keys()`` and
+    ``__getitem__``, which may raise or answer differently from the storage. A ``list`` is
+    copied through its ``__iter__``. Either way the copy is what is checked and emitted."""
     try:
         return kind(value)
     except Exception as exc:

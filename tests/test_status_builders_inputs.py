@@ -538,6 +538,45 @@ def test_a_dict_subclass_that_overrides_one_accessor_is_copied_from_its_storage(
     assert type(vc["issuer"]) is dict and vc["issuer"] == {"id": DID, "name": "x"}
 
 
+class _IterGetitemRaiseDict(dict):
+    """Overrides ``__iter__`` (delegating) and ``__getitem__``: ``dict()`` then reads it
+    through its accessors, and the first of them raises."""
+
+    def __iter__(self):
+        return super().__iter__()
+
+    def __getitem__(self, key):
+        raise RuntimeError("__getitem__ is broken")
+
+
+class _IterGetitemLiesDict(dict):
+    def __iter__(self):
+        return super().__iter__()
+
+    def __getitem__(self, key):
+        return DID if key == "id" else super().__getitem__(key)
+
+
+class _IterKeysHidesDict(dict):
+    def __iter__(self):
+        return super().__iter__()
+
+    def keys(self):
+        return [key for key in super().keys() if key != "@id"]
+
+
+def test_a_dict_subclass_that_overrides_iter_is_read_through_its_accessors():
+    # the rule in the docstring: an ``__iter__`` override sends ``dict()`` through the
+    # subclass's own ``keys()`` / ``__getitem__``; a raise there is typed, and whatever the
+    # copy returns is what is checked AND emitted (an ``@id`` that ``keys()`` hides is
+    # neither seen nor written)
+    refused(lambda: cred_unsigned(issuer=_IterGetitemRaiseDict(id=DID)), names="issuer")
+    lying = cred(issuer=_IterGetitemLiesDict({"id": "did:example:stored", "name": "x"}))
+    assert type(lying["issuer"]) is dict and lying["issuer"] == {"id": DID, "name": "x"}
+    hidden = cred(issuer=_IterKeysHidesDict({"id": DID, "@id": "did:other"}))
+    assert hidden["issuer"] == {"id": DID}
+
+
 class _HiddenKey(str):
     """A key whose hash is not its characters': ``"@id" in issuer`` cannot find it, and the
     encoder writes it as ``@id`` all the same."""
