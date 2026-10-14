@@ -263,9 +263,14 @@ def verify_vp_token(
     and every context the credential cites — only the VCDM 2.0 context is bundled. A
     nested SD-JWT never matches. A query with no ``meta``, or whose ``meta`` lacks the
     key, puts no constraint on the type. A malformed constraint is
-    :class:`VpTokenMalformed`, for all three formats and before that query's
-    Presentation is verified: a ``meta`` that is not a JSON object, or a constraint
-    that is present but ``null`` or the wrong shape, never reads as "no constraint".
+    :class:`VpTokenMalformed`, for all three formats and before any Presentation is
+    verified: a ``meta`` that is not a JSON object, or a constraint that is present
+    but ``null`` or the wrong shape, never reads as "no constraint". Every query is
+    checked, answered or not (a query the wallet left out under ``credential_sets``
+    included), so one malformed alternative fails on every response, not only on the
+    day a wallet answers it. A format openvc does not know, and the keys of another
+    format, are not read. A well-formed ``type_values`` needs ``pyld`` only when its
+    query is answered.
     Like ``vct_values``, the check selects the right credential type, not a trusted
     issuer: check each result's ``issuer`` yourself.
 
@@ -450,8 +455,24 @@ def _index_dcql(dcql_query: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
             raise VpTokenMalformed(
                 f"Credential Query {query_id!r}: require_cryptographic_holder_binding "
                 f"must be a boolean")
+        _check_constraint(query_id, entry, fmt)
         queries[query_id] = entry
     return queries
+
+
+def _check_constraint(query_id: str, query: Mapping[str, Any], fmt: str) -> None:
+    # Validate a Credential Query's type constraint (its ``meta``) up front, for EVERY
+    # query, answered or not (#254), so a malformed one fails the same way whatever the
+    # wallet sent and whichever alternative of ``credential_sets`` it answered. The
+    # readers are pure and cheap: the verifiers re-read the constraint when they use it.
+    # A format openvc does not know is left alone (its ``meta`` is not read, as before),
+    # and so are the keys of another format: each format reads only its own.
+    if fmt == FORMAT_SD_JWT_VC:
+        _vct_values(query_id, query)
+    elif fmt == FORMAT_MSO_MDOC:
+        _mdoc_doctype_value(query_id, query)
+    elif fmt in (FORMAT_JWT_VC, FORMAT_LDP_VC):
+        _type_values(query_id, query)
 
 
 def _check_completeness(
@@ -552,11 +573,15 @@ def _verify_one(
             query_id, query, presentation, nonce=nonce, expected_origins=expected_origins,
             trust_anchors=trust_anchors, now=now, leeway_s=leeway_s,
             jwk_thumbprint=mdoc_jwk_thumbprint)
-    # DCQL meta.type_values (the W3C formats) and meta.vct_values (dc+sd-jwt) are parsed
-    # before anything is verified, so a malformed constraint fails the same way whatever
-    # was presented.
+    # DCQL meta.type_values (the W3C formats) and meta.vct_values (dc+sd-jwt) are read
+    # before anything is verified. _index_dcql has already validated every query's
+    # constraint, answered or not (#254), so a malformed one never reaches this point:
+    # these are re-reads of a checked value, kept next to their use. What is new here is
+    # the pyld requirement, which only a query that is actually answered has to meet.
     type_values = (_type_values(query_id, query)
                    if fmt in (FORMAT_JWT_VC, FORMAT_LDP_VC) else None)
+    if type_values is not None:
+        _require_pyld(query_id)
     vct_values = _vct_values(query_id, query) if fmt == FORMAT_SD_JWT_VC else None
     # The audience is the client_id (redirect flow) or the DC-API calling origin.
     aud = _effective_audience(fmt, presentation, client_id, accepted_auds)
@@ -665,6 +690,7 @@ def _verify_mso_mdoc(
         raise VpTokenMalformed(
             f"an {FORMAT_MSO_MDOC} Presentation for {query_id!r} must be a base64url "
             f"string (the DeviceResponse)")
+    # Re-read of a constraint _index_dcql already validated for every query (#254).
     expected_doc_type = _mdoc_doctype_value(query_id, query)
     device_response = _b64url_to_bytes(query_id, presentation)
 
@@ -1030,8 +1056,14 @@ def _type_values(query_id: str, query: Mapping[str, Any]) -> list[list[str]] | N
         raise VpTokenMalformed(
             f"Credential Query {query_id!r}: meta.type_values must be a non-empty array of "
             f"non-empty arrays of type IRIs")
+    return type_values
+
+
+def _require_pyld(query_id: str) -> None:
     # The match runs on JSON-LD expanded types; without a processor it cannot be decided,
-    # so say so before verifying rather than accept an unchecked constraint.
+    # so say so before verifying rather than accept an unchecked constraint. Kept apart
+    # from the shape check in _type_values (#254): that one runs on every query up front,
+    # and a well-formed type_values on a query the wallet did not answer needs no pyld.
     try:
         from pyld import jsonld  # noqa: F401
     except ImportError as exc:
@@ -1039,7 +1071,6 @@ def _type_values(query_id: str, query: Mapping[str, Any]) -> list[list[str]] | N
             f"Credential Query {query_id!r}: matching meta.type_values expands each "
             f"credential's types with JSON-LD, which needs pyld: "
             f"pip install 'openvc-core[data-integrity]'") from exc
-    return type_values
 
 
 def _check_type_values(
