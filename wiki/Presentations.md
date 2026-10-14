@@ -149,11 +149,12 @@ is a non-empty string and would otherwise read as `true`.
 
 **The `dc+sd-jwt` format is the IETF SD-JWT VC, and only it.** The lane requires the
 issuer JWT `typ` to be `dc+sd-jwt` (draft-ietf-oauth-sd-jwt-vc-19 §2.2.1), the same
-string as the format. A Presentation whose issuer JWT is typed otherwise raises
-`VpTokenMalformed`, naming the query and the `typ` it got. So a W3C VCDM credential
-secured as `vc+sd-jwt` ([VC-JOSE-COSE](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt-vcsd-jwt))
-does not answer a `dc+sd-jwt` query, whatever `meta.vct_values` says, or whether it
-sets any. Before 1.33.0 it did, reported as `format='dc+sd-jwt'`, because the pipeline
+string as the format. A Presentation whose issuer JWT is typed otherwise, or not typed
+at all, raises `VpTokenMalformed`, naming the query and the `typ` it got (`None` when
+there is none). So a W3C VCDM credential secured as `vc+sd-jwt`, as the draft-era
+`vc+ld+json+sd-jwt`, or with no `typ`
+([VC-JOSE-COSE](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt-vcsd-jwt)) does not answer
+a `dc+sd-jwt` query, whatever `meta.vct_values` says, or whether it sets any. Before 1.33.0 it did, reported as `format='dc+sd-jwt'`, because the pipeline
 calls every SD-JWT `sd-jwt-vc` and the lane did not look at the typ (#272). A
 `dc+sd-jwt` token needs a `vct` in any case ([SD-JWT VC](SD-JWT-VC)).
 

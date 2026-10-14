@@ -69,12 +69,20 @@ DEFAULT_LEEWAY_S = 60
 _HASHES = {"sha-256": hashlib.sha256, "sha-384": hashlib.sha384, "sha-512": hashlib.sha512}
 _DEFAULT_HASH = "sha-256"
 _ISSUER_TYP = "dc+sd-jwt"                       # an IETF SD-JWT VC (draft-19 §2.2.1)
-_ACCEPTED_ISSUER_TYP = frozenset({"dc+sd-jwt", "vc+sd-jwt"})
 _KB_TYP = "kb+jwt"
 # W3C VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload, and verify() accepts
 # it only for one: a payload with a VCDM `@context` (#264). The IETF drafts used it before
 # draft-06 renamed it, but draft-19 dropped the transitional acceptance of it.
 _W3C_TYP = "vc+sd-jwt"
+# The name the W3C Working Drafts of August-September 2023 gave that media type
+# (`application/vc+ld+json+sd-jwt`) before the rename. The Recommendation's Example 21 still
+# carries it, and issuers built on those drafts emit it (#289). Exact match, same rule.
+_W3C_DRAFT_TYP = "vc+ld+json+sd-jwt"
+_W3C_TYPS = frozenset({_W3C_TYP, _W3C_DRAFT_TYP})
+# The issuer JWT `typ` values verify() accepts. An absent `typ` is accepted too, for a VCDM
+# payload only (VC-JOSE-COSE §3.2.1 makes it a SHOULD, and the Recommendation's Examples 4 and 5
+# omit it, #288); a present one must be in this closed set.
+_ACCEPTED_ISSUER_TYP = frozenset({_ISSUER_TYP}) | _W3C_TYPS
 _VCDM_CONTEXTS = frozenset({
     "https://www.w3.org/ns/credentials/v2",            # VCDM 2.0
     "https://www.w3.org/2018/credentials/v1",          # VCDM 1.1
@@ -275,8 +283,10 @@ class VerifiedSdJwt:
     # the payload is a W3C VCDM credential (a VCDM ``@context``, see ``_declares_vcdm``),
     # whose validity window and issuer / id / subject consistency the suite enforced
     vcdm: bool = False
-    # the verified issuer JWT ``typ``: ``dc+sd-jwt`` (an IETF SD-JWT VC, with a ``vct``)
-    # or ``vc+sd-jwt`` (a W3C VCDM payload, VC-JOSE-COSE). None when not set by verify().
+    # the verified issuer JWT ``typ``: ``dc+sd-jwt`` (an IETF SD-JWT VC, with a ``vct``),
+    # ``vc+sd-jwt`` or the draft-era ``vc+ld+json+sd-jwt`` (a W3C VCDM payload,
+    # VC-JOSE-COSE), or None when the issuer JWT carried no ``typ`` (a SHOULD there; accepted
+    # for a VCDM payload only) or the object was not built by verify().
     typ: str | None = None
 
 
@@ -312,7 +322,8 @@ def _declares_vcdm(claims: Mapping[str, Any]) -> bool:
 
     The ``typ`` is not a signal. ``vc+sd-jwt`` without a VCDM ``@context`` used to count,
     which let a ``vct``-less (or ``vct``-withheld) token skip the REQUIRED ``vct`` of an
-    IETF SD-JWT VC; verify() now refuses that ``typ`` unless this returns True (#264).
+    IETF SD-JWT VC; verify() now refuses that ``typ``, the draft-era ``vc+ld+json+sd-jwt``
+    and an absent ``typ`` unless this returns True (#264, #288, #289).
 
     An IETF SD-JWT VC that merely has a claim *named* ``validUntil`` is not VCDM: the name
     means nothing in its vocabulary, so it is not read as a validity bound."""
@@ -517,15 +528,19 @@ class SdJwtVcProofSuite:
         every KB-JWT fresh and switch the window off. The issuer JWT's ``exp``/``nbf``/``iat``
         still use the current time, as on every JOSE suite.
 
-        The issuer JWT ``typ`` is ``dc+sd-jwt`` (an IETF SD-JWT VC) or ``vc+sd-jwt``. The
-        latter is accepted only for a W3C VCDM payload, one with a VCDM ``@context``
-        (VC-JOSE-COSE §6.1.3); otherwise it raises ``SdJwtError``. When the payload is a
-        W3C VCDM credential (a VCDM ``@context``, whatever the ``typ``), its ``validFrom`` /
-        ``validUntil`` are enforced too, like the VC-JWT suite does (current time, same
-        leeway; ``check_temporal=False`` waives only the expiry). Its ``iss`` / ``jti`` /
-        ``sub`` must not conflict with ``issuer`` / ``id`` / ``credentialSubject.id``
-        either, as on the VC-JWT suite (``ClaimsInvalid``). An IETF SD-JWT VC's claims
-        are never read as a VCDM validity window or reconciled with them.
+        The issuer JWT ``typ`` is ``dc+sd-jwt`` (an IETF SD-JWT VC) or ``vc+sd-jwt``
+        (VC-JOSE-COSE §6.1.3). The draft-era ``vc+ld+json+sd-jwt`` of the Recommendation's
+        Example 21 and an absent ``typ`` (a SHOULD there; its Examples 4 and 5 omit it) are
+        accepted like ``vc+sd-jwt``. All of these but ``dc+sd-jwt`` are accepted only for
+        a W3C VCDM payload, one with a VCDM ``@context``; otherwise ``SdJwtError``. A
+        ``typ`` that is present and anything else, ``null`` included, raises it too, and so
+        does an absent one on a payload with a ``vc`` or ``vp`` claim (§3.1.3). When the
+        payload is a W3C VCDM credential (a VCDM ``@context``, whatever the ``typ``), its
+        ``validFrom`` / ``validUntil`` are enforced too, like the VC-JWT suite does (current
+        time, same leeway; ``check_temporal=False`` waives only the expiry). Its ``iss`` /
+        ``jti`` / ``sub`` must not conflict with ``issuer`` / ``id`` /
+        ``credentialSubject.id`` either, as on the VC-JWT suite (``ClaimsInvalid``). An IETF
+        SD-JWT VC's claims are never read as a VCDM validity window or reconciled with them.
 
         The issuer JWT's ``exp``/``nbf``/``iat``, and any disclosed ``iat``, must each be
         a finite JSON number when present (``null`` included). An ``iat`` more than the
@@ -555,8 +570,11 @@ class SdJwtVcProofSuite:
         alg = header.get("alg")
         if not isinstance(alg, str) or alg not in self._algs:
             raise UnsupportedAlgorithm(f"algorithm {safe_repr(alg)} is not permitted")
+        # An ABSENT `typ` is let through (None) and judged on the payload below; one that is
+        # present must be an accepted string. `null`, a number, an array and an object are
+        # present and wrong, and a JSON array/object is unhashable, so type-check first.
         typ = header.get("typ")
-        if not isinstance(typ, str) or typ not in _ACCEPTED_ISSUER_TYP:
+        if "typ" in header and (not isinstance(typ, str) or typ not in _ACCEPTED_ISSUER_TYP):
             raise SdJwtError(f"unexpected issuer JWT typ {safe_repr(typ)}")
         reject_unknown_crit(header)
         self._verify_signature(alg, public_key_jwk, signing_input, signature,
@@ -610,15 +628,28 @@ class SdJwtVcProofSuite:
                 raise SdJwtError(
                     f"{what} {name!r} is selectively disclosed ({reason}): the issuer "
                     "made it withholdable, so its absence would go undetected")
-        if typ == _W3C_TYP and not vcdm:
+        if typ != _ISSUER_TYP and not vcdm:
             # VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload, and draft-19
             # dropped the transitional acceptance of it for an IETF SD-JWT VC. Read as VCDM
             # by its typ alone, a `vct`-less or `vct`-withheld token skipped the REQUIRED
             # `vct` below (#264). A presented `@context` disclosure was refused above; a
-            # withheld one leaves the payload not VCDM, so it is refused here too.
+            # withheld one leaves the payload not VCDM, so it is refused here too. The same
+            # holds for the draft-era name and for an absent `typ` (#288, #289): none of them
+            # says "IETF SD-JWT VC", so the payload has to say "W3C VC".
+            shown = "without a typ" if typ is None else f"typ {typ!r}"
             raise SdJwtError(
-                "issuer JWT typ 'vc+sd-jwt' needs a W3C VCDM @context; an IETF SD-JWT VC "
+                f"issuer JWT {shown} needs a W3C VCDM @context; an IETF SD-JWT VC "
                 "is typed 'dc+sd-jwt'")
+        if typ is None and ("vc" in unpacked or "vp" in unpacked):
+            # VC-JOSE-COSE §3.1.3: the claim names `vc` and `vp` MUST NOT be present.
+            # A token with a `vc` object and no `typ` would be an SD-JWT VC here and, with
+            # its `~` tail dropped, a VC-JWT in the VC-JWT lane, which refuses only a typed
+            # SD-JWT issuer JWT (#189): the holder could shed key binding. A token accepted
+            # here has no `vc` claim, so that lane refuses its stripped form ("no embedded
+            # `vc` object"). It cannot help one this lane never sees (#291).
+            raise SdJwtError(
+                "issuer JWT without a typ must not carry a `vc` or `vp` claim "
+                "(VC-JOSE-COSE §3.1.3)")
         vct = unpacked.get("vct")
         if typ == _ISSUER_TYP and not (isinstance(vct, str) and vct):
             # draft-19 §2.2.2.3: `vct` is REQUIRED and never disclosable, so a withheld

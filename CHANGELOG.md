@@ -4,6 +4,54 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.0] — unreleased
+
+### Added
+
+- **A W3C VCDM credential secured with SD-JWT verifies when its issuer JWT has no `typ`,
+  or the draft-era `vc+ld+json+sd-jwt`**
+  ([#288](https://github.com/luisgf/openvc/issues/288),
+  [#289](https://github.com/luisgf/openvc/issues/289)). Found by the spec-pin check of
+  2026-10-14. This accepts input that was refused before.
+
+  W3C VC-JOSE-COSE (Recommendation of 13 October 2026) makes the SD-JWT `typ` a SHOULD
+  (§3.2.1), and its verification algorithm (§5.2) takes the media type as an input, not
+  from the header. Its own examples show it: Examples 4 and 5 carry the header
+  `{"kid", "alg"}` with no `typ`, and Example 21 carries `typ: vc+ld+json+sd-jwt`, the
+  media type name of the W3C Working Drafts of August and September 2023, before the
+  rename to `vc+sd-jwt`. openvc refused both before any crypto (`unexpected issuer JWT
+  typ`). The Recommendation publishes no key for them, so the new tests pin the real
+  tokens through the `typ` gate, which they now pass, and they fail only at the signature
+  check. The credentials of Examples 4 and 5 carry no `iss` claim either, which the SD-JWT
+  lane needs to select the issuer key, so they still do not verify end to end
+  ([#290](https://github.com/luisgf/openvc/issues/290)). A VCDM SD-JWT with an `iss` and
+  no `typ` does.
+
+  An issuer JWT with no `typ` member, and one typed exactly `vc+ld+json+sd-jwt`, are now
+  treated like `vc+sd-jwt` (#264):
+  - they are accepted only for a payload with a VCDM base `@context`, and get the VCDM
+    validity window and the issuer / id / subject checks;
+  - otherwise they raise `SdJwtError` ("needs a W3C VCDM @context"), a `vct`-bearing IETF
+    payload included: an IETF SD-JWT VC is typed `dc+sd-jwt`;
+  - a token with no `typ` must not carry a `vc` or `vp` claim (VC-JOSE-COSE §3.1.3). With
+    a `vc` object it would be an SD-JWT VC here and, with its `~` tail dropped, a VC-JWT in
+    the VC-JWT lane, which refuses only a typed SD-JWT issuer JWT (#189): the holder could
+    shed key binding. A token accepted here has no `vc` claim, so that lane refuses its
+    stripped form ("no embedded `vc` object").
+
+  A `typ` that is present and anything else is still refused, `null` and any non-string
+  included, and matching stays exact: no case folding, no `application/` prefix.
+  `dc+sd-jwt` is unchanged. `VerifiedSdJwt.typ` is `None` for a token with no `typ`, and
+  the OpenID4VP `dc+sd-jwt` lane still refuses both new cases (#272).
+
+  This drops an explicit-typing guard (RFC 9901 §9.11) for VCDM payloads. What stands in
+  for it: the signed VCDM `@context`; the ban on `vc` and `vp`, which keeps a token
+  accepted here from also being a valid VC-JWT; and key binding (`require_key_binding`
+  still needs a KB-JWT). It does not touch an older gap in the VC-JWT lane: an issuer JWT
+  with no `typ` and a `vc` object verifies there with its `~` tail dropped, on `main`
+  today ([#291](https://github.com/luisgf/openvc/issues/291)). "VCDM" still means a VCDM
+  base URL anywhere in `@context`; requiring a conforming payload is #275.
+
 ## [1.33.2] — 2026-10-14
 
 ### Fixed
