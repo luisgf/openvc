@@ -24,7 +24,9 @@ The rule now (DID Core 1.0 §3.2.2, CID 1.0 §3.3 steps 9 and 11):
 Every hostile row uses a resolvable issuer (an injected ``did:web`` fetch, or a stub resolver
 where the point is a document ``id`` that ``did:web`` would refuse) and asserts the exact
 class, so none can pass on an earlier failure. The JOSE lanes keep their fragment-tolerant
-``kid`` lookup (a JWS ``kid`` is a hint); that is pinned at the end.
+``kid`` lookup (a JWS ``kid`` is a hint); that is pinned in section 7. Section 8 pins that the
+lookup stays linear in the document size: a long document ``id`` is neither re-checked nor
+copied once per method or reference.
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ import pytest
 
 from openvc import VerificationPolicy, verify_credential, verify_many, verify_many_async
 from openvc.aio import verify_credential_async
+from openvc.did import base as did_base
 from openvc.did.base import (
     AsyncDidResolverRegistry,
     DidResolutionError,
@@ -554,3 +557,133 @@ def test_the_jose_lanes_keep_the_fragment_tolerant_kid(kid):
     result = asyncio.run(verify_credential_async(_vc_jwt(AUTH_KEY, kid), resolver=_async(doc),
                                                  policy=POLICY))
     assert result.issuer == DID
+
+
+# --------------------------------------------------------------------------- #
+# 8. the lookup is linear in the document size. The document id is as long as the DID the
+#    proof names (a did:web path has no length limit), and the number of methods and
+#    references is the host's to choose. The id is checked once per lookup and never copied
+#    per reference, so neither multiplies the other
+# --------------------------------------------------------------------------- #
+
+LONG_DID = DID + ":" + "a" * 100_000
+LONG_VM = f"{LONG_DID}#k"
+
+
+def _long_doc(references: int, decoys: int, *, granted: bool,
+              relationship: str = "assertionMethod") -> dict:
+    """LONG_DID's document: the signing key at ``#k``, beside *decoys* other ``#``
+    methods, and a *relationship* of *references* ``#z`` entries, then ``#k`` when
+    *granted* (so a grant reads every entry too)."""
+    methods = [_method("#k", AUTH_KEY, LONG_DID)]
+    methods += [_method(f"#d{i}", ASSERT_KEY, LONG_DID) for i in range(decoys)]
+    return {"id": LONG_DID, "verificationMethod": methods,
+            relationship: ["#z"] * references + (["#k"] if granted else [])}
+
+
+def _long_lane(lane: str, references: int, decoys: int, granted: bool) -> None:
+    """Verify a LONG_VM proof on *lane* against :func:`_long_doc`: it verifies when
+    *granted*, else it is refused with exactly ``ProofPurposeMismatch``."""
+    if lane == "authentication":
+        doc = _long_doc(references, decoys, granted=granted, relationship="authentication")
+        vp = _presentation(AUTH_KEY, LONG_VM)
+        if granted:
+            assert _verify_authentication(vp, doc).proof["verificationMethod"] == LONG_VM
+            return
+        with pytest.raises(ProofPurposeMismatch, match=PURPOSE_DENIED) as exc:
+            _verify_authentication(vp, doc)
+        assert type(exc.value) is ProofPurposeMismatch
+        return
+    doc = _long_doc(references, decoys, granted=granted)
+    credential = _signed(AUTH_KEY, LONG_VM)
+
+    def run() -> Any:
+        if lane == "assertion-async":
+            return asyncio.run(verify_credential_async(credential, resolver=_async(doc),
+                                                       policy=POLICY))
+        return verify_credential(credential, resolver=_sync(doc), policy=POLICY)
+    if granted:
+        assert run().issuer == LONG_DID
+        return
+    with pytest.raises(ProofPurposeMismatch, match=PURPOSE_DENIED) as exc:
+        run()
+    assert type(exc.value) is ProofPurposeMismatch
+
+
+class _CountingPattern:
+    """Stands in for ``openvc.did.base._DID_SYNTAX`` and counts every call made on it."""
+    def __init__(self, pattern: Any) -> None:
+        self._pattern = pattern
+        self.calls = 0
+
+    def __getattr__(self, name: str) -> Any:
+        method = getattr(self._pattern, name)
+
+        def counted(*args: Any, **kwargs: Any) -> Any:
+            self.calls += 1
+            return method(*args, **kwargs)
+        return counted
+
+
+@pytest.mark.parametrize("granted", [False, True], ids=["refused", "granted"])
+@pytest.mark.parametrize("lane", ["assertion-sync", "assertion-async", "authentication"])
+def test_the_document_id_is_checked_once_per_lookup(monkeypatch, lane, granted):
+    # the DID syntax check runs a fixed number of times, whatever the number of methods
+    # and references: it used to run once per '#' method id and once per '#' reference
+    real = did_base._DID_SYNTAX
+    calls = []
+    for references, decoys in ((1, 0), (2_000, 200)):
+        counter = _CountingPattern(real)
+        monkeypatch.setattr(did_base, "_DID_SYNTAX", counter)
+        _long_lane(lane, references, decoys, granted)
+        calls.append(counter.calls)
+    assert calls[0] == calls[1] <= 2
+
+
+class _CountingId(str):
+    """A document ``id`` that counts how often a string is built by appending to it."""
+    appended: int
+
+    def __new__(cls, value: str) -> _CountingId:
+        self = super().__new__(cls, value)
+        self.appended = 0
+        return self
+
+    def __add__(self, other: str) -> str:
+        self.appended += 1
+        return str.__add__(self, other)
+
+
+@pytest.mark.parametrize("granted", [False, True], ids=["refused", "granted"])
+def test_no_method_or_reference_copies_the_document_id(granted):
+    # resolving every '#' method id and reference against the id would build one string
+    # as long as the id per entry; each is compared with the id's spellings instead
+    raw = _long_doc(2_000, 200, granted=granted)
+    raw["id"] = doc_id = _CountingId(LONG_DID)
+    doc = parse_did_document(raw)
+    assert doc.id is doc_id                           # the premise: the parser keeps it
+    vm = doc.key_for_purpose(LONG_VM, "assertionMethod")
+    if granted:
+        assert vm is not None and vm.public_key_jwk == AUTH_KEY.public_jwk()
+    else:
+        assert vm is None
+    appended = doc_id.appended
+    assert appended <= 1                              # the selected method's own id, once
+
+
+@pytest.mark.parametrize("granted", [False, True], ids=["refused", "granted"])
+def test_a_long_did_with_many_references_verifies_in_linear_time(granted):
+    # 100 000 characters of DID by 10 000 references: re-checking the id per reference
+    # took about half a minute; the linear lookup takes milliseconds. The bound is loose
+    doc = _long_doc(10_000, 0, granted=granted)
+    credential = _signed(AUTH_KEY, LONG_VM)
+    start = time.perf_counter()
+    if granted:
+        assert verify_credential(credential, resolver=_sync(doc),
+                                 policy=POLICY).issuer == LONG_DID
+    else:
+        with pytest.raises(ProofPurposeMismatch, match=PURPOSE_DENIED) as exc:
+            verify_credential(credential, resolver=_sync(doc), policy=POLICY)
+        assert type(exc.value) is ProofPurposeMismatch
+    elapsed = time.perf_counter() - start
+    assert elapsed < 5.0, f"verify_credential took {elapsed:.1f}s"

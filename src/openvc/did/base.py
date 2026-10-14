@@ -84,31 +84,62 @@ class DidDocument:
             None,
         )
 
-    def _absolute(self, url: str) -> str | None:
+    def _base(self) -> str | None:
+        """The document ``id`` when it is a DID (DID Core 1.0 §3.1), the only base a
+        ``#fragment`` resolves against (§3.2.2); else ``None``.
+
+        A lookup calls this once, never once per method or reference: the ``id`` (as
+        long as the DID the proof names) and the number of references are both the
+        document host's to choose, so re-checking the ``id`` per reference would cost
+        their product."""
+        doc_id = self.id
+        return doc_id if isinstance(doc_id, str) and _DID_SYNTAX.fullmatch(doc_id) else None
+
+    @staticmethod
+    def _absolute(url: Any, base: str | None) -> str | None:
         """*url* — a method ``id`` or a relationship reference — as an absolute DID URL,
         or ``None`` when it does not resolve to one (DID Core 1.0 §3.2.2).
 
         A ``did:`` URL is returned unchanged. A ``#fragment`` is resolved against the
-        document ``id`` (RFC 3986 §5), and only when that ``id`` is a DID (§3.1):
-        ``#key-1`` in ``did:example:123`` is ``did:example:123#key-1``. Anything else is
-        ``None``: a bare ``key-1`` is a relative *path* reference, and a ``?query``,
-        ``/path`` or ``https:`` URL can never resolve to ``<did>#fragment`` either, so
-        treating them as unresolvable fails closed instead of resolving them in full."""
+        document ``id`` (RFC 3986 §5), and only when that ``id`` is a DID (§3.1), which
+        is what *base* is (:meth:`_base`): ``#key-1`` in ``did:example:123`` is
+        ``did:example:123#key-1``. Anything else is ``None``: a bare ``key-1`` is a
+        relative *path* reference, and a ``?query``, ``/path`` or ``https:`` URL can
+        never resolve to ``<did>#fragment`` either, so treating them as unresolvable
+        fails closed instead of resolving them in full."""
         if not isinstance(url, str):
             return None
         if url.startswith("did:"):
             return url
-        if (url.startswith("#") and isinstance(self.id, str)
-                and _DID_SYNTAX.fullmatch(self.id)):
-            return self.id + url
+        if url.startswith("#") and base is not None:
+            return base + url
         return None
 
-    def _methods_with_id(self, vm_id: Any) -> list[VerificationMethod]:
-        """The methods whose absolute ``id`` is exactly *vm_id* (CID 1.0 §3.3 step 9):
-        a plain, case-sensitive string comparison, with no fallback to the fragment."""
-        if not isinstance(vm_id, str):
-            return []
-        return [vm for vm in self.verification_methods if self._absolute(vm.id) == vm_id]
+    @staticmethod
+    def _spellings(absolute: Any, base: str | None) -> tuple[str, ...]:
+        """Every string that :meth:`_absolute` resolves to *absolute* against *base*:
+        *absolute* itself, when it is a ``did:`` URL, and, when it is *base* followed by
+        a ``#fragment``, that fragment. Nothing resolves to a value that is not a
+        ``did:`` URL, so that is ``()``.
+
+        A method id or reference is then matched by comparing it with these, not by
+        resolving it: each comparison costs at most the candidate's own length, so a
+        lookup stays linear in the document size. Resolving every ``#fragment`` would
+        copy the document ``id`` once per reference."""
+        if not isinstance(absolute, str) or not absolute.startswith("did:"):
+            return ()
+        if (base is not None and absolute.startswith(base)
+                and absolute.startswith("#", len(base))):
+            return (absolute, absolute[len(base):])
+        return (absolute,)
+
+    def _methods_with_id(self, vm_id: Any, base: str | None) -> list[VerificationMethod]:
+        """The methods whose absolute ``id`` (against *base*, :meth:`_base`) is exactly
+        *vm_id* (CID 1.0 §3.3 step 9): a plain, case-sensitive string comparison, with
+        no fallback to the fragment."""
+        spellings = self._spellings(vm_id, base)
+        return [vm for vm in self.verification_methods
+                if isinstance(vm.id, str) and vm.id in spellings]
 
     def key_for_purpose(
         self, kid: str | None, proof_purpose: str
@@ -138,21 +169,28 @@ class DidDocument:
         be enforced and the selected method is returned as-is. A *kid* of None falls
         back to the document's sole method, if it has exactly one, and that method
         must then pass step 2. A *proof_purpose* that is not a string (including
-        None) names no relationship and returns None."""
+        None) names no relationship and returns None.
+
+        The document ``id`` is checked once per call, and no method id or reference is
+        resolved: each is compared with the spellings of the one absolute ``id`` it
+        would have to resolve to (:meth:`_spellings`). The cost is linear in the
+        document size, however long its ``id`` and however many references it lists."""
         if not isinstance(proof_purpose, str):                 # unhashable -> no key
             return None
+        base = self._base()                    # once per lookup, never per reference
         if kid is None:
             vm = self.key_by_kid(None)                         # the sole-key fallback
         else:
-            matches = self._methods_with_id(kid)
+            matches = self._methods_with_id(kid, base)
             vm = matches[0] if len(matches) == 1 else None
         if vm is None:
             return None
         refs = self.relationships.get(proof_purpose)
         if refs is None:                       # relationship not declared -> lenient
             return vm
-        target = self._absolute(vm.id)
-        if target is not None and any(self._absolute(ref) == target for ref in refs):
+        # an unresolvable method id has no spellings, so nothing grants it
+        spellings = self._spellings(self._absolute(vm.id, base), base)
+        if any(isinstance(ref, str) and ref in spellings for ref in refs):
             return vm
         return None
 

@@ -579,7 +579,7 @@ def resolve_verification_key(
         # the same strict, exact-id selection key_for_purpose made (never the JOSE
         # lanes' fragment-tolerant key_by_kid): a method it did not select is a key
         # resolution failure, not a purpose mismatch
-        matches = doc._methods_with_id(verification_method)
+        matches = doc._methods_with_id(verification_method, doc._base())
         if not matches:
             raise KeyResolutionError(
                 f"verificationMethod {verification_method!r} not in the DID document")

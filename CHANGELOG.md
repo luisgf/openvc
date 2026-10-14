@@ -39,14 +39,17 @@ All notable changes to **openvc** are documented here. The format follows
   `KeyResolutionError` (`resolve_verification_key` now decides that with the same
   strict lookup, never the fragment-tolerant `key_by_kid`). A declared relationship
   grants it only through a reference that resolves to the same `id`, compared as a
-  plain case-sensitive string, else `ProofPurposeMismatch`. Unchanged: an undeclared
-  relationship stays lenient, a declared but empty one grants nothing, and a `kid`
-  of `None` still falls back to the document's sole method (which must then pass the
-  exact-reference grant). The JOSE lanes keep `key_by_kid`, which tolerates a bare or
-  `#`-relative `kid` (a JWS `kid` is a hint); they check no verification relationship,
-  which is a separate policy question. The recorded vectors (W3C vc-di-eddsa,
-  vc-di-ecdsa, ecdsa-sd-2023, the EBSI DID Registry capture, the did:webvh logs) all
-  use absolute ids and verify unchanged.
+  plain case-sensitive string, else `ProofPurposeMismatch`. The lookup checks the
+  document `id` once and resolves no entry: each method id and reference is compared
+  with the spellings of the one absolute `id` it must name, so the cost stays linear
+  in the document size, however long the DID and however many entries it lists.
+  Unchanged: an undeclared relationship stays lenient, a declared but empty one grants
+  nothing, and a `kid` of `None` still falls back to the document's sole method (which
+  must then pass the exact-reference grant). The JOSE lanes keep `key_by_kid`, which
+  tolerates a bare or `#`-relative `kid` (a JWS `kid` is a hint); they check no
+  verification relationship, which is a separate policy question. The recorded
+  vectors (W3C vc-di-eddsa, vc-di-ecdsa, ecdsa-sd-2023, the EBSI DID Registry capture,
+  the did:webvh logs) all use absolute ids and verify unchanged.
 
 ### Changed
 
@@ -80,11 +83,18 @@ All notable changes to **openvc** are documented here. The format follows
   whose `id` is not a DID; methods with another DID's, a bare or a versioned `id`
   that must not be selected; a same-fragment method listed first that must not
   shadow the exact one; duplicate absolute ids; the `kid`-less fallback; a
-  `[good, bad, bad, good]` batch on `verify_many` and `verify_many_async`; and the
-  JOSE lanes' unchanged `kid` tolerance. Each hostile row uses a resolvable issuer (an
-  injected `did:web` fetch, or a stub resolver where the point is a document `id`
-  `did:web` would refuse) and asserts the exact class. Run against the previous code:
-  77 fail, and the 37 that pass are the grants and the controls.
+  `[good, bad, bad, good]` batch on `verify_many` and `verify_many_async`; the
+  JOSE lanes' unchanged `kid` tolerance; and a linear-cost pin. For a 100 000-character
+  `did:web` with up to 200 extra methods and 10 000 references, the DID syntax check
+  runs a fixed number of times (both lanes, the `assertionMethod` one sync and async),
+  no entry copies the document `id`, and `verify_credential` stays under a loose
+  wall-clock bound. The adversarial review of
+  this fix found its first version re-checking the `id` once per reference: about 30 s
+  for that document, and minutes near the 1 MiB fetch cap. Each hostile row uses a
+  resolvable issuer (an injected `did:web` fetch, or a stub resolver where the point is
+  a document `id` `did:web` would refuse) and asserts the exact class. Run against the
+  previous code: 83 fail, and the 41 that pass are the grants, the controls and the four
+  linear-cost rows that need no new attribute (the previous lookup was linear).
 
 ## [1.32.3] — unreleased
 
