@@ -22,12 +22,13 @@ or :func:`~openvc.status.token_status_list.new_status_list`), set the revoked
 indices (``set_status_bit`` / ``set_status``), build + sign the artifact, serve it
 at the URL the credentials point at, and re-issue it when a revocation changes.
 
-Every builder holds its inputs to the rules the verifier applies, so openvc never
-mints a pointer or a list that its own check side then refuses: an index follows
+The builders hold the pointer and the list to the rules the verifier applies, so openvc
+never mints one that its own check side then refuses: an index follows
 :func:`~openvc.status._index.status_index` (an ``int``, never a ``bool`` or ``float``,
-below ``MAX_STATUS_INDEX``), the string fields are non-empty strings, and a list may
-not exceed the 16 MiB the verifier inflates. Anything else is a
-:class:`~openvc.status.bitstring.StatusListError`, raised at build time.
+below ``MAX_STATUS_INDEX``), the pointer strings are non-empty strings, and a list is
+bytes-like and may not exceed the 16 MiB the verifier inflates. Anything else is a
+:class:`~openvc.status.bitstring.StatusListError`, raised at build time. The time inputs
+(*issued_at*, *expires*, *valid_from*) and *ttl* are not covered by this.
 
 This is the only :mod:`openvc.status` module that touches :mod:`openvc.proof` (to
 sign/verify the token); the codecs and the check side stay pure stdlib.
@@ -67,16 +68,21 @@ def _text(value: Any, *, field: str) -> str:
 
 
 def _packed(value: Any, *, field: str) -> bytes:
-    """The list bytes of *value*, refused when it is not bytes or longer than the
-    verifier inflates (``MAX_DECOMPRESSED_BYTES``) — checked before compressing it, so
-    a list that cannot be decoded is never even built."""
-    if not isinstance(value, (bytes, bytearray)):    # bytes(int) would be a zeroed list
-        raise StatusListError(f"{field} must be bytes, got {brief(value)}")
-    if len(value) > MAX_DECOMPRESSED_BYTES:
+    """The list bytes of *value*, refused when it is not bytes-like (``bytes``,
+    ``bytearray``, ``memoryview``, ``array.array``...) or longer than the verifier
+    inflates (``MAX_DECOMPRESSED_BYTES``) — checked before compressing it, so a list
+    that cannot be decoded is never even built."""
+    try:
+        # memoryview refuses an int, a str, None and a list; ``bytes(int)`` would be a
+        # silent zeroed list. It counts bytes, where ``len()`` of an array counts items.
+        view = memoryview(value)
+    except (TypeError, ValueError):                  # ValueError: a released memoryview
+        raise StatusListError(f"{field} must be bytes-like, got {brief(value)}") from None
+    if view.nbytes > MAX_DECOMPRESSED_BYTES:
         raise StatusListError(
-            f"{field} is {len(value)} bytes, past the {MAX_DECOMPRESSED_BYTES} the "
+            f"{field} is {view.nbytes} bytes, past the {MAX_DECOMPRESSED_BYTES} the "
             f"verifier decodes: openvc would refuse to read the list back")
-    return bytes(value)
+    return bytes(view)
 
 
 def _epoch(value: datetime | int) -> int:
@@ -94,7 +100,7 @@ def build_status_list_credential(
     *,
     id: str,
     issuer: str | dict[str, Any],
-    bitstring: bytes | bytearray,
+    bitstring: bytes | bytearray | memoryview,
     status_purpose: str = "revocation",
     valid_from: datetime | None = None,
     valid_until: datetime | None = None,
@@ -112,7 +118,8 @@ def build_status_list_credential(
 
     Raises :class:`~openvc.status.bitstring.StatusListError` for an *id* or
     *status_purpose* that is not a non-empty string, and for a *bitstring* that is not
-    bytes or is longer than the 16 MiB the verifier inflates.
+    bytes-like (``bytes``, ``bytearray``, ``memoryview``...) or is longer than the
+    16 MiB the verifier inflates.
     """
     _text(id, field="status list credential id")
     _text(status_purpose, field="statusPurpose")
@@ -180,7 +187,7 @@ def build_status_list_token(
     *,
     signing_key: SigningKey,
     uri: str,
-    status_list: bytes | bytearray,
+    status_list: bytes | bytearray | memoryview,
     bits: int = 1,
     issued_at: datetime | int | None = None,
     expires: datetime | int | None = None,
@@ -196,8 +203,8 @@ def build_status_list_token(
     HSM/Vault key works. *issued_at* / *expires* accept a datetime or epoch int.
 
     Raises :class:`~openvc.status.bitstring.StatusListError` for a *uri* that is not a
-    non-empty string, a bad *bits*, and a *status_list* that is not bytes or is longer
-    than the 16 MiB the verifier inflates."""
+    non-empty string, a bad *bits*, and a *status_list* that is not bytes-like or is
+    longer than the 16 MiB the verifier inflates."""
     _text(uri, field="status list token uri")
     _check_bits(bits)
     packed = _packed(status_list, field="status_list")

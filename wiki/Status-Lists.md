@@ -65,10 +65,14 @@ fails at build time with a `StatusListError` instead of in the field:
   W3C entry still *emits* it as the base-10 string the spec asks for, and the IETF
   `idx` stays a JSON integer.
 - `status_list_credential`, `status_purpose` and the IETF `uri` are non-empty strings.
-- A list may not exceed the 16 MiB the verifier decompresses.
-  `build_status_list_credential` and `build_status_list_token` refuse a longer one, and
-  `new_bitstring(size)` / `new_status_list(size, bits=...)` refuse a `size` that would
-  need it: 2^27 one-bit statuses, but only 2^24 at 8 bits.
+- A list is bytes-like (`bytes`, `bytearray`, `memoryview`, `array.array("B")`; an
+  `int` is refused, where it used to become a zeroed list) and may not exceed the
+  16 MiB the verifier decompresses. `build_status_list_credential` and
+  `build_status_list_token` refuse a longer one, and `new_bitstring(size)` /
+  `new_status_list(size, bits=...)` refuse a `size` that would need it: 2^27 one-bit
+  statuses, but only 2^24 at 8 bits.
+- The time inputs (`issued_at`, `expires`, `valid_from`) and `ttl` are not checked
+  by this; a bad value there still fails with the plain Python error.
 
 `get_status_bit`, `set_status_bit`, `get_status` and `set_status` hold their `index` to
 the same type rule (the list's own length bounds it): a `bool` is no longer read as

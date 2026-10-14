@@ -25,6 +25,8 @@ self-contained (tests/ is not a package: no cross-import).
 """
 from __future__ import annotations
 
+import array
+import enum
 import math
 
 import pytest
@@ -55,7 +57,7 @@ from openvc.status import (
     verify_status_list_token,
 )
 from openvc.status._decompress import MAX_DECOMPRESSED_BYTES
-from openvc.status._index import MAX_STATUS_INDEX
+from openvc.status._index import MAX_STATUS_INDEX, status_index
 
 LIST_URL = "https://status.example/w3c/1"
 TOKEN_URI = "https://status.example/ietf/1"
@@ -63,6 +65,27 @@ ISSUER = "did:example:issuer"
 NAN = float("nan")
 INF = float("inf")
 HUGE = 10 ** 5000          # past sys.get_int_max_str_digits: str()/repr() raise ValueError
+
+
+def _released_view() -> memoryview:
+    view = memoryview(b"\x00" * 8)
+    view.release()
+    return view
+
+
+class _Odd(int):
+    """An int whose ``str`` is not its digits, as an ``IntEnum`` member was before
+    Python 3.11. The W3C entry writes ``str(index)``, so a builder that kept the
+    subclass would mint ``'Odd.FIVE'`` for the verifier to refuse."""
+
+    def __str__(self) -> str:
+        return "Odd.FIVE"
+
+    __repr__ = __str__
+
+
+class _Slot(enum.IntEnum):
+    FIVE = 5
 
 
 def _refused(call) -> StatusListError:
@@ -195,12 +218,23 @@ def test_list_credential_cap_is_the_verifiers_own():
     _refused(lambda: decode_bitstring(encode_bitstring(bytes(MAX_DECOMPRESSED_BYTES + 1))))
 
 
+def test_list_cap_counts_bytes_not_items():
+    # array("H") holds 2 bytes per item: len() is half the byte count, and a check on
+    # len() would let this 16 MiB + 2 B list through
+    wide = array.array("H", bytes(MAX_DECOMPRESSED_BYTES + 2))
+    assert len(wide) < MAX_DECOMPRESSED_BYTES
+    err = _refused(lambda: build_status_list_credential(
+        id=LIST_URL, issuer=ISSUER, bitstring=wide))
+    assert str(MAX_DECOMPRESSED_BYTES + 2) in str(err)
+
+
 @pytest.mark.parametrize("bitstring", [
     pytest.param(1024, id="int"),          # bytes(1024) would silently be a zeroed list
     pytest.param(HUGE, id="huge-int"),     # ... and bytes(10**5000) an OverflowError
     pytest.param("0000", id="str"),
     pytest.param(None, id="None"),
     pytest.param([0, 1], id="list"),
+    pytest.param(_released_view(), id="released-memoryview"),
 ])
 def test_list_credential_refuses_a_non_bytes_bitstring(bitstring):
     _refused(lambda: build_status_list_credential(
@@ -231,6 +265,8 @@ def test_list_token_refuses_a_list_past_the_decompression_cap():
     pytest.param(HUGE, id="huge-int"),
     pytest.param("0000", id="str"),
     pytest.param(None, id="None"),
+    pytest.param([0, 1], id="list"),
+    pytest.param(_released_view(), id="released-memoryview"),
 ])
 def test_list_token_refuses_a_non_bytes_list(status_list):
     sk = Ed25519SigningKey.generate(kid="k")
@@ -406,6 +442,75 @@ def test_list_credential_accepts_bytes_and_bytearray_and_does_not_mutate():
     assert decode_bitstring(as_bytes["credentialSubject"]["encodedList"]) == snapshot
 
 
+BYTES_LIKE = [
+    pytest.param(memoryview, id="memoryview"),
+    pytest.param(lambda raw: memoryview(raw)[::1], id="sliced-memoryview"),
+    pytest.param(lambda raw: array.array("B", raw), id="array-B"),
+]
+
+
+@pytest.mark.parametrize("wrap", BYTES_LIKE)
+def test_list_credential_accepts_any_bytes_like_list(wrap):
+    # main built these (bytes(memoryview) works), and the result verifies: the
+    # builder refuses an int or a str, not a buffer
+    bits = new_bitstring(64)
+    set_status_bit(bits, 3, 1)
+    status_vc = build_status_list_credential(
+        id=LIST_URL, issuer=ISSUER, bitstring=wrap(bytes(bits)))
+    assert decode_bitstring(status_vc["credentialSubject"]["encodedList"]) == bytes(bits)
+    revoked = {"credentialStatus": build_status_list_entry(
+        status_list_credential=LIST_URL, index=3)}
+    result = check_credential_status(revoked, resolve_status_list=lambda _u: status_vc)
+    assert result is not None and result.revoked
+
+
+@pytest.mark.parametrize("wrap", BYTES_LIKE)
+def test_list_token_accepts_any_bytes_like_list(wrap):
+    sk = Ed25519SigningKey.generate(kid="did:key:zStatus#zStatus")
+    data = new_status_list(16, bits=2)
+    set_status(data, 3, STATUS_INVALID, bits=2)
+    token = build_status_list_token(
+        signing_key=sk, uri=TOKEN_URI, status_list=wrap(bytes(data)), bits=2)
+    claims = verify_status_list_token(
+        token, public_key_jwk=sk.public_jwk(), expected_uri=TOKEN_URI)
+    reference = build_token_status_reference(uri=TOKEN_URI, index=3)
+    result = check_token_status(reference, resolve_status_list_token=lambda _u: claims)
+    assert result is not None and result.revoked
+
+
+@pytest.mark.parametrize("index", [
+    pytest.param(_Odd(5), id="int-subclass"),
+    pytest.param(_Slot.FIVE, id="IntEnum"),
+])
+def test_an_int_subclass_index_is_emitted_as_its_digits(index):
+    assert type(status_index(index, field="i", allow_string=False)) is int
+    entry = build_status_list_entry(status_list_credential=LIST_URL, index=index)
+    assert entry["statusListIndex"] == "5"
+    assert [e.index for e in parse_status_entries({"credentialStatus": entry})] == [5]
+    ref = build_token_status_reference(uri=TOKEN_URI, index=index)
+    assert type(ref["status"]["status_list"]["idx"]) is int
+    parsed = parse_token_status_ref(ref)
+    assert parsed is not None and parsed.index == 5
+    assert get_status_bit(b"\x04", index) == 1             # the codec takes it too
+
+
+def test_codec_addresses_past_the_ceiling_when_the_data_is_that_long():
+    # `locate_status` skips the 2**27 ceiling (capped=False): the data length bounds a
+    # codec index, so an in-memory list past 16 MiB stays addressable. Capping it
+    # would make these raise.
+    data = bytearray(MAX_DECOMPRESSED_BYTES + 1)
+    set_status_bit(data, MAX_STATUS_INDEX, 1)
+    assert get_status_bit(data, MAX_STATUS_INDEX) == 1
+    assert data[MAX_DECOMPRESSED_BYTES] == 0x80
+    set_status(data, MAX_STATUS_INDEX, 1, bits=1)           # LSB-first: bit 0 of byte 2**24
+    assert get_status(data, MAX_STATUS_INDEX, bits=1) == 1
+    set_status(data, MAX_DECOMPRESSED_BYTES, 3, bits=8)     # one status per byte
+    assert get_status(data, MAX_DECOMPRESSED_BYTES, bits=8) == 3
+    # ... and the data still bounds it
+    _refused(lambda: get_status_bit(data, MAX_STATUS_INDEX + 8))
+    _refused(lambda: get_status(data, MAX_DECOMPRESSED_BYTES + 1, bits=8))
+
+
 def test_codec_still_serves_a_value_given_as_bool():
     data = new_status_list(4, bits=1)
     set_status(data, 2, True)                 # a flag-like value; only the INDEX is a bool trap
@@ -471,6 +576,7 @@ _any_index = st.one_of(
     st.integers(),
     st.integers(min_value=MAX_STATUS_INDEX - 3, max_value=MAX_STATUS_INDEX + 3),
     st.sampled_from([0, 1, 7, 8, MAX_STATUS_INDEX - 1, MAX_STATUS_INDEX, HUGE, -HUGE]),
+    st.integers(min_value=-2, max_value=40).map(_Odd),      # an int subclass is an int
     st.booleans(),
     st.floats(allow_nan=True, allow_infinity=True),
     st.text(max_size=12),
@@ -486,8 +592,10 @@ def test_property_w3c_builder_accepts_only_what_the_verifier_reads_back(index):
         entry = build_status_list_entry(status_list_credential=LIST_URL, index=index)
     except StatusListError:
         return
-    # accepted, so it must be a plain in-range int that parses back to the same index
-    assert type(index) is int and 0 <= index < MAX_STATUS_INDEX
+    # accepted, so it must be an in-range int that parses back to the same index
+    assert isinstance(index, int) and not isinstance(index, bool)
+    assert 0 <= index < MAX_STATUS_INDEX
+    assert entry["statusListIndex"] == str(int(index))
     parsed = parse_status_entries({"credentialStatus": entry})
     assert [e.index for e in parsed] == [index]
 
@@ -499,7 +607,9 @@ def test_property_ietf_builder_accepts_only_what_the_verifier_reads_back(index):
         ref = build_token_status_reference(uri=TOKEN_URI, index=index)
     except StatusListError:
         return
-    assert type(index) is int and 0 <= index < MAX_STATUS_INDEX
+    assert isinstance(index, int) and not isinstance(index, bool)
+    assert 0 <= index < MAX_STATUS_INDEX
+    assert type(ref["status"]["status_list"]["idx"]) is int
     parsed = parse_token_status_ref(ref)
     assert parsed is not None and parsed.index == index
     assert not (isinstance(index, float) and math.isnan(index))

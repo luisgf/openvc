@@ -58,7 +58,8 @@ def brief(value: Any) -> str:
 def status_index(
     value: Any, *, field: str, allow_string: bool, capped: bool = True
 ) -> int:
-    """Return *value* as a status-list index, or raise :class:`StatusListError`.
+    """Return *value* as a status-list index (an exact ``int``, even from an ``int``
+    subclass), or raise :class:`StatusListError`.
 
     A non-negative ``int`` below :data:`MAX_STATUS_INDEX` is accepted; a ``bool`` is
     not, nor is any ``float`` (``NaN``, ``±Infinity``, ``1e400``, ``3.7``, ``5.0``).
@@ -87,7 +88,9 @@ def status_index(
         raise StatusListError(
             f"{field} {brief(value)} is past the largest list openvc decodes "
             f"({MAX_STATUS_INDEX} statuses)")
-    return value
+    # A plain int, whatever came in: an int subclass can carry its own ``__str__`` (an
+    # ``IntEnum`` before Python 3.11), and the W3C builder writes ``str(index)``.
+    return int(value)
 
 
 def packed_length(size: Any, *, per_byte: int, field: str = "size") -> int:
