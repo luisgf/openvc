@@ -93,7 +93,7 @@ boundary is attacker-controlled until a signature verifies.
 | Swap / replay a status list or presentation | Stale-status / replay accept | Status token `sub` must equal the fetched URI (anti-swap) — `src/openvc/resolvers.py:122-123`; presentations bind `aud` + one-time `nonce`/`challenge`; a fetched status list is **verified before trust** — `src/openvc/resolvers.py:92-98`; optional status-issuer binding (ADR-0006) — `src/openvc/verify.py:654-669`, and the default status-list resolvers refuse a verified list whose body names an issuer other than its signer (#221); a nested SD-JWT VC's KB-JWT is held to the enclosing presentation's `aud` / `nonce`, and `VcJwtProofSuite` refuses a JWS typed `sd-jwt` / `*+sd-jwt` / `kb+jwt` before key load (explicit typing, RFC 8725 §3.11 — `_reject_sd_jwt_typ`), so a tail-stripped SD-JWT issuer JWT cannot verify as a VC-JWT and sidestep `require_key_binding=True` (#189); with `require_key_binding=True` the KB-JWT is verified before the issuer JWT's `exp` / `nbf`, so an `expired` verdict never stands in for holder binding (#182) |
 | Wrap a credential issued to someone else (a VC-JWT, a Data Integrity VC, or an SD-JWT VC with its KB-JWT stripped) inside their own, correctly bound `jwt_vc_json` / `ldp_vc` presentation | Wrong-accept: a victim's credential presented as their own (a relay by a verifier that once received it) | DCQL `require_cryptographic_holder_binding` (default `true`, OpenID4VP 1.0 §6.1) is enforced on the W3C formats: each embedded VC-JWT / Data Integrity VC must name the **authenticated** VP signer as its single subject, and each nested SD-JWT VC must carry a KB-JWT bound to this exchange, or the whole response is rejected; a non-boolean flag is malformed, never coerced to `false` — `_check_holder_bound` in `openvc/openid4vp.py` (#196) |
 | Pair one's own WRPAC with another relying party's WRPRC, or request beyond the registered grant (an unregistered or format-less query, an uncovered `meta`, a second `claim` / `claims` spelling, an empty grant) | Wrong-authorize: a relying party receives attributes it never registered for | `check_matches_access_certificate` binds the WRPRC `sub` to the WRPAC entity identifier (absent on either side fails); `check_request_within_registration` requires a matching non-blank `format`, a covered `meta`, a named claim set, and every path inside the grants of the entries that apply; `claim` wins by presence on the grant side, the union is read on the request side — `rp_registration.py` (I21; #89, #152, #160, #161) |
-| Back/post-date validity | Expired / not-yet-valid accept | Temporal checks on `validFrom`/`validUntil`/`expires` (+ VCDM 1.1 aliases) — `src/openvc/proof/_verify_common.py:90-125`; a **present-but-unparseable** timestamp fails **closed** — `:84-85`; a present JWT `exp`/`nbf`/`iat` that is not a finite JSON number (`null` included) rejected on the VC-JWT, SD-JWT VC issuer/KB-JWT, VP-JWT, status-list and key-proof lanes, `exp` exclusive and a future `iat` bounded — `check_jwt_temporal` in the same module; VC-JWT `aud` enforced per RFC 7519 §4.1.3 — `check_jwt_audience` (ADR-0008); SD-JWT VC also applies `exp` / `nbf` to the processed payload, so a disclosed expired `exp` is enforced (a withheld one is R7) (#174); a W3C `vc+sd-jwt` payload is held to its VCDM validity window (#198); under the opt-in `require_not_expired=False` waiver, the reported `expired` is each suite's own verdict on the check it skipped (#203) |
+| Back/post-date validity | Expired / not-yet-valid accept | Temporal checks on `validFrom`/`validUntil`/`expires` (+ VCDM 1.1 aliases) — `src/openvc/proof/_verify_common.py:90-125`; a **present-but-unparseable** timestamp fails **closed** — `:84-85`; a present JWT `exp`/`nbf`/`iat` that is not a finite JSON number (`null` included) rejected on the VC-JWT, SD-JWT VC issuer/KB-JWT, VP-JWT, status-list and key-proof lanes, `exp` exclusive and a future `iat` bounded — `check_jwt_temporal` in the same module; VC-JWT `aud` enforced per RFC 7519 §4.1.3 — `check_jwt_audience` (ADR-0008); SD-JWT VC also applies `exp` / `nbf` to the processed payload (#174), and since #229 a disclosed `exp` / `nbf` is refused outright (a withheld one is R7); a W3C `vc+sd-jwt` payload is held to its VCDM validity window (#198); under the opt-in `require_not_expired=False` waiver, the reported `expired` is each suite's own verdict on the check it skipped (#203) |
 | Feed hostile bytes to a hand-rolled parser | Uncaught crash / DoS / parser confusion | Depth-bounded, typed-error codecs — see §6 |
 | Deeply nest the trust-list XML | XXE / entity-expansion bomb | The LOTL/TL parser refuses any DOCTYPE outright — `src/openvc/trustlist/parse.py:108-120` — which is what entities and expansion bombs require; 16 MiB + 500k-element caps — `:35-36,100-117` |
 | MITM a fetch | Tamper in transit | TLS with certificate validation and SNI on the pinned connection — `src/openvc/fetch.py:79-92` |
@@ -224,8 +224,8 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I11 | Status decompression bounded at 16 MiB, incremental | `status/_decompress.py:23,38-66` | `test_status_decompress.py:46-82` |
 | I12 | CBOR depth ≤ 64; JCS depth ≤ 100; duplicate map key rejected | `cbor.py:69,229-232`; `proof/_jcs.py:18` | `test_cbor.py:104,152`; `test_di_jcs.py:388` |
 | I13 | Trust-list XML refuses DOCTYPE (XXE + expansion closed) | `trustlist/parse.py:108-120` | `test_trustlist.py:104,121` |
-| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`), `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_kb_freshness.py`, `test_ebsi_verifier.py` (`test_verify_ebsi_badge_unparseable_attributes_url_is_openvc_error`, `test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request`), `test_ebsi_http.py` |
-| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch. **Known open gap** (I14 too): a hostile DID-document shape — valid JSON, wrong structure — served for an unsigned token's own `did:web` issuer still raises a bare exception and aborts the batch (#219, open; see R10) | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`; `test_vc_jwt_numeric_dates.py` (`test_verify_many_isolates_malformed_numeric_date`) |
+| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_did_document_shape_typed.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`), `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_kb_freshness.py`, `test_ebsi_verifier.py` (`test_verify_ebsi_badge_unparseable_attributes_url_is_openvc_error`, `test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request`), `test_ebsi_http.py` |
+| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch. A hostile DID-document shape — valid JSON, wrong structure — served for an unsigned token's own `did:web` issuer used to abort the batch; `parse_did_document` now raises `DidResolutionError` (#219, fixed in v1.32.3) | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`; `test_did_document_shape_typed.py` (`test_verify_many_isolates_every_hostile_document`, `test_verify_many_async_isolates_every_hostile_document`); `test_vc_jwt_numeric_dates.py` (`test_verify_many_isolates_malformed_numeric_date`) |
 | I16 | Hostile deeply-nested input fails closed **pipeline-wide**: every untrusted JSON parse goes through one loader that refuses nesting past **100** (`openvc._json`; 3.14's `json.loads` parses ~116k levels while `repr()` / `==` overflow far sooner), objects handed over already parsed (credential / `vp_token` dicts, DI suite input, injected-fetch DID documents and issuer metadata, RP DCQL) are held to the same bound, the pipeline maps any residual `RecursionError` to a typed error, and SD-JWT `_unpack` / JCS / did:webvh SCID walk stay capped at 100 | `_json.py`; `proof/sd_jwt.py:66,129`; `verify.py`, `aio.py`, `openid4vp.py`, `proof/vc_jwt.py`, `proof/_jws.py`, `proof/_verify_common.py`, `jwe.py`, `did/base.py`, `did/did_jwk.py`, `did/did_webvh.py`, `jwt_vc_issuer.py`, `fetch.py`, `resolvers.py` | `test_hostile_input.py`, `test_did_webvh.py`, `test_typed_error_deep_nesting.py`, `test_typed_error_vc_shape.py` (`test_deeply_nested_cryptosuite_is_typed`) |
 | I17 | An OID4VCI key proof is pinned to `typ: openid4vci-proof+jwt` and must carry **exactly one** of `jwk`/`kid`/`x5c`/`trust_chain`, with the key bound to the header `alg`'s (kty, crv) | `openid4vci.py:676,752,855` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
 | I18 | Key-proof `iat` freshness is enforced in **both** directions (stale *and* future-dated, non-finite rejected), and the nonce is consumed **exactly once per request, after every signature verifies** | `openid4vci.py:915,917,655` | `test_openid4vci.py`, `test_openid4vci_vectors.py`, `test_sd_jwt_kb_freshness.py` (the freshness helper, `check_iat_freshness`, is shared with the SD-JWT KB-JWT) |
@@ -240,8 +240,9 @@ catch (I1–I7, I20 and I21 hold); the open items are **availability /
 typed-error-hygiene** hardening and documented caveats — the "harden next" list an
 external reviewer should weigh. One caveat, **R7**, is an issuer-configuration gap: an
 expired or revoked credential whose issuer made `exp` / `nbf` / status selectively
-disclosable verifies when the holder withholds them (refusing to issue such claims is
-#229, open). **R9** was a wrong-accept and is resolved. Ranked by our assessment;
+disclosable verifies when the holder withholds them. Since #229 openvc refuses to
+*issue* such claims and rejects a presentation that *discloses* one; a withheld
+disclosure from a third-party issuer remains undetectable by design. **R9** was a wrong-accept and is resolved. Ranked by our assessment;
 items marked **✅ Resolved** have since been fixed and stay here as an audit trail.
 
 - **R1 — SD-JWT `_unpack` / `json.loads` nesting bound. ✅ Resolved in v1.20.1
@@ -304,8 +305,18 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   **withheld** one leaves the credential verified as if it had none. A disclosable
   `cnf` is never read: key binding uses only the issuer-signed body's `cnf`, so any
   KB-JWT presented against it is refused and a KB-stripped presentation verifies with
-  `key_bound=False`. openvc's own `issue(disclosable=…)` does not yet refuse those
-  claims (#229, open).
+  `key_bound=False`. **Narrowed in #229:** `SdJwtVcProofSuite.issue` refuses to make
+  `iss` / `nbf` / `exp` / `cnf` / `vct` / `vct#integrity` / `aka_vcts` / `status`
+  (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3), `credentialStatus` and `@context` (plus
+  the VCDM validity window on a VCDM payload) selectively disclosable through
+  `disclosable` (digests a caller writes into `claims` itself are signed as given).
+  `verify()` rejects (`SdJwtError`) a
+  presentation that presents such a disclosure, or one of its sub-claims, and a
+  `dc+sd-jwt` with no `vct` (`ClaimsInvalid`). What remains is the **withheld**
+  disclosure from a third-party issuer: a withheld digest is indistinguishable
+  from a decoy (RFC 9901 §9.7), so no verifier can see it. Pinned as a limitation
+  in `tests/test_sdjwt_non_disclosable.py`. `credentialSchema` is not refused:
+  schema validation is opt-in data-shape checking, not a gate.
 - **R8 — `credentialSchema` pattern-ReDoS.** Schema validation is opt-in and
   remote `$ref` is off; a catastrophic `pattern` in a trusted schema is a
   residual CPU-DoS. Point the schema resolver at trusted hosts.
@@ -336,15 +347,29 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   inline context that `@import`s a URL is still resolved once into that cache and
   reused by later calls (#225, open); on the verify path the v1.30.2 inline-context
   rule refuses such a document, so it is not reachable there today.
-- **R10 — An untyped exit still open at the verification boundary.** One known input
-  still escapes `OpenvcError` and aborts a `verify_many` batch, so I14/I15 do not yet
-  hold for it: a hostile DID-document shape — valid JSON, wrong structure — served
-  for an unsigned token's own `did:web` issuer raises a bare exception, with no key
-  needed (#219, open). It is not a wrong-accept: it fails closed, untyped. *Fix:* type
-  it at the boundary, with batch-isolation tests. Three EBSI exits are typed since
-  v1.32.1 (§7): a registry URL that `_origin` could not parse (#243), a URL the HTTP
-  client could not parse, reachable from a token's `iss` (#246), and a registry body
-  that does not decompress (#248).
+- **R10 — Untyped exits at the verification boundary. ✅ Resolved in v1.32.3
+  ([#219](https://github.com/luisgf/openvc/issues/219)).** The last known
+  attacker-controlled inputs that escaped `OpenvcError`, so that I14 did not hold for
+  them, are typed. (Caller configuration is a separate class: a string or `None`
+  `leeway_s` still raises a bare `TypeError` on the VP-JWT, status-list-token and
+  `check_jwt_temporal` lanes, tracked as
+  [#228](https://github.com/luisgf/openvc/issues/228) /
+  [#232](https://github.com/luisgf/openvc/issues/232).) Three EBSI exits
+  were typed in v1.32.1 (§7): a registry URL that `_origin` could not parse (#243), a URL
+  the HTTP client could not parse, reachable from a token's `iss` (#246), and a registry
+  body that does not decompress (#248). The fourth, the only one that reached
+  `verify_many`, was a hostile DID-document shape — valid JSON, wrong structure — served
+  for an unsigned token's own `did:web` issuer: `parse_did_document` raised a bare
+  `TypeError` / `AttributeError` and aborted the batch, with no key needed (#219). None
+  was a wrong-accept; each failed closed, untyped. **Fixed:** a wrong-typed
+  `didDocument`, `verificationMethod` or relationship raises `DidResolutionError`, is never
+  read as undeclared, and a method or reference without a string `id` is dropped (I14,
+  I15; `test_did_document_shape_typed.py`). **Residual:** the check does not know which
+  lane is asking, so a relationship that is not an array rejects the whole document, JOSE
+  lanes that never read relationships included (fail-closed, and only for a document that
+  breaks DID Core). A dropped method that carried a key is not counted by the `kid`-less
+  sole-key fallback, as a method with an undecodable Multikey never was; the key it then
+  selects is well-formed and in the issuer's own document.
 
 ## 10. Out of scope
 

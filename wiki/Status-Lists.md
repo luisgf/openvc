@@ -114,6 +114,11 @@ and read `result.status.revoked`; suspension still rejects. See
   the revocation bit. A custom `resolve_status_list` must uphold the same rule:
   return a list whose `issuer` you have authenticated, for example by comparing it
   with the `result.issuer` of the `verify_credential` call that checked the list.
-- **SD caveat**: keep the `credentialStatus` pointer **non**-selectively
-  disclosable, or a holder can withhold it — see [SD-JWT VC](SD-JWT-VC) and
-  the [Security model](Security-Model).
+- **SD caveat**: a selectively disclosable status pointer is one the holder can
+  withhold, and a withheld one looks like no status at all. openvc's SD-JWT VC
+  `issue()` refuses to make `status` or `credentialStatus` disclosable, and
+  `verify()` rejects a presentation that discloses either, or a part of one. A
+  third-party SD-JWT VC whose issuer made it disclosable still verifies when the
+  holder withholds it — see [SD-JWT VC](SD-JWT-VC) and the
+  [Security model](Security-Model). For `ecdsa-sd-2023`, keep `credentialStatus`
+  among the mandatory pointers.
