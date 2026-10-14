@@ -4,6 +4,32 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.4] — unreleased
+
+Tests and docs only: no behaviour change. The library side is a docstring and a
+comment in `rp_registration.py`.
+
+### Fixed (docs)
+
+- **`check_request_within_registration` describes the rule it enforces.** Its
+  docstring said each requested claim path must fall inside *one* matching
+  `credentials` entry. The code pools the grants of every entry whose `meta` covers
+  the whole query — two entries for the same `vct`, one granting `name` and one
+  `age`, authorize a query for both — and that rule is kept. TS 119 475 scopes the
+  registered credentials to the intended use (clause B.2.7), not to an entry, and
+  defines no either/or between entries. Pooling never borrows from an entry
+  registered for another `vct`, or for only part of the query's `meta`. A
+  one-entry rule would add no protection, because the relying party could split
+  the query in two. The Relying-Party Certificates wiki page says the same.
+
+### Tests
+
+- **The pooling rule is pinned.** One test covers entries with identical `meta`:
+  their grants pool, and an unregistered path is still refused. A second covers
+  overlapping `meta`: an entry for `vct` A alone lends nothing to a query that a
+  `vct` B credential may answer. Both were mutation-checked: a one-entry rule fails
+  both, and pooling every entry of a format, whatever its `meta`, fails the second.
+
 ## [1.31.3] — 2026-10-13
 
 Tests and docs only: no library code changes.
