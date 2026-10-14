@@ -369,7 +369,9 @@ def check_jwt_audience(
         raise ClaimsInvalid(f"{subject} aud does not include {audience!r}")
 
 
-def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
+def utc_epoch(
+    now: Any, *, error: type[Exception] = ProofError, name: str = "now",
+) -> int:
     """*now* as integer epoch seconds, read the way every openvc clock check reads it:
     ``None`` is the current time, and a **naive** datetime is UTC — never the host's
     local zone. :func:`utc_instant` is the same reading for the checks that compare
@@ -381,20 +383,26 @@ def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
     ``tzinfo`` that answers ``None``. Anything that is not a ``datetime``, or whose
     ``tzinfo`` raises, becomes *error*: typed, so a misconfigured pin cannot escape
     ``verify_many`` as a bare exception.
+
+    *name* is how the messages call the value (default ``"now"``): a caller that reads
+    some other datetime the same way, such as an issuer-side ``valid_from``, passes its
+    own parameter name so the error points at it.
     """
     if now is None:
         return int(time.time())
     if not isinstance(now, datetime):
-        raise error(f"now must be a datetime or None, not {type(now).__name__}")
+        raise error(f"{name} must be a datetime or None, not {type(now).__name__}")
     try:
         if now.utcoffset() is None:
             now = now.replace(tzinfo=timezone.utc)
         return int(now.timestamp())
     except Exception as exc:                  # a caller's tzinfo may raise anything
-        raise error(f"now cannot be read as an instant: {exc}") from exc
+        raise error(f"{name} cannot be read as an instant: {exc}") from exc
 
 
-def utc_instant(now: Any, *, error: type[Exception] = ProofError) -> datetime:
+def utc_instant(
+    now: Any, *, error: type[Exception] = ProofError, name: str = "now",
+) -> datetime:
     """*now* as an aware UTC ``datetime``: :func:`utc_epoch`'s reading for the checks
     that compare datetimes (a Data Integrity validity window, an X.509 path-validation
     time, an mdoc ``validityInfo``, a WRPRC window). ``None`` is the current time and a
@@ -406,11 +414,14 @@ def utc_instant(now: Any, *, error: type[Exception] = ProofError) -> datetime:
     ``OverflowError`` that would abort ``verify_many`` instead of failing one item.
     The result is a plain ``datetime`` in ``timezone.utc``, so no caller subclass or
     ``tzinfo`` is consulted again by the comparisons downstream.
+
+    *name* is how the messages call the value (default ``"now"``), as in
+    :func:`utc_epoch`.
     """
     if now is None:
         return datetime.now(timezone.utc)
     if not isinstance(now, datetime):
-        raise error(f"now must be a datetime or None, not {type(now).__name__}")
+        raise error(f"{name} must be a datetime or None, not {type(now).__name__}")
     try:
         aware = (now.replace(tzinfo=timezone.utc) if now.utcoffset() is None
                  else now.astimezone(timezone.utc))
@@ -419,7 +430,7 @@ def utc_instant(now: Any, *, error: type[Exception] = ProofError) -> datetime:
         return datetime(aware.year, aware.month, aware.day, aware.hour, aware.minute,
                         aware.second, aware.microsecond, tzinfo=timezone.utc)
     except Exception as exc:                  # a caller's tzinfo may raise anything
-        raise error(f"now cannot be read as an instant: {exc}") from exc
+        raise error(f"{name} cannot be read as an instant: {exc}") from exc
 
 
 def utc_window(
