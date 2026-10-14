@@ -17,7 +17,7 @@ signature check. The rest need only a signature any ``did:key`` can make:
   the issuer signature);
 * the SD-JWT ``_sd_alg`` (issuer-signed);
 * the OpenID4VP ``ldp_vc`` holder proof's ``cryptosuite``;
-* the OpenID4VCI key proof's ``typ``.
+* the OpenID4VCI key proof's ``typ`` and ``alg``.
 
 Each test asserts the **typed class** a well-formed but disallowed value already got,
 not just ``OpenvcError``. The error messages also name a container by its type: a
@@ -391,6 +391,21 @@ def test_openid4vci_unhashable_proof_typ_is_typed(holder, typ):
                       {"aud": CREDENTIAL_ISSUER, "iat": int(time.time()), "nonce": "c"})
     request = {"credential_configuration_id": "x", "proofs": {"jwt": [proof]}}
     with pytest.raises(ClaimsInvalid, match="key proof typ must be"):
+        verify_credential_request_proofs(request, credential_issuer=CREDENTIAL_ISSUER,
+                                         require_nonce=False)
+
+
+@pytest.mark.parametrize("alg", [
+    pytest.param(["ES256"], id="array"),
+    pytest.param({"ES256": True}, id="object"),
+    pytest.param([], id="empty-array"),
+])
+def test_openid4vci_unhashable_proof_alg_is_typed(holder, alg):
+    proof = _unsigned({"alg": alg, "typ": "openid4vci-proof+jwt",
+                       "jwk": holder[0].public_jwk()},
+                      {"aud": CREDENTIAL_ISSUER, "iat": int(time.time()), "nonce": "c"})
+    request = {"credential_configuration_id": "x", "proofs": {"jwt": [proof]}}
+    with pytest.raises(UnsupportedAlgorithm, match="key proof alg .* is not allow-listed"):
         verify_credential_request_proofs(request, credential_issuer=CREDENTIAL_ISSUER,
                                          require_nonce=False)
 
