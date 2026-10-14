@@ -47,12 +47,29 @@ def brief(value: Any) -> str:
     ``repr()`` on a container (deep nesting overflows it) or on a huge int (past
     ``sys.get_int_max_str_digits`` it raises a bare ``ValueError``)."""
     if isinstance(value, str):
+        value = plain_str(value)       # a subclass's __getitem__ / __len__ may raise or lie
         return repr(value[:32]) + ("..." if len(value) > 32 else "")
     if isinstance(value, int) and not isinstance(value, bool) and value.bit_length() > 64:
         return f"a {value.bit_length()}-bit integer"
     if isinstance(value, (bool, int, float)):
         return repr(value)
     return f"a {type(value).__name__}"
+
+
+def plain_str(value: str) -> str:
+    """*value* as an exact built-in ``str``, holding the characters it holds, whatever the
+    ``str`` subclass it came in says about itself.
+
+    The ``str`` counterpart of :func:`plain_int`. A subclass can override ``__len__``,
+    ``__bool__``, ``__getitem__``, ``__eq__``, ``__hash__``, ``__str__``, ``__format__``
+    and ``__repr__``, so a value checked for emptiness, for membership in a set or by
+    slicing could be a different one from the string a JSON encoder writes (which reads
+    the characters, not the methods). ``str.__str__`` is not a lookup on ``type(value)``:
+    it is the C function behind ``str``, which copies a subclass instance into a plain
+    ``str``. ``str(value)`` is not the same: it calls the subclass's own ``__str__``.
+    Callers check the type first. Every check and every use after it works on the returned
+    value, never on the original."""
+    return str.__str__(value)
 
 
 def plain_int(value: int) -> int:
