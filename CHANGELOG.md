@@ -32,8 +32,8 @@ All notable changes to **openvc** are documented here. The format follows
   and before any Presentation is read: `vct_values` for `dc+sd-jwt`, `doctype_value`
   for `mso_mdoc`, the shape of `type_values` for `jwt_vc_json` and `ldp_vc`. The
   readers are unchanged and still run when a Presentation is verified. The 1.32.3
-  wording "whatever the wallet sent for that query" is now stronger: it holds across
-  the whole query.
+  wording "whatever the wallet sent for that query" is now stronger: it holds for
+  every query of the `dcql_query`, answered or not.
 
   What changes for a caller:
   - An unanswered query with a malformed `meta`, or an earlier failure ahead of
@@ -41,7 +41,9 @@ All notable changes to **openvc** are documented here. The format follows
   - For `mso_mdoc` the constraint comes first. A malformed `doctype_value` beside a
     missing `expected_origins` was `UnsupportedPresentationFormat`, beside a missing
     `trust_anchors` was `ClaimsInvalid`, and now both are `VpTokenMalformed`. With a
-    presentation that is not a string, both formats now give the same message.
+    presentation that is not a string and a `meta` that is not an object, both
+    formats now give the same message; a malformed `doctype_value` and a malformed
+    `vct_values` keep their own messages.
   - A malformed `meta` also wins over a missing required query id, an unknown
     `vp_token` key and a presentation list that is not an array or is empty. These
     run after `_index_dcql` and are `VpTokenMalformed` already, so only the message

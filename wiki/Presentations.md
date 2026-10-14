@@ -155,13 +155,16 @@ for `dc+sd-jwt`, `doctype_value` for `mso_mdoc`, and
   own input, so this catches a bug in your verifier that would otherwise widen a
   query to any type.
 - **Every query is checked before any presentation is read, answered or not.**
-  A malformed constraint is `VpTokenMalformed`, naming the query, whatever the
-  wallet sent and whichever alternative of `credential_sets` it answered. A
-  broken alternative therefore fails on every response, not only on the day a
-  wallet answers it, and an earlier query's failure never hides it. The check
-  also comes before the shape checks of the response itself (a missing required
-  query id, an unknown `vp_token` key, a presentation list that is not an array
-  or is empty), which are `VpTokenMalformed` too. For `mso_mdoc` the constraint
+  A malformed constraint is `VpTokenMalformed`, naming the query, whatever
+  Presentations the wallet sent and whichever alternative of `credential_sets`
+  it answered. A broken alternative therefore fails on every response, not only
+  on the day a wallet answers it, and an earlier query's failure never hides it.
+  The `vp_token` container itself (valid JSON, a non-empty object, within the
+  nesting bound) and the `nonce` and `client_id` / `expected_origins` arguments
+  are checked before any query is read. After that, the constraint check comes
+  before the per-query shape checks of the response (a missing required query
+  id, an unknown `vp_token` key, a presentation list that is not an array or is
+  empty), which are `VpTokenMalformed` too. For `mso_mdoc` the constraint
   comes first: before a missing `expected_origins` or `trust_anchors` and
   before a presentation that is not a string, as for `dc+sd-jwt`. A query whose
   `format` openvc does not know is not read, and each format reads only its own
