@@ -61,6 +61,18 @@ All notable changes to **openvc** are documented here. The format follows
   today ([#291](https://github.com/luisgf/openvc/issues/291)). "VCDM" still means a VCDM
   base URL anywhere in `@context`; requiring a conforming payload is #275.
 
+### Fixed (docs)
+
+- **A W3C query does not choose what is nested**
+  ([#277](https://github.com/luisgf/openvc/issues/277)). The Presentations page now says
+  what the code does by design. A `jwt_vc_json` or `ldp_vc` query without
+  `meta.type_values` is answered by a presentation that nests an IETF SD-JWT VC
+  (`dc+sd-jwt`) or a W3C credential secured as `vc+sd-jwt`, because the nesting is part of
+  the W3C data model and a query without `type_values` constrains nothing. `type_values` is
+  the control, and a nested SD-JWT never satisfies it: openvc reads no types from one, since
+  its holder could reshape `type` by withholding disclosures. The `dc+sd-jwt` lane stays the
+  strict one (#272). No behaviour changes.
+
 ## [1.33.2] — 2026-10-14
 
 ### Fixed
