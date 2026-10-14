@@ -31,7 +31,7 @@ from openvc.openid4vp import (
     VpTokenMalformed,
     verify_vp_token,
 )
-from openvc.proof.errors import ClaimsInvalid, SignatureInvalid
+from openvc.proof.errors import ClaimsInvalid, MalformedToken, SignatureInvalid
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
 from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.proof.vp_jwt import VpJwtProofSuite
@@ -343,15 +343,89 @@ def test_empty_vp_token_is_rejected_even_with_credential_sets(issuer, holder):
         verify_vp_token({}, dcql_query=dcql, nonce=NONCE, client_id=CLIENT_ID)
 
 
-@pytest.mark.parametrize("vct_values", ["a-string", [], [123], {"x": 1}],
-                         ids=["string", "empty-list", "non-string-item", "dict"])
+# A vct_values / meta that is present but malformed must never read as "no constraint"
+# (#224): that would let any SD-JWT VC type answer the query.
+_BAD_VCT_VALUES = [
+    pytest.param("a-string", id="string"),
+    pytest.param([], id="empty-list"),
+    pytest.param([123], id="non-string-item"),
+    pytest.param({"x": 1}, id="dict"),
+    pytest.param(None, id="null"),
+    pytest.param(0, id="zero"),
+    pytest.param("", id="empty-string"),
+    pytest.param(False, id="false"),
+]
+# Falsy ones included: a `meta or {}` shortcut would turn them into "no constraint".
+_BAD_META = [
+    pytest.param(None, id="null"),
+    pytest.param([], id="empty-array"),
+    pytest.param(["vct_values"], id="array"),
+    pytest.param("x", id="string"),
+    pytest.param("", id="empty-string"),
+    pytest.param(0, id="zero"),
+    pytest.param(False, id="false"),
+]
+
+
+def _sd_jwt_query(meta):
+    return {"credentials": [{"id": "my_credential", "format": FORMAT_SD_JWT_VC,
+                             "meta": meta}]}
+
+
+@pytest.mark.parametrize("vct_values", _BAD_VCT_VALUES)
 def test_malformed_vct_values_fails_safe(issuer, holder, vct_values):
     pres = _sd_jwt_presentation(issuer, holder)
-    dcql = {"credentials": [{"id": "my_credential", "format": FORMAT_SD_JWT_VC,
-                             "meta": {"vct_values": vct_values}}]}
-    with pytest.raises(VpTokenMalformed):
-        verify_vp_token({"my_credential": [pres]}, dcql_query=dcql,
+    with pytest.raises(VpTokenMalformed, match="meta.vct_values"):
+        verify_vp_token({"my_credential": [pres]},
+                        dcql_query=_sd_jwt_query({"vct_values": vct_values}),
                         nonce=NONCE, client_id=CLIENT_ID)
+
+
+@pytest.mark.parametrize("meta", _BAD_META)
+def test_non_object_meta_fails_safe(issuer, holder, meta):
+    pres = _sd_jwt_presentation(issuer, holder)
+    with pytest.raises(VpTokenMalformed, match="meta must be a JSON object"):
+        verify_vp_token({"my_credential": [pres]}, dcql_query=_sd_jwt_query(meta),
+                        nonce=NONCE, client_id=CLIENT_ID)
+
+
+@pytest.mark.parametrize("meta", _BAD_META + [
+    pytest.param({"vct_values": None}, id="null-vct-values"),
+    pytest.param({"vct_values": []}, id="empty-vct-values"),
+    pytest.param({"vct_values": [VCT, 1]}, id="non-string-vct-value"),
+])
+def test_malformed_vct_constraint_is_rejected_before_verifying(meta):
+    # The presentation is not even a JWS: verified first, it would fail with a
+    # MalformedToken. The malformed query is reported instead, so it never depends on
+    # what was presented (#224).
+    with pytest.raises(VpTokenMalformed, match="meta"):
+        verify_vp_token({"my_credential": ["junk~"]}, dcql_query=_sd_jwt_query(meta),
+                        nonce=NONCE, client_id=CLIENT_ID)
+
+
+def test_the_junk_presentation_fails_on_its_own_with_a_sound_constraint():
+    # Control for the test above: with a well-formed constraint the same junk is rejected
+    # by the verification step, so the earlier VpTokenMalformed is the query's doing.
+    with pytest.raises(MalformedToken):
+        verify_vp_token({"my_credential": ["junk~"]},
+                        dcql_query=_sd_jwt_query({"vct_values": [VCT]}),
+                        nonce=NONCE, client_id=CLIENT_ID)
+
+
+@pytest.mark.parametrize("meta", [
+    pytest.param(None, id="absent-meta"),
+    pytest.param({}, id="empty-meta"),
+    pytest.param({"doctype_value": "org.iso.18013.5.1.mDL"}, id="other-key"),
+])
+def test_absent_vct_values_is_no_constraint(issuer, holder, meta):
+    # "Absent key means no constraint" still holds: a VCT other than the usual one answers.
+    pres = _sd_jwt_presentation(issuer, holder, vct="https://example.com/OtherType")
+    query = {"id": "my_credential", "format": FORMAT_SD_JWT_VC}
+    if meta is not None:
+        query["meta"] = meta
+    result = verify_vp_token({"my_credential": [pres]}, dcql_query={"credentials": [query]},
+                             nonce=NONCE, client_id=CLIENT_ID)
+    assert result.for_query("my_credential")[0].raw.vct == "https://example.com/OtherType"
 
 
 # --------------------------------------------------------------------------- #

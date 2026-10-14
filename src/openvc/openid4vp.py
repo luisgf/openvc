@@ -261,7 +261,11 @@ def verify_vp_token(
     ``https://www.w3.org/2018/credentials#VerifiableCredential``, while a term no context
     defines stays as written. Expanding needs the ``[data-integrity]`` extra (``pyld``)
     and every context the credential cites — only the VCDM 2.0 context is bundled. A
-    nested SD-JWT never matches. A malformed constraint is :class:`VpTokenMalformed`.
+    nested SD-JWT never matches. A query with no ``meta``, or whose ``meta`` lacks the
+    key, puts no constraint on the type. A malformed constraint is
+    :class:`VpTokenMalformed`, for all three formats and before any Presentation is
+    verified: a ``meta`` that is not a JSON object, or a constraint that is present but
+    ``null`` or the wrong shape, never reads as "no constraint".
     Like ``vct_values``, the check selects the right credential type, not a trusted
     issuer: check each result's ``issuer`` yourself.
 
@@ -548,10 +552,12 @@ def _verify_one(
             query_id, query, presentation, nonce=nonce, expected_origins=expected_origins,
             trust_anchors=trust_anchors, now=now, leeway_s=leeway_s,
             jwk_thumbprint=mdoc_jwk_thumbprint)
-    # DCQL meta.type_values (the W3C formats) is parsed before anything is verified, so a
-    # malformed constraint fails the same way whatever was presented.
+    # DCQL meta.type_values (the W3C formats) and meta.vct_values (dc+sd-jwt) are parsed
+    # before anything is verified, so a malformed constraint fails the same way whatever
+    # was presented.
     type_values = (_type_values(query_id, query)
                    if fmt in (FORMAT_JWT_VC, FORMAT_LDP_VC) else None)
+    vct_values = _vct_values(query_id, query) if fmt == FORMAT_SD_JWT_VC else None
     # The audience is the client_id (redirect flow) or the DC-API calling origin.
     aud = _effective_audience(fmt, presentation, client_id, accepted_auds)
     # Cryptographic Holder Binding is required unless the query opted out (OpenID4VP 1.0
@@ -559,7 +565,7 @@ def _verify_one(
     require_binding = query.get("require_cryptographic_holder_binding", True)
     if fmt == FORMAT_SD_JWT_VC:
         return _verify_sd_jwt_vc(
-            query_id, query, presentation, require_binding=require_binding,
+            query_id, vct_values, presentation, require_binding=require_binding,
             nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
             kb_max_age_s=kb_max_age_s,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
@@ -627,12 +633,13 @@ def _b64url_to_bytes(query_id: str, value: str) -> bytes:
 def _mdoc_doctype_value(query_id: str, query: Mapping[str, Any]) -> str | None:
     # DCQL meta.doctype_value constrains the acceptable mdoc docType for an mso_mdoc query
     # (OpenID4VP DCQL §6.3.2) — the mdoc analogue of SD-JWT's meta.vct_values. If the query
-    # named it, the presented docType MUST equal it (the "right credential"). A malformed
-    # constraint fails safe rather than silently widening.
-    meta = query.get("meta")
-    doctype = meta.get("doctype_value") if isinstance(meta, Mapping) else None
-    if doctype is None:
+    # named it, the presented docType MUST equal it (the "right credential"). Absent means
+    # no constraint; a present value that is not a non-empty string (an explicit null
+    # included) fails safe rather than silently widening.
+    meta = _dcql_meta(query_id, query)
+    if "doctype_value" not in meta:
         return None
+    doctype = meta["doctype_value"]
     if not isinstance(doctype, str) or not doctype:
         raise VpTokenMalformed(
             f"Credential Query {query_id!r}: meta.doctype_value must be a non-empty string")
@@ -684,7 +691,7 @@ def _verify_mso_mdoc(
 
 
 def _verify_sd_jwt_vc(
-    query_id: str, query: Mapping[str, Any], presentation: Any, *, require_binding: bool,
+    query_id: str, vct_values: list[str] | None, presentation: Any, *, require_binding: bool,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
     jwt_vc_issuer_fetch: Any = None,
     x5c_trust_anchors: Any = None,
@@ -724,7 +731,7 @@ def _verify_sd_jwt_vc(
         raise VpTokenMalformed(
             f"Presentation for {query_id!r} did not verify as an SD-JWT VC "
             f"(got {result.format!r})")
-    _check_vct(query_id, query, getattr(result.raw, "vct", None))
+    _check_vct(query_id, vct_values, getattr(result.raw, "vct", None))
     holder = result.subject
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_SD_JWT_VC, holder=holder,
@@ -964,19 +971,42 @@ def _check_holder_bound(query_id: str, credentials: Sequence[Any], holder: str |
                 f"{holder!r}")
 
 
-def _check_vct(query_id: str, query: Mapping[str, Any], vct: str | None) -> None:
-    # DCQL meta.vct_values constrains the acceptable SD-JWT VC type(s) (§6.3.1); if the
-    # query named them, the disclosed vct MUST be one of them — the "right credential".
-    meta = query.get("meta")
-    vct_values = meta.get("vct_values") if isinstance(meta, Mapping) else None
-    if vct_values is None:
-        return
-    # A malformed constraint fails safe (VpTokenMalformed) rather than silently widening.
+def _dcql_meta(query_id: str, query: Mapping[str, Any]) -> Mapping[str, Any]:
+    # The DCQL ``meta`` of a Credential Query, for the type constraints read from it
+    # (vct_values, doctype_value, type_values). An absent ``meta`` is the empty object: no
+    # constraint. A ``meta`` that is present but not a JSON object (null, an array, a
+    # string) fails safe (VpTokenMalformed) instead of reading as "no constraint" and
+    # widening the query to any type. One reader for all three formats, so they cannot
+    # drift apart.
+    if "meta" not in query:
+        return {}
+    meta = query["meta"]
+    if not isinstance(meta, Mapping):
+        raise VpTokenMalformed(f"Credential Query {query_id!r}: meta must be a JSON object")
+    return meta
+
+
+def _vct_values(query_id: str, query: Mapping[str, Any]) -> list[str] | None:
+    # DCQL meta.vct_values constrains the acceptable SD-JWT VC type(s) (§6.3.1). Absent
+    # means no constraint; a present value that is not a non-empty array of strings (an
+    # explicit null included) fails safe (VpTokenMalformed) rather than silently widening.
+    meta = _dcql_meta(query_id, query)
+    if "vct_values" not in meta:
+        return None
+    vct_values = meta["vct_values"]
     if (not isinstance(vct_values, list) or not vct_values
             or not all(isinstance(v, str) for v in vct_values)):
         raise VpTokenMalformed(
             f"Credential Query {query_id!r}: meta.vct_values must be a non-empty array "
             f"of strings")
+    return vct_values
+
+
+def _check_vct(query_id: str, vct_values: list[str] | None, vct: str | None) -> None:
+    # If the query named vct_values (parsed before the presentation was verified), the
+    # disclosed vct MUST be one of them — the "right credential".
+    if vct_values is None:
+        return
     if vct not in vct_values:
         raise ClaimsInvalid(
             f"Credential Query {query_id!r}: vct {vct!r} is not one of the requested "
@@ -989,11 +1019,7 @@ def _type_values(query_id: str, query: Mapping[str, Any]) -> list[list[str]] | N
     # IRIs. Absent means no constraint, as for vct_values. Anything else that is not that
     # shape (a non-object meta, an explicit null, an empty alternative) fails safe
     # (VpTokenMalformed) rather than silently widening to "any type".
-    if "meta" not in query:
-        return None
-    meta = query["meta"]
-    if not isinstance(meta, Mapping):
-        raise VpTokenMalformed(f"Credential Query {query_id!r}: meta must be a JSON object")
+    meta = _dcql_meta(query_id, query)
     if "type_values" not in meta:
         return None
     type_values = meta["type_values"]

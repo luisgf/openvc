@@ -138,6 +138,30 @@ result = verify_vp_token(vp_token, dcql_query=dcql_query,
 print(p.format, p.holder, p.raw.claims["given_name"])
 ```
 
+### Type constraints in the query
+
+A Credential Query selects the credential type through its `meta`: `vct_values`
+for `dc+sd-jwt`, `doctype_value` for `mso_mdoc`, and
+[`type_values`](#matching-the-credential-type-metatype_values) for
+`jwt_vc_json` and `ldp_vc`. The three follow one rule:
+
+- **Absent means no constraint.** A query with no `meta`, or a `meta` without the
+  key, accepts any type. OpenID4VP 1.0 marks `vct_values` and `doctype_value` as
+  required; openvc keeps an absent one permissive, as it does `type_values`.
+- **Present but malformed is `VpTokenMalformed`, never "no constraint".** That
+  covers a `meta` that is not a JSON object (`null`, an array, a string), a key
+  whose value is `null`, a `vct_values` that is not a non-empty array of strings,
+  and a `doctype_value` that is not a non-empty string. The `dcql_query` is your
+  own input, so this catches a bug in your verifier that would otherwise widen a
+  query to any type.
+- **The query is read before the presentation is verified.** A malformed
+  constraint fails the same way whatever the wallet sent. For `mso_mdoc` the
+  missing `expected_origins` or `trust_anchors` are reported first, then the
+  constraint, then the `DeviceResponse` is decoded.
+- **A parsed constraint is then matched.** The verified `vct` must be one of
+  `vct_values`, else `ClaimsInvalid`. The mdoc `docType` must equal
+  `doctype_value`, else `MdocDocTypeMismatch`.
+
 ## HAIP encrypted responses (`direct_post.jwt`)
 
 Under the High Assurance Interoperability Profile the wallet encrypts the
