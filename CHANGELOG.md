@@ -69,6 +69,235 @@ All notable changes to **openvc** are documented here. The format follows
   its `validUntil` now raises `ClaimsInvalid`, because the `vct` gate runs before the
   VCDM window; it used to raise `CredentialExpired`. Under
   `require_not_expired=False` it is refused instead of returned with `expired=True`.
+- **The EBSI plugin validates the DID before it puts it in a registry URL**
+  ([#266](https://github.com/luisgf/openvc/issues/266)). Found by the review of
+  [#251](https://github.com/luisgf/openvc/pull/251) (issue #219) and listed as out of
+  scope by #257. Hardening and contract; no wrong-accept was found.
+
+  `DidRegistryV5.identifiers_url`, `TirV4.issuer_url` and `TirV5.issuer_url` interpolate the
+  DID into the path verbatim, and `DidEbsiResolver.resolve` / `.issuer_record` passed them
+  whatever string they were given. `verify_ebsi_badge` takes that string from an unsigned
+  token (`iss`) and the trust walk from the registry (`accreditedBy`), so no key was needed to
+  choose the path and query of a GET to an allow-listed EBSI host: `/` started a new path
+  segment, a `..` segment was collapsed by httpx (three of them reach the host root, so any
+  path on the host was addressable), `?` started a query that swallowed the TIR `/attributes`
+  suffix, `#` was dropped, `%2f` / `%2e%2e` were forwarded as written, another DID method or a
+  whole URL stayed inside the path, and a 60,000-character `iss` went out as a 60 KB request
+  line. Host, scheme and port never changed, and the signature still had to verify under a key
+  in the fetched document, so no impersonation was found. What it did produce: a verified
+  `issuer` that was not a DID with `trusted=True` (an accredited issuer behind a dot segment),
+  and, once this check types the failure, a 60,301-character error message for a 60,010-character
+  `iss` if the message were not cut.
+
+  Both methods now validate the identifier first and raise `DidResolutionError` before any
+  URL is built. Maintainer decisions, recorded here:
+  - **The pattern** is `did:ebsi:z` followed by 22 or 23 base58btc characters
+    (`[1-9A-HJ-NP-Za-km-z]`), matched with `re.fullmatch` and an explicit ASCII class (never
+    `\w` or `\d`, never `match` + `$`, which accepts a trailing newline). Alphabet and length
+    only: nothing is decoded, so the version byte is not checked and a future version byte
+    cannot make the check fail. Case-sensitive, no normalisation, no percent-decoding. The
+    length is the legal-entity form of the method as the EBSI DevHub page
+    ["The did:ebsi DID method"](https://hub.ebsi.eu/docs/onboarding/legal-entity/did-ebsi-method)
+    defines it (read 2026-10-14): `z` and the base58btc of a version byte (`1`) plus 16 random
+    bytes, 17 bytes in all. That value lies in [2^128, 2^129), which needs 22 digits below
+    58^22 and 23 above it, never 21 or 24, and the page's two example DIDs and the recorded
+    pilot DID are all `z` plus 22. The page also defines an optional `did:ebsi:[network]:`
+    segment, "fully omitted for the EBSI blockchain", which is what the DID Registry and TIR
+    APIs this plugin reads serve; a network-qualified DID is **not** accepted.
+  - **The error** is `DidResolutionError` from both methods, with the value cut by `safe_repr`.
+    `verify_ebsi_badge` reports it as `EbsiVerificationError`, and wraps one raised by
+    `issuer_record` the same way although a token cannot reach it (`issuer_record` is public).
+    In `verify_trust_chain` a malformed walk subject is `NoTrustedAnchor`, the class a 404 gave
+    before, with a message that says it is not a `did:ebsi` identifier rather than "not in the
+    registry"; a hostile `accreditedBy` that equals the accreditation's signed `iss` is
+    `AccreditationInvalid` through the existing wrapper, and no request names it.
+  - **No `supports()`** is added: `DidEbsiResolver` still does not satisfy the `DidResolver`
+    protocol or sit in a `DidResolverRegistry`. That is its own issue.
+  - **The adapters stay wire-only**: `identifiers_url` and `issuer_url` keep no validation of
+    their own (their docstrings now say they expect a validated DID), so a new API version
+    inherits the check, and `_guard_host` is unchanged: it still guards the TIR `attributes`,
+    `next` and `href` URLs, which never pass through the DID check.
+  - **Messages are bounded**: the `safe_repr` cut now also covers the walk's last-resort
+    message and the accreditation-subject mismatch.
+  - **A `str` subclass is read as its characters**, not refused: the check normalises the
+    argument with `str.__str__` (the plain slot; `str(did)` can be overridden) to an exact
+    `str` and uses that one for the pattern, the URL, the document-`id` comparison and the
+    message. Before, a subclass that overrode `__format__` matched the pattern and then
+    steered the URL, because the adapters build it with an f-string (not new in this change).
+    Reachable only from in-process code: a JSON-decoded `iss` or `accreditedBy` is an exact
+    `str`.
+
+- **The TIR issuer response is bound to the DID that was asked for**
+  ([#267](https://github.com/luisgf/openvc/issues/267)). Found by the write-up of
+  [#257](https://github.com/luisgf/openvc/issues/257). A conditional wrong-accept: the
+  condition is a registry-side fault.
+
+  `DidEbsiResolver.issuer_record` handed the registry body to the adapter and returned what
+  came back; neither adapter read the response's own `did`, and `IssuerRecord.did` was filled
+  from the *request*. So a record about another issuer, or with no `did` at all, was accepted
+  and relabelled. In single-level mode (no `trust_anchors`), which verifies no accreditation
+  signature and reads only `has_attributes`, `issuer_type` and `credential_types`, that is the
+  trust decision: a badge signed by an issuer with no accreditation verified as `trusted=True`
+  on another issuer's record, with no error. Reachable through a registry fault, an injected
+  `Fetch`, a wrong `base` or a cache keyed on less than the URL (the built-in `TtlCache` is
+  keyed by the full URL); an operator who wants to lie can serve a matching `did`, so this adds
+  nothing against a compromised registry (still out of scope, threat model §10).
+
+  `TirAdapter` gains a **non-abstract** `response_did(raw)` hook (default: the top-level `did`,
+  as found and unchecked), so a third-party adapter written before it still instantiates and a
+  version that moves the field overrides one method. The **resolver** compares what it returns
+  with the requested DID, exactly, **before the adapter follows any link**, and raises
+  `MalformedRegistryResponse`, with both values cut by `safe_repr`, on any difference: another
+  DID, or an absent, `null`, non-string or empty `did`. A rejected record costs one request
+  (the issuer), not the `attributes` page and a revision per accreditation. The policy lives
+  once, in the resolver, with no `if version == ...`. `IssuerRecord.did` is now the DID the
+  registry named. Maintainer decisions, recorded here:
+  - **An absent `did` is refused for `TirV4` too**: one rule across versions. `TirV4` has no
+    recorded response in this repository, so its tests use synthetic inline bodies; if a real
+    v4 registry omits `did`, the override is one line in `TirV4.response_did` and the v5 rule
+    does not change.
+  - **The class is `MalformedRegistryResponse`**, not a trust error: nothing wraps
+    `issuer_record`, and a mismatched body is malformed input, not an "untrusted" issuer, so
+    `require_trust=False` does not suppress it either.
+  - `_require_object` moved up into the resolver for this body, so a non-object issuer body
+    (`null`, a list, a string, a number) is a `MalformedRegistryResponse` on `TirV4` as well
+    (it was a bare `AttributeError`). `TirV5.parse_issuer` keeps its own call: it is tested
+    directly.
+
+  Not changed: the `attributes` URL and each revision `href` are still pinned to the
+  listing's origin (#172), not to `.../issuers/{did}/`, so a record with the right `did` whose
+  `attributes` URL points into another issuer's listing is still read (a test documents it);
+  the revision's own `did` is not read; and single-level mode still verifies no accreditation
+  JWT, which is the documented policy of the default mode.
+
+### Changed
+
+- **Behaviour changes in `openvc_ebsi`, from the two fixes above.**
+  - `DidEbsiResolver.resolve` / `.issuer_record` now raise `DidResolutionError` for a DID URL
+    (`did:ebsi:zX#key-1`, which worked by accident because httpx drops the fragment), for any
+    string that is not a `did:ebsi` identifier, for `resolve("")` (v1.32.4 refused it only
+    when the document had no usable `id`; it is now refused on syntax, before any request),
+    for a network-qualified DID, and for a **placeholder DID** of another length or alphabet
+    (`did:ebsi:zLeafIssuerAAAA` has `I`, `l`, `O` and `0`, which are not base58btc). Test
+    code that used such placeholders needs well-formed ones, for example
+    `"did:ebsi:z" + b58btc_encode(bytes([1]) + bytes([seed]) * 16)`.
+  - A control character or an over-long `iss` through `verify_ebsi_badge` was
+    `HttpForbiddenHost` and is now `EbsiVerificationError`. Both are `EbsiError`, but code that
+    catches the first class by name must catch the second. `HttpForbiddenHost` is still what
+    the HTTP client raises for a TIR URL it refuses.
+  - `verify_trust_chain` on a malformed subject raises `NoTrustedAnchor` (a direct call used
+    to reach the registry and get its 404, mapped to the same class).
+  - A TIR response whose `did` is another DID, or is absent, `null`, a non-string or empty,
+    used to resolve and now raises `MalformedRegistryResponse` from `issuer_record`, from
+    `verify_ebsi_badge` (with or without `require_trust`) and from `verify_trust_chain`.
+  - **Recursive mode, a misrouted record:** `MalformedRegistryResponse`, at the first
+    `issuer_record` call and before the accreditor is resolved. For another issuer's genuine
+    record (its signed accreditation names another subject) it replaces
+    `AccreditationInvalid`, so the class changes. With `require_trust=True` the outcome
+    (refused) does not; with `require_trust=False` a returned `trusted=False` result becomes
+    a `MalformedRegistryResponse` raise, because `verify_ebsi_badge` swallowed the trust error
+    of the later refusal and does not swallow this one (malformed input, not an untrusted
+    issuer: the same rule as in single-level mode). A record whose own `did` alone is wrong,
+    with the walked DID's `attributes` behind it, was accepted before this change and is now
+    refused too. The walk already let `MalformedRegistryResponse` escape for other malformed
+    TIR bodies.
+  - Unchanged: a matching `did` resolves (the golden fixture, 3 accreditations, 5 fetches);
+    the origin pin on `attributes`, `href` and `links.next`; the single-level and recursive
+    trust policies.
+- **A Credential Query's `multiple` must be a JSON boolean, answered or not**
+  ([#268](https://github.com/luisgf/openvc/issues/268)). Found while probing for the
+  review of [#249](https://github.com/luisgf/openvc/pull/249) and left out of
+  [#254](https://github.com/luisgf/openvc/issues/254) as out of scope. A `dcql_query`
+  whose `multiple` is any non-boolean used to verify and now raises `VpTokenMalformed`
+  on every response, naming the query. Defence in depth: every Presentation was still
+  fully verified, and the `dcql_query` is the verifier's own input, so no attacker can
+  set `multiple`.
+
+  OpenID4VP 1.0 §6.1 defines `multiple` as OPTIONAL, a boolean, default `false`, and
+  §8.1 requires exactly one Presentation per query when it is omitted or `false`.
+  openvc read it in one place, `_presentation_list`, by truthiness, and
+  `_index_dcql` already checked `require_cryptographic_holder_binding` on every query
+  but nothing about `multiple`. So a non-boolean was neither rejected nor read the way
+  the spec does, in both directions:
+
+  - **A truthy non-boolean opened the query to several Presentations.** `"false"` (a
+    non-empty string), `"true"`, `"0"`, `1`, `1.0`, `2`, `[0]` and `{"a": 1}` all
+    behaved as `true`: a wallet could return N Presentations, and all N were verified
+    and returned. A consumer written for one Presentation per query got several from
+    `for_query`: `(p,) = result.for_query("q")` raised a bare `ValueError` in its own
+    code, and `result.for_query("q")[0]` silently took whichever the wallet put first.
+    `"false"` is the plausible one: a templating, environment-variable or form-field
+    bug that reads as "no" to a person and as `true` to `bool()`.
+  - **A falsy non-boolean was read as `false` by accident.** `null`, `""`, `0`, `0.0`,
+    `[]` and `{}` landed on the single-valued side without being validated, and were
+    never reported as malformed. With one Presentation they verified; only a response
+    with several was rejected, as "single-valued", which hid the cause.
+  - **A query the wallet did not answer** (allowed by `credential_sets`) never had its
+    `multiple` read, so every value was accepted there.
+
+  `_index_dcql` now requires `multiple`, when present, to be a boolean
+  (`isinstance(..., bool)`, so `0`, `1` and `1.0` are not accepted) on every query of
+  the `dcql_query`, right after the same check on `require_cryptographic_holder_binding`
+  and before any Presentation is read, for every format and for a format openvc does
+  not know. The message is `Credential Query 'q': multiple must be a boolean`.
+  `_presentation_list` is unchanged: it has one caller, after `_index_dcql`, so the
+  value it reads is a `bool` by construction.
+
+  What changes for a caller:
+  - A `dcql_query` with a non-boolean `multiple`, on any query, is `VpTokenMalformed`
+    on every response. A truthy one (`"true"`, `1`) used to return several
+    Presentations, a falsy one (`null`, `0`, `""`, `[]`, `{}`) used to read as `false`;
+    both now raise, so a verifier that templated the flag has to emit `true` or
+    `false`. No unverified credential was ever accepted: the Presentations went
+    through the full pipeline either way.
+  - A malformed `multiple` also wins over a malformed `meta` on the same query (the
+    constraint reader of [#254](https://github.com/luisgf/openvc/issues/254) runs right
+    after it), over a *later* query's own shape error (an entry that is not an object,
+    a missing or duplicate id, a format that is not a string, a malformed `meta`:
+    `_index_dcql` walks the queries in order and raises on the first), and over a
+    missing required query id, an unknown `vp_token` key and a presentation list that is
+    not an array or is empty (these run after `_index_dcql`). All of them are
+    `VpTokenMalformed` already, so only the message changes. If
+    `require_cryptographic_holder_binding` is malformed on the same query, that error
+    still comes first, and so does a shape error that `_index_dcql` itself raises on an
+    earlier query (its id, format, duplicate id, either flag or `meta`) or on this
+    query's own id or format. An earlier query's *Presentation* failing does not: all
+    queries are indexed before any Presentation is read.
+
+  Unchanged: an absent `multiple` is `false` (it is not required); `"multiple": true`
+  still allows several Presentations; a boolean `false` still rejects a response with
+  several as "single-valued but returned N Presentations"; the `meta` constraints and
+  the format dispatch. The `verify_vp_token` docstring, the wiki ("OpenID4VP 1.0:
+  `verify_vp_token`", where `multiple` was not documented) and `assurance.md` state the
+  rule. `verify_encrypted_vp_response` delegates to `verify_vp_token`, so it follows.
+  Same family, not covered here: `_check_completeness` still reads `credential_sets`
+  by truthiness.
+
+### Tests
+
+- **`tests/test_dcql_multiple_boolean.py`** (#268). Negatives first, each pinning the
+  query it names and the exact class, so none can pass on the "single-valued" message
+  or on a later failure: the fourteen non-booleans (`"false"`, `"true"`, `""`, `"0"`,
+  `0`, `0.0`, `1`, `1.0`, `2`, `[]`, `[0]`, `{}`, `{"a": 1}`, `null`) on an answered
+  query with one and with two Presentations, on an unanswered query (listed second and
+  first), and, for `"false"`, `1` and `null`, beside an earlier junk Presentation;
+  `"false"` on `mso_mdoc`, `ldp_vc`, `jwt_vc_json` and on an unanswered query of an
+  unknown format; and a malformed `multiple` against each later shape check. The
+  ordering is pinned too: a malformed `multiple` (`"false"`, `1`, `null`) beside a
+  malformed `meta` on the same query, for all four known formats, and in front of each
+  of five shape errors on a later query (an entry that is not an object, a missing id,
+  a non-string format, a duplicate id, a malformed `meta`). Controls that pass before
+  and after: `true` allows two Presentations, `false` and an absent `multiple` accept
+  one and reject two as "single-valued" (also for the three string formats), a boolean
+  `multiple` on an unanswered query, an unknown format with `multiple: true`, the
+  holder-binding flag still reported first, the later shape checks firing on their own,
+  and the same two orderings with `multiple` absent, `false` or `true`, where the
+  `meta` / the later query's error is the one reported. Mutation-checked against
+  `origin/main` at 45b28be: 84 negatives fail and the 46 controls pass; removing the
+  new check fails the same 84; accepting an `int`, accepting a `float`, reading
+  `multiple` without its `false` default, checking only `dc+sd-jwt` queries, moving the
+  check below the `meta` reader and moving it into a second pass after the walk each
+  fail their own rows (17, 8, 45, 13, 12 and 17).
 
 ### Fixed
 
