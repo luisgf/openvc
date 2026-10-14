@@ -65,6 +65,11 @@ All notable changes to **openvc** are documented here. The format follows
   `dc+sd-jwt` Presentation whose issuer JWT is not typed `dc+sd-jwt`, raising
   `VpTokenMalformed`.
 
+  One exception class changes. A `vct`-less `dc+sd-jwt` with a VCDM `@context` past
+  its `validUntil` now raises `ClaimsInvalid`, because the `vct` gate runs before the
+  VCDM window; it used to raise `CredentialExpired`. Under
+  `require_not_expired=False` it is refused instead of returned with `expired=True`.
+
 ## [1.32.4] — 2026-10-14
 
 ### Security
