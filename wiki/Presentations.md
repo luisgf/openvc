@@ -138,6 +138,15 @@ result = verify_vp_token(vp_token, dcql_query=dcql_query,
 print(p.format, p.holder, p.raw.claims["given_name"])
 ```
 
+Each value of the `vp_token` is an **array** of Presentations. A query holds exactly
+one Presentation unless it sets `"multiple": true` (OpenID4VP 1.0 §8.1); a wallet that
+returns two for a single-valued query is rejected, and `for_query` returns every
+Presentation of a `multiple` query. `multiple` must be a JSON boolean, and an absent
+one is `false`. Anything else (`"false"`, `1`, `null`, `[]`, …) is `VpTokenMalformed`
+naming the query, for **every** query of the `dcql_query`, answered or not: `"false"`
+is a non-empty string and would otherwise read as `true`.
+`require_cryptographic_holder_binding` is held to the same rule.
+
 ### Type constraints in the query
 
 A Credential Query selects the credential type through its `meta`: `vct_values`

@@ -304,6 +304,11 @@ def verify_vp_token(
     To accept a credential the presenter is not bound to — §14.1.1's "the Holder may not
     be the subject of the Credential" — set the flag to ``false`` in that query.
     A non-boolean flag is :class:`VpTokenMalformed`.
+    The same goes for a Credential Query's ``multiple`` (OpenID4VP 1.0 §6.1, default
+    ``false``): each ``vp_token`` value is an array holding exactly one Presentation
+    unless the query sets ``"multiple": true`` (§8.1), and a ``multiple`` that is not a
+    JSON boolean (``"false"``, ``1``, ``null``, ``[]``, …) is :class:`VpTokenMalformed`,
+    naming the query, for every query, answered or not.
     *require_holder_binding* is the caller's own, stricter switch: whatever the query
     says, every embedded credential's subject — an SD-JWT VC's ``sub`` included — must
     be the authenticated holder.
@@ -450,11 +455,17 @@ def _index_dcql(dcql_query: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
         if query_id in queries:
             raise VpTokenMalformed(f"duplicate Credential Query id {query_id!r}")
         # A malformed flag fails safe: coercing it would let bool(None) / bool(0) opt the
-        # query out of holder binding.
+        # query out of holder binding, and would let "false" / 1 open a query to several
+        # Presentations (#268). Both are checked for EVERY query, answered or not; a bool
+        # is exact (0, 1 and 1.0 are not JSON booleans). _presentation_list reads
+        # ``multiple`` after this, so it only ever sees a bool.
         if not isinstance(entry.get("require_cryptographic_holder_binding", True), bool):
             raise VpTokenMalformed(
                 f"Credential Query {query_id!r}: require_cryptographic_holder_binding "
                 f"must be a boolean")
+        if not isinstance(entry.get("multiple", False), bool):
+            raise VpTokenMalformed(
+                f"Credential Query {query_id!r}: multiple must be a boolean")
         _check_constraint(query_id, entry, fmt)
         queries[query_id] = entry
     return queries
@@ -491,6 +502,7 @@ def _check_completeness(
 
 def _presentation_list(query_id: str, query: Mapping[str, Any], value: Any) -> list[Any]:
     # OpenID4VP 1.0 §8.1: the value is ALWAYS an array; length 1 unless multiple:true.
+    # ``multiple`` is a bool here: _index_dcql rejected any other type (#268).
     if not isinstance(value, list):
         raise VpTokenMalformed(
             f"vp_token[{query_id!r}] must be an array of Presentations")

@@ -4,6 +4,90 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.5] — unreleased
+
+### Changed
+
+- **A Credential Query's `multiple` must be a JSON boolean, answered or not**
+  ([#268](https://github.com/luisgf/openvc/issues/268)). Found while probing for the
+  review of [#249](https://github.com/luisgf/openvc/pull/249) and left out of
+  [#254](https://github.com/luisgf/openvc/issues/254) as out of scope. A `dcql_query`
+  whose `multiple` is any non-boolean used to verify and now raises `VpTokenMalformed`
+  on every response, naming the query. Defence in depth: every Presentation was still
+  fully verified, and the `dcql_query` is the verifier's own input, so no attacker can
+  set `multiple`.
+
+  OpenID4VP 1.0 §6.1 defines `multiple` as OPTIONAL, a boolean, default `false`, and
+  §8.1 requires exactly one Presentation per query when it is omitted or `false`.
+  openvc read it in one place, `_presentation_list`, by truthiness, and
+  `_index_dcql` already checked `require_cryptographic_holder_binding` on every query
+  but nothing about `multiple`. So a non-boolean was neither rejected nor read the way
+  the spec does, in both directions:
+
+  - **A truthy non-boolean opened the query to several Presentations.** `"false"` (a
+    non-empty string), `"true"`, `"0"`, `1`, `1.0`, `2`, `[0]` and `{"a": 1}` all
+    behaved as `true`: a wallet could return N Presentations, and all N were verified
+    and returned. A consumer written for one Presentation per query got several from
+    `for_query`: `(p,) = result.for_query("q")` raised a bare `ValueError` in its own
+    code, and `result.for_query("q")[0]` silently took whichever the wallet put first.
+    `"false"` is the plausible one: a templating, environment-variable or form-field
+    bug that reads as "no" to a person and as `true` to `bool()`.
+  - **A falsy non-boolean was read as `false` by accident.** `null`, `""`, `0`, `0.0`,
+    `[]` and `{}` landed on the single-valued side without being validated, and were
+    never reported as malformed. With one Presentation they verified; only a response
+    with several was rejected, as "single-valued", which hid the cause.
+  - **A query the wallet did not answer** (allowed by `credential_sets`) never had its
+    `multiple` read, so every value was accepted there.
+
+  `_index_dcql` now requires `multiple`, when present, to be a boolean
+  (`isinstance(..., bool)`, so `0`, `1` and `1.0` are not accepted) on every query of
+  the `dcql_query`, right after the same check on `require_cryptographic_holder_binding`
+  and before any Presentation is read, for every format and for a format openvc does
+  not know. The message is `Credential Query 'q': multiple must be a boolean`.
+  `_presentation_list` is unchanged: it has one caller, after `_index_dcql`, so the
+  value it reads is a `bool` by construction.
+
+  What changes for a caller:
+  - A `dcql_query` with a non-boolean `multiple`, on any query, is `VpTokenMalformed`
+    on every response. A truthy one (`"true"`, `1`) used to return several
+    Presentations, a falsy one (`null`, `0`, `""`, `[]`, `{}`) used to read as `false`;
+    both now raise, so a verifier that templated the flag has to emit `true` or
+    `false`. No unverified credential was ever accepted: the Presentations went
+    through the full pipeline either way.
+  - A malformed `multiple` also wins over a missing required query id, an unknown
+    `vp_token` key and a presentation list that is not an array or is empty. These
+    run after `_index_dcql` and are `VpTokenMalformed` already, so only the message
+    changes. If `require_cryptographic_holder_binding` is malformed on the same query,
+    that error still comes first.
+
+  Unchanged: an absent `multiple` is `false` (it is not required); `"multiple": true`
+  still allows several Presentations; a boolean `false` still rejects a response with
+  several as "single-valued but returned N Presentations"; the `meta` constraints and
+  the format dispatch. The `verify_vp_token` docstring, the wiki ("OpenID4VP 1.0:
+  `verify_vp_token`", where `multiple` was not documented) and `assurance.md` state the
+  rule. `verify_encrypted_vp_response` delegates to `verify_vp_token`, so it follows.
+  Same family, not covered here: `_check_completeness` still reads `credential_sets`
+  by truthiness.
+
+### Tests
+
+- **`tests/test_dcql_multiple_boolean.py`** (#268). Negatives first, each pinning the
+  query it names and the exact class, so none can pass on the "single-valued" message
+  or on a later failure: the thirteen non-booleans (`"false"`, `"true"`, `""`, `"0"`,
+  `0`, `1`, `1.0`, `2`, `[]`, `[0]`, `{}`, `{"a": 1}`, `null`) on an answered query with
+  one and with two Presentations, on an unanswered query (listed second and first),
+  and, for `"false"`, `1` and `null`, beside an earlier junk Presentation; `"false"` on
+  `mso_mdoc`, `ldp_vc`, `jwt_vc_json` and on an unanswered query of an unknown format;
+  and a malformed `multiple` against each later shape check. Controls that pass before
+  and after: `true` allows two Presentations, `false` and an absent `multiple` accept
+  one and reject two as "single-valued" (also for the three string formats), a boolean
+  `multiple` on an unanswered query, an unknown format with `multiple: true`, the
+  holder-binding flag still reported first, and the later shape checks firing on their
+  own. Mutation-checked against `origin/main` at 45b28be: 63 negatives fail and the 19
+  controls pass; removing the new check fails the same 63; accepting an `int`, reading
+  `multiple` without its `false` default, and checking only `dc+sd-jwt` queries each
+  fail their own rows (13, 33 and 4).
+
 ## [1.32.4] — unreleased
 
 ### Security
