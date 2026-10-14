@@ -154,13 +154,20 @@ for `dc+sd-jwt`, `doctype_value` for `mso_mdoc`, and
   and a `doctype_value` that is not a non-empty string. The `dcql_query` is your
   own input, so this catches a bug in your verifier that would otherwise widen a
   query to any type.
-- **The query is read before its presentation is verified.** A malformed
-  constraint fails the same way whatever the wallet sent for that query. Each
-  query's constraint is read when its own presentation comes up, so a query the
-  wallet did not answer (allowed by `credential_sets`) is not checked, and an
-  earlier query's failure is reported first. For `mso_mdoc` the order is: a
-  missing `expected_origins` or `trust_anchors`, then a presentation that is not a
-  string, then the constraint, then the `DeviceResponse` is decoded.
+- **Every query is checked before any presentation is read, answered or not.**
+  A malformed constraint is `VpTokenMalformed`, naming the query, whatever the
+  wallet sent and whichever alternative of `credential_sets` it answered. A
+  broken alternative therefore fails on every response, not only on the day a
+  wallet answers it, and an earlier query's failure never hides it. The check
+  also comes before the shape checks of the response itself (a missing required
+  query id, an unknown `vp_token` key, a presentation list that is not an array
+  or is empty), which are `VpTokenMalformed` too. For `mso_mdoc` the constraint
+  comes first: before a missing `expected_origins` or `trust_anchors` and
+  before a presentation that is not a string, as for `dc+sd-jwt`. A query whose
+  `format` openvc does not know is not read, and each format reads only its own
+  key: a `vct_values` on an `mso_mdoc` query is ignored.
+  So a `dcql_query` with a malformed `meta` on a query that no wallet ever
+  answers is rejected on every response.
 - **A parsed constraint is then matched.** The verified `vct` must be one of
   `vct_values`, else `ClaimsInvalid`. The mdoc `docType` must equal
   `doctype_value`, else `MdocDocTypeMismatch`.
@@ -295,8 +302,9 @@ credentials use. Failures are typed and fail closed:
 - An unknown context raises `DocumentLoaderError`.
 - A credential whose types cannot be expanded raises `ClaimsInvalid`.
 - An SD-JWT nested in the presentation never matches.
-- Without pyld, a query that carries `type_values` raises `OpenID4VPError`
-  before anything is verified.
+- Without pyld, an answered query that carries a well-formed `type_values`
+  raises `OpenID4VPError` before its Presentation is verified. A query the
+  wallet did not answer needs no pyld: its constraint is only checked for shape.
 - A malformed constraint raises `VpTokenMalformed`: a `type_values` that is not
   a non-empty array of non-empty string arrays (a flat list included), or a
   `meta` that is not an object.
