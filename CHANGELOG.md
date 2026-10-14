@@ -6,8 +6,51 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.32.1] — unreleased
 
-Tests and docs only: no behaviour change. The library side is a docstring and a
-comment in `rp_registration.py`.
+A typed-error fix in the DID-document parser (#219), plus tests and docs. The other
+library change is a docstring and a comment in `rp_registration.py`.
+
+### Security
+
+- **A DID document of the wrong shape is a typed error, not a batch abort**
+  ([#219](https://github.com/luisgf/openvc/issues/219)). Found by the adversarial
+  review of [#212](https://github.com/luisgf/openvc/pull/212).
+
+  `parse_did_document` assumed the document's shape. A document that was valid JSON
+  but the wrong shape raised a bare `TypeError` or `AttributeError`, neither of them
+  an `OpenvcError`, so one such credential aborted a whole `verify_many` /
+  `verify_many_async` batch. No key was needed: key resolution runs before the
+  signature check, so an unsigned token whose `iss` names the attacker's own
+  `did:web` was enough, and the attacker hosts the document. The default fetch only
+  checks that the top level is an object. A `null` or scalar `verificationMethod`, a
+  `didDocument` wrapper that is `null` or a list, a relationship (`assertionMethod`,
+  `authentication`, …) that is `null` or a number, and a method whose `id` is a
+  number each raised. The parser is shared, so the `did:webvh` resolved state and
+  the EBSI DID Registry had the same gap.
+
+  A `didDocument` wrapper that is not an object, and a `verificationMethod` or a
+  relationship that is present but not an array, now raise `DidResolutionError`; so
+  does a document that is not an object at all, which an injected fetch can return.
+  The pipeline maps it to `KeyResolutionFailed` for that item (`EbsiVerificationError`
+  on the EBSI plugin). A wrong-typed member is never read as an absent one. An
+  undeclared relationship leaves the key purpose unenforced, so reading `null` as
+  "not declared" would have failed open. The check also closes a smaller grant leak:
+  a relationship written as a bare string, `"assertionMethod": "k"`, was iterated one
+  character at a time, so a one-letter reference authorized any method whose
+  fragment is `k`. A method whose `id` is not a string, and a relationship entry that
+  is neither an id string nor an object with a string `id`, are dropped, as non-object
+  entries already were: they select no key and can only narrow a grant.
+  `VerificationMethod.kid` therefore never sees a non-string `id`. A document `id`,
+  and a method's `type` or `controller`, that is not a string reads as `""`, so the
+  model's `str` fields stay `str`; nothing is selected on them, and an empty `id`
+  never equals the DID a resolver asked for.
+
+  A well-formed document parses as before, the DID 1.1 / CID 1.0 documents included.
+  Tests: `test_did_document_shape_typed.py` serves each shape (null, scalar, string,
+  list and object, in every member) through the issue's `DidWebResolver(fetch=...)`
+  repro and asserts the exact class on `verify_credential`, with a good credential
+  beside the bad ones on both `verify_many` and `verify_many_async`. It also covers
+  the async resolver, a forged `did:webvh` log whose signed state is hostile, and the
+  EBSI registry.
 
 ### Fixed (docs)
 

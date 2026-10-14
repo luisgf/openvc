@@ -136,6 +136,14 @@ Example-based, but broad. Representative anchors:
   batch-isolated on `verify_many` / `verify_many_async`, and a 50k-character Unicode
   host on `verify_many_async` in under 2 s (`test_did_web_hostile_host.py`). RFC 6598
   CGNAT refused (`test_fetch.py`).
+- **DID-document shape** — a document that is valid JSON but the wrong shape (a `null`,
+  scalar, string or object where `verificationMethod` or a relationship must be an
+  array, a `didDocument` wrapper or a whole document that is not an object, a method
+  whose `id` is not a string, a string relationship read one character at a time)
+  typed `DidResolutionError` and never read as undeclared, through `did:web` (sync and
+  async), a forged `did:webvh` log and the EBSI registry; one good credential
+  verifies beside every bad one on `verify_many` / `verify_many_async`
+  (`test_did_document_shape_typed.py`).
 - **Issuer key resolution (https `iss`, x5c)** — an `iss` that Python and a WHATWG
   parser read as different hosts (userinfo, a backslash, an IDN, a `%`-encoded host,
   port 0, dot segments, `;?#`) refused before the `/.well-known/jwt-vc-issuer` fetch,
@@ -188,6 +196,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
+- `#219` — *batch abort, and a purpose granted by a typo* — a DID document that is valid JSON but the wrong shape (a `null` or scalar `verificationMethod`, a relationship that is not an array, a `didDocument` wrapper that is not an object, a method whose `id` is not a string) raised a bare `TypeError` / `AttributeError` from `parse_did_document`, before the signature check, so one unsigned token naming the attacker's own `did:web` aborted a whole `verify_many` batch; the `did:webvh` state and the EBSI registry shared the parser, and a string relationship was read one character at a time, so `"assertionMethod": "k"` authorized any method whose fragment is `k`; a wrong-typed container is now `DidResolutionError` (`KeyResolutionFailed` in the pipeline), never read as undeclared, and a method or reference without a string `id` is dropped (v1.32.1; `test_did_document_shape_typed.py`)
 - `#218` — *batch abort* — a clock pin that is not an instant (an epoch number, a string, a `date`, a `datetime` with no UTC equivalent) or a non-numeric `leeway_s` raised a bare `AttributeError` / `OverflowError` / `TypeError` on every datetime validity window (Data Integrity, x5c, mdoc, WRPAC, WRPRC, the trust-list walks); each lane now raises its own typed error (v1.30.5; `test_typed_clock_pins.py`)
 - `#200` — *crash on caller configuration* — `VpJwtProofSuite.verify` with a pinned holder key and no resolver raised a bare `AttributeError`, a regression since v1.6.0; the resolver now defaults, and the pinned key alone still decides the VP signature (v1.30.4; `test_vp_jwt_pinned_holder_no_resolver.py`)
 - `#208` — *batch abort* — a Data Integrity `proofPurpose` that is a JSON array or object raised a bare `TypeError` on all five suites, before any crypto; it is now `ProofMalformed`, checked before the DID is resolved (v1.30.3, PR #210 — the Data Integrity slice; #208 is still open; `test_unhashable_proof_purpose.py`)

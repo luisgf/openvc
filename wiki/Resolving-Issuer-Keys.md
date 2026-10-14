@@ -77,6 +77,21 @@ unchanged the day issuers emit them — the `Multikey` verification method and t
 relationships are already handled. The DID 1.1 relationship-semantics diff is revisited
 when it reaches Proposed Recommendation (nothing speculative before then).
 
+### A DID document of the wrong shape
+
+A document comes from the issuer a token names, and openvc resolves it before the
+signature is checked, so its *shape* is untrusted too. `parse_did_document` is the one
+parser behind `did:web` (sync and async), the resolved state of a `did:webvh` log and the
+EBSI DID Registry. It raises `DidResolutionError` for a `didDocument` wrapper that is not
+an object, and for a `verificationMethod` or a relationship (`assertionMethod`,
+`authentication`, …) that is present but not an array. A `null`, a number, a string or an
+object there is never read as "not declared": an undeclared relationship leaves the key
+purpose unenforced, and a bare string would otherwise be read one character at a time.
+A method whose `id` is not a string, and a relationship entry that is neither an id string
+nor an object with a string `id`, are dropped, so they select no key and grant no purpose.
+In `verify_many` the credential gets a `KeyResolutionFailed` and the rest of the batch
+still verifies.
+
 ## What the SSRF guard guarantees
 
 Every issuer-named URL (`did:web` documents, well-known metadata, status
