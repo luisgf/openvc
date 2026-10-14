@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.32.2] — unreleased
+## [1.32.3] — unreleased
 
 ### Security
 
@@ -70,6 +70,101 @@ All notable changes to **openvc** are documented here. The format follows
   the async resolver, a forged `did:webvh` log whose signed state is hostile, the
   EBSI registry, the exact error class on the Data Integrity lane, and the `kid`-less
   fallback.
+
+## [1.32.2] — 2026-10-14
+
+One security fix in the SD-JWT VC suite, which changes what issues and what
+verifies (see *Changed*).
+
+### Security
+
+- **SD-JWT VC: the claims a verifier needs to judge validity are never
+  selectively disclosable** ([#229](https://github.com/luisgf/openvc/issues/229)).
+  `SdJwtVcProofSuite.issue(disclosable=…)` accepted any top-level claim. A holder
+  can withhold any disclosure, and a withheld one is indistinguishable from a
+  decoy (RFC 9901 §9.7), so the claim simply read as absent. An already-expired
+  credential with a disclosable `exp` verified, and so did a revoked one with a
+  disclosable `status` or `credentialStatus`, even under
+  `require_status=True, require_not_revoked=True`. Reproduced on v1.32.0.
+  - **Issuer side (the fix).** `issue()` raises `SdJwtError`, before it signs
+    anything, when `disclosable` names `iss`, `nbf`, `exp`, `cnf`, `vct`,
+    `vct#integrity`, `aka_vcts` or `status`. draft-ietf-oauth-sd-jwt-vc-19
+    §2.2.2.3 says these, "including any of their sub-claims", MUST NOT be
+    disclosed. openvc policy adds `credentialStatus`, which the pipeline
+    enforces on SD-JWT too, and `@context`, which switches the VCDM rules on.
+    When `@context` makes the payload VCDM, `validFrom`, `validUntil`,
+    `issuanceDate` and `expirationDate` are also refused. Every other name
+    (`sub` and `iat` included) issues byte-for-byte as before. The guard covers
+    what `disclosable` produces; `_sd` digests a caller writes into `claims`
+    itself are signed as given.
+  - **Verifier side (defence in depth).** `verify()` rejects (`SdJwtError`) a
+    presentation that *presents* a disclosure of one of those claims, at the top
+    level or anywhere beneath one: `cnf.jwk`, `status.status_list`, an element of
+    `aka_vcts` or `credentialStatus`. A third-party issuer that ignores the
+    profile now fails visibly instead of only failing open. The rule lives in
+    the SD-JWT VC profile layer. `_unpack`, the generic RFC 9901 step, only
+    records where each disclosure landed.
+  - **`vct` is REQUIRED on a `dc+sd-jwt`.** A `dc+sd-jwt` whose processed
+    payload is not VCDM and has no non-empty string `vct` is now `ClaimsInvalid`.
+    Besides `iss`, without which nothing verifies, it is the one refused claim
+    whose *withholding* is detectable, because its absence is itself
+    non-conformant. `issue()` requires the same: a `vct` that is not a non-empty
+    string (a list, a number, `True`) raises `SdJwtError` instead of minting a
+    token openvc would then reject.
+  - **Not closed, by design:** a *withheld* disclosure from a third-party
+    issuer. A credential whose issuer made `exp` or `status` disclosable still
+    verifies, as never-expiring or with no status, when the holder omits it. No
+    verifier can see a withheld digest. `tests/test_sdjwt_non_disclosable.py`
+    pins this as a limitation.
+  - **Deliberately not refused:** `credentialSchema` (schema validation is
+    opt-in data-shape checking, and `require_schema` fails closed only on a
+    missing resolver), and `aud` (the SD-JWT VC draft does not list it, and the
+    suite never reads the issuer JWT's `aud`).
+  - **Adversarial review of this change** found one hole in the new issuer-side
+    guard, closed here. `issue()` judged "is this VCDM?" on the Python object,
+    and a tuple `@context` is not a list there but is a JSON array once signed.
+    So `issue(…, {"@context": ("https://www.w3.org/ns/credentials/v2",), …},
+    disclosable=["validUntil"])` signed a VCDM credential whose expiry the holder
+    could withhold. The verdict is now taken on the payload as the verifier will
+    parse it. The review found no way past the verifier-side check: chained and
+    array-element disclosures, lookalike names, `_sd_alg`, the KB-JWT ordering
+    and the nested VP / OpenID4VP / enveloped paths all failed closed.
+
+### Changed
+
+- **Behaviour change: calls and tokens that used to succeed now fail**
+  ([#229](https://github.com/luisgf/openvc/issues/229)). Each fails closed with
+  a typed error, and in `verify_many` / `verify_many_async` it fails only its
+  own item.
+  - `SdJwtVcProofSuite.issue()` with one of the refused names in `disclosable`
+    raises `SdJwtError`, alone or mixed with allowed names.
+  - `issue()` with a `vct` that is not a non-empty string raises `SdJwtError`.
+  - An SD-JWT presentation that presents a disclosure of a refused claim, or of
+    a sub-claim of one, raises `SdJwtError` from the suite and from every
+    `verify_credential*` / `verify_many*` entry point. Under
+    `require_key_binding=True`, a disclosed `cnf` fails earlier, as the
+    key-binding `ClaimsInvalid`. Before, a disclosed expired `exp` or past
+    `validUntil` failed as expired, or, under `require_not_expired=False`,
+    **verified with `expired=True`**. Waiver users re-checking archived
+    presentations will now see `SdJwtError` for that shape. A disclosed `vct`,
+    `status` or `credentialStatus`, or a disclosed `cnf` with no KB-JWT,
+    verified.
+  - A `dc+sd-jwt` with no `vct` (and no VCDM `@context`) raises `ClaimsInvalid`.
+
+### Tests
+
+- **`tests/test_sdjwt_non_disclosable.py`** (#229). Issue-time refusals: each name
+  alone and mixed, nothing signed, the VCDM window only on a VCDM payload. Each
+  presented refused disclosure, and each sub-claim shape, through the suite,
+  `verify_credential`, `verify_credential_async`, `verify_many` and
+  `verify_many_async`, with the good neighbours of a `[good, bad, good]` batch
+  still verifying. The withheld-disclosure limitation is pinned so it is never
+  mistaken for coverage. Run against v1.32.0: 130 fail, and the 40 that pass are
+  the controls and the limitation pins. Existing tests that issued or presented a
+  disclosable `exp`, `validUntil` or `@context`, or minted a `dc+sd-jwt` with no
+  `vct`, now assert the refusal. Regression tests for the review finding (tuple
+  `@context`), the string `vct` at issue, and the waiver, mutation-checked
+  against the pre-review commit.
 
 ## [1.32.1] — 2026-10-14
 
@@ -3305,6 +3400,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.32.2]: https://github.com/luisgf/openvc/releases/tag/v1.32.2
 [1.32.1]: https://github.com/luisgf/openvc/releases/tag/v1.32.1
 [1.32.0]: https://github.com/luisgf/openvc/releases/tag/v1.32.0
 [1.31.3]: https://github.com/luisgf/openvc/releases/tag/v1.31.3

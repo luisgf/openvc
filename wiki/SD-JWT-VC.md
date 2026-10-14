@@ -204,9 +204,10 @@ put the expiry only in `validUntil`, and openvc enforces it just as the VC-JWT l
 does:
 
 - `validFrom` / `validUntil`, or the VCDM 1.1 `issuanceDate` / `expirationDate`, are
-  checked on the processed payload. That is after the disclosures are applied, so a
-  disclosed `validUntil` counts. The check uses the current time and the suite
-  leeway.
+  checked on the processed payload, with the current time and the suite leeway. They
+  must not be selectively disclosable: a presented disclosure of one is refused
+  (`SdJwtError`), because a holder could just as well have withheld it (see
+  [below](#validity-claims-are-never-disclosable)).
 - A past `validUntil` raises `CredentialExpired`, and a future `validFrom` raises
   `CredentialNotYetValid`. A present but unparseable value raises
   `MalformedTimestamp`.
@@ -239,7 +240,7 @@ these:
 | Signal | Example |
 |---|---|
 | The payload's `@context` names a VCDM base context, as a string or anywhere in the array | `"@context": ["https://www.w3.org/ns/credentials/v2", …]` (or `…/2018/credentials/v1`) |
-| The `typ` is `vc+sd-jwt` and the payload has no `vct` (a non-empty string) | a W3C issuer that omitted `@context`, or made it disclosable and the holder withheld it |
+| The `typ` is `vc+sd-jwt` and the payload has no `vct` (a non-empty string) | a W3C issuer that omitted `@context`, or a third-party issuer that made it disclosable (openvc refuses that) and the holder withheld it |
 
 An **IETF SD-JWT VC is not affected**: a `dc+sd-jwt` one, or one with the legacy
 `vc+sd-jwt` typ and a `vct`. Its claims are the issuer's own vocabulary, so a claim
@@ -262,9 +263,10 @@ so a policy that sets `expected_types` raises `TypeMismatch` that points at
 `expected_vct`. It no longer verifies as if the pin were met. Before 1.31.0 the SD-JWT
 lane ignored `expected_types` entirely: a policy that asked for a
 `UniversityDegreeCredential` accepted any SD-JWT VC. Rejecting is also what keeps the
-pin holder-proof. If an issuer makes the `@context` of a `dc+sd-jwt` VCDM credential
-disclosable, a holder who withholds it turns the payload into a non-VCDM one, and
-ignoring the pin there would bypass it. To verify both kinds under one pin, use one
+pin holder-proof. If a third-party issuer makes the `@context` of a `dc+sd-jwt` VCDM
+credential disclosable (openvc refuses to, and rejects a presented one), a holder who
+withholds it turns the payload into a non-VCDM one, and ignoring the pin there would
+bypass it. To verify both kinds under one pin, use one
 policy per format: `expected_types` for W3C credentials and `expected_vct` for IETF
 SD-JWT VCs. An empty or unset `expected_types` constrains nothing, as on every lane.
 A presentation verified under one policy, such as `VpJwtProofSuite.verify(...,
@@ -273,21 +275,61 @@ policy=...)`, applies that policy to every credential it carries. So if the poli
 the whole presentation is rejected. Leave `expected_types` unset there and check each
 `result.credentials` entry yourself.
 
-## Caveat: keep enforcement pointers non-disclosable
+## Validity claims are never disclosable
 
-If a credential's `credentialStatus` (or `credentialSchema`) must be
-enforceable, do **not** list it in `disclosable`: a holder could simply omit
-the disclosure and the verifier would never see the pointer. Fail-closed
-status only works for claims the holder cannot withhold — the same applies to
-`ecdsa-sd-2023`'s mandatory pointers (see the
-[Security model](Security-Model)). RFC 9901 §9.7 likewise forbids making
-`exp` / `nbf` / `iss` / `cnf` / `aud` selectively disclosable: a withheld
-`exp` cannot be distinguished from an absent one, so an expired credential
-would verify. The same holds for a W3C credential's `validUntil` / `validFrom` and
-its `@context`. VC-JOSE-COSE §3.2.1 says properties needed for validation SHOULD
-NOT be selectively disclosable. A holder can withhold a disclosable `validUntil`.
-A holder can also withhold a disclosable `@context`, including a VCDM entry that is
-itself an array-element disclosure. The credential then counts as VCDM only if it is
-typed `vc+sd-jwt` and has no `vct`. If it is `dc+sd-jwt`, or carries a `vct`, its
-window and its `issuer` / `id` / `sub` consistency are no longer checked, and a policy
-that sets `expected_types` rejects it.
+A holder can withhold any disclosure, and a verifier cannot tell a withheld
+disclosure from a decoy (RFC 9901 §9.7). So a disclosable `exp` or `status` lets
+the holder present an expired or revoked credential as one that never expires and
+has no status. `issue()` therefore raises `SdJwtError`, before it signs anything,
+when `disclosable` names one of these claims:
+
+| Refused in `disclosable` | Why |
+|---|---|
+| `iss`, `nbf`, `exp`, `cnf`, `vct`, `vct#integrity`, `aka_vcts`, `status` | draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3: they, "including any of their sub-claims", MUST NOT be selectively disclosed |
+| `credentialStatus` | openvc enforces a W3C status pointer on SD-JWT too, exactly like `status` |
+| `@context` | it makes the payload a W3C VCDM credential, which switches on the VCDM validity window and the `issuer` / `id` / `sub` consistency checks |
+| `validFrom`, `validUntil`, `issuanceDate`, `expirationDate` | only when `@context` makes the payload VCDM: the validity window openvc enforces there |
+
+`sub`, `iat` and every other claim stay disclosable, and the issued token is
+byte-for-byte what it was before. The guard covers what `disclosable` produces:
+digests you write into `claims` yourself (an `_sd` array of your own) are signed
+as given. On an IETF SD-JWT VC a claim merely *named*
+`validUntil` means nothing, so it may be disclosed.
+
+<!-- docs: no-run -->
+```python
+suite.issue(claims, signing_key=issuer, disclosable=["given_name", "exp"])
+# SdJwtError: claim 'exp' must not be selectively disclosable (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3): ...
+```
+
+### Credentials from other issuers
+
+`verify()` rejects (`SdJwtError`) a presentation that **presents** a disclosure
+of one of those claims, or of any sub-claim of one: `cnf.jwk` under a plaintext
+`cnf`, `status.status_list`, an element of `aka_vcts` or `credentialStatus`. A
+non-conformant issuer then fails visibly instead of only failing open.
+
+It cannot catch the disclosure a holder **withholds**. A credential whose issuer
+made `exp` or `status` disclosable still verifies as never-expiring, or with no
+status, when the holder leaves that disclosure out. The exceptions are `iss`,
+without which nothing verifies, and `vct`: it is REQUIRED, so a `dc+sd-jwt` that
+is not a VCDM payload and has no `vct` is rejected (`ClaimsInvalid`), whoever left
+it out. `issue()` likewise requires `vct` to be a non-empty string. If you accept SD-JWT VCs from
+issuers you do not control and rely on expiry or status, check that the verified
+`claims` actually carry them.
+
+The same limit applies to a third-party W3C credential whose `@context` was
+disclosable and is withheld (including a VCDM entry that is itself an
+array-element disclosure). It then counts as VCDM only if it is typed `vc+sd-jwt`
+and has no `vct`. Otherwise its window and its `issuer` / `id` / `sub`
+consistency are not checked, and a policy that sets `expected_types` rejects it.
+
+Two claims are deliberately **not** refused:
+
+- `credentialSchema`. Schema validation is opt-in data-shape checking, not a
+  gate: `require_schema` fails closed when the resolver is missing, never when
+  the schema is. If you need it validated, keep it out of `disclosable` yourself.
+  `ecdsa-sd-2023`'s mandatory pointers follow the same logic (see the
+  [Security model](Security-Model)).
+- `aud`. RFC 9901 §9.7 names it, but the SD-JWT VC draft does not, and this suite
+  never reads the issuer JWT's `aud`, so refusing it would enforce nothing.
