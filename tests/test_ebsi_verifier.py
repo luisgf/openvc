@@ -34,6 +34,7 @@ import pytest
 from openvc.did.base import DidResolutionError, parse_did_document
 from openvc.errors import OpenvcError
 from openvc.keys import P256SigningKey
+from openvc.multibase import b58btc_encode
 from openvc.proof.errors import CredentialExpired
 from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc_ebsi.errors import MalformedRegistryResponse
@@ -462,6 +463,9 @@ def test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request(iss: str) -> 
     # #246. An unsigned token is enough: the issuer is peeked and put in the DID Registry
     # URL, which httpx rejected with a bare `httpx.InvalidURL`. Uses the real client so
     # the URL reaches httpx; the mock transport records any request that gets through.
+    # Since #266 the resolver refuses the string as "not a did:ebsi identifier" before the
+    # URL is built, so the client's `HttpForbiddenHost` (still pinned in test_ebsi_http.py
+    # and, for a TIR href, below) is no longer what the caller sees: `EbsiVerificationError`.
     requests: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -477,8 +481,65 @@ def test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request(iss: str) -> 
     token = f"{seg({'alg': 'ES256', 'kid': iss + '#k'})}.{seg({'iss': iss, 'vc': {}})}.AAAA"
     with pytest.raises(OpenvcError) as exc_info:
         verify_ebsi_badge(token, resolver=resolver, proof_suite=suite)
-    assert type(exc_info.value) is HttpForbiddenHost
+    assert type(exc_info.value) is EbsiVerificationError
+    assert type(exc_info.value.__cause__) is DidResolutionError
+    assert "not a did:ebsi identifier" in str(exc_info.value)
     assert requests == []
+
+
+def test_guard_host_still_guards_a_tir_href() -> None:
+    # #246, the half #266 does not touch. A TIR `attributes` / `next` / `href` URL is
+    # registry-supplied and never passes the DID check; the client's `_guard_host` is what
+    # stands behind the origin pin. Direct test on a recorded revision `href`: the recorded
+    # one passes, and each way it could be turned into a request the client must not make
+    # is `HttpForbiddenHost`, before any I/O.
+    href = _load("tir_v5_attributes.json")["items"][0]["href"]
+    client = EbsiHttpClient(allowed_hosts={"api-pilot.ebsi.eu"})
+    try:
+        client._guard_host(href)                                       # control: passes
+        for bad in (
+            href.replace("api-pilot.ebsi.eu", "evil.example"),         # host off the allow-list
+            href.replace("https://", "http://", 1),                    # not https
+            href + "\t", href + "\x00", href + "\x7f", href + " x",    # not visible ASCII
+            href + "\u00e9",                                           # non-ASCII
+            "https://api-pilot.ebsi.eu:99999/x",                       # port out of range
+        ):
+            with pytest.raises(HttpForbiddenHost) as exc_info:
+                client._guard_host(bad)
+            assert type(exc_info.value) is HttpForbiddenHost
+    finally:
+        client.close()
+
+
+def test_resolver_over_the_real_client_refuses_a_tir_url_off_the_allow_list() -> None:
+    # The same guard, reached through the resolver: a TIR issuer response whose
+    # `attributes` URL is on the listing's origin (so the origin pin passes it) but on a
+    # host the client does not allow. The issuer URL itself is served by a stub so the
+    # walk gets as far as the `attributes` fetch; the mock transport records any request.
+    other_base = "https://registry.example"
+    did = "did:ebsi:zZeKyEJfUTGwajhNyNX928z"
+    issuer_url = f"{other_base}/trusted-issuers-registry/v5/issuers/{did}"
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(404, json={})
+    client = EbsiHttpClient(allowed_hosts={"api-pilot.ebsi.eu"})
+    client._client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    def fetch(url: str) -> dict:
+        if url == issuer_url:
+            return {"did": did, "hasAttributes": True, "attributes": f"{issuer_url}/attributes"}
+        return client.get_json(url)
+    try:
+        resolver = DidEbsiResolver(fetch, decode_jwt=VcJwtProofSuite().peek_claims,
+                                   tir=TirV5(), base=other_base)
+        with pytest.raises(HttpForbiddenHost) as exc_info:
+            resolver.issuer_record(did)
+        assert type(exc_info.value) is HttpForbiddenHost
+        assert requests == []
+    finally:
+        client.close()
 
 
 def test_tir_v5_malformed_registry_response_is_typed_error() -> None:
@@ -661,6 +722,11 @@ def test_ssrf_guard_blocks_foreign_and_plaintext_hosts() -> None:
 # kid), and each negative is paired with a control carrying the right `id`, so the `id` is
 # the only thing that can make it fail.
 
+def _did(seed: int) -> str:
+    # A well-formed did:ebsi identifier (#266): `z` + base58btc(version byte 1 || 16 bytes).
+    return "did:ebsi:z" + b58btc_encode(bytes([1]) + bytes([seed]) * 16)
+
+
 BIND_DID = "did:ebsi:zZeKyEJfUTGwajhNyNX928z"
 BIND_KID = f"{BIND_DID}#key-1"
 BIND_URL = f"{PILOT_BASE}/did-registry/v5/identifiers/{BIND_DID}"
@@ -668,7 +734,7 @@ _ABSENT = object()                              # the document has no `id` membe
 
 # the document `id` member: not the requested DID, or not a usable string at all
 WRONG_IDS = [
-    pytest.param("did:ebsi:zSomebodyElse", id="another-did"),
+    pytest.param(_did(0xD4), id="another-did"),
     pytest.param(7, id="number"),
     pytest.param(None, id="null"),
     pytest.param([], id="list"),
@@ -748,31 +814,26 @@ def test_resolve_refuses_a_document_that_is_not_for_the_requested_did(
     pytest.param(7, id="number"),
     pytest.param(_ABSENT, id="absent"),
 ])
-def test_resolve_refuses_a_document_without_a_usable_id_even_for_an_empty_did(
+def test_resolve_refuses_the_empty_did_before_it_asks_the_registry(
         doc_id: object, wrapped: bool) -> None:
-    # The parser reads an absent, empty or non-string `id` as "". A bare `doc.id != did`
-    # would then accept it for `resolve("")`: "" == "". A document with no usable `id`
-    # is refused whatever was asked, so "never matches" holds without a caveat.
+    # #257 pinned that a document with no usable `id` (the parser reads it as "") is not
+    # accepted for resolve(""), where "" == "". Since #266 the empty string is not a
+    # did:ebsi identifier, so it never reaches the registry: refused on syntax, with no
+    # request, whatever the document at the (empty) identifier URL would have held. The
+    # document-side refusal is still pinned, for a well-formed DID, by WRONG_IDS (empty,
+    # number and absent among them).
     sk = P256SigningKey.generate(kid=BIND_KID)
     suite = VcJwtProofSuite()
     empty_url = f"{PILOT_BASE}/did-registry/v5/identifiers/"          # identifiers_url(base, "")
-    # control: the route for "" answers (the document is fetched and parsed, not a 404) and
-    # a document with a real `id` is still not the one that was asked for; the same
-    # document, asked for by its own DID, resolves
-    fetch = StubFetch({empty_url: _bind_doc(sk, BIND_DID, wrapped=wrapped)})
-    with pytest.raises(DidResolutionError, match="!= requested") as other:
-        DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, base=PILOT_BASE).resolve("")
-    assert type(other.value) is DidResolutionError
-    assert fetch.calls == [empty_url]
-    assert _bind_resolver(_bind_doc(sk, BIND_DID, wrapped=wrapped),
-                          suite).resolve(BIND_DID).id == BIND_DID
-    # the document with no usable `id` was fetched (the route answered) and refused
     fetch = StubFetch({empty_url: _bind_doc(sk, doc_id, wrapped=wrapped)})
     resolver = DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, base=PILOT_BASE)
-    with pytest.raises(DidResolutionError, match="!= requested") as exc_info:
+    with pytest.raises(DidResolutionError, match="not a did:ebsi identifier") as exc_info:
         resolver.resolve("")
     assert type(exc_info.value) is DidResolutionError
-    assert fetch.calls == [empty_url]
+    assert fetch.calls == []
+    # control: the same kind of document, asked for by a well-formed DID, resolves
+    assert _bind_resolver(_bind_doc(sk, BIND_DID, wrapped=wrapped),
+                          suite).resolve(BIND_DID).id == BIND_DID
 
 
 @pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "wrapper"])
@@ -823,10 +884,11 @@ def _registry_client(routes: dict[str, dict], paths: list[str]) -> EbsiHttpClien
     return client
 
 
-def test_resolve_refuses_a_did_url_although_the_registry_answers_it() -> None:
-    # A DID URL passed as the DID resolved by accident: httpx drops the fragment, so the
-    # registry returned the DID's own document. A DID URL is not a DID (iss and
-    # accreditedBy are DIDs), and the document's `id` is not the string that was asked for.
+def test_resolve_refuses_a_did_url_before_it_asks_the_registry() -> None:
+    # A DID URL passed as the DID resolved by accident (#257): httpx drops the fragment, so
+    # the registry returned the DID's own document, and the document `id` check refused it
+    # afterwards. A DID URL is not a DID (iss and accreditedBy are DIDs), so since #266 it
+    # is refused on syntax and the registry is not asked at all.
     sk = P256SigningKey.generate(kid=BIND_KID)
     suite = VcJwtProofSuite()
     paths: list[str] = []
@@ -834,10 +896,10 @@ def test_resolve_refuses_a_did_url_although_the_registry_answers_it() -> None:
     client = _registry_client({registry_path: _bind_doc(sk, BIND_DID, wrapped=False)}, paths)
     resolver = DidEbsiResolver(client.get_json, decode_jwt=suite.peek_claims, base=PILOT_BASE)
     assert resolver.resolve(BIND_DID).id == BIND_DID                  # control
-    with pytest.raises(DidResolutionError, match="!= requested") as exc_info:
+    with pytest.raises(DidResolutionError, match="not a did:ebsi identifier") as exc_info:
         resolver.resolve(BIND_KID)
     assert type(exc_info.value) is DidResolutionError
-    assert paths == [registry_path, registry_path]    # the registry did answer: no fragment sent
+    assert paths == [registry_path]                   # the control's request only: none for the URL
 
     token = suite.sign(
         {"id": "urn:uuid:x", "type": ["VerifiableCredential"], "issuer": BIND_KID,
@@ -846,15 +908,17 @@ def test_resolve_refuses_a_did_url_although_the_registry_answers_it() -> None:
         verify_ebsi_badge(token, resolver=resolver, proof_suite=suite, require_trust=False)
     assert type(vexc.value) is EbsiVerificationError
     assert type(vexc.value.__cause__) is DidResolutionError
+    assert paths == [registry_path]
     client.close()
 
 
-def test_resolve_refuses_the_document_a_dot_segment_iss_steers_to() -> None:
-    # An unsigned token's `iss` is put into the registry path unvalidated (out of scope
-    # here), so `zA/../zB` makes httpx request B's resource. The registry then returns B's
-    # document, whose `id` is not the requested string: closed by the binding, not by
-    # validating the DID.
-    other = "did:ebsi:zOtherSubjectBBBBBBBB"
+def test_resolve_refuses_a_dot_segment_iss_before_it_asks_the_registry() -> None:
+    # An unsigned token's `iss` is put into the registry path, so before #266 `zA/../zB`
+    # made httpx request B's resource; B's document then came back and #257's binding
+    # refused it because its `id` was not the requested string. Now the string is refused
+    # on syntax and the request is never made. The control proves B's resource is served
+    # and that the registry does answer the collapsed path.
+    other = _did(0xE5)
     sk = P256SigningKey.generate(kid=BIND_KID)
     other_doc = {"id": other, "verificationMethod": [{
         "id": f"{other}#key-1", "type": "JsonWebKey2020", "controller": other,
@@ -866,33 +930,48 @@ def test_resolve_refuses_the_document_a_dot_segment_iss_steers_to() -> None:
                                base=PILOT_BASE)
     assert resolver.resolve(other).id == other                        # control
     steered = f"{BIND_DID}/../{other}"
-    with pytest.raises(DidResolutionError, match="!= requested") as exc_info:
+    with pytest.raises(DidResolutionError, match="not a did:ebsi identifier") as exc_info:
         resolver.resolve(steered)
     assert type(exc_info.value) is DidResolutionError
-    assert paths == [other_path, other_path]            # the request did reach B's resource
+    assert paths == [other_path]                        # the control's request only
     client.close()
 
 
 def test_resolve_mismatch_message_is_bounded() -> None:
-    # The requested DID is a token's `iss` and the document `id` is registry-supplied:
-    # both are attacker-sized, and both are cut to 200 characters in the message.
-    long_did = "did:ebsi:" + "z" * 60_000
+    # The document `id` is registry-supplied and the requested DID is a token's `iss`:
+    # both are attacker-sized, and both are cut to 200 characters in their messages. A
+    # requested DID of that size is not a did:ebsi identifier (#266), so it is refused on
+    # syntax with its own bounded message; the document `id` is the side that can still be
+    # long at the comparison.
     long_other = "did:ebsi:" + "y" * 60_000
     sk = P256SigningKey.generate(kid=BIND_KID)
     suite = VcJwtProofSuite()
 
-    def resolver_for(doc_id: str) -> DidEbsiResolver:
+    def resolver_for(doc_id: str, calls: list[str] | None = None) -> DidEbsiResolver:
         doc = _bind_doc(sk, doc_id, wrapped=False)
-        return DidEbsiResolver(lambda url: doc, decode_jwt=suite.peek_claims, base=PILOT_BASE)
 
-    assert resolver_for(long_did).resolve(long_did).id == long_did    # control: same size, matches
+        def fetch(url: str) -> dict:
+            if calls is not None:
+                calls.append(url)
+            return doc
+        return DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, base=PILOT_BASE)
+
+    assert resolver_for(BIND_DID).resolve(BIND_DID).id == BIND_DID    # control
     with pytest.raises(DidResolutionError) as exc_info:
-        resolver_for(long_other).resolve(long_did)
+        resolver_for(long_other).resolve(BIND_DID)
     assert type(exc_info.value) is DidResolutionError
-    assert len(long_did) == len(long_other) == 60_009
-    assert str(exc_info.value) == (                    # each cut at 200 characters
-        f"document id {long_other[:200]!r}... (60009 chars) != "
-        f"requested {long_did[:200]!r}... (60009 chars)")
+    assert len(long_other) == 60_009
+    assert str(exc_info.value) == (                    # the registry's side, cut at 200 characters
+        f"document id {long_other[:200]!r}... (60009 chars) != requested {BIND_DID!r}")
+
+    long_did = "did:ebsi:" + "z" * 60_000
+    calls: list[str] = []
+    with pytest.raises(DidResolutionError) as syntax_info:
+        resolver_for(long_did, calls).resolve(long_did)
+    assert type(syntax_info.value) is DidResolutionError
+    assert str(syntax_info.value) == (                 # the requested side, cut at 200 characters
+        f"not a did:ebsi identifier: {long_did[:200]!r}... (60009 chars)")
+    assert calls == []
 
 
 def _long_did_registry(doc: dict, did: str):
@@ -919,46 +998,69 @@ def _long_issuer_token(suite: VcJwtProofSuite, sk: P256SigningKey, issuer: str) 
 def test_verify_ebsi_badge_wrapper_messages_are_bounded() -> None:
     # The resolver's own message is cut (above), but `verify_ebsi_badge` wraps it in a
     # message of its own, and that one names the issuer (a token's `iss`, attacker-sized)
-    # and the `kid` (a header field, equally so). Each is cut at 200 characters too.
-    long_did = "did:ebsi:" + "z" * 60_000
-    long_other = "did:ebsi:" + "y" * 60_000
-    long_kid = f"{long_did}#key-1"
+    # and the `kid` (a header field, equally so). Each is cut at 200 characters too. An
+    # `iss` of that size is not a did:ebsi identifier (#266), so the DID-sized cases are:
+    # the `iss` itself, a registry document whose `id` is long, and a long `kid`.
+    long_did = "did:ebsi:" + "z" * 60_000                       # an `iss` that is not a DID
+    long_other = "did:ebsi:" + "y" * 60_000                     # a registry-supplied `id`
+    long_kid = f"{BIND_DID}#" + "k" * 60_000
     sk = P256SigningKey.generate(kid=long_kid)
     suite = VcJwtProofSuite()
-    token = _long_issuer_token(suite, sk, long_did)
+    token = _long_issuer_token(suite, sk, BIND_DID)
 
     def doc_with(doc_id: str, vm_id: str) -> dict:
         return {"id": doc_id, "verificationMethod": [{
             "id": vm_id, "type": "JsonWebKey2020", "controller": doc_id,
             "publicKeyJwk": sk.public_jwk()}], "assertionMethod": [vm_id]}
 
-    def resolver_for(doc: dict) -> DidEbsiResolver:
-        return DidEbsiResolver(_long_did_registry(doc, long_did),
-                               decode_jwt=suite.peek_claims, base=PILOT_BASE)
+    def resolver_for(doc: dict, did: str, calls: list[str] | None = None) -> DidEbsiResolver:
+        inner = _long_did_registry(doc, did)
+
+        def fetch(url: str) -> dict:
+            if calls is not None:
+                calls.append(url)
+            return inner(url)
+        return DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, base=PILOT_BASE)
 
     # control: the same sizes, a document that is for the issuer and holds the key, verify
-    ok = verify_ebsi_badge(token, resolver=resolver_for(doc_with(long_did, long_kid)),
+    ok = verify_ebsi_badge(token, resolver=resolver_for(doc_with(BIND_DID, long_kid), BIND_DID),
                            proof_suite=suite, require_trust=False)
-    assert ok.issuer == long_did
+    assert ok.issuer == BIND_DID
 
-    # the registry answers with another subject's document: the resolve wrapper
+    # an `iss` that is not a did:ebsi identifier: the resolve wrapper, no request at all
+    calls: list[str] = []
+    long_token = _long_issuer_token(suite, sk, long_did)
+    with pytest.raises(OpenvcError) as syntax_info:
+        verify_ebsi_badge(long_token,
+                          resolver=resolver_for(doc_with(long_did, long_kid), long_did, calls),
+                          proof_suite=suite, require_trust=False)
+    assert type(syntax_info.value) is EbsiVerificationError
+    assert type(syntax_info.value.__cause__) is DidResolutionError
+    assert str(syntax_info.value) == (
+        f"could not resolve issuer DID {long_did[:200]!r}... (60009 chars): "
+        f"not a did:ebsi identifier: {long_did[:200]!r}... (60009 chars)")
+    assert calls == []
+
+    # the registry answers with another subject's document, whose `id` is long
     with pytest.raises(OpenvcError) as exc_info:
-        verify_ebsi_badge(token, resolver=resolver_for(doc_with(long_other, long_kid)),
+        verify_ebsi_badge(token,
+                          resolver=resolver_for(doc_with(long_other, long_kid), BIND_DID),
                           proof_suite=suite, require_trust=False)
     assert type(exc_info.value) is EbsiVerificationError
     assert type(exc_info.value.__cause__) is DidResolutionError
-    assert str(exc_info.value).startswith(
-        f"could not resolve issuer DID {long_did[:200]!r}... (60009 chars): ")
-    assert len(str(exc_info.value)) < 1000
+    assert str(exc_info.value) == (
+        f"could not resolve issuer DID {BIND_DID!r}: "
+        f"document id {long_other[:200]!r}... (60009 chars) != requested {BIND_DID!r}")
 
     # the document is the issuer's but holds no key under the token's `kid`
     with pytest.raises(OpenvcError) as vm_info:
-        verify_ebsi_badge(token, resolver=resolver_for(doc_with(long_did, f"{long_did}#other")),
+        verify_ebsi_badge(token,
+                          resolver=resolver_for(doc_with(BIND_DID, f"{BIND_DID}#other"), BIND_DID),
                           proof_suite=suite, require_trust=False)
     assert type(vm_info.value) is VerificationMethodNotFound
     assert str(vm_info.value) == (
-        f"no verification method for kid {long_kid[:200]!r}... (60015 chars) in DID "
-        f"{long_did[:200]!r}... (60009 chars)")
+        f"no verification method for kid {long_kid[:200]!r}... ({len(long_kid)} chars) in DID "
+        f"{BIND_DID!r}")
 
 
 # --------------------------------------------------------------------------- #

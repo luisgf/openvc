@@ -429,7 +429,29 @@ def test_a_dc_sd_jwt_with_no_vct_at_all_is_rejected(run):
         run(_mint(claims))
 
 
-def test_a_vcdm_payload_needs_no_vct(run):
-    # A W3C VCDM credential is typed by `type`; the vct rule binds IETF SD-JWT VCs only.
-    for typ in ("vc+sd-jwt", "dc+sd-jwt"):
-        assert run(_mint(_vcdm(), typ=typ)).claims["type"] == ["VerifiableCredential"]
+def _raw(result):
+    # the VerifiedSdJwt itself: the suite returns it, the pipelines carry it as `.raw`
+    return getattr(result, "raw", result)
+
+
+def test_a_vc_sd_jwt_vcdm_payload_needs_no_vct(run):
+    # A W3C VCDM credential secured as `vc+sd-jwt` is typed by `type`, not by `vct`.
+    result = run(_mint(_vcdm(), typ="vc+sd-jwt"))
+    assert result.claims["type"] == ["VerifiableCredential"]
+    assert _raw(result).vcdm is True
+    assert _raw(result).vct is None
+
+
+def test_a_dc_sd_jwt_needs_a_vct_even_with_a_vcdm_context(run):
+    # #272: `dc+sd-jwt` means the payload follows the SD-JWT VC rules (draft-19 §2.2.1),
+    # and §2.2.2.3 makes `vct` REQUIRED there. A VCDM @context does not waive it.
+    with pytest.raises(ClaimsInvalid, match="needs a non-empty string vct"):
+        run(_mint(_vcdm(), typ="dc+sd-jwt"))
+
+
+def test_a_dc_sd_jwt_vcdm_payload_with_a_vct_verifies_as_vcdm(run):
+    # The vct satisfies the IETF rule; the VCDM @context still switches the VCDM rules on.
+    result = run(_mint(_vcdm(vct=VCT), typ="dc+sd-jwt"))
+    assert _raw(result).vcdm is True
+    assert _raw(result).vct == VCT
+    assert _raw(result).typ == "dc+sd-jwt"

@@ -1,6 +1,7 @@
 """
 tests/test_sd_jwt_vc_typ_vcdm_only.py — the ``vc+sd-jwt`` issuer typ is accepted only for a
-payload with a VCDM base ``@context`` (#264; a conforming VCDM payload is #275).
+payload with a VCDM base ``@context`` (#264; a conforming VCDM payload is #275), and the
+``dc+sd-jwt`` typ always needs a ``vct`` (#272).
 
 draft-ietf-oauth-sd-jwt-vc-19 §2.2.1 types an IETF SD-JWT VC ``dc+sd-jwt`` and dropped the
 transitional acceptance of the ``vc+sd-jwt`` that drafts before 06 used. W3C VC-JOSE-COSE
@@ -18,9 +19,14 @@ That was a hole, not a leniency:
 
 The rule now: ``vc+sd-jwt`` needs a VCDM base context (``@context``, never disclosable,
 so the verdict rests on issuer-signed plaintext) and is refused (``SdJwtError``) without
-one, a ``vct`` or none. A ``dc+sd-jwt`` is unchanged: an IETF SD-JWT VC needs a non-empty
-string ``vct`` (``ClaimsInvalid``) unless it carries a VCDM ``@context``. A ``vc+sd-jwt``
-that does carry one is still VCDM, with or without ``vct``, with the validity window.
+one, a ``vct`` or none. The other direction (#272): a ``dc+sd-jwt`` needs a non-empty
+string ``vct`` (``ClaimsInvalid``) whether or not it carries a VCDM ``@context``, because the
+typ says the payload follows the SD-JWT VC rules (draft-19 §2.2.1), and those make ``vct``
+REQUIRED (§2.2.2.3). One that has both verifies as VCDM, window and consistency checks
+included. A ``vc+sd-jwt`` that carries a VCDM context is still VCDM, with or without
+``vct``, with the validity window. Under OpenID4VP the ``dc+sd-jwt`` format answers only
+for an issuer JWT typed ``dc+sd-jwt`` (``result.raw.typ``): a W3C credential secured as
+``vc+sd-jwt`` is not an IETF SD-JWT VC, ``meta.vct_values`` or not.
 
 Helpers are self-contained (tests/ is not a package — no cross-import); issuers are
 ``did:jwk``, resolved offline by the default resolvers; ``asyncio.run`` drives the async
@@ -43,6 +49,7 @@ from openvc import (
 )
 from openvc.errors import OpenvcError
 from openvc.keys import P256SigningKey
+from openvc.openid4vp import VpTokenMalformed
 from openvc.proof.errors import ClaimsInvalid, CredentialExpired, CredentialNotYetValid
 from openvc.proof.sd_jwt import (
     SdJwtError,
@@ -315,9 +322,12 @@ def test_suite_result_reports_vcdm_for_a_vc_sd_jwt_with_a_vcdm_context():
 
 
 def test_vc_sd_jwt_is_vcdm_by_its_context_and_not_by_its_typ():
-    # The same VCDM body verifies the same way under either typ; only the context matters.
-    for typ in ("vc+sd-jwt", "dc+sd-jwt"):
-        assert _suite_verify(_mint(_vcdm(), typ=typ)).vcdm is True
+    # The same VCDM body verifies the same way under either typ; only the context decides
+    # VCDM. The dc+sd-jwt carries its REQUIRED vct too (#272); the vc+sd-jwt needs none.
+    for typ, extra in (("vc+sd-jwt", {}), ("dc+sd-jwt", {"vct": VCT})):
+        result = _suite_verify(_mint(_vcdm(**extra), typ=typ))
+        assert result.vcdm is True
+        assert result.typ == typ
 
 
 def test_vc_sd_jwt_vcdm_expired_valid_until_still_fails(run, form):
@@ -361,7 +371,52 @@ def test_a_withheld_context_leaves_a_vc_sd_jwt_refused(run):
 
 
 # --------------------------------------------------------------------------- #
-# OpenID4VP — a vct-less vc+sd-jwt must not answer a dc+sd-jwt query
+# dc+sd-jwt with a VCDM @context still needs its vct (#272)
+# --------------------------------------------------------------------------- #
+
+def test_a_dc_sd_jwt_with_a_vcdm_context_and_no_vct_is_refused(run, form):
+    # draft-19 §2.2.1: the typ says the payload follows the SD-JWT VC rules, and §2.2.2.3
+    # makes vct REQUIRED there. A VCDM @context used to waive it; it does not any more.
+    with pytest.raises(ClaimsInvalid, match=NEEDS_VCT):
+        run(form(_mint(_vcdm(), typ="dc+sd-jwt")), None)
+
+
+@pytest.mark.parametrize("vct", ["", 0, [], None, {"a": "b"}],
+                         ids=["empty", "zero", "empty-array", "null", "object"])
+def test_a_vct_that_is_not_a_non_empty_string_does_not_rescue_a_vcdm_dc_sd_jwt(
+        run, form, vct):
+    with pytest.raises(ClaimsInvalid, match=NEEDS_VCT):
+        run(form(_mint(_vcdm(vct=vct), typ="dc+sd-jwt")), None)
+
+
+def test_the_suite_refuses_a_vct_less_vcdm_dc_sd_jwt_directly():
+    with pytest.raises(ClaimsInvalid, match=NEEDS_VCT):
+        _suite_verify(_mint(_vcdm(), typ="dc+sd-jwt"))
+
+
+def test_a_dc_sd_jwt_with_a_vcdm_context_and_a_vct_verifies_as_vcdm(run, form):
+    result = run(form(_mint(_vcdm(vct=VCT), typ="dc+sd-jwt")), None)
+    assert result.raw.vcdm is True
+    assert result.raw.vct == VCT
+
+
+def test_the_vcdm_rules_still_bind_a_dc_sd_jwt_that_has_its_vct(run, form):
+    with pytest.raises(CredentialExpired):
+        run(form(_mint(_vcdm(validUntil=PAST, vct=VCT), typ="dc+sd-jwt")), None)
+    with pytest.raises(ClaimsInvalid, match="!= issuer"):
+        run(form(_mint(_vcdm(issuer="did:web:university.example", vct=VCT),
+                       typ="dc+sd-jwt")), None)
+
+
+def test_the_verified_issuer_typ_is_reported(run, form):
+    assert _suite_verify(_mint(_ietf(), typ="dc+sd-jwt")).typ == "dc+sd-jwt"
+    assert _suite_verify(_mint(_vcdm(), typ="vc+sd-jwt")).typ == "vc+sd-jwt"
+    assert run(form(_mint(_ietf(), typ="dc+sd-jwt")), None).raw.typ == "dc+sd-jwt"
+    assert run(form(_mint(_vcdm(), typ="vc+sd-jwt")), None).raw.typ == "vc+sd-jwt"
+
+
+# --------------------------------------------------------------------------- #
+# OpenID4VP — a vc+sd-jwt must not answer a dc+sd-jwt query
 # --------------------------------------------------------------------------- #
 
 def _present(claims, *, typ):
@@ -398,3 +453,34 @@ def test_openid4vp_dc_sd_jwt_query_refuses_a_vct_bearing_vc_sd_jwt():
     # A legacy (pre-draft-06) issuer's credential, with the vct the query even asks for.
     with pytest.raises(SdJwtError, match=REFUSED):
         _answer(_present(_ietf(), typ="vc+sd-jwt"), vct_values=[VCT])
+
+
+@pytest.mark.parametrize("claims, vct_values", [
+    pytest.param(_vcdm(), None, id="no-vct-no-vct-values"),
+    pytest.param(_vcdm(vct=VCT), None, id="vct-no-vct-values"),
+    pytest.param(_vcdm(vct=VCT), [VCT], id="vct-matching-vct-values"),
+])
+def test_openid4vp_dc_sd_jwt_query_refuses_a_vcdm_credential_secured_as_vc_sd_jwt(
+        claims, vct_values):
+    # #272: the pipeline names every SD-JWT "sd-jwt-vc", a W3C VCDM credential secured as
+    # `vc+sd-jwt` included. The dc+sd-jwt format is the IETF SD-JWT VC, whose issuer JWT is
+    # typed `dc+sd-jwt` (draft-19 §2.2.1): the W3C credential does not answer the query,
+    # even with a vct that matches `meta.vct_values`.
+    with pytest.raises(VpTokenMalformed, match="must be an IETF SD-JWT VC") as excinfo:
+        _answer(_present(claims, typ="vc+sd-jwt"), vct_values=vct_values)
+    assert type(excinfo.value) is VpTokenMalformed
+    assert "'vc+sd-jwt'" in str(excinfo.value)
+
+
+def test_openid4vp_dc_sd_jwt_query_refuses_a_vct_less_vcdm_dc_sd_jwt():
+    # The vct waiver is gone (#272), so the suite's own rule refuses it before the format
+    # check is reached.
+    with pytest.raises(ClaimsInvalid, match=NEEDS_VCT):
+        _answer(_present(_vcdm(), typ="dc+sd-jwt"))
+
+
+def test_openid4vp_dc_sd_jwt_query_answers_a_vcdm_dc_sd_jwt_that_has_its_vct():
+    answer = _answer(_present(_vcdm(vct=VCT), typ="dc+sd-jwt"), vct_values=[VCT])
+    assert answer.raw.typ == "dc+sd-jwt"
+    assert answer.raw.vcdm is True
+    assert answer.raw.vct == VCT

@@ -213,7 +213,7 @@ member that is not JSON, such as `{"id": b"x"}`, builds and fails at sign). A to
 and `default_status_list_token_resolver` refuses it (`StatusListError`: no `iss` to find
 the key with), so pass the issuer unless you resolve the key some other way.
 
-This is a behaviour change in 1.32.5. These used to build and now raise: an `issuer` that
+This is a behaviour change in 1.33.0. These used to build and now raise: an `issuer` that
 is not a non-empty string or an object with a string `id` and no `@id`; a `subject_id`,
 entry `id` or token `issuer` that is not a non-empty string; `contexts` that is a string,
 a `dict`, an iterator or a list with an entry that is neither a non-empty string nor an
@@ -221,7 +221,7 @@ object, or whose first entry is not a VC base context; and a falsy `subject_id` 
 `contexts` that fell back to the default (pass `None`, or leave it out). Inputs that
 already raised a bare `TypeError` (`contexts=5`, a `bytes` issuer) now raise
 `StatusListError`. The
-[CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for 1.32.5
+[CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for 1.33.0
 has the list.
 
 ## Fail-closed by default in the pipeline
