@@ -144,7 +144,7 @@ All notable changes to **openvc** are documented here. The format follows
     the origin pin on `attributes`, `href` and `links.next`; the single-level and recursive
     trust policies.
 
-## [1.32.4] — unreleased
+## [1.32.4] — 2026-10-14
 
 ### Security
 
@@ -219,6 +219,52 @@ All notable changes to **openvc** are documented here. The format follows
   `tests/fixtures/didwebvh` golden log resolves unchanged. `did:web` and the EBSI DID
   Registry keep tolerating the `didDocument` envelope, which is what the shared parser's
   unwrapping is for.
+- **A Data Integrity key is selected, and authorized for its purpose, by exact DID
+  URL** ([#258](https://github.com/luisgf/openvc/issues/258)). Found by the
+  adversarial review of [#251](https://github.com/luisgf/openvc/pull/251); the gap
+  predates it. `DidDocument.key_for_purpose` compared only the text after the first
+  `#`. A relationship entry granted a method whenever its fragment matched, whatever
+  came before the `#`: a method of another DID (`did:web:other.example#auth`, as a
+  string or as an embedded method), one version of the document (`?versionId=1#auth`),
+  a path (`/path#auth`), an `https:` URL, or a bare `auth`. Method selection used the
+  same rule and took the first match in document order, so a same-fragment method
+  listed before the exact one shadowed it: a correctly signed proof failed with
+  `SignatureInvalid` and a proof signed by the shadowing method's key verified. All
+  five Data Integrity suites were affected, sync and async, on the credential lane
+  (`assertionMethod`, or `policy.proof_purpose`) and on the OpenID4VP `ldp_vc`
+  holder proof (`authentication`).
+
+  No key from outside the issuer's own document was ever admitted: the key always
+  comes from the resolved document, `did:web` / `did:webvh` bind the document `id`,
+  and the proof's DID is bound to the credential `issuer` (or is the VP holder). What
+  broke was purpose separation inside one document. A key the document lists for
+  `authentication` only could sign credentials accepted as assertions whenever the
+  controller had written an `assertionMethod` entry with the same fragment that
+  points elsewhere.
+
+  The rule now follows DID Core 1.0 §3.2.2 and CID 1.0 §3.3 (steps 9 and 11). A
+  method `id` and a relationship reference are compared as absolute DID URLs: a
+  `did:` URL as written, a `#fragment` resolved against the document `id` when that
+  `id` is a DID (§3.1 syntax), and anything else as resolving to nothing. The proof's
+  `verificationMethod` selects the one method whose absolute `id` equals it, else
+  `KeyResolutionError` (`resolve_verification_key` now decides that with the same
+  strict lookup, never the fragment-tolerant `key_by_kid`). A declared relationship
+  grants it only through a reference that resolves to the same `id`, compared as a
+  plain case-sensitive string, else `ProofPurposeMismatch`. In the lookup the
+  document `id` is checked a fixed number of times, and only the selected method's
+  own relative `id` is resolved; no other method id or reference is: each is compared
+  with the spellings of the one absolute `id` it must name, so the cost stays linear
+  in the document size, however long the DID and however many entries it lists. A
+  resolver that returns its own document type instead of a `DidDocument` keeps the
+  previous classification of a refusal (by its `key_by_kid`), so it still gets a typed
+  error rather than an `AttributeError` that would abort `verify_many`.
+  Unchanged: an undeclared relationship stays lenient, a declared but empty one grants
+  nothing, and a `kid` of `None` still falls back to the document's sole method (which
+  must then pass the exact-reference grant). The JOSE lanes keep `key_by_kid`, which
+  tolerates a bare or `#`-relative `kid` (a JWS `kid` is a hint); they check no
+  verification relationship, which is a separate policy question. The recorded
+  vectors (W3C vc-di-eddsa, vc-di-ecdsa, ecdsa-sd-2023, the EBSI DID Registry capture,
+  the did:webvh logs) all use absolute ids and verify unchanged.
 
 ### Changed
 
@@ -284,7 +330,7 @@ All notable changes to **openvc** are documented here. The format follows
   `vct_values` on an `mso_mdoc` query is ignored). The `verify_vp_token` docstring
   and the wiki ("Type constraints in the query") state the rule.
   `verify_encrypted_vp_response` delegates to `verify_vp_token`, so it follows. The
-  `multiple` flag is still read by truthiness, which is a separate gap.
+  `multiple` flag is still read by truthiness, which is a separate gap (#268).
 - **A `did:webvh` log whose last state has a `didDocument` member no longer resolves**
   (#256). It used to resolve, to the inner document. No golden log and no known
   implementation produces one. A wrapper that was not an object (`null`, a list, a
@@ -294,6 +340,89 @@ All notable changes to **openvc** are documented here. The format follows
   `deactivated` flag: a deactivated log whose last state is wrapped now fails with the
   wrapper message, not "is deactivated". Both are a `DidWebvhError`, and a deactivated log
   with a bare last state still reports the deactivation.
+
+- **A naive `datetime` is UTC in both status-list builders, so a non-UTC host now mints
+  a different `validFrom` / `validUntil`**
+  ([#255](https://github.com/luisgf/openvc/issues/255)). This is the one change in this
+  release that alters what a successful call returns rather than refusing an input: the
+  call still succeeds and signs a different string. Decision: a naive value is *read as UTC* rather than refused, the one rule
+  every openvc clock check uses (the
+  [#187](https://github.com/luisgf/openvc/issues/187) precedent).
+
+  `build_status_list_credential` called `astimezone`, which reads a naive value as the
+  **host's local time**, while `build_status_list_token` already read it as UTC. The same
+  `datetime(2026, 1, 1, 12, 0)` minted `validFrom = 2026-01-01T03:00:00Z` under
+  `TZ=Asia/Tokyo` and `17:00:00Z` under `America/New_York`, and `iat = 12:00:00Z` in the
+  token on both: a host west of UTC kept a list valid for hours longer than intended, one
+  east of it expired the list early. Both builders now agree and the result no longer
+  depends on the host's zone: `12:00:00Z` everywhere. A caller that relied on the local
+  reading passes an aware `datetime` instead (`datetime(..., tzinfo=ZoneInfo("Asia/Tokyo"))`).
+  On a host already on UTC nothing changes, and neither does anything for an aware value:
+  `valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc)` is still `"2026-01-01T00:00:00Z"`,
+  byte for byte. Two edge inputs follow the same rule: a `tzinfo` whose `utcoffset()` is
+  `None` (naive by Python's own definition) is UTC in both builders, where it was a bare
+  `TypeError` in the token builder and local time in the credential one; and a naive
+  `datetime.min` / `datetime.max` builds (`0001-01-01T00:00:00Z`, `9999-12-31T23:59:59Z`),
+  where it was a bare `ValueError`.
+
+- **`ttl` is `None` or a positive `int`, on both builders**
+  ([#255](https://github.com/luisgf/openvc/issues/255)). Decision: an `int` only, never a
+  `bool`, rather than "also a finite float" (the IETF draft's "positive number"), which
+  matches the signature, and a CWT `ttl` is an unsigned integer. Anything else raises
+  `StatusListError`.
+  - `"5"`, `True`, `1.5`, `300.0`, `0`, `-1`, a `list`, a `dict` and `10**400` were
+    minted as given; `NaN` and `inf` were signed as non-JSON. Pass a positive `int`.
+  - a `timedelta`, a `Decimal`, a `Fraction` (pass `int(x)`) and `10**5000` were a bare
+    `TypeError` / `ValueError` in the token builder, and in the credential builder a
+    credential that failed later at `VcJwtProofSuite.sign`.
+  - `ttl=300` is unchanged. The IETF `ttl` is seconds and the W3C one milliseconds; the
+    builders do not convert.
+
+- **`issued_at` / `expires` take a `datetime` or a finite number**
+  ([#255](https://github.com/luisgf/openvc/issues/255)): the same NumericDate gate
+  (`is_numeric_date`) that `verify_status_list_token` applies to `iat` / `exp` / `nbf`.
+  A digit string (`"1700000000"`, which `int()` coerced), a `bool` (minted as `1` / `0`),
+  a `Decimal` or `Fraction` (pass `int(x)`) now raise `StatusListError`. `time.time()`
+  and any finite `float` still work and are truncated to whole seconds as before. A
+  `datetime` whose UTC form is outside years 1 to 9999 (year 1 at `+01:00`,
+  `9999-12-31T23:00` at `-05:00`) is refused too, as `valid_from` / `valid_until` already
+  refuse it; the token used to sign an epoch for it (see Fixed).
+
+- **`valid_from` / `valid_until` are a `datetime` or `None`**, as the signature says
+  ([#255](https://github.com/luisgf/openvc/issues/255)). A string, an epoch number or a
+  `date` was a bare `AttributeError` and is now a `StatusListError`.
+
+- **Callers that caught a builtin exception around a builder catch `OpenvcError`.** The
+  inputs that already raised now raise `StatusListError` (an `OpenvcError`) instead of
+  `ValueError` / `TypeError` / `OverflowError` / `AttributeError`.
+
+- `openvc.proof._verify_common.utc_instant` and `utc_epoch` gain an add-only `name=`
+  keyword (default `"now"`), so a caller that reads some other datetime the same way gets
+  an error that names its parameter. The default messages are unchanged.
+- **Behaviour change: DID documents that relied on the fragment match now fail**
+  ([#258](https://github.com/luisgf/openvc/issues/258)), on the Data Integrity lanes
+  only. Each fails closed with a typed error, and in `verify_many` /
+  `verify_many_async` only its own item fails.
+  - A relationship entry that is not a DID URL for the method, such as
+    `"assertionMethod": ["key-1"]`, no longer grants `#key-1`: `ProofPurposeMismatch`.
+    Such a document does not conform to DID Core (an entry must be a DID URL, and a
+    bare `key-1` is a relative path reference). `"#key-1"` and the full
+    `did:…#key-1` still grant it.
+  - A method whose `id` is not a DID URL for the proof's `verificationMethod` (a bare
+    `key-1`, another DID's `#key-1`, a `#key-1` in a document whose `id` is not a DID)
+    is no longer selected: `KeyResolutionError`.
+  - Two methods whose `id`s resolve to the same absolute DID URL (`#key-1` and
+    `did:…#key-1`, or the same `id` twice) are ambiguous, and neither is selected:
+    `KeyResolutionError`. Document order used to pick the first.
+  - `DidDocument.key_for_purpose` called directly with a bare or `#`-relative `kid`
+    returns `None`; it takes the absolute DID URL a proof carries. `key_by_kid` is
+    unchanged.
+  - A `#fragment` resolves only against a document `id` that is a DID by DID Core 1.0
+    §3.1 syntax. `did:web` fetches some DIDs that are not: a path segment with `~`,
+    `+`, `!`, `@` or an invalid `%`-escape (`did:web:example.com:~alice`). Their
+    documents must use absolute method ids and references
+    (`did:web:example.com:~alice#key-1`); a `#key-1` in them selects and grants
+    nothing (`KeyResolutionError`, or `ProofPurposeMismatch` for a reference).
 
 ### Fixed
 
@@ -309,6 +438,59 @@ All notable changes to **openvc** are documented here. The format follows
   `no verification method` for an accreditor in `verify_trust_chain`. The other messages
   in those two modules name a DID taken from a verified credential or from the
   registry's own response, and are unchanged.
+
+- **The status-list builders' time inputs and `ttl` fail at build time, typed, and the
+  one signed value they could get wrong is fixed**
+  ([#255](https://github.com/luisgf/openvc/issues/255)). Found by the review of
+  [#250](https://github.com/luisgf/openvc/pull/250); #250 had narrowed its docs to say
+  these inputs were not covered. 140 builder calls probed on `main`: 66 raised a bare
+  exception and none a `StatusListError`.
+  - `build_status_list_token(issued_at=…, expires=…)`: a string, `NaN`, `±inf`, a
+    `date`, a `timedelta`, a list, a `bool` and an integer no float holds all raise
+    `StatusListError`. `10**400` was the one pure "minted what the verifier rejects" row
+    (`verify_status_list_token` refuses the token as not a finite numeric timestamp), and
+    `10**5000` died with a bare `ValueError` from `json.dumps` inside `sign_compact` (the
+    4300-digit limit). A `datetime` whose `tzinfo` raises is typed too.
+  - `build_status_list_token` reads a `datetime` the way the credential builder does:
+    `utc_instant` rebuilds a plain aware `datetime`, and the epoch is taken from that,
+    never from the caller's object. Before, the token asked the object for `timestamp()`,
+    so a `datetime` subclass answering a 5000-digit integer died with the same bare
+    `ValueError`, one answering `10**400` was minted as a 1329-bit `iat` / `exp` (which
+    `verify_status_list_token` refuses as not a finite NumericDate), and one answering the
+    string `"1700000000"` was coerced by `int()`. All three now mint the instant the
+    object holds, and `timestamp()` is not called. A naive subclass whose `utcoffset()`
+    answers something that is not a `timedelta` was read in the host's local zone (an
+    hour off on a UTC+1 host) and is now a `StatusListError`.
+  - Both builders now refuse the same `datetime`s: exactly those with no UTC form in years
+    1 to 9999. The token used to mint year 1 at `+01:00` as `iat = -62135600400` and
+    `9999-12-31T23:00` at `-05:00` as `253402315200`, which the credential builder
+    refused. A caller that relied on those two edge values passes the UTC instant
+    (`datetime(1, 1, 1, tzinfo=timezone.utc)`) or the epoch number; no other `datetime`
+    changes, and an aware or naive value in years 1 to 9999 mints the same `iat` / `exp`
+    byte for byte.
+  - `build_status_list_credential(valid_from=…, valid_until=…)`: besides the non-`datetime`
+    values above, an aware value whose UTC form leaves years 1 to 9999 (year 1 at
+    `+01:00`, `9999-12-31T23:00` at `-05:00`) was a bare `OverflowError`; it and a
+    `datetime` whose `tzinfo` raises are now a `StatusListError`. The error names the
+    parameter (`valid_from cannot be read as an instant: date value out of range`).
+  - a non-finite `ttl` was signed as `"ttl":NaN` (not JSON, RFC 8259): the JOSE verifiers
+    accepted it while `eddsa-jcs-2022` and `eddsa-rdfc-2022` refused the same credential
+    at `add_proof`. The builder, the one place that can decide for every lane, now
+    refuses it before `sign_compact` is reached.
+  - `validFrom` / `validUntil` are rendered with `isoformat`, not `strftime("%Y")`, which
+    does not pad a year below 1000 on glibc (`999-01-01T00:00:00Z`, which the verifier
+    refuses as a `MalformedTimestamp`). The string for every aware-UTC input is the
+    same one the builder emitted before.
+  - An `int` or `float` subclass is reduced to the plain number it holds before it is
+    checked and signed (`int.__index__` / `float.__float__`), so the value checked is the
+    value emitted; the same rule #250 applies to an index.
+
+  Not changed, by design: the order of a window (a past `expires`, an `issued_at` in the
+  future, `expires` before `issued_at`, `valid_until` before `valid_from`) is still the
+  verifier's call at read time, and building such a list stays legitimate. `leeway_s` on
+  `verify_status_list_token` is [#228](https://github.com/luisgf/openvc/issues/228), and
+  the non-time string parameters (`contexts`, `issuer`, `subject_id`, an entry `id`) are
+  separate.
 
 ### Fixed (docs)
 
@@ -407,6 +589,56 @@ All notable changes to **openvc** are documented here. The format follows
   the controls) and the two WRPRC `typ` message tests. The new key-proof `alg` cases
   (array, object, empty array) fail with a bare `TypeError` when the `isinstance`
   guard at `openid4vci.py:971` is removed.
+
+- **`tests/test_status_builders_time.py`** pins every row of the three tables in the issue
+  (the time inputs of each of `issued_at`, `expires`, `valid_from` and `valid_until`, and
+  every `ttl` on both builders) against the exact class `StatusListError`, with the token
+  negatives signing through a key whose `sign` raises. A naive `datetime` is
+  checked with `TZ` pinned to UTC, to a POSIX UTC+9 and UTC-5 (DST) zone and to
+  `Asia/Tokyo` and `America/New_York`, and the check is made to fail if the pin did not
+  take effect. Build, sign, verify round trips cover an aware UTC, `+09:00` and `-05:00`
+  value, a naive one and years 1 and 9999. Hypothesis properties cover the accepted
+  `datetime`s (exactly those with a UTC form in years 1 to 9999, for the token as for the
+  credential, with the edge values pinned as `@example`s), a window the builders accept and
+  the verifier reads inside it, the token's time inputs, and `ttl`. A `datetime` subclass
+  whose `timestamp()` raises, answers `10**5000`, `10**400`, a digit string, `NaN` or a
+  negative number is built for each of an aware UTC, an aware `+09:00` and a naive value,
+  in `issued_at` and `expires`, and must mint the instant it holds; a naive subclass whose
+  `utcoffset()` is not a `timedelta` is refused by both builders.
+  Mutation-checked in a scratch copy of `src`: 223 of the 256 cases fail against the code
+  before this PR (`a815089`). The 33 that pass are the controls, the naive-`datetime` cases
+  on a UTC host (the bug is invisible by construction) and the year-padding rows on a host
+  whose `strftime` pads, such as macOS (glibc fails them). The token's `datetime` reading
+  is checked separately: with `_epoch` back on `utc_epoch`, 49 cases fail (the 36
+  `timestamp()` rows, the 10 no-UTC-reading rows, the token control that used to expect
+  `iat = -62135600400`, the error-class test and the token property).
+- **`tests/test_did_reference_exact_match.py`** (#258). Every row of the issue's
+  table on the `assertionMethod` lane through `verify_credential` and
+  `verify_credential_async`, and on the `authentication` lane through the suite call
+  the `ldp_vc` holder proof makes, plus one `verify_vp_token` `ldp_vc` case; two
+  grants and three refusals on each of the five suites; relative method ids and references
+  that resolve; a `#fragment` reference, and a relative method id, in documents
+  whose `id` is not a DID; methods with another DID's, a bare or a versioned `id`
+  that must not be selected; a same-fragment method listed first that must not
+  shadow the exact one; duplicate absolute ids; the `kid`-less fallback; a
+  `[good, bad, bad, good]` batch on `verify_many` and `verify_many_async`; the
+  JOSE lanes' unchanged `kid` tolerance; a resolver that returns its own document
+  type, refused with a typed error on `verify_credential`, `verify_credential_async`,
+  `verify_many` and `verify_many_async` beside good neighbours; `did:web` documents
+  whose `id` fails the §3.1 syntax, where only absolute ids verify; and a linear-cost
+  pin. For a 100 000-character `did:web` with 200 extra methods and 2 000 references,
+  against one method and one reference, the DID syntax check runs the same fixed
+  number of times (both lanes, the `assertionMethod` one sync and async), no entry
+  copies the document `id`, and the prefix checks made on the selected method's
+  resolved `id` stay the same fixed number; with 10 000 references,
+  `verify_credential` stays under a loose wall-clock bound. The adversarial review of
+  this fix found its first version re-checking the `id` once per reference: about 30 s
+  for that document, and minutes near the 1 MiB fetch cap. Each hostile row uses a
+  resolvable issuer (an injected `did:web` fetch, or a stub resolver where the point is
+  a document `id` `did:web` would refuse) and asserts the exact class. Run against the
+  previous code: 100 fail, and the 43 that pass are the grants, the controls, the four
+  rows with a resolver's own document type (the previous code refused those with a
+  typed error too) and the two wall-clock rows (the previous lookup was linear).
 
 ## [1.32.3] — 2026-10-14
 
@@ -3927,6 +4159,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.32.4]: https://github.com/luisgf/openvc/releases/tag/v1.32.4
 [1.32.3]: https://github.com/luisgf/openvc/releases/tag/v1.32.3
 [1.32.2]: https://github.com/luisgf/openvc/releases/tag/v1.32.2
 [1.32.1]: https://github.com/luisgf/openvc/releases/tag/v1.32.1

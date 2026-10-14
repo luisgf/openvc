@@ -369,7 +369,9 @@ def check_jwt_audience(
         raise ClaimsInvalid(f"{subject} aud does not include {audience!r}")
 
 
-def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
+def utc_epoch(
+    now: Any, *, error: type[Exception] = ProofError, name: str = "now",
+) -> int:
     """*now* as integer epoch seconds, read the way every openvc clock check reads it:
     ``None`` is the current time, and a **naive** datetime is UTC — never the host's
     local zone. :func:`utc_instant` is the same reading for the checks that compare
@@ -381,20 +383,26 @@ def utc_epoch(now: Any, *, error: type[Exception] = ProofError) -> int:
     ``tzinfo`` that answers ``None``. Anything that is not a ``datetime``, or whose
     ``tzinfo`` raises, becomes *error*: typed, so a misconfigured pin cannot escape
     ``verify_many`` as a bare exception.
+
+    *name* is how the messages call the value (default ``"now"``): a caller that reads
+    some other datetime the same way, such as an issuer-side ``valid_from``, passes its
+    own parameter name so the error points at it.
     """
     if now is None:
         return int(time.time())
     if not isinstance(now, datetime):
-        raise error(f"now must be a datetime or None, not {type(now).__name__}")
+        raise error(f"{name} must be a datetime or None, not {type(now).__name__}")
     try:
         if now.utcoffset() is None:
             now = now.replace(tzinfo=timezone.utc)
         return int(now.timestamp())
     except Exception as exc:                  # a caller's tzinfo may raise anything
-        raise error(f"now cannot be read as an instant: {exc}") from exc
+        raise error(f"{name} cannot be read as an instant: {exc}") from exc
 
 
-def utc_instant(now: Any, *, error: type[Exception] = ProofError) -> datetime:
+def utc_instant(
+    now: Any, *, error: type[Exception] = ProofError, name: str = "now",
+) -> datetime:
     """*now* as an aware UTC ``datetime``: :func:`utc_epoch`'s reading for the checks
     that compare datetimes (a Data Integrity validity window, an X.509 path-validation
     time, an mdoc ``validityInfo``, a WRPRC window). ``None`` is the current time and a
@@ -406,11 +414,14 @@ def utc_instant(now: Any, *, error: type[Exception] = ProofError) -> datetime:
     ``OverflowError`` that would abort ``verify_many`` instead of failing one item.
     The result is a plain ``datetime`` in ``timezone.utc``, so no caller subclass or
     ``tzinfo`` is consulted again by the comparisons downstream.
+
+    *name* is how the messages call the value (default ``"now"``), as in
+    :func:`utc_epoch`.
     """
     if now is None:
         return datetime.now(timezone.utc)
     if not isinstance(now, datetime):
-        raise error(f"now must be a datetime or None, not {type(now).__name__}")
+        raise error(f"{name} must be a datetime or None, not {type(now).__name__}")
     try:
         aware = (now.replace(tzinfo=timezone.utc) if now.utcoffset() is None
                  else now.astimezone(timezone.utc))
@@ -419,7 +430,7 @@ def utc_instant(now: Any, *, error: type[Exception] = ProofError) -> datetime:
         return datetime(aware.year, aware.month, aware.day, aware.hour, aware.minute,
                         aware.second, aware.microsecond, tzinfo=timezone.utc)
     except Exception as exc:                  # a caller's tzinfo may raise anything
-        raise error(f"now cannot be read as an instant: {exc}") from exc
+        raise error(f"{name} cannot be read as an instant: {exc}") from exc
 
 
 def utc_window(
@@ -529,14 +540,20 @@ def resolve_verification_key(
     verification-relationship binding for *proof_purpose*.
 
     Uses *resolver* (a ``DidResolver`` or ``DidResolverRegistry``) when it handles
-    the DID, otherwise falls back to offline ``did:key``. When the resolved DID
+    the DID, otherwise falls back to offline ``did:key``. The method is selected by
+    its exact absolute ``id`` (``DidDocument.key_for_purpose``); none, or two with
+    that ``id``, is a :class:`KeyResolutionError`. When the resolved DID
     document declares the relationship named by *proof_purpose*
-    (``assertionMethod`` / ``authentication`` / ...), the method must be listed in
-    it — a document that separates an assertion key from an authentication key
-    then rejects a proof signed by the wrong one. When the document does not
+    (``assertionMethod`` / ``authentication`` / ...), one of its references must
+    resolve to that same ``id`` — a document that separates an assertion key from an
+    authentication key then rejects a proof signed by the wrong one with
+    :class:`ProofPurposeMismatch`. When the document does not
     declare that relationship at all (a minimal ``did:web`` that only lists
     ``verificationMethod``), the binding cannot be enforced and the key is
-    accepted; the ``proofPurpose`` string is still checked separately.
+    accepted; the ``proofPurpose`` string is still checked separately. A resolver that
+    returns its own document type instead of a ``DidDocument`` is used through its
+    ``key_for_purpose``, and a refusal is classified by its ``key_by_kid``: no method
+    is a :class:`KeyResolutionError`, else :class:`ProofPurposeMismatch`.
     """
     if not isinstance(verification_method, str) or not verification_method:
         raise KeyResolutionError("proof has no verificationMethod to resolve")
@@ -547,7 +564,7 @@ def resolve_verification_key(
         raise ProofMalformed(
             f"proofPurpose must be a string, not {type(proof_purpose).__name__}")
 
-    from ..did.base import DidResolutionError, UnsupportedDidMethod
+    from ..did.base import DidDocument, DidResolutionError, UnsupportedDidMethod
 
     did = verification_method.split("#", 1)[0]
     logger.debug("resolve verification method: %s", did)
@@ -573,9 +590,27 @@ def resolve_verification_key(
     purpose = proof_purpose or "assertionMethod"
     vm = doc.key_for_purpose(verification_method, purpose)
     if vm is None:
-        if doc.key_by_kid(verification_method) is None:
+        if not isinstance(doc, DidDocument):
+            # a resolver's own document type: only its key_for_purpose / key_by_kid
+            # are known to exist, so classify the refusal by key_by_kid
+            if doc.key_by_kid(verification_method) is None:
+                raise KeyResolutionError(
+                    f"verificationMethod {safe_repr(verification_method)} not in the "
+                    f"DID document")
+            raise ProofPurposeMismatch(
+                f"verificationMethod {safe_repr(verification_method)} is not authorized "
+                f"for proofPurpose {purpose!r}")
+        # the same strict, exact-id selection key_for_purpose made (never the JOSE
+        # lanes' fragment-tolerant key_by_kid): a method it did not select is a key
+        # resolution failure, not a purpose mismatch
+        matches = doc._methods_with_id(verification_method, doc._base())
+        if not matches:
             raise KeyResolutionError(
                 f"verificationMethod {verification_method!r} not in the DID document")
+        if len(matches) > 1:
+            raise KeyResolutionError(
+                f"verificationMethod {safe_repr(verification_method)} names "
+                f"{len(matches)} methods in the DID document")
         raise ProofPurposeMismatch(
             f"verificationMethod {verification_method!r} is not authorized for "
             f"proofPurpose {purpose!r}")
