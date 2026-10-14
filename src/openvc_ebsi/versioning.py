@@ -58,6 +58,9 @@ DecodeJwt = Callable[[str], dict[str, Any]]      # VC-JWT body -> claims (proof 
 # EBSI's registry URLs run to a few hundred characters; this is far below httpx's own
 # 64 KiB URL limit, so the origin pin never passes a URL the client then rejects.
 _MAX_URL_LENGTH = 8192
+# The port an absent one stands for. Only https: the HTTP client refuses anything else, so
+# an http URL keeps an empty port and can never match an https listing anyway.
+_DEFAULT_PORTS = {"https": 443}
 
 # The ``did:ebsi`` identifier of a Legal Entity: ``z`` (multibase base58btc) followed by the
 # base58btc encoding of 17 bytes, a version byte (``1``) and 16 random bytes. EBSI DevHub,
@@ -87,17 +90,25 @@ def _origin(url: str) -> str:
     anything but visible ASCII (urlsplit drops a tab or newline and ignores other
     control characters that httpx rejects), or longer than ``_MAX_URL_LENGTH``. That
     check runs first: on CPython ≤ 3.12 ``urlparse`` NFKC-normalizes a non-ASCII netloc
-    in quadratic time."""
+    in quadratic time.
+
+    An absent port is the scheme's default (RFC 3986 §6.2.3), so ``https://host`` and
+    ``https://host:443`` are one origin, as they are to httpx (#253). Only an absent port
+    is filled in: an explicit ``:0`` stays port 0, never the default. httpcore would
+    connect ``:0`` to 443, so refusing it is stricter than the client, and fails closed."""
     if len(url) > _MAX_URL_LENGTH:
         raise MalformedRegistryResponse("registry URL is too long")
     if not (url.isascii() and url.isprintable()) or " " in url:
         raise MalformedRegistryResponse("registry URL is not visible ASCII")
     try:
         p = urlparse(url)                 # raises on a broken IPv6 literal
-        port = "" if p.port is None else p.port   # raises on a bad port
+        port = p.port                     # raises on a bad port
     except ValueError as exc:
         raise MalformedRegistryResponse("registry URL does not parse") from exc
-    return f"{p.scheme.lower()}://{(p.hostname or '').lower()}:{port}"
+    scheme = p.scheme.lower()
+    if port is None:                      # `is None`: port 0 is falsy, not absent
+        port = _DEFAULT_PORTS.get(scheme)
+    return f"{scheme}://{(p.hostname or '').lower()}:{'' if port is None else port}"
 
 
 def _on_origin(url: str, origin: str) -> bool:

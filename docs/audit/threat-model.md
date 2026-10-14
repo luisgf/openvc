@@ -194,7 +194,9 @@ finite input", with no explicit constant.
   resolved through it (its allow-list would reject every legitimate host).
   Because the allow-list matches the host and not the port, the TIR v5 adapter pins
   `links.next`, the HATEOAS `attributes` URL and every revision `href` to the
-  listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`; #172).
+  listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`; #172). An
+  absent https port is 443 (RFC 3986 §6.2.3), so `:443` and no port are one origin,
+  as they are to httpx; an explicit `:0` or another port stays off-origin (#253).
   A URL with no origin to compare is treated as off-origin: a typed
   `MalformedRegistryResponse` on the `attributes` hop, skipped on `links.next` and
   `href`. That covers a port that does not parse (`:99999`, `:abc`) and a broken IPv6
