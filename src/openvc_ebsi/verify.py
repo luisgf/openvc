@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from openvc.did.base import DidResolutionError
+from openvc.proof._verify_common import safe_repr
 from openvc.proof.vc_jwt import VcJwtProofSuite, VerifiedCredential
 from openvc.status import (
     CredentialRevoked,
@@ -137,11 +138,11 @@ def verify_ebsi_badge(
         doc = resolver.resolve(issuer_hint)
     except DidResolutionError as exc:
         raise EbsiVerificationError(
-            f"could not resolve issuer DID {issuer_hint!r}: {exc}") from exc
+            f"could not resolve issuer DID {safe_repr(issuer_hint)}: {exc}") from exc
     vm = doc.key_by_kid(kid)
     if vm is None:
         raise VerificationMethodNotFound(
-            f"no verification method for kid {kid!r} in DID {issuer_hint!r}")
+            f"no verification method for kid {safe_repr(kid)} in DID {safe_repr(issuer_hint)}")
 
     # 4) verify signature + temporal claims + envelope reconciliation.
     verified = proof_suite.verify(

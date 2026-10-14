@@ -6,7 +6,110 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.32.4] — unreleased
 
+### Security
+
+- **The EBSI DID Registry document is bound to the DID that was asked for**
+  ([#257](https://github.com/luisgf/openvc/issues/257)). Found by the adversarial
+  review of [#251](https://github.com/luisgf/openvc/pull/251) (issue #219), where it was
+  listed as a follow-up. Hardening and contract consistency; no wrong-accept was found.
+
+  `DidEbsiResolver.resolve` returned whatever `parse_did_document` made of the registry
+  body and compared nothing, so a document whose `id` was another DID, a number, `null`,
+  a list, empty or absent still resolved, bare or inside a `didDocument` wrapper, and
+  `key_by_kid` found its keys. `did:web` and `did:webvh` reject the same document, and
+  `did:key` / `did:jwk` derive it from the DID, so the EBSI resolver was the only
+  built-in one that did not hold to the `DidResolver` contract: `resolve(did)` returns
+  the document of `did`. A consumer reading `DidDocument.id` got a document about
+  another subject, and a misrouted response (a registry bug, a cache keyed wrongly, a
+  `base` pointing at the wrong environment) was accepted silently.
+
+  `resolve` now compares the parsed document's `id`, after the `didDocument` wrapper is
+  unwrapped, with the requested DID, exactly and with no normalisation (a `did:ebsi`
+  method-specific id is case-sensitive base58btc), and raises
+  `openvc.did.base.DidResolutionError` on any difference. A missing, empty or
+  non-string `id` never matches, whatever was asked: the parser reads all three as `""`,
+  which is refused outright, so not even `resolve("")` accepts a document with no usable
+  `id`. The message shows both values through `safe_repr`, so a 60 KB DID is cut to 200
+  characters. The check is in the resolver, not in `DidRegistryV5`: it is
+  version-agnostic domain logic, so a future registry adapter inherits it. `DidResolutionError` is what every caller already
+  handles: `verify_ebsi_badge` wraps it in `EbsiVerificationError`,
+  `verify_trust_chain` in `AccreditationInvalid`, and the generic pipeline maps
+  `DidError` to `KeyResolutionFailed`. The golden registry fixture has `id` equal to its
+  DID, so the real registry is unaffected.
+
+  This also closes a reachable steering path, though not its cause. `identifiers_url`
+  puts the DID into the registry path unvalidated, so an unsigned token whose `iss` is
+  `did:ebsi:zA/../did:ebsi:zB` made the client request B's resource (httpx collapses
+  the dot segment) and B's document resolved. B's `id` is not the string that was asked
+  for, so it is now refused. No impersonation was possible before: B's key still had to
+  verify the token. Validating the DID before it is put in a URL is a separate gap and
+  is not changed here.
+
 ### Changed
+
+- **A DID URL passed to `DidEbsiResolver.resolve` is now refused.** `did:ebsi:zX#key-1`,
+  for example as a token's `iss`, resolved by accident: httpx drops the fragment, so the
+  registry answered with `zX`'s own document. It now raises `DidResolutionError`, as
+  `did:web` does, and `verify_ebsi_badge` reports `EbsiVerificationError`. `iss` and
+  `accreditedBy` are DIDs, not DID URLs, so a conforming credential is unaffected. The
+  same applies to any other input whose registry document `id` is not that exact string.
+- **`resolve("")` against a document with no usable `id` is now refused.** An absent,
+  empty or non-string `id` is read as `""`, so a bare `doc.id != did` accepted it for the
+  empty DID. It now raises `DidResolutionError`. The shipped callers already reject an
+  empty `iss` before they resolve, so only a direct call with `""` is affected.
+- **Every Credential Query's `meta` is validated up front, answered or not**
+  ([#254](https://github.com/luisgf/openvc/issues/254)). Found by the review of the
+  fix for [#224](https://github.com/luisgf/openvc/issues/224) (see its `### Security`
+  entry under 1.32.3). A `dcql_query` that carries a malformed `meta` on a query the
+  wallets never answer used to verify and now raises `VpTokenMalformed` on every
+  response. Defence in depth: nothing was ever accepted under a malformed constraint,
+  and the `dcql_query` is the verifier's own input, so no attacker can reach this.
+
+  #224 made a malformed `meta.vct_values`, `meta.doctype_value` or `meta.type_values`
+  fail safe, but `verify_vp_token` read a query's `meta` only when that query's own
+  Presentation came up. So a query the wallet did not answer (allowed by
+  `credential_sets`) was never checked. An earlier query's presentation failure was
+  reported before a later query's malformed `meta`. And the order inside one query
+  depended on the format: `dc+sd-jwt` read the constraint before the "must be a
+  compact string" check, `mso_mdoc` read it after `expected_origins`,
+  `trust_anchors` and the "must be a base64url string" check. A verifier with one
+  broken alternative passed every test whose wallet answered the other one, and
+  failed in production the day a wallet answered the broken one.
+
+  `_index_dcql` now checks every query's constraint, after the per-query checks it
+  already made (`id`, `format`, duplicate ids, `require_cryptographic_holder_binding`)
+  and before any Presentation is read: `vct_values` for `dc+sd-jwt`, `doctype_value`
+  for `mso_mdoc`, the shape of `type_values` for `jwt_vc_json` and `ldp_vc`. The
+  readers are unchanged and still run when a Presentation is verified. The 1.32.3
+  wording "whatever the wallet sent for that query" is now stronger: it holds for
+  every query of the `dcql_query`, answered or not.
+
+  What changes for a caller:
+  - An unanswered query with a malformed `meta`, or an earlier failure ahead of
+    one, is `VpTokenMalformed: Credential Query 'b': meta …`, naming the query.
+  - For `mso_mdoc` the constraint comes first. A malformed `doctype_value` beside a
+    missing `expected_origins` was `UnsupportedPresentationFormat`, beside a missing
+    `trust_anchors` was `ClaimsInvalid`, and now both are `VpTokenMalformed`. With a
+    presentation that is not a string and a `meta` that is not an object, both
+    formats now give the same message; a malformed `doctype_value` and a malformed
+    `vct_values` keep their own messages.
+  - A malformed `meta` also wins over a missing required query id, an unknown
+    `vp_token` key and a presentation list that is not an array or is empty. These
+    run after `_index_dcql` and are `VpTokenMalformed` already, so only the message
+    changes.
+  - The `pyld` requirement of `type_values` moved from the shape parser to the point
+    of use. A well-formed `type_values` on an unanswered query needs no `pyld`, as
+    before; an answered one still raises `OpenID4VPError` before its Presentation is
+    verified. Nothing else about `pyld` changes.
+
+  Unchanged: an absent `meta`, or one without the key, is still no constraint; the
+  match against the verified `vct` / `docType` / types; a query of a format openvc
+  does not know is `UnsupportedPresentationFormat` when answered and ignored when
+  not, its `meta` unread; and the keys of another format are not read (a
+  `vct_values` on an `mso_mdoc` query is ignored). The `verify_vp_token` docstring
+  and the wiki ("Type constraints in the query") state the rule.
+  `verify_encrypted_vp_response` delegates to `verify_vp_token`, so it follows. The
+  `multiple` flag is still read by truthiness, which is a separate gap.
 
 - **A naive `datetime` is UTC in both status-list builders, so a non-UTC host now mints
   a different `validFrom` / `validUntil`**
@@ -66,6 +169,19 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Fixed
 
+- **The EBSI verifier's error messages no longer echo an attacker-sized DID or `kid`
+  in full** (#257). `verify_ebsi_badge` and `verify_trust_chain` wrap the resolver's
+  error in a message of their own, and those interpolated the token's `iss`, the
+  accreditation's `iss` and `accreditedBy`, and the JWS `kid` with a bare `!r`. They are
+  read before any signature is checked, so a 60 KB `iss` made a 60 KB exception message
+  even when the resolver's own text was cut. Five messages now go through `safe_repr`
+  (a `str` past 200 characters is cut and its length shown; shorter values read as
+  before): `could not resolve issuer DID` and `no verification method for kid` in
+  `verify_ebsi_badge`, and `accreditation issuer`, `cannot resolve accreditor` and
+  `no verification method` for an accreditor in `verify_trust_chain`. The other messages
+  in those two modules name a DID taken from a verified credential or from the
+  registry's own response, and are unchanged.
+
 - **The status-list builders' time inputs and `ttl` fail at build time, typed, and the
   one signed value they could get wrong is fixed**
   ([#255](https://github.com/luisgf/openvc/issues/255)). Found by the review of
@@ -103,6 +219,45 @@ All notable changes to **openvc** are documented here. The format follows
   separate.
 
 ### Tests
+
+- **`resolve("")` and the callers' messages are pinned** (#257).
+  `test_ebsi_verifier.py` asks for the empty DID against a document whose `id` is
+  absent, `""` or a number, bare and in a `didDocument` wrapper, and requires exactly
+  `DidResolutionError`; a control shows the route answered. The 60 KB cases go through
+  `verify_ebsi_badge` (the resolve wrapper, and a document without the token's `kid`)
+  and, in `test_trust_chain.py`, through an accreditation whose `iss`, `accreditedBy` or
+  `kid` is attacker-sized, each asserting the exact cut message and the exact class.
+  Mutation-checked: dropping the empty-`id` guard fails the six `resolve("")` rows, and
+  reverting any one of the eight `safe_repr` swaps fails the test for its message.
+- **The binding is pinned for every wrong `id`** (#257). `test_ebsi_verifier.py` serves
+  a registry document that is otherwise good (it holds the signing key under the right
+  `kid`) with `id` set to another DID, a number, `null`, a list, an object, a bool,
+  `""`, no `id` at all, a case-folded DID, a DID with a trailing space, a DID URL and
+  another method's DID, each bare and in a `didDocument` wrapper. `resolve` raises
+  exactly `DidResolutionError`, and `verify_ebsi_badge` exactly `EbsiVerificationError`
+  with that cause; each case is paired with a control carrying the right `id`, which
+  resolves and verifies. `test_trust_chain.py` serves the mismatched document as the
+  accreditor's, at the middle and the root hop, and requires exactly
+  `AccreditationInvalid`. The DID-URL and dot-segment cases go through the real
+  `EbsiHttpClient` on an `httpx.MockTransport`, so httpx does the URL handling, and
+  assert the registry was in fact asked. The recorded pilot document still resolves.
+  Mutation-checked: 59 of these cases fail against the previous code, each with
+  `DID NOT RAISE`, and the controls pass; a check that skips an empty `id`, and one
+  that ignores case or surrounding space, each fail their own rows.
+- **`tests/test_dcql_meta_upfront.py`** (#254). Negatives first, each pinning the
+  query it names and the exact class: an unanswered query with a malformed `meta`
+  in every format (the issue's shapes, plus falsy and non-string ones); the same
+  with an earlier junk presentation; the malformed query listed first; the
+  `mso_mdoc` order against a missing `expected_origins`, a missing `trust_anchors`
+  and a presentation that is not a string; both formats agreeing on a `null`
+  `meta`; and a malformed `meta` against each later shape check. Controls that pass
+  before and after: an unanswered query with an absent, empty or other-format-key
+  `meta` (malformed or not), an unknown format, a sound constraint, a well-formed
+  `type_values` with `pyld` hidden, an answered one without `pyld` still
+  `OpenID4VPError`, and the sound `mso_mdoc` order unchanged. Mutation-checked
+  against `origin/main` at 886774f: 95 negatives fail and the 44 controls pass;
+  removing the new call fails the same 95; putting the `pyld` check back in the
+  shape parser fails the two `pyld` controls.
 
 - **`tests/test_status_builders_time.py`** pins every row of the three tables in the issue
   (the time inputs of each of `issued_at`, `expires`, `valid_from` and `valid_until`, and
