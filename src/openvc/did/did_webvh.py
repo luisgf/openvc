@@ -282,11 +282,13 @@ class _WebvhReplay:
             # updateKeys, when present, must be a list of multikey STRINGS — a non-string
             # element would otherwise crash _prerotation_hash with a bare AttributeError,
             # before the entryHash/proof checks (so with no valid signature required).
+            # A multikey is base58btc, so ASCII by definition: a lone UTF-16 surrogate
+            # (JSON "\ud800") would crash the same hash with a bare UnicodeEncodeError.
             if declared_keys is not None and (
                     not isinstance(declared_keys, list)
-                    or not all(isinstance(k, str) for k in declared_keys)):
+                    or not all(isinstance(k, str) and k.isascii() for k in declared_keys)):
                 raise DidWebvhError(
-                    f"entry {number}: updateKeys must be a list of multikey strings")
+                    f"entry {number}: updateKeys must be a list of ASCII multikey strings")
 
             # -- authorized signing keys for THIS entry -------------------- #
             if index == 0:
