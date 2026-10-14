@@ -4,10 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.32.1] — unreleased
-
-A typed-error fix in the DID-document parser (#219), plus tests and docs. The other
-library change is a docstring and a comment in `rp_registration.py`.
+## [1.32.2] — unreleased
 
 ### Security
 
@@ -30,27 +27,112 @@ library change is a docstring and a comment in `rp_registration.py`.
   A `didDocument` wrapper that is not an object, and a `verificationMethod` or a
   relationship that is present but not an array, now raise `DidResolutionError`; so
   does a document that is not an object at all, which an injected fetch can return.
-  The pipeline maps it to `KeyResolutionFailed` for that item (`EbsiVerificationError`
-  on the EBSI plugin). A wrong-typed member is never read as an absent one. An
-  undeclared relationship leaves the key purpose unenforced, so reading `null` as
-  "not declared" would have failed open. The check also closes a smaller grant leak:
-  a relationship written as a bare string, `"assertionMethod": "k"`, was iterated one
-  character at a time, so a one-letter reference authorized any method whose
-  fragment is `k`. A method whose `id` is not a string, and a relationship entry that
-  is neither an id string nor an object with a string `id`, are dropped, as non-object
-  entries already were: they select no key and can only narrow a grant.
-  `VerificationMethod.kid` therefore never sees a non-string `id`. A document `id`,
-  and a method's `type` or `controller`, that is not a string reads as `""`, so the
-  model's `str` fields stay `str`; nothing is selected on them, and an empty `id`
-  never equals the DID a resolver asked for.
+  `verify_credential` and `verify_many` report it for that item as
+  `KeyResolutionFailed` on the JOSE lanes and on the async API, and as
+  `KeyResolutionError` (a `ProofError`) on the synchronous Data Integrity lane, as
+  they already did for any failed DID resolution; the cause is the
+  `DidResolutionError` in each case. The EBSI plugin reports `EbsiVerificationError`.
+  A wrong-typed member is never read as an absent one. An undeclared relationship
+  leaves the key purpose unenforced, so reading `null` as "not declared" would have
+  failed open. The check also closes a smaller grant leak: a relationship written as
+  a bare string, `"assertionMethod": "k"`, was iterated one character at a time, so
+  a one-letter reference authorized any method whose fragment is `k`.
+
+  A relationship that is not an array rejects the whole document, on every lane,
+  including the JOSE lanes that never read relationships: the parser does not know
+  which lane is asking, and DID Core requires a set. Treating it per relationship, as
+  declared but granting nothing, would keep those lanes working and was not taken. A
+  document that did this verified before and now fails closed.
+
+  A method whose `id` is not a string, and a relationship entry that is neither an id
+  string nor an object with a string `id`, are dropped, as non-object entries already
+  were. A dropped method is never selected: it cannot be named by a `kid`, and no
+  proof purpose reaches it. A dropped relationship entry grants nothing. Dropping is
+  not strictly a narrowing, though. A token with no `kid` falls back to the document's
+  sole key, and the count it uses no longer includes a method dropped this way, as it
+  already left out a method with no key or an undecodable Multikey. A document that
+  holds a keyed method with an unreadable `id` beside one good method now resolves
+  that good key for a `kid`-less token, which was refused before. The key is
+  well-formed and is in the issuer's own document, so no other issuer's key is
+  involved. `VerificationMethod.kid` never sees a non-string `id`. A document `id`, and a
+  method's `type` or `controller`, that is not a string reads as `""`, so the model's
+  `str` fields stay `str`; nothing is selected on them. `did:web` compares the
+  parsed document `id` with the DID it asked for, so for `did:web` an empty `id`
+  never matches. The other resolvers are not covered by that sentence: `did:webvh`
+  compares the `id` of the log state, before a `didDocument` wrapper is unwrapped,
+  and the EBSI registry resolver compares none.
 
   A well-formed document parses as before, the DID 1.1 / CID 1.0 documents included.
   Tests: `test_did_document_shape_typed.py` serves each shape (null, scalar, string,
   list and object, in every member) through the issue's `DidWebResolver(fetch=...)`
   repro and asserts the exact class on `verify_credential`, with a good credential
   beside the bad ones on both `verify_many` and `verify_many_async`. It also covers
-  the async resolver, a forged `did:webvh` log whose signed state is hostile, and the
-  EBSI registry.
+  the async resolver, a forged `did:webvh` log whose signed state is hostile, the
+  EBSI registry, the exact error class on the Data Integrity lane, and the `kid`-less
+  fallback.
+
+## [1.32.1] — 2026-10-14
+
+### Security
+
+- **A TIR v5 registry URL that does not parse is now a typed error or an
+  off-origin skip, never a bare `ValueError`**
+  ([#243](https://github.com/luisgf/openvc/issues/243)). Found by the audit-pack
+  catch-up in 1.32.0 (#240), which recorded it as an untracked residual.
+
+  The EBSI plugin pins three registry-supplied URLs to the listing's
+  `scheme://host:port` (#172): the HATEOAS `attributes` URL, each `links.next`
+  cursor and each revision `href`. The pin called `urlparse(url).port`. A port out
+  of range (`:99999`) or not numeric (`:abc`), a broken IPv6 literal
+  (`https://[::1/x`) or a character that NFKC folds into a delimiter made it raise a
+  bare `ValueError`. That is not an `OpenvcError`, so a compromised or broken
+  registry made `verify_ebsi_badge` fail closed but untyped, past code that catches
+  `EbsiError` / `OpenvcError`. It was never a wrong-accept.
+
+  A URL with no origin to compare is now handled like an off-origin one, hop by hop:
+  - an `attributes` URL raises `MalformedRegistryResponse`;
+  - an `href` is skipped and its revision never fetched;
+  - a `links.next` ends the walk and keeps the items already read.
+
+  So is a URL the HTTP client would read differently (#246, below): anything but
+  visible ASCII, or over 8 KiB. That check runs before `urlparse` reads the URL: on
+  CPython 3.12 and earlier, `urlparse` NFKC-normalizes a non-ASCII netloc in quadratic
+  time (see 1.31.2). The EBSI client's https host allow-list is unchanged.
+
+  `threat-model.md` §7 and R10 no longer list it as an open residual; R10 keeps the
+  hostile DID-document shape (#219).
+
+- **A URL the EBSI HTTP client cannot parse is refused, typed, before any request**
+  ([#246](https://github.com/luisgf/openvc/issues/246)). Found by the adversarial
+  review of [#244](https://github.com/luisgf/openvc/pull/244), the fix for #243.
+  Present before it.
+
+  `EbsiHttpClient.get_json` checked a URL with `urlparse` and fetched it with httpx.
+  `urlsplit` drops a tab or newline and ignores other control characters; httpx
+  rejects them, and a URL over 64 KiB, with `httpx.InvalidURL`. That is a plain
+  `Exception`, not an `httpx.TransportError`, so it escaped `get_json` untyped. No key
+  was needed: `verify_ebsi_badge` puts the issuer it peeks from an unsigned token
+  into the DID Registry URL, so an `iss` such as `did:ebsi:z\tx` aborted it with a bare
+  `httpx.InvalidURL`. A TIR `attributes`, `links.next` or `href` holding such a
+  character passed the origin pin the same way. The guard also left a broken IPv6
+  literal as a bare `ValueError`, and never read the port, so `:99999` went to the
+  transport.
+
+  The client now refuses, as `HttpForbiddenHost` and before any request, a URL that
+  is not visible ASCII (checked before `urlparse`) or that `urlparse` cannot read,
+  port included. `httpx.InvalidURL` is mapped to `HttpForbiddenHost` as a backstop
+  and is not retried.
+
+- **A registry body httpx cannot decompress is now `MalformedRegistryResponse`**
+  ([#248](https://github.com/luisgf/openvc/issues/248)). Found by the second
+  adversarial pass on #244. Present before it.
+
+  httpx decompresses a `gzip` / `deflate` body while streaming it, and the client
+  advertises both. A corrupt body raised `httpx.DecodingError`, a `RequestError` but
+  not a `TransportError`, so it escaped `get_json`, and `verify_ebsi_badge`, untyped.
+  It escaped from the capped read on a 200 and from the drain of any other status.
+  A broken or compromised allow-listed registry was enough. It is now a
+  `MalformedRegistryResponse` and is not retried.
 
 ### Fixed (docs)
 
@@ -3223,6 +3305,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.32.1]: https://github.com/luisgf/openvc/releases/tag/v1.32.1
 [1.32.0]: https://github.com/luisgf/openvc/releases/tag/v1.32.0
 [1.31.3]: https://github.com/luisgf/openvc/releases/tag/v1.31.3
 [1.31.2]: https://github.com/luisgf/openvc/releases/tag/v1.31.2

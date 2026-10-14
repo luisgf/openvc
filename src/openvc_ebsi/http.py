@@ -173,6 +173,13 @@ class EbsiHttpClient:
                         body = self._read_capped(resp, url)
                     else:
                         resp.read()                  # drain the small error body, reuse the conn
+            except httpx.InvalidURL as exc:          # not a TransportError: never retried
+                # Backstop for any other urlparse/httpx disagreement (#246).
+                raise HttpForbiddenHost("URL rejected by the HTTP client", url=url) from exc
+            except httpx.DecodingError as exc:       # not a TransportError: never retried
+                # A corrupt gzip/deflate body, on the capped read or the error drain (#248).
+                raise MalformedRegistryResponse(
+                    f"registry returned a body that does not decode: {url}") from exc
             except httpx.TransportError as exc:      # network error / timeout
                 last_exc = exc
                 self._sleep_before_retry(attempt)
@@ -217,7 +224,19 @@ class EbsiHttpClient:
     # -- internals --------------------------------------------------------- #
 
     def _guard_host(self, url: str) -> None:
-        parsed = urlparse(url)
+        # A URL is checked by `urlparse` here and fetched by httpx, which reads some URLs
+        # differently: urlsplit drops a tab or newline and ignores other control
+        # characters that httpx rejects. Refuse anything that is not visible ASCII
+        # before `urlparse` reads it (on CPython <= 3.12 it NFKC-normalizes a non-ASCII
+        # netloc in quadratic time), and a URL `urlparse` cannot read, port included —
+        # typed, before any I/O (#246).
+        if not (url.isascii() and url.isprintable()) or " " in url:
+            raise HttpForbiddenHost("URL rejected: not visible ASCII", url=url)
+        try:
+            parsed = urlparse(url)
+            parsed.port                       # raises on an out-of-range or non-numeric port
+        except ValueError as exc:
+            raise HttpForbiddenHost("URL rejected: does not parse", url=url) from exc
         if parsed.scheme != "https":
             raise HttpForbiddenHost(f"non-https URL rejected: {url}", url=url)
         if parsed.hostname is None or parsed.hostname.lower() not in self._allowed:

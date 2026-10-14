@@ -55,7 +55,7 @@ relying-party registration, **no wrong-authorize**):
 4. **The hand-rolled attacker-facing parsers** — CBOR, COSE, mdoc, JCS,
    multibase, SD-JWT, ecdsa-sd, bitstring, decompress, and the two XML paths
    (threat model §6). Depth/size bounds and typed-error hygiene. Start with
-   residual risks **R10** and **R2–R3** (**R1** was resolved in v1.20.1).
+   residual risks **R2–R3** (**R1** was resolved in v1.20.1, **R10** in v1.32.2).
 5. **The SSRF surface** — `fetch.py` (IP-pin, forbidden ranges, redirect
    refusal), the resolver opt-out boundary, and the EBSI host allow-list
    (§7, R4–R5).
@@ -65,10 +65,10 @@ relying-party registration, **no wrong-authorize**):
 
 The residual-risk register (R1–R10) is deliberately the reviewer's shortcut to
 the soft spots we already know about; **R1** (SD-JWT unbounded recursion →
-batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117))
-and **R9** (the RDF Data Integrity wrong-accept) in v1.30.2, leaving the
-typed-error-hygiene items **R10** (open untyped exits at the boundary) and **R2–R3**
-at the top of the harden-next list.
+batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117)),
+**R9** (the RDF Data Integrity wrong-accept) in v1.30.2 and **R10** (the last known
+untyped exits at the verification boundary) in v1.32.2, leaving the typed-error-hygiene
+items **R2–R3** at the top of the harden-next list.
 
 ## 4. How to reproduce the evidence
 

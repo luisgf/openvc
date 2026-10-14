@@ -147,8 +147,9 @@ def _relationship_refs(doc: dict[str, Any], key: str) -> list[str]:
 def _text(value: Any) -> str:
     """*value* if it is a string, else ``""`` — keeps the ``str`` fields of the model
     honest when a document gives ``id`` / ``type`` / ``controller`` some other JSON type.
-    Nothing is selected on them (a method is chosen by its ``id``), and an empty id never
-    equals the DID a resolver asked for."""
+    Nothing is selected on them (a method is chosen by its ``id``). A resolver that
+    compares the document ``id`` with the DID it asked for (``did:web`` does) never
+    matches an empty one; the parser itself compares nothing."""
     return value if isinstance(value, str) else ""
 
 
@@ -215,10 +216,15 @@ def parse_did_document(raw: dict[str, Any]) -> DidDocument:
     document or ``didDocument`` wrapper that is not an object, and a ``verificationMethod``
     or relationship (``assertionMethod`` …) that is present but not an array, raise
     :class:`DidResolutionError` — never read as an absent member, since an undeclared
-    relationship leaves the key purpose unenforced. A method whose ``id`` is not a string,
+    relationship leaves the key purpose unenforced. The check is per document, not per
+    lane: a relationship that is not an array rejects the whole document, even for a
+    lane that never reads relationships. A method whose ``id`` is not a string is dropped
     and a relationship entry that is neither an id string nor an object with a string
-    ``id``, are dropped: they select no key and can only narrow a grant. An ``id`` /
-    ``type`` / ``controller`` that is not a string reads as ``""``."""
+    ``id`` is dropped. A dropped method is never selected, by ``kid`` or by purpose, and
+    a dropped entry grants nothing. The ``kid``-less fallback to the sole key counts the
+    methods that remain, so a dropped method that carried a key no longer makes it
+    ambiguous (as a method with an undecodable Multikey never did). An ``id`` / ``type`` /
+    ``controller`` that is not a string reads as ``""``."""
     if not isinstance(raw, dict):            # an injected fetch can hand over any JSON value
         raise DidResolutionError(
             f"DID document must be a JSON object, not {type(raw).__name__}")

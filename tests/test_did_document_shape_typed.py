@@ -23,8 +23,14 @@ Two rules, besides "typed":
   key, and a relationship entry that is neither a string nor an object with a string ``id``
   grants nothing.
 
-Every assertion is on the exact typed class: ``DidResolutionError`` from the parser, and
-``KeyResolutionFailed`` from the pipeline (which maps ``DidError`` to it).
+Every assertion is on the exact typed class: ``DidResolutionError`` from the parser, and from
+the pipeline ``KeyResolutionFailed`` on the JOSE lanes and on the async API, but
+``KeyResolutionError`` (a ``ProofError``, not a ``VerificationError``) on the synchronous
+Data Integrity lane. That split predates #219 and is pinned as it is.
+
+One more rule is pinned because it is not strictly a narrowing: a dropped method that carries
+a key is not counted by the ``kid``-less fallback to "the sole key", as a method with an
+undecodable Multikey never was.
 """
 from __future__ import annotations
 
@@ -329,14 +335,15 @@ def _did_key_p256():
     return P256SigningKey(priv, kid=f"did:key:{mb}#{mb}"), f"did:key:{mb}"
 
 
-def _vc_jwt(key, did: str) -> str:
-    """A VC-JWT signed by *key* for issuer *did*, key id = ``key.kid``."""
+def _vc_jwt(key, did: str, *, with_kid: bool = True) -> str:
+    """A VC-JWT signed by *key* for issuer *did*, key id = ``key.kid`` (no ``kid`` header
+    when *with_kid* is false, so the verifier falls back to the document's sole key)."""
     now = int(time.time())
     vc = {"@context": [V2], "type": ["VerifiableCredential"], "issuer": did,
           "credentialSubject": {"id": "did:example:s"}}
     claims = {"iss": did, "sub": "did:example:s", "nbf": now, "iat": now, "vc": vc}
-    signing_input = (f"{_b64u(json.dumps({'alg': key.alg, 'typ': 'JWT', 'kid': key.kid}).encode())}"
-                     f".{_b64u(json.dumps(claims).encode())}")
+    header = {"alg": key.alg, "typ": "JWT", **({"kid": key.kid} if with_kid else {})}
+    signing_input = f"{_b64u(json.dumps(header).encode())}.{_b64u(json.dumps(claims).encode())}"
     return f"{signing_input}.{_b64u(key.sign(signing_input.encode()))}"
 
 
@@ -390,22 +397,68 @@ def test_the_issues_repro_no_longer_aborts_the_batch():
 # 4. never fail open, and never over-reject
 # --------------------------------------------------------------------------- #
 
-def _signed_did_web(*, extra: dict | None = None, vms_before=(), refs_before=()):
+def _signed_did_web(*, extra: dict | None = None, vms_before=(), refs_before=(),
+                    with_kid: bool = True):
     """A VC-JWT signed by a P-256 key published in a did:web document that carries
     malformed entries around the real method and its reference."""
     key = P256SigningKey.generate(kid=KID)
     doc = {"id": DID,
            "verificationMethod": [*vms_before, _vm(DID, publicKeyJwk=key.public_jwk())],
            "assertionMethod": [*refs_before, KID], **(extra or {})}
-    return _vc_jwt(key, DID), doc
+    return _vc_jwt(key, DID, with_kid=with_kid), doc
+
+
+# Entries that carry a usable public key but no string id. They are the ones the parser drops
+# that a lookup could otherwise reach: a keyless entry never was in the method list at all.
+_MULTIKEY = encode_multibase(bytes([0xED, 0x01]) + bytes(32))        # an Ed25519 Multikey
+KEYED_NO_ID = {
+    "int": {"id": 7, "publicKeyJwk": GOOD_JWK},
+    "null": {"id": None, "publicKeyJwk": GOOD_JWK},
+    "list": {"id": [KID], "publicKeyJwk": GOOD_JWK},
+    "object": {"id": {"id": KID}, "publicKeyJwk": GOOD_JWK},
+    "multikey": {"id": 7, "publicKeyMultibase": _MULTIKEY},
+}
 
 
 def test_a_well_formed_method_beside_malformed_entries_still_verifies():
-    token, doc = _signed_did_web(vms_before=(7, None, {"id": 7}, {"id": ["x"]}, [], "x"),
-                                 refs_before=(7, None, {"id": 3}, [], {}))
+    token, doc = _signed_did_web(
+        vms_before=(7, None, {"id": 7}, {"id": ["x"]}, [], "x", *KEYED_NO_ID.values()),
+        refs_before=(7, None, {"id": 3}, [], {}))
+    # The keyed entries are really in the document and really dropped, so the drop is
+    # exercised end to end: left in the list, the first of them would be compared with the
+    # kid and break the lookup, which is what the keyless junk above could never do.
+    carrying_a_key = [vm for vm in doc["verificationMethod"] if isinstance(vm, dict)
+                      and not isinstance(vm.get("id"), str)
+                      and ("publicKeyJwk" in vm or "publicKeyMultibase" in vm)]
+    assert len(carrying_a_key) == len(KEYED_NO_ID)
+    assert [vm.id for vm in parse_did_document(doc).verification_methods] == [KID]
     assert verify_credential(token, resolver=_sync_registry(doc)).issuer == DID
     result = asyncio.run(verify_credential_async(token, resolver=_async_registry(doc)))
     assert result.issuer == DID
+
+
+@pytest.mark.parametrize("junk", KEYED_NO_ID.values(), ids=KEYED_NO_ID)
+def test_the_kidless_fallback_counts_only_the_methods_that_remain(junk):
+    # Dropping is not strictly a narrowing: a token with no kid falls back to the document's
+    # sole key, and a dropped method that carried a key no longer makes it ambiguous. The key
+    # it selects is the well-formed one in the issuer's own document. Pinned so that changing
+    # it is a decision (the same holds for a method with an undecodable Multikey).
+    token, doc = _signed_did_web(vms_before=(junk,), with_kid=False)
+    assert verify_credential(token, resolver=_sync_registry(doc)).issuer == DID
+    result = asyncio.run(verify_credential_async(token, resolver=_async_registry(doc)))
+    assert result.issuer == DID
+
+
+def test_the_kidless_fallback_still_refuses_two_usable_keys():
+    key = P256SigningKey.generate(kid=KID)
+    doc = {"id": DID, "assertionMethod": [KID], "verificationMethod": [
+        _vm(DID, id=DID + "#other"), _vm(DID, publicKeyJwk=key.public_jwk())]}
+    token = _vc_jwt(key, DID, with_kid=False)
+    with pytest.raises(KeyResolutionFailed, match="no verification method") as exc:
+        verify_credential(token, resolver=_sync_registry(doc))
+    assert type(exc.value) is KeyResolutionFailed
+    with pytest.raises(KeyResolutionFailed, match="no verification method"):
+        asyncio.run(verify_credential_async(token, resolver=_async_registry(doc)))
 
 
 def test_a_wrong_typed_relationship_never_lets_a_valid_signature_through():
@@ -448,6 +501,33 @@ def test_data_integrity_lane_never_selects_a_key_through_a_wrong_shaped_document
         with pytest.raises(ProofPurposeMismatch):
             verify_credential(cred, resolver=_sync_registry(
                 _di_doc(key, assertionMethod=junk)))
+
+
+def test_the_error_class_differs_between_the_sync_data_integrity_lane_and_the_rest():
+    # The same wrong-shaped document, the same DidResolutionError cause, two classes: the
+    # sync Data Integrity lane raises KeyResolutionError (a ProofError), every other lane
+    # KeyResolutionFailed (a VerificationError). The split predates #219; the docs state it,
+    # so it is pinned. Making the two one class is a separate change.
+    key = Ed25519SigningKey(ed25519.Ed25519PrivateKey.generate(), kid=KID)
+    cred = _di_credential(key, KID)
+    doc = _di_doc(key, verificationMethod=None)
+
+    with pytest.raises(KeyResolutionError) as sync_exc:
+        verify_credential(cred, resolver=_sync_registry(doc))
+    assert type(sync_exc.value) is KeyResolutionError
+    assert not isinstance(sync_exc.value, KeyResolutionFailed)
+    assert type(sync_exc.value.__cause__) is DidResolutionError
+
+    with pytest.raises(KeyResolutionFailed) as async_exc:
+        asyncio.run(verify_credential_async(cred, resolver=_async_registry(doc)))
+    assert type(async_exc.value) is KeyResolutionFailed
+    assert type(async_exc.value.__cause__) is DidResolutionError
+
+    # verify_many reports the class of its lane, and still isolates the item
+    assert [type(r.error) for r in verify_many([cred], resolver=_sync_registry(doc))] \
+        == [KeyResolutionError]
+    assert [type(r.error) for r in asyncio.run(
+        verify_many_async([cred], resolver=_async_registry(doc)))] == [KeyResolutionFailed]
 
 
 # --------------------------------------------------------------------------- #
