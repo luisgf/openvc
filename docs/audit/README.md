@@ -7,8 +7,9 @@ vetting the project) needs to scope and start a review of openvc's security
 core. It is self-review documentation — the *funded external audit* itself is
 gated on funding (see §5).
 
-Anchors are pinned to **v1.24.1**; re-anchor line numbers against the commit
-under review.
+Anchors are pinned to **v1.24.0** (no v1.24.1 was ever tagged; rows added with later
+fixes are as of their own release); re-anchor line numbers against the commit under
+review. Entries added on 2026-10-13 cite symbols and test names instead.
 
 ## 1. What openvc is (in one paragraph)
 
@@ -28,7 +29,7 @@ external review.
 
 | Document | What it holds |
 |---|---|
-| [threat-model.md](threat-model.md) | The code-cited threat model: assets, trust boundaries, attacker model, per-suite and per-parser attack-surface tables, the **fail-closed invariants catalog** (I1–I19), and the **residual-risk register** (R1–R8) |
+| [threat-model.md](threat-model.md) | The code-cited threat model: assets, trust boundaries, attacker model, per-suite and per-parser attack-surface tables, the **fail-closed invariants catalog** (I1–I21), and the **residual-risk register** (R1–R10) |
 | [assurance.md](assurance.md) | Property-based **fuzz** coverage, the "harden-next" gap map, negative/tamper coverage by suite, and the **adversarial-review history** |
 | [Security-Model](https://github.com/luisgf/openvc/wiki/Security-Model) (wiki) | The user/integrator-facing summary the threat model annex expands |
 | [SECURITY.md](https://github.com/luisgf/openvc/blob/main/SECURITY.md) | Reporting policy + per-control hardening notes |
@@ -36,7 +37,8 @@ external review.
 
 ## 3. Suggested review scope & priority
 
-Ranked by attacker leverage against the one property — **no wrong-accept**:
+Ranked by attacker leverage against the one property — **no wrong-accept** (for a
+relying-party registration, **no wrong-authorize**):
 
 1. **The alg allow-list & the fail-closed pipeline** — that the
    `{ES256, ES384, EdDSA, Ed25519}` gate truly runs before any crypto, that
@@ -45,21 +47,28 @@ Ranked by attacker leverage against the one property — **no wrong-accept**:
 2. **Issuer binding across all three suites** — DI `verificationMethod`↔`issuer`,
    VC-JWT envelope reconciliation, x5c SAN↔`iss` (I4–I6). The place a
    sign-with-own-key impersonation would hide.
-3. **The hand-rolled attacker-facing parsers** — CBOR, COSE, mdoc, JCS,
+3. **Relying-party authorization (WRPRC)** — the WRPAC↔WRPRC identifier bind and
+   requested ⊆ registered (`check_matches_access_certificate`,
+   `check_request_within_registration`), with grant-side precedence narrow and the
+   request side read as a union (threat model I21). Three wrong-authorize bugs
+   shipped here before v1.25.0 (#152, #160, #161).
+4. **The hand-rolled attacker-facing parsers** — CBOR, COSE, mdoc, JCS,
    multibase, SD-JWT, ecdsa-sd, bitstring, decompress, and the two XML paths
    (threat model §6). Depth/size bounds and typed-error hygiene. Start with
-   residual risks **R2–R3** (**R1** was resolved in v1.20.1).
-4. **The SSRF surface** — `fetch.py` (IP-pin, forbidden ranges, redirect
+   residual risks **R10** and **R2–R3** (**R1** was resolved in v1.20.1).
+5. **The SSRF surface** — `fetch.py` (IP-pin, forbidden ranges, redirect
    refusal), the resolver opt-out boundary, and the EBSI host allow-list
    (§7, R4–R5).
-5. **The XAdES / Trusted-List XML trust base** — DOCTYPE refusal, the
+6. **The XAdES / Trusted-List XML trust base** — DOCTYPE refusal, the
    XAdES-BASELINE-B profile, the XSW guard, and the `signxml`/`lxml` dependency
    (I13, R6).
 
-The residual-risk register (R1–R8) is deliberately the reviewer's shortcut to
+The residual-risk register (R1–R10) is deliberately the reviewer's shortcut to
 the soft spots we already know about; **R1** (SD-JWT unbounded recursion →
-batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117)),
-leaving the typed-error-hygiene items **R2–R3** at the top of the harden-next list.
+batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117))
+and **R9** (the RDF Data Integrity wrong-accept) in v1.30.2, leaving the
+typed-error-hygiene items **R10** (open untyped exits at the boundary) and **R2–R3**
+at the top of the harden-next list.
 
 ## 4. How to reproduce the evidence
 
