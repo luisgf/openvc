@@ -161,13 +161,22 @@ with for_ebsi("pilot") as http:
   allow-list, short client-side TTL caching, and bounded retries
   ([ADR-0001](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0001-ebsi-http-client.md)).
   A URL that is not visible ASCII, or that does not parse (port included), is
-  refused as `HttpForbiddenHost` before any request.
+  refused as `HttpForbiddenHost` before any request. The DID itself is checked before
+  it is put in a registry URL: anything but `did:ebsi:z` plus 22 or 23 base58btc
+  characters (a path, a `..`, a query, a fragment, a percent escape, another method) is a
+  `DidResolutionError` from `resolve` / `issuer_record`, so an unsigned token's `iss`
+  cannot choose the request path (`verify_ebsi_badge` reports `EbsiVerificationError`).
   Never resolve `did:web` through it — `did:web` has its own guarded fetch
   (see [Resolving issuer keys](Resolving-Issuer-Keys)).
 - **The document must be for the DID asked**: `DidEbsiResolver.resolve(did)` raises
   `DidResolutionError` unless the registry document's `id` is exactly `did`, as `did:web`
   does (a missing, empty, non-string or differently-cased `id`, and a DID URL such as
-  `did:ebsi:zX#key-1`, are refused).
+  `did:ebsi:zX#key-1`, are refused). The Trusted Issuers Registry record is held to the
+  same rule: `issuer_record(did)` raises `MalformedRegistryResponse` unless the response
+  names exactly `did` (another DID, or an absent, `null`, non-string or empty `did`, on
+  every API version), before any `attributes` page or revision is fetched, so
+  `IssuerRecord.did` is the DID the registry answered for. The `attributes` / `href` path
+  is still pinned to the registry's origin, not to the issuer.
 - **Environment-aware**: `for_ebsi("pilot" | "conformance" | "production")` seeds
   the allow-list from the chosen EBSI environment — `production` (`api.ebsi.eu`) is
   registered for EBSI's Q4 2026 business launch. Pass `extra_hosts` to also permit an
