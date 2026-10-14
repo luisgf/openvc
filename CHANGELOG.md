@@ -226,8 +226,11 @@ All notable changes to **openvc** are documented here. The format follows
   the bounded loader: it takes the lane's own error class, so `keys.py` (which cannot import
   from `openvc.proof`) and the three proof suites share it. The message names the code point and
   its index and never the text, which is attacker-controlled and can be any length. **The string
-  is never repaired** (`errors="replace"` and `"surrogatepass"` would make two different inputs
-  hash alike). Checked and already typed, so unchanged: `eddsa-jcs-2022` and `ecdsa-jcs-2019`
+  is never repaired**: `errors="replace"` would make two different inputs hash alike (`"\ud800"`
+  and `"?"` are both `b"?"`), and `"surrogatepass"` is lossless but emits bytes that are not UTF-8
+  (`ED A0 80` through `ED BF BF`): a strict decoder rejects them and a conformant encoder in
+  another implementation never produces them (a WHATWG `TextEncoder` writes U+FFFD), so the hash
+  would not match what that implementation computes. Checked and already typed, so unchanged: `eddsa-jcs-2022` and `ecdsa-jcs-2019`
   (`ProofMalformed`), VC-JWT, VP-JWT and SD-JWT VC (`MalformedToken`, `SdJwtError`), every DID
   method's key resolution, status lists, JWE, the trust lists, the schema and Type Metadata
   lanes, EBSI, and mdoc / COSE / CBOR (a CBOR text string is strict UTF-8, so one never holds a

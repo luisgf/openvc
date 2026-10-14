@@ -20,10 +20,14 @@ lone UTF-16 surrogate, and ``json.loads`` returns a ``str`` holding that code po
 a string cannot be encoded to UTF-8, so a bare ``.encode("utf-8")`` on attacker text is a
 bare ``UnicodeEncodeError``: not an ``OpenvcError``, and it aborts a whole ``verify_many``
 batch the same way. :func:`utf8` is the encode for those sites. It refuses the string with
-the caller's own typed error and never repairs it (``errors="replace"`` or
-``"surrogatepass"`` would make two different inputs encode to the same bytes). The loader
-itself keeps accepting the escape: a JOSE issuer may sign one, and what verifies is what
-the issuer signed.
+the caller's own typed error and never repairs it. ``errors="replace"`` would make two
+different inputs encode to the same bytes (``"\\ud800"`` and ``"?"`` are both ``b"?"``).
+``errors="surrogatepass"`` is lossless but emits bytes that are not UTF-8 (``ED A0 80``
+through ``ED BF BF``): a strict decoder rejects them, and a conformant encoder elsewhere
+never produces them (a WHATWG ``TextEncoder`` writes U+FFFD for the same code point), so
+the hash would not match the one another implementation computes. The loader itself keeps
+accepting the escape: a JOSE issuer may sign one, and what verifies is what the issuer
+signed.
 
 It imports only the standard library, so any module can use it without an import cycle.
 """
