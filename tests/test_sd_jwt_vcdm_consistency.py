@@ -22,6 +22,16 @@ applied neither rule, on both pipelines:
   pointing at ``expected_vct``) instead of ignoring the pin. Ignoring it would also let
   a holder dodge the pin by withholding a disclosable ``@context``.
 
+Since #275 a ``vc+sd-jwt`` (and the draft-era and absent ``typ``) has to be read as a W3C
+credential before the pin is looked at: its ``type`` must include ``VerifiableCredential``
+and not ``VerifiablePresentation`` (VCDM 2.0 §4.5, §4.13) and the base ``@context`` must be
+the first entry (§4.3). A ``type`` that is withheld or is no array of names (a number, a
+bool, an object, a string that is not ``VerifiableCredential``, an empty array, ``null``)
+is therefore ``SdJwtError`` at that gate, where it used to reach the pin and be a
+``TypeMismatch``. The pin still sees every ``type`` the gate lets through (an array that
+includes ``VerifiableCredential`` with hostile entries beside it) and, with no type rule
+for it, every ``dc+sd-jwt`` payload with a VCDM ``@context``.
+
 IETF SD-JWT VCs keep their behaviour otherwise: a claim merely *named* ``issuer`` / ``id``
 / ``type`` there is the issuer's own vocabulary, and ``result.issuer`` (the verified
 ``iss``) stays the only authenticated issuer on every lane.
@@ -297,18 +307,83 @@ def test_vcdm_missing_expected_type_is_rejected(run, form):
 
 
 def test_vcdm_withheld_type_is_rejected(run, form):
-    # A holder that withholds a disclosable `type` presents no type at all.
+    # A holder that withholds a disclosable `type` presents no type at all. Until #275 the
+    # pin caught it (TypeMismatch); a vc+sd-jwt is now refused one step earlier, as a
+    # payload that does not say it is a credential (VCDM 2.0 §4.5), with or without a pin.
     sd_jwt = _without(_mint(_vcdm(), disclose=["type"]), "type")
-    with pytest.raises(TypeMismatch):
+    for policy in (_types("ExampleAlumniCredential"), None):
+        with pytest.raises(SdJwtError, match="includes VerifiableCredential") as excinfo:
+            run(form(sd_jwt), policy)
+        assert excinfo.type is SdJwtError
+        assert "typ 'vc+sd-jwt'" in str(excinfo.value)
+
+
+def test_vcdm_presented_type_disclosure_meets_the_gate_and_the_pin(run, form):
+    # The twin of the refusal above: the same token with the disclosure presented (the shape
+    # of the Recommendation's Example 4) verifies, and the pin reads the disclosed `type`.
+    sd_jwt = _mint(_vcdm(), disclose=["type"])
+    result = run(form(sd_jwt), _types("ExampleAlumniCredential"))
+    assert result.credential["type"] == ["VerifiableCredential", "ExampleAlumniCredential"]
+    with pytest.raises(TypeMismatch, match="UniversityDegreeCredential"):
+        run(form(sd_jwt), _types("UniversityDegreeCredential"))
+
+
+def test_a_withheld_type_on_a_dc_sd_jwt_vcdm_payload_is_still_a_mismatch(run, form):
+    # What the test above used to prove about the pin, through the typ that has no `type`
+    # rule (#275): a dc+sd-jwt with a vct and a VCDM @context is VCDM, the holder withholds
+    # the disclosable `type`, and the pin, not the gate, is what stops the dodge.
+    sd_jwt = _without(_mint(_vcdm(vct=VCT), typ="dc+sd-jwt", disclose=["type"]), "type")
+    with pytest.raises(TypeMismatch, match="ExampleAlumniCredential") as excinfo:
         run(form(sd_jwt), _types("ExampleAlumniCredential"))
+    assert excinfo.type is TypeMismatch
+    assert run(form(sd_jwt), None).raw.vcdm is True        # with no pin it verifies
+
+
+@pytest.mark.parametrize("hostile", [
+    None, 5, True, {"ExampleAlumniCredential": 1},
+    {}, "ExampleAlumniCredential", [],
+], ids=["null", "number", "bool", "object-keys", "empty-object", "string-without-vc",
+        "empty-array"])
+def test_vcdm_hostile_type_shape_is_refused_at_the_gate(run, hostile):
+    # Never a bare TypeError, and never an object whose KEYS pass the membership test. Until
+    # #275 the first four reached the pin and were a TypeMismatch; none of these says
+    # "VerifiableCredential" (VCDM 2.0 §4.5), so a vc+sd-jwt is refused before the pin is
+    # read (SdJwtError, a different class), whether or not the policy sets one.
+    for policy in (_types("ExampleAlumniCredential"), None):
+        with pytest.raises(SdJwtError, match="includes VerifiableCredential") as excinfo:
+            run(_mint(_vcdm(type=hostile)), policy)
+        assert excinfo.type is SdJwtError
+
+
+@pytest.mark.parametrize("hostile", [
+    ["VerifiableCredential", 7],
+    ["VerifiableCredential", None],
+    ["VerifiableCredential", True],
+    ["VerifiableCredential", {"a": 1}],
+    ["VerifiableCredential", {"ExampleAlumniCredential": 1}],
+    ["VerifiableCredential", ["ExampleAlumniCredential"]],
+], ids=["number-entry", "null-entry", "bool-entry", "object-entry", "object-keys-entry",
+        "nested-array-entry"])
+def test_vcdm_hostile_type_shape_is_a_typed_mismatch(run, hostile):
+    # The shapes the gate lets through, because the array includes VerifiableCredential, and
+    # the pin reads: a TypeMismatch, never a bare TypeError (an unhashable entry) and never
+    # an entry whose KEYS or members pass the membership test.
+    with pytest.raises(TypeMismatch) as excinfo:
+        run(_mint(_vcdm(type=hostile)), _types("ExampleAlumniCredential"))
+    assert excinfo.type is TypeMismatch
+    # and with no pin the same payload verifies: the gate does not mind the extra entries
+    assert run(_mint(_vcdm(type=hostile)), None).raw.vcdm is True
 
 
 @pytest.mark.parametrize("hostile", [None, 5, True, {"ExampleAlumniCredential": 1}],
                          ids=["null", "number", "bool", "object-keys"])
-def test_vcdm_hostile_type_shape_is_a_typed_mismatch(run, hostile):
-    # Never a bare TypeError, and never an object whose KEYS pass the membership test.
-    with pytest.raises(TypeMismatch):
-        run(_mint(_vcdm(type=hostile)), _types("ExampleAlumniCredential"))
+def test_vcdm_hostile_type_shape_on_a_dc_sd_jwt_is_a_typed_mismatch(run, hostile):
+    # The four shapes the test above (until #275) held to the pin, through the typ that has no
+    # `type` rule: a dc+sd-jwt with a vct and a VCDM @context is VCDM and the pin reads them.
+    with pytest.raises(TypeMismatch) as excinfo:
+        run(_mint(_vcdm(type=hostile, vct=VCT), typ="dc+sd-jwt"),
+            _types("ExampleAlumniCredential"))
+    assert excinfo.type is TypeMismatch
 
 
 def test_vcdm_expected_types_present_verify(run, form):
@@ -549,9 +624,21 @@ def test_forged_sd_jwt_status_list_cannot_borrow_the_victim_issuer(pipeline, for
 # --------------------------------------------------------------------------- #
 
 def test_string_type_pin_is_not_satisfied_by_its_characters(run):
-    doc = _vcdm(type=list("ExampleAlumniCredential"))
-    with pytest.raises(TypeMismatch):
+    # The characters ride beside VerifiableCredential so that the payload meets the gate
+    # (#275) and the pin is what refuses it: iterating the bare string would match them all.
+    doc = _vcdm(type=["VerifiableCredential", *"ExampleAlumniCredential"])
+    with pytest.raises(TypeMismatch) as excinfo:
         run(_mint(doc), VerificationPolicy(expected_types="ExampleAlumniCredential"))
+    assert excinfo.type is TypeMismatch
+
+
+def test_a_type_of_nothing_but_the_pins_characters_is_refused_at_the_gate(run):
+    # The shape this test used to hold to the pin: no VerifiableCredential among the
+    # characters, so a vc+sd-jwt is refused before the pin is read (#275, SdJwtError).
+    doc = _vcdm(type=list("ExampleAlumniCredential"))
+    with pytest.raises(SdJwtError, match="includes VerifiableCredential") as excinfo:
+        run(_mint(doc), VerificationPolicy(expected_types="ExampleAlumniCredential"))
+    assert excinfo.type is SdJwtError
 
 
 def test_string_type_pin_matches_the_whole_type(run):

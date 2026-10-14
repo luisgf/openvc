@@ -179,8 +179,9 @@ def _reject_sd_jwt_payload(payload: dict[str, Any]) -> None:
     know) whose payload holds a ``vc`` object verified as a VC-JWT once its ``~`` tail was
     dropped, with no key binding (#291, the same hole #189 closed for a typed one). A VC-JWT
     never carries SD-JWT markers, so a payload that does is an SD-JWT issuer JWT whatever its
-    ``typ``. This cannot see a zero-disclosure SD-JWT, which has no marker: that one is
-    indistinguishable from a VC-JWT that carries a ``cnf``, which this lane never enforces."""
+    ``typ``. This cannot see a zero-disclosure SD-JWT, which carries none of the markers (an
+    ``_sd_alg`` alone, or a decoy digest, is refused): that one is indistinguishable from a
+    VC-JWT that carries a ``cnf``, which this lane never enforces."""
     if _carries_sd_jwt_marker(payload):
         raise MalformedToken(
             "a JWS whose payload carries SD-JWT markers (_sd, _sd_alg, \"...\") is an "

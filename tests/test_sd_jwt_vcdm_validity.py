@@ -15,10 +15,16 @@ The other direction matters as much: an IETF SD-JWT VC (``dc+sd-jwt``) that mere
 carries a claim *named* ``validUntil`` must keep verifying, and must not be flagged
 ``expired`` under the waiver.
 
-What makes a payload VCDM is its ``@context`` and nothing else. ``vc+sd-jwt`` is the W3C
-typ and is accepted only for such a payload (#264): the typ alone no longer reads as
+What turns the window on is the payload's ``@context`` and nothing else: a VCDM base URL
+anywhere in it, for every typ (the lax ``_declares_vcdm``, on purpose: a holder must not be
+able to switch the window off by moving the URL out of first place). ``vc+sd-jwt`` is the
+W3C typ and is accepted only for such a payload (#264): the typ alone no longer reads as
 VCDM, and the pre-draft-06 IETF use of it (a ``vct`` but no VCDM ``@context``) is refused
 with ``SdJwtError``, as draft-ietf-oauth-sd-jwt-vc-19 dropped its transitional acceptance.
+Since #275 a typ other than ``dc+sd-jwt`` also needs the base URL as the FIRST ``@context``
+entry (VCDM 2.0 §4.3) and a credential ``type``, so the "not first" payloads below reach
+the window only under ``dc+sd-jwt``, which has no such rule; under ``vc+sd-jwt`` they are
+refused (``SdJwtError``) before any date is read.
 
 Helpers are self-contained (tests/ is not a package — no cross-import); issuers are
 ``did:jwk``, resolved offline by the default resolvers; ``asyncio.run`` drives the
@@ -241,17 +247,49 @@ def test_valid_until_inside_the_leeway_verifies(run):
 
 @pytest.mark.parametrize("typ, context, extra", [
     pytest.param("vc+sd-jwt", V2, {}, id="context-as-a-string"),
-    pytest.param("vc+sd-jwt", ["https://example.org/ctx", V2], {}, id="v2-not-first"),
+    # The base URL in second place: the lax `_declares_vcdm` still turns the window on, which
+    # only a typ without the context-position rule can show (#275; the vc+sd-jwt twin is
+    # refused whole, in the test after this one), and a dc+sd-jwt carries its REQUIRED vct.
+    pytest.param("dc+sd-jwt", ["https://example.org/ctx", V2], {"vct": "urn:x"},
+                 id="v2-not-first"),
     pytest.param("vc+sd-jwt", [V2], {"vct": "urn:x"}, id="w3c-typ-context-and-vct"),
     pytest.param("dc+sd-jwt", [V2], {"vct": "urn:x"}, id="ietf-typ-but-vcdm-context"),
 ])
 def test_every_vcdm_signal_enforces_the_window(run, typ, context, extra):
-    # The @context is the only signal (#264); the typ, either one, does not matter here.
-    # A dc+sd-jwt always carries its REQUIRED vct (#272), and the context wins over it.
+    # The @context is the only signal that turns the window on (#264), wherever the base URL
+    # sits in it; the typ, either one, does not matter here. A dc+sd-jwt always carries its
+    # REQUIRED vct (#272), and the context wins over it.
     doc = _vcdm(validUntil=PAST, **extra)
     doc["@context"] = context
     with pytest.raises(CredentialExpired):
         run(_mint(doc, typ=typ), None)
+
+
+@pytest.mark.parametrize("extra", [
+    pytest.param({}, id="no-vct"),
+    pytest.param({"vct": "urn:x"}, id="vct"),
+])
+@pytest.mark.parametrize("claim, value", [
+    pytest.param("validUntil", PAST, id="expired"),
+    pytest.param("validFrom", FUTURE, id="not-yet-valid"),
+])
+def test_vc_sd_jwt_with_the_vcdm_context_not_first_is_refused_before_the_window(
+        run, claim, value, extra):
+    # The vc+sd-jwt row that was "v2-not-first" in the test above until #275. VCDM 2.0 §4.3
+    # makes the base URL the first item of `@context`, so the payload is not read as a W3C
+    # credential and no date is looked at: SdJwtError, not CredentialExpired /
+    # CredentialNotYetValid, and the waiver waives the expiry only, never this.
+    conforming = _vcdm(**{claim: value}, **extra)
+    conforming["@context"] = [V2, "https://example.org/ctx"]
+    not_first = {**conforming, "@context": ["https://example.org/ctx", V2]}
+    # The control: with the base URL put first the window is read, and it fails.
+    window_error = CredentialExpired if claim == "validUntil" else CredentialNotYetValid
+    with pytest.raises(window_error):
+        run(_mint(conforming, typ="vc+sd-jwt"), None)
+    for policy in (None, WAIVED):
+        with pytest.raises(SdJwtError, match="first `@context` entry") as excinfo:
+            run(_mint(not_first, typ="vc+sd-jwt"), policy)
+        assert excinfo.type is SdJwtError
 
 
 def test_dc_sd_jwt_with_a_vcdm_context_but_no_vct_is_refused_before_the_window(run):
@@ -398,6 +436,9 @@ def test_envelope_media_type_does_not_turn_ietf_claims_into_vcdm(run):
     ({"@context": [V2]}, True),
     ({"@context": V2}, True),
     ({"@context": [V1]}, True),
+    # Lax on purpose (#275): the base URL anywhere turns the window and the consistency
+    # checks on; being read as a credential (first entry, credential `type`) is a stricter
+    # test, `_vcdm_nonconformity`, applied to every typ but dc+sd-jwt.
     ({"@context": ["https://example.org/ctx", V2]}, True),
     ({"@context": [V2], "vct": "urn:x"}, True),     # the context wins over a vct
     ({}, False),                                    # the typ no longer counts: no @context

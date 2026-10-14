@@ -7,7 +7,11 @@ when its issuer JWT has no ``typ`` member, or carries the draft-era ``vc+ld+json
 own files (test_sd_jwt_vc_typ_vcdm_only.py, test_sd_jwt_vc_dc_typ_ietf_only.py); this one
 pins what #288 and #289 let through, and what they must keep out. A VCDM presentation
 secured with SD-JWT is the first of those: it has the ``@context`` of a credential and no
-``vp`` claim, so with no ``typ`` nothing else tells it from a credential (#293).
+``vp`` claim, so with no ``typ`` nothing else tells it from a credential (#293). #275 then
+holds every typ that reads as W3C (``vc+sd-jwt``, the draft-era one and an absent ``typ``)
+to the same two requirements, and only ``dc+sd-jwt`` is exempt: the base URL is the FIRST
+``@context`` entry (VCDM 2.0 §4.3) and the ``type`` includes ``VerifiableCredential`` and
+not ``VerifiablePresentation`` (§4.5, §4.13).
 
 W3C VC-JOSE-COSE (Recommendation of 13 October 2026, https://www.w3.org/TR/vc-jose-cose/)
 makes the SD-JWT ``typ`` a SHOULD (§3.2.1), and its verification algorithm (§5.2) takes the
@@ -21,24 +25,30 @@ lane needs to select the key, so they still do not verify end to end (#290). RFC
 ``SdJwtVcProofSuite.verify`` does now:
 
 * **No ``typ`` member.** Accepted only if the processed payload declares a W3C VCDM base
-  ``@context`` (VCDM 2.0 or 1.1, as a string or anywhere in an array), carries no ``vc``
-  or ``vp`` claim (§3.1.3), and says it is a credential: its ``type`` (a string or an
-  array) includes ``VerifiableCredential`` and not ``VerifiablePresentation`` (VCDM 2.0
-  §4.5, §4.13). It then gets the VCDM validity window and the issuer / id / subject
-  reconciliation, exactly like ``vc+sd-jwt``, and reports ``typ is None``. Without a VCDM
-  ``@context`` it is ``SdJwtError``, a ``vct``-bearing IETF payload included: an IETF
-  SD-JWT VC is typed ``dc+sd-jwt``. With a ``vc`` or ``vp`` claim it is ``SdJwtError``, and
-  so it is without that ``type`` (#293). The test is positive: a ``type`` that is absent,
+  ``@context`` (VCDM 2.0 or 1.1, as a string or anywhere in an array: the lax test that
+  turns the validity window on for every typ), carries no ``vc`` or ``vp`` claim (§3.1.3),
+  and conforms to VCDM (#275): the base URL is the FIRST ``@context`` entry (§4.3, a bare
+  string is its own first item), and the ``type`` (a string or an array) includes
+  ``VerifiableCredential`` and not ``VerifiablePresentation`` (§4.5, §4.13). It then gets the
+  VCDM validity window and the issuer / id / subject reconciliation, exactly like
+  ``vc+sd-jwt``, and reports ``typ is None``. Without a VCDM ``@context`` anywhere it is
+  ``SdJwtError``, a ``vct``-bearing IETF payload included: an IETF SD-JWT VC is typed
+  ``dc+sd-jwt``. With a ``vc`` or ``vp`` claim it is ``SdJwtError``, and so it is with the
+  base URL in second place or without that ``type`` (#293, #275), each with a message that
+  names the requirement that failed. The ``type`` test is positive: a ``type`` that is absent,
   malformed or withheld (Example 4 of the Recommendation makes it selectively disclosable)
-  is refused, like one that says "presentation" or names both. Only an absent ``typ`` is
-  held to it: ``vc+sd-jwt`` and ``vc+ld+json+sd-jwt`` name a credential themselves.
+  is refused, like one that says "presentation" or names both. Every typ but ``dc+sd-jwt``
+  is held to both: a ``vc+sd-jwt`` or ``vc+ld+json+sd-jwt`` says it is a credential, and the
+  payload has to agree.
 * **``vc+ld+json+sd-jwt``, exactly.** Treated like ``vc+sd-jwt``: it needs a VCDM
-  ``@context``, or it is ``SdJwtError``.
+  ``@context`` that starts with the base URL and a credential ``type``, or it is
+  ``SdJwtError``.
 * **A ``typ`` that is present and anything else** is ``SdJwtError`` ("unexpected issuer JWT
   typ"): ``null``, any non-string, ``""``, ``JWT``, ``kb+jwt``, ``vc+jwt``, a case or
   whitespace variant, an ``application/`` prefix. A ``"typ": null`` member is present, not
   absent. Matching is exact.
-* **``dc+sd-jwt`` is unchanged**: a non-empty string ``vct``, whatever the ``@context``.
+* **``dc+sd-jwt`` is unchanged**: a non-empty string ``vct``, whatever the ``@context``
+  (the base URL in second place included) and whatever the ``type``, absent or withheld.
 * **The claim rules do not depend on the typ** (section K). Under no ``typ`` and the
   draft-era one, as under ``vc+sd-jwt``: a presented disclosure of a validity claim, of
   ``exp``, ``nbf``, ``cnf``, ``status``, ``credentialStatus``, ``aka_vcts`` or
@@ -55,8 +65,9 @@ lane needs to select the key, so they still do not verify end to end (#290). RFC
   ``dc+sd-jwt`` (#272), so neither new case answers a ``dc+sd-jwt`` query.
 
 Two real tokens of the Recommendation sit in tests/fixtures/vc_jose_cose/ (section I).
-Section J is the #293 type rule; K and L pin the rules around the typ gate that a token with
-no ``typ``, or with the draft-era one, must not get round.
+Section J is the #293 type rule, widened by #275 to every typ but ``dc+sd-jwt``; K and L pin
+the rules around the typ gate that a token with no ``typ``, or with the draft-era one, must
+not get round.
 
 Helpers are self-contained (tests/ is not a package — no cross-import); issuers are
 ``did:jwk``, resolved offline by the default resolvers; signatures are real P-256 (P-384 for
@@ -118,8 +129,10 @@ ABSENT = object()                       # `_mint(typ=ABSENT)`: a header with no 
 # What the suite (SdJwtError) and the lanes around it say, as regexes. The first four are
 # the typ gate's refusals of a payload with no VCDM @context (under no typ, then under
 # the two W3C typs), the fifth its refusal of a `vc` / `vp` claim under no typ, and the
-# sixth its refusal of a payload that does not say it is a credential under no typ (#293):
-# keep them apart.
+# sixth its refusal of a payload that does not say it is a credential under no typ (#293).
+# Since #275 the last two requirements are asked of every typ but dc+sd-jwt, and the
+# message names the typ it judged (`_first_context_refusal` / `_credential_type_refusal`
+# below build the regexes): keep all of them apart.
 NO_TYP_NEEDS_CONTEXT = (r"issuer JWT without a typ needs a W3C VCDM @context; "
                         r"an IETF SD-JWT VC is typed 'dc\+sd-jwt'")
 VC_TYP_NEEDS_CONTEXT = (r"issuer JWT typ 'vc\+sd-jwt' needs a W3C VCDM @context; "
@@ -131,6 +144,11 @@ NO_TYP_NO_VC_CLAIM = (r"issuer JWT without a typ must not carry a `vc` or `vp` c
 NO_TYP_NEEDS_CREDENTIAL_TYPE = (r"issuer JWT without a typ needs a `type` that includes "
                                 r"VerifiableCredential and not VerifiablePresentation "
                                 r"\(VCDM 2\.0 §4\.5, §4\.13\)")
+# How the typ gate says which typ it judged (the `shown` of its messages), for the helpers.
+SHOWN_NO_TYP = "without a typ"
+SHOWN_DRAFT_TYP = f"typ '{DRAFT_TYP}'"
+FIRST_CONTEXT = "first `@context` entry"            # a fragment that names the requirement
+CREDENTIAL_TYPE = "includes VerifiableCredential"   # the other one
 UNEXPECTED_TYP = "unexpected issuer JWT typ"
 CONTEXT_DISCLOSED = "'@context' is selectively disclosed"
 VCT_DISCLOSED = "'vct' is selectively disclosed"
@@ -255,6 +273,20 @@ def _vcdm_vct(**extra):
     return _vcdm(vct=VCT, **extra)
 
 
+def _first_context_refusal(shown):
+    """The #275 refusal of a payload whose base VCDM context is not its first ``@context``
+    entry, as the typ gate words it for the typ *shown*."""
+    return re.escape(f"issuer JWT {shown} needs a VCDM base context as the first "
+                     "`@context` entry (VCDM 2.0 §4.3), not just somewhere in it")
+
+
+def _credential_type_refusal(shown):
+    """The refusal of a payload whose ``type`` does not include VerifiableCredential (and not
+    VerifiablePresentation), as the typ gate words it for the typ *shown* (#293, #275)."""
+    return re.escape(f"issuer JWT {shown} needs a `type` that includes VerifiableCredential "
+                     "and not VerifiablePresentation (VCDM 2.0 §4.5, §4.13)")
+
+
 # What an issuer of the VCDM 1.1 JWT encoding puts under `vc` / `vp`.
 EMBEDDED_VC = {"@context": [V2], "type": ["VerifiableCredential"], "issuer": DID,
                "validFrom": "2020-01-01T00:00:00Z",
@@ -316,12 +348,26 @@ def _answer(presentation, *, vct_values=None):
                            nonce=NONCE, client_id=CLIENT_ID).for_query("q")[0]
 
 
+# A payload that names a VCDM base context anywhere in `@context` (the lax test that turns the
+# validity window on, and the only context rule of dc+sd-jwt). The second marker is those of
+# the first that also CONFORM (#275): the base URL first, or alone as a string. The third is
+# the one that does not, which every typ but dc+sd-jwt refuses.
 VCDM_CONTEXTS = pytest.mark.parametrize("context", [
     [V2, EXAMPLES_V2],
     V2,
     ["https://example.org/ctx", V2],
     [V1],
 ], ids=["v2-array", "v2-string", "v2-not-first", "v1"])
+
+CONFORMING_CONTEXTS = pytest.mark.parametrize("context", [
+    [V2, EXAMPLES_V2],
+    V2,
+    [V1],
+], ids=["v2-array", "v2-string", "v1"])
+
+NOT_FIRST_CONTEXTS = pytest.mark.parametrize("context", [
+    pytest.param(["https://example.org/ctx", V2], id="v2-not-first"),
+])
 
 # Not a VCDM base context, though several of them look like one: the reader compares each
 # entry as a string, exactly, and only the entries of an array (never the keys of an object,
@@ -455,13 +501,14 @@ def test_the_helper_writes_no_cty_member_unless_asked_and_leaves_the_typ_alone()
 
 
 # --------------------------------------------------------------------------- #
-# A. no typ member and a VCDM @context: accepted as VCDM (#288)
+# A. no typ member and a conforming VCDM payload: accepted as VCDM (#288, #275)
 # --------------------------------------------------------------------------- #
 
-@VCDM_CONTEXTS
+@CONFORMING_CONTEXTS
 @WITH_VCT
 def test_a_vcdm_sd_jwt_with_no_typ_verifies_as_vcdm(run, form, context, with_vct):
-    # VC-JOSE-COSE §3.2.1: the typ is a SHOULD, and Examples 4 and 5 omit it.
+    # VC-JOSE-COSE §3.2.1: the typ is a SHOULD, and Examples 4 and 5 omit it. The base URL is
+    # the first `@context` entry (VCDM 2.0 §4.3) and the `type` says credential (#275).
     doc = _vcdm(**{"@context": context})
     if with_vct:
         doc["vct"] = VCT
@@ -472,6 +519,27 @@ def test_a_vcdm_sd_jwt_with_no_typ_verifies_as_vcdm(run, form, context, with_vct
     assert result.raw.vct == (VCT if with_vct else None)
     assert result.issuer == DID
     assert result.expired is False
+
+
+@NOT_FIRST_CONTEXTS
+@WITH_VCT
+def test_a_vcdm_sd_jwt_with_no_typ_and_the_context_not_first_is_refused(
+        run, form, context, with_vct):
+    # The row that was "v2-not-first" in the test above until #275: a base URL somewhere in
+    # `@context` is enough to turn the VCDM window on, not to be read as a credential
+    # (VCDM 2.0 §4.3 makes it the first item). SdJwtError, naming that requirement.
+    def mint(entries):
+        doc = _vcdm(**{"@context": entries})
+        if with_vct:
+            doc["vct"] = VCT
+        return form(_mint(doc))
+
+    assert run(mint(context[::-1]), None).raw.vcdm is True      # the control: only the order
+    with pytest.raises(SdJwtError, match=_first_context_refusal(SHOWN_NO_TYP)) as excinfo:
+        run(mint(context), None)
+    assert excinfo.type is SdJwtError
+    assert "needs a W3C VCDM @context" not in str(excinfo.value)
+    assert CREDENTIAL_TYPE not in str(excinfo.value)             # the `type` was fine
 
 
 def test_the_suite_reports_no_typ_directly_not_only_the_pipeline():
@@ -748,7 +816,7 @@ def test_control_the_payload_of_the_wrong_typ_tests_verifies_under_each_accepted
 # E. vc+ld+json+sd-jwt: treated like vc+sd-jwt (#289)
 # --------------------------------------------------------------------------- #
 
-@VCDM_CONTEXTS
+@CONFORMING_CONTEXTS
 @WITH_VCT
 def test_the_draft_era_typ_verifies_as_vcdm_with_a_vcdm_context(run, form, context, with_vct):
     doc = _vcdm(**{"@context": context})
@@ -758,6 +826,24 @@ def test_the_draft_era_typ_verifies_as_vcdm_with_a_vcdm_context(run, form, conte
     assert result.raw.typ == DRAFT_TYP
     assert result.raw.vcdm is True
     assert result.raw.vct == (VCT if with_vct else None)
+
+
+@NOT_FIRST_CONTEXTS
+@WITH_VCT
+def test_the_draft_era_typ_with_the_context_not_first_is_refused(run, form, context, with_vct):
+    # The draft-era twin of the refusal in section A (#275, the row that was "v2-not-first" in
+    # the test above): the same requirement, worded for the typ it judged.
+    def mint(entries):
+        doc = _vcdm(**{"@context": entries})
+        if with_vct:
+            doc["vct"] = VCT
+        return form(_mint(doc, typ=DRAFT_TYP))
+
+    assert run(mint(context[::-1]), None).raw.typ == DRAFT_TYP   # the control: only the order
+    with pytest.raises(SdJwtError, match=_first_context_refusal(SHOWN_DRAFT_TYP)) as excinfo:
+        run(mint(context), None)
+    assert excinfo.type is SdJwtError
+    assert "needs a W3C VCDM @context" not in str(excinfo.value)
 
 
 def test_the_suite_reports_the_draft_era_typ_directly():
@@ -868,6 +954,22 @@ def test_a_dc_sd_jwt_with_a_vcdm_context_and_a_vct_still_verifies_as_vcdm(run, f
     assert result.raw.typ == "dc+sd-jwt"
     assert result.raw.vcdm is True
     assert result.raw.vct == VCT
+
+
+@VCDM_CONTEXTS
+def test_a_dc_sd_jwt_has_no_context_position_rule_and_keeps_the_lax_vcdm_reading(
+        run, form, context):
+    # #275 holds the other typs to "the base URL is the FIRST `@context` entry"; the IETF
+    # rules have no such rule, so the base URL anywhere (v2-not-first included) still makes
+    # the payload VCDM, and a VCDM payload keeps its validity window: a holder cannot switch
+    # the window off by moving the URL out of first place.
+    doc = _vcdm_vct(**{"@context": context})
+    result = run(form(_mint(doc, typ="dc+sd-jwt")), None)
+    assert result.raw.typ == "dc+sd-jwt"
+    assert result.raw.vcdm is True
+    assert result.raw.vct == VCT
+    with pytest.raises(CredentialExpired):
+        run(form(_mint({**doc, "validUntil": PAST}, typ="dc+sd-jwt")), None)
 
 
 # --------------------------------------------------------------------------- #
@@ -1182,7 +1284,8 @@ def test_example_5_verifies_end_to_end_once_its_issuer_is_named_in_iss():
 
 
 # --------------------------------------------------------------------------- #
-# J. no typ: the payload has to say it is a credential, not a presentation (#293)
+# J. the payload has to say it is a credential, not a presentation (#293; #275 asks it of
+#    every typ but dc+sd-jwt, not only of a token with no typ)
 # --------------------------------------------------------------------------- #
 
 def _vcdm_presentation(**extra):
@@ -1335,16 +1438,48 @@ def test_a_presented_type_disclosure_that_says_presentation_is_refused(run, form
 
 @pytest.mark.parametrize("typ", ["vc+sd-jwt", DRAFT_TYP], ids=["vc-sd-jwt", "draft-typ"])
 @pytest.mark.parametrize("how", ["absent", "withheld"])
-def test_the_type_rule_is_for_a_token_with_no_typ_only(run, form, typ, how):
-    # `vc+sd-jwt` and `vc+ld+json+sd-jwt` name a credential themselves, so they do not need
-    # the payload to: a `type` that is missing or withheld is not their defect.
+def test_the_type_rule_is_for_every_typ_but_dc_sd_jwt(run, form, typ, how):
+    # This was "for a token with no typ only" until #275: `vc+sd-jwt` and `vc+ld+json+sd-jwt`
+    # say the payload is a credential, and a payload that is not must not pass under a typ
+    # that says it is. A `type` that is missing or withheld (a holder may drop it, Example 4
+    # makes it disclosable) is their defect too: SdJwtError, worded for the typ it judged.
     if how == "absent":
         sd_jwt = _mint(_with_type(ABSENT), typ=typ)
     else:
         sd_jwt = _without(_mint(_vcdm(), typ=typ, disclose=["type"]), "type")
-    result = run(form(sd_jwt), None)
+    # The control: the same token with its `type` there verifies under the same typ.
+    assert run(form(_mint(_vcdm(), typ=typ)), None).raw.typ == typ
+    with pytest.raises(SdJwtError, match=_credential_type_refusal(f"typ {typ!r}")) as excinfo:
+        run(form(sd_jwt), None)
+    assert excinfo.type is SdJwtError
+    assert CREDENTIAL_TYPE in str(excinfo.value)
+    assert FIRST_CONTEXT not in str(excinfo.value)           # the `@context` was fine
+
+
+@pytest.mark.parametrize("typ", ["vc+sd-jwt", DRAFT_TYP], ids=["vc-sd-jwt", "draft-typ"])
+def test_a_presented_type_disclosure_that_says_credential_verifies_under_each_w3c_typ(
+        run, form, typ):
+    # The twin of the withheld refusal above, as the one for a token with no typ is of its own
+    # (the shape of Example 4): the same token with the disclosure presented.
+    result = run(form(_mint(_vcdm(), typ=typ, disclose=["type"])), None)
+    assert result.claims["type"] == ["VerifiableCredential", "ExampleAlumniCredential"]
     assert result.raw.typ == typ
     assert result.raw.vcdm is True
+
+
+@pytest.mark.parametrize("how", ["absent", "withheld"])
+def test_a_dc_sd_jwt_has_no_type_rule(run, form, how):
+    # The IETF rules make `vct` REQUIRED (draft-19 §2.2.2.3) and have no `type` rule: the
+    # same payloads that the two W3C typs refuse above still verify as `dc+sd-jwt` (with
+    # their vct), VCDM by the lax reading of their `@context`, and with no `type` to report.
+    if how == "absent":
+        sd_jwt = _mint({**_with_type(ABSENT), "vct": VCT}, typ="dc+sd-jwt")
+    else:
+        sd_jwt = _without(_mint(_vcdm_vct(), typ="dc+sd-jwt", disclose=["type"]), "type")
+    result = run(form(sd_jwt), None)
+    assert result.raw.typ == "dc+sd-jwt"
+    assert result.raw.vcdm is True
+    assert result.raw.vct == VCT
     assert "type" not in result.claims
 
 
