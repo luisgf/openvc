@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from .. import _json
 from ..multibase import encode_multibase
 from ._context_validation import validate_document
 from ._verify_common import (
@@ -113,7 +114,9 @@ def _canonize(document: dict[str, Any], loader: Any) -> bytes:
                 break
             cause = cause.__cause__ or cause.__context__
         raise DataIntegrityError(f"canonicalization failed: {exc}") from exc
-    return nquads.encode("utf-8")
+    # A statement about a *named* node is never hashed by pyld (only blank nodes are), so a
+    # lone UTF-16 surrogate in one survives into the N-Quads and fails here, not above.
+    return _json.utf8(nquads, error=DataIntegrityError, what="the canonical N-Quads")
 
 
 def _hash_data(document: dict[str, Any], proof_config: dict[str, Any], loader: Any) -> bytes:
