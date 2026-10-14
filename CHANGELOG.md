@@ -71,6 +71,37 @@ All notable changes to **openvc** are documented here. The format follows
   EBSI registry, the exact error class on the Data Integrity lane, and the `kid`-less
   fallback.
 
+- **A malformed `meta.vct_values` or `meta.doctype_value` no longer reads as "no
+  constraint"** ([#224](https://github.com/luisgf/openvc/issues/224)). Found while
+  implementing [#205](https://github.com/luisgf/openvc/issues/205). On a `dc+sd-jwt`
+  query, a `meta` that was `null`, an array or a string, or an explicit
+  `"vct_values": null`, skipped the type check, so any SD-JWT VC type answered the
+  query. A `mso_mdoc` query did the same with `meta` or `"doctype_value": null`, and
+  any mdoc docType answered. These now raise `VpTokenMalformed`, as `type_values`
+  has since #205. An absent `meta`, or a `meta` without the key, still means no
+  constraint. The `dcql_query` is the verifier's own input, not the wallet's, so this
+  is defence in depth: it stops a verifier-side bug from widening a query to any
+  type, and no attacker can reach it.
+
+  `vct_values` is also parsed before the SD-JWT presentation is verified. A
+  malformed query used to surface as whatever the presentation failed with first
+  (and only a valid presentation reached the check at all). It is now
+  `VpTokenMalformed` whatever the wallet sent for that query, as for `type_values`.
+  The match against the verified `vct` is unchanged. One reader (`_dcql_meta`) now serves
+  `vct_values`, `doctype_value` and `type_values`, so the three formats cannot drift
+  apart again. The Presentations wiki page states the rule.
+
+### Tests
+
+- **The type constraints are pinned in both directions** (#224). For
+  `vct_values` and `doctype_value`: a `null`, empty, non-string or wrong-shaped
+  value, and a `meta` that is `null`, an array, a string, `0`, `false` or `""`, all
+  raise `VpTokenMalformed`. They do so with a junk presentation too, which would
+  otherwise have failed with `MalformedToken` or `MdocMalformed`. Each junk case has
+  a control showing it fails on its own with a sound constraint. The absent-`meta`,
+  empty-`meta` and other-key cases still verify. Mutation-checked: 34 of these
+  cases fail against the previous code.
+
 ## [1.32.2] — 2026-10-14
 
 One security fix in the SD-JWT VC suite, which changes what issues and what
