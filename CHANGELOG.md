@@ -51,6 +51,24 @@ All notable changes to **openvc** are documented here. The format follows
     in a tagged release; they now name the tests. The anchors are as of v1.24.0, not
     the never-tagged v1.24.1. The pack README's catalog span is I1–I21 and R1–R10, and its review ranking gains
     relying-party authorization.
+- **`check_request_within_registration` describes the rule it enforces.** Its
+  docstring said each requested claim path must fall inside *one* matching
+  `credentials` entry. The code pools the grants of every entry whose `meta` covers
+  the whole query — two entries for the same `vct`, one granting `name` and one
+  `age`, authorize a query for both — and that rule is kept. TS 119 475 scopes the
+  registered credentials to the intended use (clause B.2.7), not to an entry, and
+  defines no either/or between entries. Pooling never borrows from an entry
+  registered for another `vct`, or for only part of the query's `meta`. A
+  one-entry rule would add no protection, because the relying party could split
+  the query in two. The Relying-Party Certificates wiki page says the same.
+
+### Tests
+
+- **The pooling rule is pinned.** One test covers entries with identical `meta`:
+  their grants pool, and an unregistered path is still refused. A second covers
+  overlapping `meta`: an entry for `vct` A alone lends nothing to a query that a
+  `vct` B credential may answer. Both were mutation-checked: a one-entry rule fails
+  both, and pooling every entry of a format, whatever its `meta`, fails the second.
 
 ### Tests
 

@@ -921,10 +921,20 @@ def check_request_within_registration(
 
     *dcql_query* is the OpenID4VP 1.0 ``dcql_query`` the relying party sent — the same
     object :func:`openvc.verify_vp_token` consumes. For each of its credential queries
-    this requires a registered entry of the same ``format`` whose ``meta`` covers the
-    requested one, and every requested claim ``path`` to fall inside that entry's
-    registered paths (a registered container covers its members; see
-    :func:`_path_covered`).
+    this requires at least one registered entry of the same ``format`` whose ``meta``
+    covers the **whole** requested one, and every requested claim ``path`` to fall
+    inside the registered paths of those entries (a registered container covers its
+    members; see :func:`_path_covered`).
+
+    When several entries apply — two for the same ``vct``, one granting ``name`` and one
+    ``age`` — their grants are **pooled**. Clause B.2.7 scopes the registered
+    credentials to the intended use, not to an entry, and the specification defines no
+    either/or between entries. Pooling never borrows: an entry counts only if its
+    ``meta`` covers everything the query can match, so every pooled path is registered
+    for every credential the query can return; an entry for another ``vct`` contributes
+    nothing. Holding each query to a single entry would add no protection (the relying
+    party could split it into two queries) and would refuse a registration that lists
+    one entry per attribute.
 
     A WRPRC carries **one** intended use (clause 5.2.4 flattens TS5's nested model), so
     *intended_use_id* is an optional assertion rather than a selector: pass it and the
@@ -986,6 +996,7 @@ def check_request_within_registration(
             raise RpRegistrationError(
                 f"credential query {label!r} names no claims (asks for every attribute), "
                 f"which this WRPRC does not register")
+        # Pooled over the entries that cover the whole query `meta` (see docstring).
         granted = tuple(p for c in candidates for p in c.claim_paths)
         for path in wanted:
             if not any(_path_covered(reg, path) for reg in granted):
