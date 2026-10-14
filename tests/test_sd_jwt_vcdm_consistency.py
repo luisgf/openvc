@@ -187,8 +187,16 @@ def test_vc_sd_jwt_without_a_vcdm_context_is_refused_before_reconciliation(run, 
 
 
 def test_vcdm_issuer_conflict_is_rejected_under_a_dc_sd_jwt_typ(run, form):
-    # VCDM by its @context, whatever the typ says.
-    with pytest.raises(ClaimsInvalid, match="issuer"):
+    # VCDM by its @context, whatever the typ says. A dc+sd-jwt needs a vct whatever else it
+    # carries (#272), so this one has it: the conflict, not a missing vct, is what fails.
+    with pytest.raises(ClaimsInvalid, match="!= issuer"):
+        run(form(_mint(_vcdm(issuer=UNIVERSITY, vct=VCT), typ="dc+sd-jwt")), None)
+
+
+def test_a_vct_less_dc_sd_jwt_is_refused_for_its_vct_before_the_conflict_is_read(run, form):
+    # The same payload without the vct fails the IETF rule first (#272): what is checked
+    # is the missing vct, not the issuer conflict, which is never reached.
+    with pytest.raises(ClaimsInvalid, match="needs a non-empty string vct"):
         run(form(_mint(_vcdm(issuer=UNIVERSITY), typ="dc+sd-jwt")), None)
 
 

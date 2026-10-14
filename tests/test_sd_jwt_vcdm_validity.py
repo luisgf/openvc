@@ -243,15 +243,23 @@ def test_valid_until_inside_the_leeway_verifies(run):
     pytest.param("vc+sd-jwt", V2, {}, id="context-as-a-string"),
     pytest.param("vc+sd-jwt", ["https://example.org/ctx", V2], {}, id="v2-not-first"),
     pytest.param("vc+sd-jwt", [V2], {"vct": "urn:x"}, id="w3c-typ-context-and-vct"),
-    pytest.param("dc+sd-jwt", [V2], {}, id="ietf-typ-but-vcdm-context"),
-    pytest.param("dc+sd-jwt", [V2], {"vct": "urn:x"}, id="vcdm-context-wins-over-vct"),
+    pytest.param("dc+sd-jwt", [V2], {"vct": "urn:x"}, id="ietf-typ-but-vcdm-context"),
 ])
 def test_every_vcdm_signal_enforces_the_window(run, typ, context, extra):
     # The @context is the only signal (#264); the typ, either one, does not matter here.
+    # A dc+sd-jwt always carries its REQUIRED vct (#272), and the context wins over it.
     doc = _vcdm(validUntil=PAST, **extra)
     doc["@context"] = context
     with pytest.raises(CredentialExpired):
         run(_mint(doc, typ=typ), None)
+
+
+def test_dc_sd_jwt_with_a_vcdm_context_but_no_vct_is_refused_before_the_window(run):
+    # #272: a dc+sd-jwt needs its vct whatever else it carries, so this expired VCDM
+    # payload fails on the missing vct, and the waiver changes nothing about that.
+    for policy in (None, WAIVED):
+        with pytest.raises(ClaimsInvalid, match="needs a non-empty string vct"):
+            run(_mint(_vcdm(validUntil=PAST), typ="dc+sd-jwt"), policy)
 
 
 @pytest.mark.parametrize("extra", [
