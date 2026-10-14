@@ -291,7 +291,9 @@ when `disclosable` names one of these claims:
 | `validFrom`, `validUntil`, `issuanceDate`, `expirationDate` | only when `@context` makes the payload VCDM: the validity window openvc enforces there |
 
 `sub`, `iat` and every other claim stay disclosable, and the issued token is
-byte-for-byte what it was before. On an IETF SD-JWT VC a claim merely *named*
+byte-for-byte what it was before. The guard covers what `disclosable` produces:
+digests you write into `claims` yourself (an `_sd` array of your own) are signed
+as given. On an IETF SD-JWT VC a claim merely *named*
 `validUntil` means nothing, so it may be disclosed.
 
 <!-- docs: no-run -->
@@ -309,9 +311,10 @@ non-conformant issuer then fails visibly instead of only failing open.
 
 It cannot catch the disclosure a holder **withholds**. A credential whose issuer
 made `exp` or `status` disclosable still verifies as never-expiring, or with no
-status, when the holder leaves that disclosure out. The one exception is `vct`: it
-is REQUIRED, so a `dc+sd-jwt` that is not a VCDM payload and has no `vct` is
-rejected (`ClaimsInvalid`), whoever left it out. If you accept SD-JWT VCs from
+status, when the holder leaves that disclosure out. The exceptions are `iss`,
+without which nothing verifies, and `vct`: it is REQUIRED, so a `dc+sd-jwt` that
+is not a VCDM payload and has no `vct` is rejected (`ClaimsInvalid`), whoever left
+it out. `issue()` likewise requires `vct` to be a non-empty string. If you accept SD-JWT VCs from
 issuers you do not control and rely on expiry or status, check that the verified
 `claims` actually carry them.
 

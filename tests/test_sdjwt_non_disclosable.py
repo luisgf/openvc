@@ -246,6 +246,28 @@ def test_issue_refuses_the_vcdm_window_on_a_vcdm_payload(name):
     assert key.calls == 0
 
 
+@pytest.mark.parametrize("context", [(V2,), [V2], V2], ids=["tuple", "list", "string"])
+def test_issue_judges_vcdm_on_the_payload_as_signed(context):
+    # Adversarial review of #229: a tuple `@context` is not a list to _declares_vcdm, so
+    # issue() saw an IETF payload and signed a disclosable validUntil — but it is a JSON
+    # array once serialized, so the verifier read VCDM and a withheld expiry verified.
+    claims = _ietf(**{"@context": context, "validUntil": "2021-01-01T00:00:00Z"})
+    key = _CountingKey(KEY)
+    with pytest.raises(SdJwtError, match="VCDM validity window"):
+        SUITE.issue(claims, signing_key=key, disclosable=["validUntil"])
+    assert key.calls == 0
+
+
+@pytest.mark.parametrize("vct", [["urn:x"], 1, {"a": 1}, True, ""])
+def test_issue_requires_the_string_vct_the_verifier_requires(vct):
+    # Adversarial review of #229: issue() took any truthy vct, and verify() now rejects
+    # a dc+sd-jwt without a non-empty string one — openvc would mint what it refuses.
+    key = _CountingKey(KEY)
+    with pytest.raises(SdJwtError, match="vct"):
+        SUITE.issue({"iss": DID}, signing_key=key, vct=vct)
+    assert key.calls == 0
+
+
 @pytest.mark.parametrize("name", ["validFrom", "validUntil", "issuanceDate", "expirationDate"])
 def test_issue_allows_vcdm_named_claims_on_an_ietf_payload(name):
     # On an IETF SD-JWT VC these names mean nothing and are never read as a validity bound.
@@ -284,6 +306,20 @@ def test_a_disclosed_expired_exp_is_refused_not_read_as_expired(run):
     claims = _ietf(exp=PAST)
     with pytest.raises(SdJwtError, match="'exp' is selectively disclosed"):
         run(_mint(claims, disclose=["exp"]))
+
+
+@pytest.mark.parametrize("claims, disclose, typ", [
+    (_ietf(exp=PAST), ["exp"], "dc+sd-jwt"),
+    (_vcdm(validUntil="2021-01-01T00:00:00Z"), ["validUntil"], "vc+sd-jwt"),
+], ids=["exp", "validUntil"])
+def test_the_expiry_waiver_does_not_admit_a_disclosed_expiry(claims, disclose, typ):
+    # Before #229 a disclosed expired exp / validUntil verified under the waiver with
+    # expired=True. The shape itself is refused now, waiver or not.
+    token = _mint(claims, disclose=disclose, typ=typ)
+    with pytest.raises(SdJwtError, match="is selectively disclosed"):
+        SUITE.verify(token, public_key_jwk=JWK, check_temporal=False)
+    with pytest.raises(SdJwtError, match="is selectively disclosed"):
+        verify_credential(token, policy=VerificationPolicy(require_not_expired=False))
 
 
 def test_a_disclosed_iss_fails_typed(run):

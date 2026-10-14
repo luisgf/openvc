@@ -308,8 +308,9 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   `key_bound=False`. **Narrowed in #229:** `SdJwtVcProofSuite.issue` refuses to make
   `iss` / `nbf` / `exp` / `cnf` / `vct` / `vct#integrity` / `aka_vcts` / `status`
   (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3), `credentialStatus` and `@context` (plus
-  the VCDM validity window on a VCDM payload) selectively disclosable, so openvc's
-  own credentials cannot be shaped this way. `verify()` rejects (`SdJwtError`) a
+  the VCDM validity window on a VCDM payload) selectively disclosable through
+  `disclosable` (digests a caller writes into `claims` itself are signed as given).
+  `verify()` rejects (`SdJwtError`) a
   presentation that presents such a disclosure, or one of its sub-claims, and a
   `dc+sd-jwt` with no `vct` (`ClaimsInvalid`). What remains is the **withheld**
   disclosure from a third-party issuer: a withheld digest is indistinguishable
