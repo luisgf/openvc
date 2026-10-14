@@ -160,6 +160,8 @@ with for_ebsi("pilot") as http:
 - **SSRF-guarded**: the EBSI HTTP client is https-only with a host
   allow-list, short client-side TTL caching, and bounded retries
   ([ADR-0001](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0001-ebsi-http-client.md)).
+  A URL that is not visible ASCII, or that does not parse (port included), is
+  refused as `HttpForbiddenHost` before any request.
   Never resolve `did:web` through it — `did:web` has its own guarded fetch
   (see [Resolving issuer keys](Resolving-Issuer-Keys)).
 - **Environment-aware**: `for_ebsi("pilot" | "conformance" | "production")` seeds
