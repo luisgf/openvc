@@ -36,7 +36,7 @@ All notable changes to **openvc** are documented here. The format follows
   `dc+sd-jwt` is unchanged here. Its other direction, that a `dc+sd-jwt` always
   needs a `vct` even with a VCDM `@context`, is #272.
 
-## [1.32.4] — unreleased
+## [1.32.4] — 2026-10-14
 
 ### Security
 
@@ -111,6 +111,52 @@ All notable changes to **openvc** are documented here. The format follows
   `tests/fixtures/didwebvh` golden log resolves unchanged. `did:web` and the EBSI DID
   Registry keep tolerating the `didDocument` envelope, which is what the shared parser's
   unwrapping is for.
+- **A Data Integrity key is selected, and authorized for its purpose, by exact DID
+  URL** ([#258](https://github.com/luisgf/openvc/issues/258)). Found by the
+  adversarial review of [#251](https://github.com/luisgf/openvc/pull/251); the gap
+  predates it. `DidDocument.key_for_purpose` compared only the text after the first
+  `#`. A relationship entry granted a method whenever its fragment matched, whatever
+  came before the `#`: a method of another DID (`did:web:other.example#auth`, as a
+  string or as an embedded method), one version of the document (`?versionId=1#auth`),
+  a path (`/path#auth`), an `https:` URL, or a bare `auth`. Method selection used the
+  same rule and took the first match in document order, so a same-fragment method
+  listed before the exact one shadowed it: a correctly signed proof failed with
+  `SignatureInvalid` and a proof signed by the shadowing method's key verified. All
+  five Data Integrity suites were affected, sync and async, on the credential lane
+  (`assertionMethod`, or `policy.proof_purpose`) and on the OpenID4VP `ldp_vc`
+  holder proof (`authentication`).
+
+  No key from outside the issuer's own document was ever admitted: the key always
+  comes from the resolved document, `did:web` / `did:webvh` bind the document `id`,
+  and the proof's DID is bound to the credential `issuer` (or is the VP holder). What
+  broke was purpose separation inside one document. A key the document lists for
+  `authentication` only could sign credentials accepted as assertions whenever the
+  controller had written an `assertionMethod` entry with the same fragment that
+  points elsewhere.
+
+  The rule now follows DID Core 1.0 §3.2.2 and CID 1.0 §3.3 (steps 9 and 11). A
+  method `id` and a relationship reference are compared as absolute DID URLs: a
+  `did:` URL as written, a `#fragment` resolved against the document `id` when that
+  `id` is a DID (§3.1 syntax), and anything else as resolving to nothing. The proof's
+  `verificationMethod` selects the one method whose absolute `id` equals it, else
+  `KeyResolutionError` (`resolve_verification_key` now decides that with the same
+  strict lookup, never the fragment-tolerant `key_by_kid`). A declared relationship
+  grants it only through a reference that resolves to the same `id`, compared as a
+  plain case-sensitive string, else `ProofPurposeMismatch`. In the lookup the
+  document `id` is checked a fixed number of times, and only the selected method's
+  own relative `id` is resolved; no other method id or reference is: each is compared
+  with the spellings of the one absolute `id` it must name, so the cost stays linear
+  in the document size, however long the DID and however many entries it lists. A
+  resolver that returns its own document type instead of a `DidDocument` keeps the
+  previous classification of a refusal (by its `key_by_kid`), so it still gets a typed
+  error rather than an `AttributeError` that would abort `verify_many`.
+  Unchanged: an undeclared relationship stays lenient, a declared but empty one grants
+  nothing, and a `kid` of `None` still falls back to the document's sole method (which
+  must then pass the exact-reference grant). The JOSE lanes keep `key_by_kid`, which
+  tolerates a bare or `#`-relative `kid` (a JWS `kid` is a hint); they check no
+  verification relationship, which is a separate policy question. The recorded
+  vectors (W3C vc-di-eddsa, vc-di-ecdsa, ecdsa-sd-2023, the EBSI DID Registry capture,
+  the did:webvh logs) all use absolute ids and verify unchanged.
 
 ### Changed
 
@@ -176,7 +222,7 @@ All notable changes to **openvc** are documented here. The format follows
   `vct_values` on an `mso_mdoc` query is ignored). The `verify_vp_token` docstring
   and the wiki ("Type constraints in the query") state the rule.
   `verify_encrypted_vp_response` delegates to `verify_vp_token`, so it follows. The
-  `multiple` flag is still read by truthiness, which is a separate gap.
+  `multiple` flag is still read by truthiness, which is a separate gap (#268).
 - **A `did:webvh` log whose last state has a `didDocument` member no longer resolves**
   (#256). It used to resolve, to the inner document. No golden log and no known
   implementation produces one. A wrapper that was not an object (`null`, a list, a
@@ -190,8 +236,8 @@ All notable changes to **openvc** are documented here. The format follows
 - **A naive `datetime` is UTC in both status-list builders, so a non-UTC host now mints
   a different `validFrom` / `validUntil`**
   ([#255](https://github.com/luisgf/openvc/issues/255)). This is the one change in this
-  release that does not fail closed: the call still succeeds and signs a different
-  string. Decision: a naive value is *read as UTC* rather than refused, the one rule
+  release that alters what a successful call returns rather than refusing an input: the
+  call still succeeds and signs a different string. Decision: a naive value is *read as UTC* rather than refused, the one rule
   every openvc clock check uses (the
   [#187](https://github.com/luisgf/openvc/issues/187) precedent).
 
@@ -245,6 +291,30 @@ All notable changes to **openvc** are documented here. The format follows
 - `openvc.proof._verify_common.utc_instant` and `utc_epoch` gain an add-only `name=`
   keyword (default `"now"`), so a caller that reads some other datetime the same way gets
   an error that names its parameter. The default messages are unchanged.
+- **Behaviour change: DID documents that relied on the fragment match now fail**
+  ([#258](https://github.com/luisgf/openvc/issues/258)), on the Data Integrity lanes
+  only. Each fails closed with a typed error, and in `verify_many` /
+  `verify_many_async` only its own item fails.
+  - A relationship entry that is not a DID URL for the method, such as
+    `"assertionMethod": ["key-1"]`, no longer grants `#key-1`: `ProofPurposeMismatch`.
+    Such a document does not conform to DID Core (an entry must be a DID URL, and a
+    bare `key-1` is a relative path reference). `"#key-1"` and the full
+    `did:…#key-1` still grant it.
+  - A method whose `id` is not a DID URL for the proof's `verificationMethod` (a bare
+    `key-1`, another DID's `#key-1`, a `#key-1` in a document whose `id` is not a DID)
+    is no longer selected: `KeyResolutionError`.
+  - Two methods whose `id`s resolve to the same absolute DID URL (`#key-1` and
+    `did:…#key-1`, or the same `id` twice) are ambiguous, and neither is selected:
+    `KeyResolutionError`. Document order used to pick the first.
+  - `DidDocument.key_for_purpose` called directly with a bare or `#`-relative `kid`
+    returns `None`; it takes the absolute DID URL a proof carries. `key_by_kid` is
+    unchanged.
+  - A `#fragment` resolves only against a document `id` that is a DID by DID Core 1.0
+    §3.1 syntax. `did:web` fetches some DIDs that are not: a path segment with `~`,
+    `+`, `!`, `@` or an invalid `%`-escape (`did:web:example.com:~alice`). Their
+    documents must use absolute method ids and references
+    (`did:web:example.com:~alice#key-1`); a `#key-1` in them selects and grants
+    nothing (`KeyResolutionError`, or `ProofPurposeMismatch` for a reference).
 
 ### Fixed
 
@@ -434,6 +504,33 @@ All notable changes to **openvc** are documented here. The format follows
   is checked separately: with `_epoch` back on `utc_epoch`, 49 cases fail (the 36
   `timestamp()` rows, the 10 no-UTC-reading rows, the token control that used to expect
   `iat = -62135600400`, the error-class test and the token property).
+- **`tests/test_did_reference_exact_match.py`** (#258). Every row of the issue's
+  table on the `assertionMethod` lane through `verify_credential` and
+  `verify_credential_async`, and on the `authentication` lane through the suite call
+  the `ldp_vc` holder proof makes, plus one `verify_vp_token` `ldp_vc` case; two
+  grants and three refusals on each of the five suites; relative method ids and references
+  that resolve; a `#fragment` reference, and a relative method id, in documents
+  whose `id` is not a DID; methods with another DID's, a bare or a versioned `id`
+  that must not be selected; a same-fragment method listed first that must not
+  shadow the exact one; duplicate absolute ids; the `kid`-less fallback; a
+  `[good, bad, bad, good]` batch on `verify_many` and `verify_many_async`; the
+  JOSE lanes' unchanged `kid` tolerance; a resolver that returns its own document
+  type, refused with a typed error on `verify_credential`, `verify_credential_async`,
+  `verify_many` and `verify_many_async` beside good neighbours; `did:web` documents
+  whose `id` fails the §3.1 syntax, where only absolute ids verify; and a linear-cost
+  pin. For a 100 000-character `did:web` with 200 extra methods and 2 000 references,
+  against one method and one reference, the DID syntax check runs the same fixed
+  number of times (both lanes, the `assertionMethod` one sync and async), no entry
+  copies the document `id`, and the prefix checks made on the selected method's
+  resolved `id` stay the same fixed number; with 10 000 references,
+  `verify_credential` stays under a loose wall-clock bound. The adversarial review of
+  this fix found its first version re-checking the `id` once per reference: about 30 s
+  for that document, and minutes near the 1 MiB fetch cap. Each hostile row uses a
+  resolvable issuer (an injected `did:web` fetch, or a stub resolver where the point is
+  a document `id` `did:web` would refuse) and asserts the exact class. Run against the
+  previous code: 100 fail, and the 43 that pass are the grants, the controls, the four
+  rows with a resolver's own document type (the previous code refused those with a
+  typed error too) and the two wall-clock rows (the previous lookup was linear).
 
 ## [1.32.3] — 2026-10-14
 
@@ -3954,6 +4051,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.32.4]: https://github.com/luisgf/openvc/releases/tag/v1.32.4
 [1.32.3]: https://github.com/luisgf/openvc/releases/tag/v1.32.3
 [1.32.2]: https://github.com/luisgf/openvc/releases/tag/v1.32.2
 [1.32.1]: https://github.com/luisgf/openvc/releases/tag/v1.32.1

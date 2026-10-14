@@ -145,6 +145,20 @@ Example-based, but broad. Representative anchors:
   async), a forged `did:webvh` log and the EBSI registry; one good credential
   verifies beside every bad one on `verify_many` / `verify_many_async`
   (`test_did_document_shape_typed.py`).
+- **DID reference matching (Data Integrity)** — a relationship entry for another DID, a
+  version, a path, an `https:` URL, a bare name or another case never grants the
+  method with the same fragment; a method with such an `id` is never selected and never
+  shadows the exact one; two methods with one absolute `id` select neither; a `#fragment`
+  in a document whose `id` is not a DID resolves to nothing. On both lanes
+  (`assertionMethod`, `authentication`), all five suites, sync and async, and an
+  OpenID4VP `ldp_vc` holder proof. A resolver's own document type is refused with a
+  typed error, never a bare `AttributeError`, beside good neighbours on `verify_many` /
+  `verify_many_async`. The lookup stays linear in the document size: for a
+  100 000-character DID with 200 extra methods and 2 000 references, the document `id`
+  is checked a fixed number of times, and only the selected method's own relative `id`
+  is resolved; no other method id or reference is (the same counts as for one method
+  and one reference); with 10 000 references verification stays under a loose
+  wall-clock bound (`test_did_reference_exact_match.py`).
 - **Issuer key resolution (https `iss`, x5c)** — an `iss` that Python and a WHATWG
   parser read as different hosts (userinfo, a backslash, an IDN, a `%`-encoded host,
   port 0, dot segments, `;?#`) refused before the `/.well-known/jwt-vc-issuer` fetch,
@@ -273,6 +287,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `#174` — **wrong-accept** — SD-JWT VC applies `exp` / `nbf` to the processed payload too (RFC 9901 §7.1 step 6): an expired `exp` the issuer had made selectively disclosable was ignored when disclosed. A holder who *withholds* that disclosure is still accepted — residual R7, narrowed by #229, which now refuses to issue or accept a disclosed `exp` / `nbf` (v1.25.0; the `test_sd_jwt.py` test became #229's issue-time refusal)
 
 **Issuer identity & impersonation**
+- `#258` — *purpose granted by a same-fragment reference (defence in depth)* — `DidDocument.key_for_purpose` compared only the text after the first `#`, so a relationship entry naming another DID's `#auth`, one version or path of the document, an `https:` URL or a bare `auth` authorized the document's own `#auth` for that purpose, and a same-fragment method listed first shadowed the exact one; all five Data Integrity suites, sync and async, on the `assertionMethod` and the `ldp_vc` `authentication` lanes. No key outside the issuer's own document was admitted. Method ids and references are now compared as absolute DID URLs (DID Core 1.0 §3.2.2, CID 1.0 §3.3 steps 9 and 11): the proof's `verificationMethod` selects the one method with that `id` (`KeyResolutionError` for none or two), and only a reference resolving to it grants the purpose (`ProofPurposeMismatch`); the JOSE `kid` lookup is unchanged. Its review caught a first version of the fix that re-checked the document `id` once per reference, quadratic in the DID length times the entry count (about 30 s for a 100 000-character DID with 10 000 references); now the document `id` is checked a fixed number of times, and only the selected method's own relative `id` is resolved; no other method id or reference is (v1.32.4; `test_did_reference_exact_match.py`)
 - `#256` — *identity confusion (low)* — a `did:webvh` log state that carried a `didDocument` member was unwrapped by the shared parser after the state's own `id` had been compared with the requested DID, so the resolver returned a document whose `id`, `raw` and method ids were another DID's, or whose inner methods replaced the state's own. The controller signs the wrapper, so it passed the SCID, entryHash, proof and pre-rotation checks; it stays inside the controller boundary and no verification lane reads `doc.id`, so it was a consistency defect, not a forgery. A returned (last) state with a `didDocument` member is now a `DidWebvhError` before the parser runs (`KeyResolutionFailed` on the JOSE lanes and the async API, `KeyResolutionError` on the sync Data Integrity lane), and the parsed `doc.id` is checked against the requested DID as `did:web` does; earlier states are never parsed, and `did:web` and the EBSI registry keep the envelope (v1.32.4; `test_did_webvh_state_envelope.py`)
 - `#236` — *identity confusion* — an https `iss` must name the same host to Python's `urlparse` as to a WHATWG parser: `https://trusted.example\@attacker.example` verified with metadata and JWKS fetched from the host Python resolved, and an x5c `dNSName` leaf for `attacker.example` bound (an exact-string issuer allow-list was never fooled). Userinfo, a backslash, non-ASCII, a `%`-encoded host, port 0, dot segments and `;?#` are refused before any fetch; the same rule guards every https URL openid4vci validates (`credential_issuer`, the metadata endpoints), which had accepted many of the same forms (v1.31.2; `test_https_issuer_identifier.py`)
 - `#221` — **wrong-accept** — a W3C `vc+sd-jwt` credential gets the VC-JWT reconciliation: one signed with an attacker's own key could name `"issuer": "did:web:university.example"` in its body and verify, and `expected_types` was silently ignored on SD-JWT, so a caller's type pin passed a credential of any type (an IETF SD-JWT VC under a type pin is now rejected). Its review also refused a forged `dc+sd-jwt` status list naming the victim issuer under `require_status_issuer_binding` (v1.31.0; `test_sd_jwt_vcdm_consistency.py`)

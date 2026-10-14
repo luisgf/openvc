@@ -121,7 +121,12 @@ boundary is attacker-controlled until a signature verifies.
   `ecdsa-sd-2023`. `verificationMethod`↔`issuer` binding (`src/openvc/verify.py:628-641`);
   cryptosuite chosen from the resolved key, never a proof field
   (`src/openvc/proof/_verify_common.py:289-303`); validity window + `proofPurpose`
-  enforced (`src/openvc/proof/data_integrity.py:235,238`). The RDF suites sign the
+  enforced (`src/openvc/proof/data_integrity.py:235,238`). The key is selected by the
+  exact absolute DID URL of its `id`, and granted the `proofPurpose` only by a
+  relationship entry that resolves to that same URL (DID Core 1.0 §3.2.2, CID 1.0 §3.3);
+  a same-fragment entry pointing at another DID, version, path or a bare name grants
+  nothing (#258, fixed in v1.32.4; `DidDocument.key_for_purpose`,
+  `resolve_verification_key`; `test_did_reference_exact_match.py`). The RDF suites sign the
   dataset but the policy reads the JSON, so context validation
   (`src/openvc/proof/_context_validation.py`, invariant I20) ties the two together
   first. The JCS suites sign the JSON itself. The JCS suites and
