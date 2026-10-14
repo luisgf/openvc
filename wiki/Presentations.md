@@ -154,10 +154,13 @@ for `dc+sd-jwt`, `doctype_value` for `mso_mdoc`, and
   and a `doctype_value` that is not a non-empty string. The `dcql_query` is your
   own input, so this catches a bug in your verifier that would otherwise widen a
   query to any type.
-- **The query is read before the presentation is verified.** A malformed
-  constraint fails the same way whatever the wallet sent. For `mso_mdoc` the
-  missing `expected_origins` or `trust_anchors` are reported first, then the
-  constraint, then the `DeviceResponse` is decoded.
+- **The query is read before its presentation is verified.** A malformed
+  constraint fails the same way whatever the wallet sent for that query. Each
+  query's constraint is read when its own presentation comes up, so a query the
+  wallet did not answer (allowed by `credential_sets`) is not checked, and an
+  earlier query's failure is reported first. For `mso_mdoc` the order is: a
+  missing `expected_origins` or `trust_anchors`, then a presentation that is not a
+  string, then the constraint, then the `DeviceResponse` is decoded.
 - **A parsed constraint is then matched.** The verified `vct` must be one of
   `vct_values`, else `ClaimsInvalid`. The mdoc `docType` must equal
   `doctype_value`, else `MdocDocTypeMismatch`.

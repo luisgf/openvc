@@ -263,9 +263,9 @@ def verify_vp_token(
     and every context the credential cites — only the VCDM 2.0 context is bundled. A
     nested SD-JWT never matches. A query with no ``meta``, or whose ``meta`` lacks the
     key, puts no constraint on the type. A malformed constraint is
-    :class:`VpTokenMalformed`, for all three formats and before any Presentation is
-    verified: a ``meta`` that is not a JSON object, or a constraint that is present but
-    ``null`` or the wrong shape, never reads as "no constraint".
+    :class:`VpTokenMalformed`, for all three formats and before that query's
+    Presentation is verified: a ``meta`` that is not a JSON object, or a constraint
+    that is present but ``null`` or the wrong shape, never reads as "no constraint".
     Like ``vct_values``, the check selects the right credential type, not a trusted
     issuer: check each result's ``issuer`` yourself.
 
