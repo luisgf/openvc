@@ -117,16 +117,40 @@ class DidResolver(Protocol):
 # Shared W3C DID-document parser (used by did:web and the EBSI DID Registry)
 # --------------------------------------------------------------------------- #
 
+def _array(value: Any, what: str) -> list[Any]:
+    """*value* as the JSON array a DID document member must be, else
+    :class:`DidResolutionError`. The document is attacker-hosted JSON: ``null``, a
+    scalar, a string or an object where an array belongs is a typed failure, never a bare
+    ``TypeError``, and never read as "the member is absent" — an absent relationship
+    leaves the key purpose unenforced, so the wrong-typed one must not."""
+    if not isinstance(value, (list, tuple)):
+        raise DidResolutionError(
+            f"DID document {what} must be an array, not {type(value).__name__}")
+    return list(value)
+
+
 def _relationship_refs(doc: dict[str, Any], key: str) -> list[str]:
     """The verificationMethod ids a relationship references. Entries may be a bare
-    id string or an embedded verification-method object (we take its `id`)."""
+    id string or an embedded verification-method object (we take its `id`). An entry
+    that is neither is dropped, which can only narrow what the relationship grants; a
+    relationship that is not an array is :class:`DidResolutionError` (a bare string would
+    otherwise be read one character at a time, each a one-letter key reference)."""
     refs: list[str] = []
-    for item in doc.get(key, []):
+    for item in _array(doc.get(key, []), key):
         if isinstance(item, str):
             refs.append(item)
         elif isinstance(item, dict) and isinstance(item.get("id"), str):
             refs.append(item["id"])
     return refs
+
+
+def _text(value: Any) -> str:
+    """*value* if it is a string, else ``""`` — keeps the ``str`` fields of the model
+    honest when a document gives ``id`` / ``type`` / ``controller`` some other JSON type.
+    Nothing is selected on them (a method is chosen by its ``id``). A resolver that
+    compares the document ``id`` with the DID it asked for (``did:web`` does) never
+    matches an empty one; the parser itself compares nothing."""
+    return value if isinstance(value, str) else ""
 
 
 def _b64url(data: bytes) -> str:
@@ -186,28 +210,48 @@ def parse_did_document(raw: dict[str, Any]) -> DidDocument:
     The parser is **context-agnostic** — it reads the document *shape*
     (``verificationMethod`` / relationships), never ``@context`` — so **DID 1.1 / CID 1.0**
     documents (the ``https://www.w3.org/ns/did/v1.1`` context) resolve unchanged. The DID 1.1
-    relationship-semantics diff is revisited when it reaches Proposed Recommendation."""
+    relationship-semantics diff is revisited when it reaches Proposed Recommendation.
+
+    The document is attacker-hosted JSON, so its *shape* is checked, not assumed. A
+    document or ``didDocument`` wrapper that is not an object, and a ``verificationMethod``
+    or relationship (``assertionMethod`` …) that is present but not an array, raise
+    :class:`DidResolutionError` — never read as an absent member, since an undeclared
+    relationship leaves the key purpose unenforced. The check is per document, not per
+    lane: a relationship that is not an array rejects the whole document, even for a
+    lane that never reads relationships. A method whose ``id`` is not a string is dropped
+    and a relationship entry that is neither an id string nor an object with a string
+    ``id`` is dropped. A dropped method is never selected, by ``kid`` or by purpose, and
+    a dropped entry grants nothing. The ``kid``-less fallback to the sole key counts the
+    methods that remain, so a dropped method that carried a key no longer makes it
+    ambiguous (as a method with an undecodable Multikey never did). An ``id`` / ``type`` /
+    ``controller`` that is not a string reads as ``""``."""
+    if not isinstance(raw, dict):            # an injected fetch can hand over any JSON value
+        raise DidResolutionError(
+            f"DID document must be a JSON object, not {type(raw).__name__}")
     if _json.nesting_exceeds(raw):           # an injected fetch hands it over already parsed
         raise DidResolutionError(
             f"DID document is nested deeper than {_json.MAX_DEPTH} levels")
-    doc = raw.get("didDocument", raw)
+    doc = raw["didDocument"] if "didDocument" in raw else raw    # present-but-null is not absent
+    if not isinstance(doc, dict):
+        raise DidResolutionError(
+            f"didDocument must be an object, not {type(doc).__name__}")
+    doc_id = _text(doc.get("id"))
     vms = [
         VerificationMethod(
             id=vm["id"],
-            type=vm.get("type", ""),
-            controller=vm.get("controller", doc.get("id", "")),
+            type=_text(vm.get("type")),
+            controller=_text(vm["controller"]) if "controller" in vm else doc_id,
             public_key_jwk=jwk,
         )
-        for vm in doc.get("verificationMethod", [])
-        if isinstance(vm, dict) and "id" in vm and (jwk := _vm_public_jwk(vm)) is not None
+        for vm in _array(doc.get("verificationMethod", []), "verificationMethod")
+        # an entry without a string id names no key (VerificationMethod.kid splits it)
+        if isinstance(vm, dict) and isinstance(vm.get("id"), str)
+        and (jwk := _vm_public_jwk(vm)) is not None
     ]
     relationships = {
         key: _relationship_refs(doc, key) for key in RELATIONSHIP_KEYS if key in doc
     }
-    return DidDocument(
-        id=doc.get("id", ""), verification_methods=vms, raw=doc,
-        relationships=relationships,
-    )
+    return DidDocument(id=doc_id, verification_methods=vms, raw=doc, relationships=relationships)
 
 
 # --------------------------------------------------------------------------- #

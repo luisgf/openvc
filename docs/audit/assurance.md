@@ -136,6 +136,14 @@ Example-based, but broad. Representative anchors:
   batch-isolated on `verify_many` / `verify_many_async`, and a 50k-character Unicode
   host on `verify_many_async` in under 2 s (`test_did_web_hostile_host.py`). RFC 6598
   CGNAT refused (`test_fetch.py`).
+- **DID-document shape** — a document that is valid JSON but the wrong shape (a `null`,
+  scalar, string or object where `verificationMethod` or a relationship must be an
+  array, a `didDocument` wrapper or a whole document that is not an object, a method
+  whose `id` is not a string, a string relationship read one character at a time)
+  typed `DidResolutionError` and never read as undeclared, through `did:web` (sync and
+  async), a forged `did:webvh` log and the EBSI registry; one good credential
+  verifies beside every bad one on `verify_many` / `verify_many_async`
+  (`test_did_document_shape_typed.py`).
 - **Issuer key resolution (https `iss`, x5c)** — an `iss` that Python and a WHATWG
   parser read as different hosts (userinfo, a backslash, an IDN, a `%`-encoded host,
   port 0, dot segments, `;?#`) refused before the `/.well-known/jwt-vc-issuer` fetch,
@@ -192,6 +200,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
+- `#219` — *batch abort, and a purpose granted by a typo* — a DID document that is valid JSON but the wrong shape (a `null` or scalar `verificationMethod`, a relationship that is not an array, a `didDocument` wrapper that is not an object, a method whose `id` is not a string) raised a bare `TypeError` / `AttributeError` from `parse_did_document`, before the signature check, so one unsigned token naming the attacker's own `did:web` aborted a whole `verify_many` batch; the `did:webvh` state and the EBSI registry shared the parser, and a string relationship was read one character at a time, so `"assertionMethod": "k"` authorized any method whose fragment is `k`; a wrong-typed container is now `DidResolutionError` (`KeyResolutionFailed` on the JOSE lanes and the async API, `KeyResolutionError` on the sync Data Integrity lane), never read as undeclared, and a method or reference without a string `id` is dropped (selected by no `kid` or purpose; a dropped keyed method is not counted by the `kid`-less sole-key fallback, as an undecodable Multikey already was) (v1.32.3; `test_did_document_shape_typed.py`)
 - `#248` — *untyped error* — a corrupt `gzip` / `deflate` body from an allow-listed EBSI registry raised a bare `httpx.DecodingError` (a `RequestError`, not a `TransportError`) out of `get_json` and `verify_ebsi_badge`, on a 200 or on the error drain; now `MalformedRegistryResponse`, not retried. Found by the second adversarial pass on #244 (v1.32.1; `test_ebsi_http.py`)
 - `#246` — *untyped error, no key needed* — the EBSI client checked a URL with `urlparse` and fetched it with httpx, which rejects what urlsplit drops or ignores (a tab, NUL, DEL) and a URL over 64 KiB with a bare `httpx.InvalidURL`; an unsigned token whose `iss` held one escaped `verify_ebsi_badge`, and so did such a TIR `attributes` / `next` / `href`. The client now refuses a URL that is not visible ASCII or that `urlparse` cannot read (port included) as `HttpForbiddenHost` before any request, and maps `httpx.InvalidURL` to it; the TIR pin applies the same rule and an 8 KiB cap. Found by the adversarial review of #244 (v1.32.1; `test_ebsi_http.py`, `test_ebsi_verifier.py`)
 - `#243` — *untyped error* — an EBSI TIR v5 registry URL that does not parse (a port out of range or not numeric, a broken IPv6 literal, an NFKC delimiter) made the `_origin` pin raise a bare `ValueError` out of `verify_ebsi_badge`; it is now treated as off-origin: a `MalformedRegistryResponse` on `attributes`, skipped on `links.next` and `href`, and a non-ASCII URL is refused before `urlparse` (v1.32.1; `test_ebsi_verifier.py`)

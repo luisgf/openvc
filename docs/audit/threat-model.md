@@ -224,8 +224,8 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I11 | Status decompression bounded at 16 MiB, incremental | `status/_decompress.py:23,38-66` | `test_status_decompress.py:46-82` |
 | I12 | CBOR depth ≤ 64; JCS depth ≤ 100; duplicate map key rejected | `cbor.py:69,229-232`; `proof/_jcs.py:18` | `test_cbor.py:104,152`; `test_di_jcs.py:388` |
 | I13 | Trust-list XML refuses DOCTYPE (XXE + expansion closed) | `trustlist/parse.py:108-120` | `test_trustlist.py:104,121` |
-| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`), `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_kb_freshness.py`, `test_ebsi_verifier.py` (`test_verify_ebsi_badge_unparseable_attributes_url_is_openvc_error`, `test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request`), `test_ebsi_http.py` |
-| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch. **Known open gap** (I14 too): a hostile DID-document shape — valid JSON, wrong structure — served for an unsigned token's own `did:web` issuer still raises a bare exception and aborts the batch (#219, open; see R10) | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`; `test_vc_jwt_numeric_dates.py` (`test_verify_many_isolates_malformed_numeric_date`) |
+| I14 | Every internal failure subclasses `OpenvcError` and re-raises typed | `verify.py:105-123,320-322` | `test_hostile_input.py`, `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_did_document_shape_typed.py`, `test_typed_clock_pins.py`, `test_cose.py` (`test_a_non_integer_crit_label_is_cose_malformed_not_typeerror`), `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_kb_freshness.py`, `test_ebsi_verifier.py` (`test_verify_ebsi_badge_unparseable_attributes_url_is_openvc_error`, `test_verify_ebsi_badge_hostile_iss_is_typed_before_any_request`), `test_ebsi_http.py` |
+| I15 | `verify_many` isolates per-credential — one bad item never aborts the batch. A hostile DID-document shape — valid JSON, wrong structure — served for an unsigned token's own `did:web` issuer used to abort the batch; `parse_did_document` now raises `DidResolutionError` (#219, fixed in v1.32.3) | `verify.py:458-465` | `test_hostile_input.py` (`test_verify_many_isolates_a_non_string_kid`, `test_verify_many_isolates_a_non_object_payload`, `test_verify_many_isolates_a_deeply_nested_sd_jwt`, `test_verify_many_isolates_deeply_nested_across_formats`); the batch tests in `test_typed_error_unhashable_header.py`, `test_typed_error_vc_shape.py`, `test_unhashable_proof_purpose.py`, `test_status_index_hostile.py`, `test_did_web_hostile_host.py`, `test_typed_clock_pins.py`; `test_did_document_shape_typed.py` (`test_verify_many_isolates_every_hostile_document`, `test_verify_many_async_isolates_every_hostile_document`); `test_vc_jwt_numeric_dates.py` (`test_verify_many_isolates_malformed_numeric_date`) |
 | I16 | Hostile deeply-nested input fails closed **pipeline-wide**: every untrusted JSON parse goes through one loader that refuses nesting past **100** (`openvc._json`; 3.14's `json.loads` parses ~116k levels while `repr()` / `==` overflow far sooner), objects handed over already parsed (credential / `vp_token` dicts, DI suite input, injected-fetch DID documents and issuer metadata, RP DCQL) are held to the same bound, the pipeline maps any residual `RecursionError` to a typed error, and SD-JWT `_unpack` / JCS / did:webvh SCID walk stay capped at 100 | `_json.py`; `proof/sd_jwt.py:66,129`; `verify.py`, `aio.py`, `openid4vp.py`, `proof/vc_jwt.py`, `proof/_jws.py`, `proof/_verify_common.py`, `jwe.py`, `did/base.py`, `did/did_jwk.py`, `did/did_webvh.py`, `jwt_vc_issuer.py`, `fetch.py`, `resolvers.py` | `test_hostile_input.py`, `test_did_webvh.py`, `test_typed_error_deep_nesting.py`, `test_typed_error_vc_shape.py` (`test_deeply_nested_cryptosuite_is_typed`) |
 | I17 | An OID4VCI key proof is pinned to `typ: openid4vci-proof+jwt` and must carry **exactly one** of `jwk`/`kid`/`x5c`/`trust_chain`, with the key bound to the header `alg`'s (kty, crv) | `openid4vci.py:676,752,855` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
 | I18 | Key-proof `iat` freshness is enforced in **both** directions (stale *and* future-dated, non-finite rejected), and the nonce is consumed **exactly once per request, after every signature verifies** | `openid4vci.py:915,917,655` | `test_openid4vci.py`, `test_openid4vci_vectors.py`, `test_sd_jwt_kb_freshness.py` (the freshness helper, `check_iat_freshness`, is shared with the SD-JWT KB-JWT) |
@@ -347,15 +347,29 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   inline context that `@import`s a URL is still resolved once into that cache and
   reused by later calls (#225, open); on the verify path the v1.30.2 inline-context
   rule refuses such a document, so it is not reachable there today.
-- **R10 — An untyped exit still open at the verification boundary.** One known input
-  still escapes `OpenvcError` and aborts a `verify_many` batch, so I14/I15 do not yet
-  hold for it: a hostile DID-document shape — valid JSON, wrong structure — served
-  for an unsigned token's own `did:web` issuer raises a bare exception, with no key
-  needed (#219, open). It is not a wrong-accept: it fails closed, untyped. *Fix:* type
-  it at the boundary, with batch-isolation tests. Three EBSI exits are typed since
-  v1.32.1 (§7): a registry URL that `_origin` could not parse (#243), a URL the HTTP
-  client could not parse, reachable from a token's `iss` (#246), and a registry body
-  that does not decompress (#248).
+- **R10 — Untyped exits at the verification boundary. ✅ Resolved in v1.32.3
+  ([#219](https://github.com/luisgf/openvc/issues/219)).** The last known
+  attacker-controlled inputs that escaped `OpenvcError`, so that I14 did not hold for
+  them, are typed. (Caller configuration is a separate class: a string or `None`
+  `leeway_s` still raises a bare `TypeError` on the VP-JWT, status-list-token and
+  `check_jwt_temporal` lanes, tracked as
+  [#228](https://github.com/luisgf/openvc/issues/228) /
+  [#232](https://github.com/luisgf/openvc/issues/232).) Three EBSI exits
+  were typed in v1.32.1 (§7): a registry URL that `_origin` could not parse (#243), a URL
+  the HTTP client could not parse, reachable from a token's `iss` (#246), and a registry
+  body that does not decompress (#248). The fourth, the only one that reached
+  `verify_many`, was a hostile DID-document shape — valid JSON, wrong structure — served
+  for an unsigned token's own `did:web` issuer: `parse_did_document` raised a bare
+  `TypeError` / `AttributeError` and aborted the batch, with no key needed (#219). None
+  was a wrong-accept; each failed closed, untyped. **Fixed:** a wrong-typed
+  `didDocument`, `verificationMethod` or relationship raises `DidResolutionError`, is never
+  read as undeclared, and a method or reference without a string `id` is dropped (I14,
+  I15; `test_did_document_shape_typed.py`). **Residual:** the check does not know which
+  lane is asking, so a relationship that is not an array rejects the whole document, JOSE
+  lanes that never read relationships included (fail-closed, and only for a document that
+  breaks DID Core). A dropped method that carried a key is not counted by the `kid`-less
+  sole-key fallback, as a method with an undecodable Multikey never was; the key it then
+  selects is well-formed and in the issuer's own document.
 
 ## 10. Out of scope
 

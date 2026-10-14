@@ -4,6 +4,73 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.3] — unreleased
+
+### Security
+
+- **A DID document of the wrong shape is a typed error, not a batch abort**
+  ([#219](https://github.com/luisgf/openvc/issues/219)). Found by the adversarial
+  review of [#212](https://github.com/luisgf/openvc/pull/212).
+
+  `parse_did_document` assumed the document's shape. A document that was valid JSON
+  but the wrong shape raised a bare `TypeError` or `AttributeError`, neither of them
+  an `OpenvcError`, so one such credential aborted a whole `verify_many` /
+  `verify_many_async` batch. No key was needed: key resolution runs before the
+  signature check, so an unsigned token whose `iss` names the attacker's own
+  `did:web` was enough, and the attacker hosts the document. The default fetch only
+  checks that the top level is an object. A `null` or scalar `verificationMethod`, a
+  `didDocument` wrapper that is `null` or a list, a relationship (`assertionMethod`,
+  `authentication`, …) that is `null` or a number, and a method whose `id` is a
+  number each raised. The parser is shared, so the `did:webvh` resolved state and
+  the EBSI DID Registry had the same gap.
+
+  A `didDocument` wrapper that is not an object, and a `verificationMethod` or a
+  relationship that is present but not an array, now raise `DidResolutionError`; so
+  does a document that is not an object at all, which an injected fetch can return.
+  `verify_credential` and `verify_many` report it for that item as
+  `KeyResolutionFailed` on the JOSE lanes and on the async API, and as
+  `KeyResolutionError` (a `ProofError`) on the synchronous Data Integrity lane, as
+  they already did for any failed DID resolution; the cause is the
+  `DidResolutionError` in each case. The EBSI plugin reports `EbsiVerificationError`.
+  A wrong-typed member is never read as an absent one. An undeclared relationship
+  leaves the key purpose unenforced, so reading `null` as "not declared" would have
+  failed open. The check also closes a smaller grant leak: a relationship written as
+  a bare string, `"assertionMethod": "k"`, was iterated one character at a time, so
+  a one-letter reference authorized any method whose fragment is `k`.
+
+  A relationship that is not an array rejects the whole document, on every lane,
+  including the JOSE lanes that never read relationships: the parser does not know
+  which lane is asking, and DID Core requires a set. Treating it per relationship, as
+  declared but granting nothing, would keep those lanes working and was not taken. A
+  document that did this verified before and now fails closed.
+
+  A method whose `id` is not a string, and a relationship entry that is neither an id
+  string nor an object with a string `id`, are dropped, as non-object entries already
+  were. A dropped method is never selected: it cannot be named by a `kid`, and no
+  proof purpose reaches it. A dropped relationship entry grants nothing. Dropping is
+  not strictly a narrowing, though. A token with no `kid` falls back to the document's
+  sole key, and the count it uses no longer includes a method dropped this way, as it
+  already left out a method with no key or an undecodable Multikey. A document that
+  holds a keyed method with an unreadable `id` beside one good method now resolves
+  that good key for a `kid`-less token, which was refused before. The key is
+  well-formed and is in the issuer's own document, so no other issuer's key is
+  involved. `VerificationMethod.kid` never sees a non-string `id`. A document `id`, and a
+  method's `type` or `controller`, that is not a string reads as `""`, so the model's
+  `str` fields stay `str`; nothing is selected on them. `did:web` compares the
+  parsed document `id` with the DID it asked for, so for `did:web` an empty `id`
+  never matches. The other resolvers are not covered by that sentence: `did:webvh`
+  compares the `id` of the log state, before a `didDocument` wrapper is unwrapped,
+  and the EBSI registry resolver compares none.
+
+  A well-formed document parses as before, the DID 1.1 / CID 1.0 documents included.
+  Tests: `test_did_document_shape_typed.py` serves each shape (null, scalar, string,
+  list and object, in every member) through the issue's `DidWebResolver(fetch=...)`
+  repro and asserts the exact class on `verify_credential`, with a good credential
+  beside the bad ones on both `verify_many` and `verify_many_async`. It also covers
+  the async resolver, a forged `did:webvh` log whose signed state is hostile, the
+  EBSI registry, the exact error class on the Data Integrity lane, and the `kid`-less
+  fallback.
+
 ## [1.32.2] — 2026-10-14
 
 One security fix in the SD-JWT VC suite, which changes what issues and what
