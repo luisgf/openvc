@@ -48,6 +48,7 @@ from openvc import (
 from openvc.keys import P256SigningKey
 from openvc.proof.errors import ClaimsInvalid
 from openvc.proof.sd_jwt import (
+    SdJwtError,
     SdJwtVcProofSuite,
     disclosure_digest,
     make_object_disclosure,
@@ -290,12 +291,25 @@ def test_ietf_type_claim_does_not_satisfy_expected_types(run):
         run(_mint(claims, typ="dc+sd-jwt"), _types("ExampleAlumniCredential"))
 
 
-def test_withheld_context_cannot_dodge_expected_types(run):
+@pytest.mark.parametrize("extra, error", [
+    ({}, ClaimsInvalid),                # no vct left either: an IETF SD-JWT VC needs one (#229)
+    ({"vct": VCT}, TypeMismatch),       # a vct: an IETF SD-JWT VC, and the type pin refuses it
+], ids=["no-vct", "with-vct"])
+def test_withheld_context_cannot_dodge_expected_types(run, extra, error):
     # A dc+sd-jwt VCDM credential with a disclosable @context: withheld, the payload no
     # longer reads as VCDM. Ignoring expected_types there would be a holder-side bypass.
-    sd_jwt = _without(_mint(_vcdm(), typ="dc+sd-jwt", disclose=["@context"]), "@context")
-    with pytest.raises(TypeMismatch):
+    sd_jwt = _without(_mint(_vcdm(**extra), typ="dc+sd-jwt", disclose=["@context"]),
+                      "@context")
+    with pytest.raises(error):
         run(sd_jwt, _types("ExampleAlumniCredential"))
+
+
+def test_presented_disclosable_context_is_refused(run):
+    # #229: the same credential with @context presented — the issuer made the VCDM
+    # switch withholdable, so the disclosure itself is refused.
+    sd_jwt = _mint(_vcdm(), typ="dc+sd-jwt", disclose=["@context"])
+    with pytest.raises(SdJwtError, match="'@context' is selectively disclosed"):
+        run(sd_jwt, None)
 
 
 @pytest.mark.parametrize("expected", [None, []], ids=["unset", "empty"])
@@ -445,6 +459,9 @@ FORGED_LISTS = {      # signed by the attacker's own key (DID), naming the victi
     "dc-no-vct-issuer-object": _signed_sd_jwt(KEY, DID, {
         "iss": DID, "issuer": {"id": VICTIM},
         "credentialSubject": _status_subject(revoked=False)}, "dc+sd-jwt"),
+    "dc-with-vct-issuer-object": _signed_sd_jwt(KEY, DID, {
+        "iss": DID, "vct": "urn:example:status", "issuer": {"id": VICTIM},
+        "credentialSubject": _status_subject(revoked=False)}, "dc+sd-jwt"),
     "vcdm": _signed_sd_jwt(KEY, DID, {
         "@context": [V2], "iss": DID, "issuer": VICTIM, "type": ["VerifiableCredential"],
         "credentialSubject": _status_subject(revoked=False)}, "vc+sd-jwt"),
@@ -477,7 +494,10 @@ def test_genuine_status_list_still_revokes(pipeline):
 @pytest.mark.parametrize("pipeline", sorted(PIPELINES))
 def test_forged_sd_jwt_status_list_cannot_borrow_the_victim_issuer(pipeline, forged):
     from openvc.errors import OpenvcError
-    with pytest.raises(OpenvcError, match="issuer") as caught:
+    # #229: a dc+sd-jwt with no vct (and no VCDM @context) is refused before the binding
+    # runs — vct is REQUIRED; "dc-with-vct-issuer-object" keeps the binding's own case.
+    match = "vct" if forged is FORGED_LISTS["dc-no-vct-issuer-object"] else "issuer"
+    with pytest.raises(OpenvcError, match=match) as caught:
         _with_status(forged, BINDING, pipeline)
     assert type(caught.value).__name__ != "CredentialRevoked"
 

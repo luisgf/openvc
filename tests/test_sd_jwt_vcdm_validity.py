@@ -39,6 +39,7 @@ from openvc.proof.errors import (
     MalformedTimestamp,
 )
 from openvc.proof.sd_jwt import (
+    SdJwtError,
     SdJwtVcProofSuite,
     _declares_vcdm,
     disclosure_digest,
@@ -187,9 +188,10 @@ def test_vcdm_1_1_expiration_date_is_rejected(run, form):
         run(form(_mint(doc)), None)
 
 
-def test_selectively_disclosed_valid_until_is_enforced(run, form):
-    # The window is read on the processed payload, after the disclosures are applied.
-    with pytest.raises(CredentialExpired):
+def test_selectively_disclosed_valid_until_is_refused(run, form):
+    # #229: a disclosable validUntil is withholdable, so the window would fail open. A
+    # presented one is refused as a disclosure (SdJwtError) — before it is read as expired.
+    with pytest.raises(SdJwtError, match="'validUntil' is selectively disclosed"):
         run(form(_mint(_vcdm(validUntil=PAST), disclose=["validUntil"])), None)
 
 

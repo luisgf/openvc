@@ -470,6 +470,104 @@ def test_verify_vp_token_enforces_dcql_doctype_value():
                         expected_origins=[ORIGIN], trust_anchors=[iaca], now=NOW)
 
 
+# A doctype_value / meta that is present but malformed must never read as "no constraint"
+# (#224): that would let any mdoc docType answer the query. Falsy values included: a
+# `meta or {}` shortcut would turn them into one.
+_BAD_DOCTYPE_VALUE = [
+    pytest.param(None, id="null"),
+    pytest.param("", id="empty-string"),
+    pytest.param([DOCTYPE], id="array"),
+    pytest.param(5, id="number"),
+    pytest.param(False, id="false"),
+    pytest.param({"v": DOCTYPE}, id="object"),
+]
+_BAD_META = [
+    pytest.param(None, id="null"),
+    pytest.param([], id="empty-array"),
+    pytest.param(["doctype_value"], id="array"),
+    pytest.param("x", id="string"),
+    pytest.param("", id="empty-string"),
+    pytest.param(0, id="zero"),
+    pytest.param(False, id="false"),
+]
+
+
+def _mdoc_query(meta):
+    return {"credentials": [{"id": "mdl", "format": "mso_mdoc", "meta": meta}]}
+
+
+@pytest.mark.parametrize("doctype_value", _BAD_DOCTYPE_VALUE)
+def test_malformed_doctype_value_fails_safe(doctype_value):
+    from openvc.openid4vp import VpTokenMalformed, verify_vp_token
+
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st)          # a genuine, matching mdoc
+    with pytest.raises(VpTokenMalformed, match="meta.doctype_value"):
+        verify_vp_token({"mdl": [_b64url(dr)]},
+                        dcql_query=_mdoc_query({"doctype_value": doctype_value}),
+                        nonce=NONCE, expected_origins=[ORIGIN], trust_anchors=[iaca],
+                        now=NOW)
+
+
+@pytest.mark.parametrize("meta", _BAD_META)
+def test_non_object_meta_fails_safe(meta):
+    from openvc.openid4vp import VpTokenMalformed, verify_vp_token
+
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st)
+    with pytest.raises(VpTokenMalformed, match="meta must be a JSON object"):
+        verify_vp_token({"mdl": [_b64url(dr)]}, dcql_query=_mdoc_query(meta),
+                        nonce=NONCE, expected_origins=[ORIGIN], trust_anchors=[iaca],
+                        now=NOW)
+
+
+@pytest.mark.parametrize("meta", _BAD_META + [
+    pytest.param({"doctype_value": None}, id="null-doctype-value"),
+    pytest.param({"doctype_value": ""}, id="empty-doctype-value"),
+    pytest.param({"doctype_value": [DOCTYPE]}, id="array-doctype-value"),
+])
+def test_malformed_doctype_constraint_is_rejected_before_verifying(meta):
+    from openvc.openid4vp import VpTokenMalformed, verify_vp_token
+
+    # Valid base64url of something that is not CBOR: verified first, it would fail with
+    # an MdocMalformed. The malformed query is reported instead (#224).
+    junk = _b64url(b"\xff\xff not cbor")
+    with pytest.raises(VpTokenMalformed, match="meta"):
+        verify_vp_token({"mdl": [junk]}, dcql_query=_mdoc_query(meta), nonce=NONCE,
+                        expected_origins=[ORIGIN], trust_anchors=[], now=NOW)
+
+
+def test_the_junk_mdoc_fails_on_its_own_with_a_sound_constraint():
+    from openvc.openid4vp import verify_vp_token
+
+    # Control for the test above: with a well-formed constraint the same junk is rejected
+    # by the verification step, so the earlier VpTokenMalformed is the query's doing.
+    with pytest.raises(mdoc.MdocMalformed):
+        verify_vp_token({"mdl": [_b64url(b"\xff\xff not cbor")]},
+                        dcql_query=_mdoc_query({"doctype_value": DOCTYPE}), nonce=NONCE,
+                        expected_origins=[ORIGIN], trust_anchors=[], now=NOW)
+
+
+@pytest.mark.parametrize("meta", [
+    pytest.param(None, id="absent-meta"),
+    pytest.param({}, id="empty-meta"),
+    pytest.param({"vct_values": ["https://example.com/Other"]}, id="other-key"),
+])
+def test_absent_doctype_value_is_no_constraint(meta):
+    from openvc.openid4vp import verify_vp_token
+
+    # "Absent key means no constraint" still holds: any docType answers.
+    st = dcapi_session_transcript(ORIGIN, NONCE)
+    dr, iaca = _build_online(session_transcript=st)
+    query = {"id": "mdl", "format": "mso_mdoc"}
+    if meta is not None:
+        query["meta"] = meta
+    result = verify_vp_token({"mdl": [_b64url(dr)]}, dcql_query={"credentials": [query]},
+                             nonce=NONCE, expected_origins=[ORIGIN], trust_anchors=[iaca],
+                             now=NOW)
+    assert result.for_query("mdl")[0].credentials[0].doc_type == DOCTYPE
+
+
 def test_verify_vp_token_tries_each_expected_origin():
     from openvc.openid4vp import verify_vp_token
 
