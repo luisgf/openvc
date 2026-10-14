@@ -4,6 +4,88 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.4] — unreleased
+
+### Security
+
+- **A Data Integrity key is selected, and authorized for its purpose, by exact DID
+  URL** ([#258](https://github.com/luisgf/openvc/issues/258)). Found by the
+  adversarial review of [#251](https://github.com/luisgf/openvc/pull/251); the gap
+  predates it. `DidDocument.key_for_purpose` compared only the text after the first
+  `#`. A relationship entry granted a method whenever its fragment matched, whatever
+  came before the `#`: a method of another DID (`did:web:other.example#auth`, as a
+  string or as an embedded method), one version of the document (`?versionId=1#auth`),
+  a path (`/path#auth`), an `https:` URL, or a bare `auth`. Method selection used the
+  same rule and took the first match in document order, so a same-fragment method
+  listed before the exact one shadowed it: a correctly signed proof failed with
+  `SignatureInvalid` and a proof signed by the shadowing method's key verified. All
+  five Data Integrity suites were affected, sync and async, on the credential lane
+  (`assertionMethod`, or `policy.proof_purpose`) and on the OpenID4VP `ldp_vc`
+  holder proof (`authentication`).
+
+  No key from outside the issuer's own document was ever admitted: the key always
+  comes from the resolved document, `did:web` / `did:webvh` bind the document `id`,
+  and the proof's DID is bound to the credential `issuer` (or is the VP holder). What
+  broke was purpose separation inside one document. A key the document lists for
+  `authentication` only could sign credentials accepted as assertions whenever the
+  controller had written an `assertionMethod` entry with the same fragment that
+  points elsewhere.
+
+  The rule now follows DID Core 1.0 §3.2.2 and CID 1.0 §3.3 (steps 9 and 11). A
+  method `id` and a relationship reference are compared as absolute DID URLs: a
+  `did:` URL as written, a `#fragment` resolved against the document `id` when that
+  `id` is a DID (§3.1 syntax), and anything else as resolving to nothing. The proof's
+  `verificationMethod` selects the one method whose absolute `id` equals it, else
+  `KeyResolutionError` (`resolve_verification_key` now decides that with the same
+  strict lookup, never the fragment-tolerant `key_by_kid`). A declared relationship
+  grants it only through a reference that resolves to the same `id`, compared as a
+  plain case-sensitive string, else `ProofPurposeMismatch`. Unchanged: an undeclared
+  relationship stays lenient, a declared but empty one grants nothing, and a `kid`
+  of `None` still falls back to the document's sole method (which must then pass the
+  exact-reference grant). The JOSE lanes keep `key_by_kid`, which tolerates a bare or
+  `#`-relative `kid` (a JWS `kid` is a hint); they check no verification relationship,
+  which is a separate policy question. The recorded vectors (W3C vc-di-eddsa,
+  vc-di-ecdsa, ecdsa-sd-2023, the EBSI DID Registry capture, the did:webvh logs) all
+  use absolute ids and verify unchanged.
+
+### Changed
+
+- **Behaviour change: DID documents that relied on the fragment match now fail**
+  ([#258](https://github.com/luisgf/openvc/issues/258)), on the Data Integrity lanes
+  only. Each fails closed with a typed error, and in `verify_many` /
+  `verify_many_async` only its own item fails.
+  - A relationship entry that is not a DID URL for the method, such as
+    `"assertionMethod": ["key-1"]`, no longer grants `#key-1`: `ProofPurposeMismatch`.
+    Such a document does not conform to DID Core (an entry must be a DID URL, and a
+    bare `key-1` is a relative path reference). `"#key-1"` and the full
+    `did:…#key-1` still grant it.
+  - A method whose `id` is not a DID URL for the proof's `verificationMethod` (a bare
+    `key-1`, another DID's `#key-1`, a `#key-1` in a document whose `id` is not a DID)
+    is no longer selected: `KeyResolutionError`.
+  - Two methods whose `id`s resolve to the same absolute DID URL (`#key-1` and
+    `did:…#key-1`, or the same `id` twice) are ambiguous, and neither is selected:
+    `KeyResolutionError`. Document order used to pick the first.
+  - `DidDocument.key_for_purpose` called directly with a bare or `#`-relative `kid`
+    returns `None`; it takes the absolute DID URL a proof carries. `key_by_kid` is
+    unchanged.
+
+### Tests
+
+- **`tests/test_did_reference_exact_match.py`** (#258). Every row of the issue's
+  table on the `assertionMethod` lane through `verify_credential` and
+  `verify_credential_async`, and on the `authentication` lane through the suite call
+  the `ldp_vc` holder proof makes, plus one `verify_vp_token` `ldp_vc` case; two
+  grants and three refusals on each of the five suites; relative method ids and references
+  that resolve; a `#fragment` reference, and a relative method id, in documents
+  whose `id` is not a DID; methods with another DID's, a bare or a versioned `id`
+  that must not be selected; a same-fragment method listed first that must not
+  shadow the exact one; duplicate absolute ids; the `kid`-less fallback; a
+  `[good, bad, bad, good]` batch on `verify_many` and `verify_many_async`; and the
+  JOSE lanes' unchanged `kid` tolerance. Each hostile row uses a resolvable issuer (an
+  injected `did:web` fetch, or a stub resolver where the point is a document `id`
+  `did:web` would refuse) and asserts the exact class. Run against the previous code:
+  77 fail, and the 37 that pass are the grants and the controls.
+
 ## [1.32.3] — unreleased
 
 ### Security

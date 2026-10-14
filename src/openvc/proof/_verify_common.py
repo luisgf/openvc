@@ -529,11 +529,14 @@ def resolve_verification_key(
     verification-relationship binding for *proof_purpose*.
 
     Uses *resolver* (a ``DidResolver`` or ``DidResolverRegistry``) when it handles
-    the DID, otherwise falls back to offline ``did:key``. When the resolved DID
+    the DID, otherwise falls back to offline ``did:key``. The method is selected by
+    its exact absolute ``id`` (``DidDocument.key_for_purpose``); none, or two with
+    that ``id``, is a :class:`KeyResolutionError`. When the resolved DID
     document declares the relationship named by *proof_purpose*
-    (``assertionMethod`` / ``authentication`` / ...), the method must be listed in
-    it — a document that separates an assertion key from an authentication key
-    then rejects a proof signed by the wrong one. When the document does not
+    (``assertionMethod`` / ``authentication`` / ...), one of its references must
+    resolve to that same ``id`` — a document that separates an assertion key from an
+    authentication key then rejects a proof signed by the wrong one with
+    :class:`ProofPurposeMismatch`. When the document does not
     declare that relationship at all (a minimal ``did:web`` that only lists
     ``verificationMethod``), the binding cannot be enforced and the key is
     accepted; the ``proofPurpose`` string is still checked separately.
@@ -573,9 +576,17 @@ def resolve_verification_key(
     purpose = proof_purpose or "assertionMethod"
     vm = doc.key_for_purpose(verification_method, purpose)
     if vm is None:
-        if doc.key_by_kid(verification_method) is None:
+        # the same strict, exact-id selection key_for_purpose made (never the JOSE
+        # lanes' fragment-tolerant key_by_kid): a method it did not select is a key
+        # resolution failure, not a purpose mismatch
+        matches = doc._methods_with_id(verification_method)
+        if not matches:
             raise KeyResolutionError(
                 f"verificationMethod {verification_method!r} not in the DID document")
+        if len(matches) > 1:
+            raise KeyResolutionError(
+                f"verificationMethod {safe_repr(verification_method)} names "
+                f"{len(matches)} methods in the DID document")
         raise ProofPurposeMismatch(
             f"verificationMethod {verification_method!r} is not authorized for "
             f"proofPurpose {purpose!r}")

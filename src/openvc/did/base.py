@@ -12,6 +12,7 @@ did:web and did:ebsi alike, so they belong in the core.)
 from __future__ import annotations
 
 import base64
+import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Protocol, runtime_checkable
 
@@ -32,6 +33,13 @@ RELATIONSHIP_KEYS = (
     "assertionMethod", "authentication", "keyAgreement",
     "capabilityInvocation", "capabilityDelegation",
 )
+
+# A DID, not a DID URL: DID Core 1.0 §3.1 (`did:` method-name `:` method-specific-id,
+# with no path, query or fragment). Only a document whose `id` is one resolves a
+# `#fragment` reference (§3.2.2).
+_DID_SYNTAX = re.compile(
+    r"did:[a-z0-9]+:(?:(?:[A-Za-z0-9._-]|%[0-9A-Fa-f]{2})*:)*"
+    r"(?:[A-Za-z0-9._-]|%[0-9A-Fa-f]{2})+")
 
 
 # --------------------------------------------------------------------------- #
@@ -63,7 +71,9 @@ class DidDocument:
 
     def key_by_kid(self, kid: str | None) -> VerificationMethod | None:
         """Match on the full verificationMethod id or its fragment (a JWS `kid`
-        may carry either). If kid is None, fall back to the sole key if unique."""
+        may carry either). If kid is None, fall back to the sole key if unique.
+        This is the JOSE lanes' lookup; a Data Integrity proof's key is selected by
+        the stricter, exact-id :meth:`key_for_purpose`."""
         if kid is None:
             return self.verification_methods[0] if len(self.verification_methods) == 1 else None
         if not isinstance(kid, str):
@@ -74,24 +84,75 @@ class DidDocument:
             None,
         )
 
+    def _absolute(self, url: str) -> str | None:
+        """*url* — a method ``id`` or a relationship reference — as an absolute DID URL,
+        or ``None`` when it does not resolve to one (DID Core 1.0 §3.2.2).
+
+        A ``did:`` URL is returned unchanged. A ``#fragment`` is resolved against the
+        document ``id`` (RFC 3986 §5), and only when that ``id`` is a DID (§3.1):
+        ``#key-1`` in ``did:example:123`` is ``did:example:123#key-1``. Anything else is
+        ``None``: a bare ``key-1`` is a relative *path* reference, and a ``?query``,
+        ``/path`` or ``https:`` URL can never resolve to ``<did>#fragment`` either, so
+        treating them as unresolvable fails closed instead of resolving them in full."""
+        if not isinstance(url, str):
+            return None
+        if url.startswith("did:"):
+            return url
+        if (url.startswith("#") and isinstance(self.id, str)
+                and _DID_SYNTAX.fullmatch(self.id)):
+            return self.id + url
+        return None
+
+    def _methods_with_id(self, vm_id: Any) -> list[VerificationMethod]:
+        """The methods whose absolute ``id`` is exactly *vm_id* (CID 1.0 §3.3 step 9):
+        a plain, case-sensitive string comparison, with no fallback to the fragment."""
+        if not isinstance(vm_id, str):
+            return []
+        return [vm for vm in self.verification_methods if self._absolute(vm.id) == vm_id]
+
     def key_for_purpose(
         self, kid: str | None, proof_purpose: str
     ) -> VerificationMethod | None:
-        """Like :meth:`key_by_kid`, but authorized for *proof_purpose*.
+        """The verification method *kid* names, if it is authorized for *proof_purpose*.
 
-        If the document declares that relationship, the method must be referenced
-        by it (returns None otherwise — the key exists but is not usable for this
-        purpose). If the document does not declare the relationship at all, the
-        binding cannot be enforced and the matched key is returned as-is. A
-        *proof_purpose* that is not a string (including None) names no relationship
-        and returns None."""
-        vm = self.key_by_kid(kid)
-        if vm is None or not isinstance(proof_purpose, str):   # unhashable -> no key
+        This is the Data Integrity lookup, and it is stricter than :meth:`key_by_kid`
+        (which the JOSE lanes keep, since a JWS ``kid`` is only a hint). Method ids and
+        relationship references are compared as absolute DID URLs, resolved as DID
+        Core 1.0 §3.2.2 says (see :meth:`_absolute`): ``#key-1`` in the document for
+        ``did:example:123`` is ``did:example:123#key-1``, while a bare ``key-1``, a
+        ``?query``, a ``/path`` or a non-DID URL resolves to nothing. The comparison is
+        a plain, case-sensitive string equality, as in CID 1.0 §3.3 (Retrieve
+        Verification Method):
+
+        1. **select** (step 9): *kid* must equal the absolute ``id`` of exactly one
+           method. Nothing falls back to the fragment, and a second method with the
+           same absolute ``id`` is not resolved by document order: returns None.
+        2. **grant** (step 11): when the document declares the relationship named by
+           *proof_purpose*, one of its references (a string, or the ``id`` of an
+           embedded method) must resolve to that same absolute ``id``. A reference to
+           another DID, another version, a path or a non-DID URL grants nothing, even
+           when its fragment matches; returns None (the key exists but is not usable
+           for this purpose). A declared but empty relationship grants nothing.
+
+        If the document does not declare the relationship at all, the binding cannot
+        be enforced and the selected method is returned as-is. A *kid* of None falls
+        back to the document's sole method, if it has exactly one, and that method
+        must then pass step 2. A *proof_purpose* that is not a string (including
+        None) names no relationship and returns None."""
+        if not isinstance(proof_purpose, str):                 # unhashable -> no key
+            return None
+        if kid is None:
+            vm = self.key_by_kid(None)                         # the sole-key fallback
+        else:
+            matches = self._methods_with_id(kid)
+            vm = matches[0] if len(matches) == 1 else None
+        if vm is None:
             return None
         refs = self.relationships.get(proof_purpose)
         if refs is None:                       # relationship not declared -> lenient
             return vm
-        if any(ref == vm.id or ref.split("#", 1)[-1] == vm.kid for ref in refs):
+        target = self._absolute(vm.id)
+        if target is not None and any(self._absolute(ref) == target for ref in refs):
             return vm
         return None
 

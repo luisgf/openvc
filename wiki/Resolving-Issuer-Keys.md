@@ -98,6 +98,24 @@ verifies: `KeyResolutionFailed` on the JOSE lanes and on `verify_many_async`,
 `KeyResolutionError` (a `ProofError`) on the synchronous Data Integrity lane. In both
 cases the cause is the `DidResolutionError`.
 
+### How a proof's key and purpose are matched
+
+A Data Integrity proof names its key with a full DID URL (`verificationMethod`), and its
+`proofPurpose` (`assertionMethod` for a credential, `authentication` for a presentation)
+must be one the document grants that key. openvc compares method ids and relationship
+entries as absolute DID URLs (DID Core 1.0 §3.2.2, CID 1.0 §3.3). A `did:` URL counts as
+written. A `#key-1` is resolved against the document `id`, when that `id` is a DID, so
+`#key-1` in `did:web:issuer.example` is `did:web:issuer.example#key-1`. Anything else
+resolves to nothing: a bare `key-1`, a `?versionId=…` or `/path` reference, an `https:`
+URL. The proof's `verificationMethod` must equal the `id` of exactly one method, else
+`KeyResolutionError`. If the document declares the relationship, one of its entries (a
+string, or the `id` of an embedded method) must resolve to that same `id`, compared as a
+case-sensitive string, else `ProofPurposeMismatch`. An entry for another DID, another
+version or a path grants nothing, even when its fragment matches. A relationship the
+document does not declare at all is not enforced. The JOSE lanes (VC-JWT, SD-JWT VC)
+look the key up by the JWS `kid` and still accept a bare or `#`-relative `kid`, since a
+`kid` is only a hint; they check no relationship.
+
 ## What the SSRF guard guarantees
 
 Every issuer-named URL (`did:web` documents, well-known metadata, status
