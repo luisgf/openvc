@@ -281,16 +281,19 @@ def test_single_level_refuses_a_misrouted_record(value: object, require_trust: b
 
 
 # --------------------------------------------------------------------------- #
-# Recursive mode: the class changed from AccreditationInvalid, the outcome did not
+# Recursive mode: the class changed from AccreditationInvalid; under require_trust=False a
+# returned trusted=False became a raise
 # --------------------------------------------------------------------------- #
 
 ROOT = _did(0xC3)
 LEAF = _did(0xA1)
 
 
-def _chain(response_did: object):
+def _chain(response_did: object, *, about: str = LEAF):
     """LEAF accredited by ROOT, with a genuine signed accreditation; the TIR record served
-    for LEAF carries *response_did*."""
+    for LEAF carries *response_did*. With *about* another DID the whole record behind LEAF's
+    URL (its `did`, the revision's `did` and the signed accreditation's subject) is that
+    other issuer's genuine one, served at LEAF's address."""
     suite = VcJwtProofSuite()
     leaf_sk = P256SigningKey.generate(kid=f"{LEAF}#key-1")
     root_sk = P256SigningKey.generate(kid=f"{ROOT}#key-1")
@@ -301,7 +304,7 @@ def _chain(response_did: object):
     acc = suite.sign({
         "id": "urn:uuid:acc-267",
         "type": ["VerifiableCredential", "VerifiableAccreditationToAttest"], "issuer": ROOT,
-        "credentialSubject": {"id": LEAF, "accreditedFor": [{"types": ["OpenBadgeCredential"]}]}},
+        "credentialSubject": {"id": about, "accreditedFor": [{"types": ["OpenBadgeCredential"]}]}},
         signing_key=root_sk)
     issuer_url = f"{BASE}/trusted-issuers-registry/v5/issuers/{LEAF}"
     attrs, rev = f"{issuer_url}/attributes", f"{issuer_url}/attributes/aa/revisions/bb"
@@ -315,8 +318,8 @@ def _chain(response_did: object):
         f"{BASE}/did-registry/v5/identifiers/{ROOT}": doc(ROOT, root_sk),
         issuer_url: _with_did({"hasAttributes": True, "attributes": attrs}, response_did),
         attrs: {"items": [{"id": "aa", "href": rev}]},
-        rev: {"did": LEAF, "attribute": {"body": acc, "hash": "aa", "issuerType": "TI",
-                                         "tao": ROOT, "rootTao": ROOT}},
+        rev: {"did": about, "attribute": {"body": acc, "hash": "aa", "issuerType": "TI",
+                                          "tao": ROOT, "rootTao": ROOT}},
     })
     resolver = DidEbsiResolver(fetch, decode_jwt=suite.peek_claims, tir=TirV5(), base=BASE)
     return suite, token, fetch, resolver, issuer_url
@@ -337,10 +340,11 @@ def test_control_recursive_walk_reaches_the_anchor() -> None:
     pytest.param(_ABSENT, id="absent"),
 ])
 def test_recursive_walk_refuses_a_record_that_is_not_the_walked_dids(value: object) -> None:
-    # Measured on main: the misrouted record was refused LATER, as AccreditationInvalid, from
-    # the signed accreditation's subject, and only after the accreditor was resolved. It is
-    # now MalformedRegistryResponse at the first `issuer_record` call, before anything else
-    # is fetched: the class changed, the outcome (refused) did not.
+    # Only the record's own `did` is wrong; the `attributes` and the revision behind it are
+    # still the walked DID's genuine ones. Measured on main (a3932f0): the walk ACCEPTED it
+    # (a chain to the anchor, `trusted=True`, whatever `require_trust` says). It is now a
+    # MalformedRegistryResponse at the first `issuer_record` call, before anything else is
+    # fetched. The next test is the case where the whole record is another issuer's.
     suite, token, fetch, resolver, issuer_url = _chain(value)
     with pytest.raises(OpenvcError) as exc_info:
         verify_trust_chain(LEAF, ["OpenBadgeCredential"], resolver=resolver,
@@ -349,6 +353,30 @@ def test_recursive_walk_refuses_a_record_that_is_not_the_walked_dids(value: obje
     assert fetch.calls == [issuer_url]
 
     for require_trust in (True, False):               # and through the badge verifier
+        fetch.calls.clear()
+        with pytest.raises(OpenvcError) as bexc:
+            verify_ebsi_badge(token, resolver=resolver, proof_suite=suite,
+                              trust_anchors={ROOT}, require_trust=require_trust)
+        assert type(bexc.value) is MalformedRegistryResponse
+        assert fetch.calls == [f"{BASE}/did-registry/v5/identifiers/{LEAF}", issuer_url]
+
+
+def test_recursive_walk_refuses_another_issuers_genuine_record() -> None:
+    # OTHER's genuine record (its `did`, its revision, an accreditation signed by ROOT whose
+    # subject is OTHER) served at LEAF's address. Measured on main (a3932f0), through
+    # `verify_ebsi_badge` with trust_anchors={ROOT}: require_trust=True raised
+    # AccreditationInvalid (the signed subject is not LEAF), and require_trust=False
+    # RETURNED trusted=False, because the trust error is swallowed. Now it is a
+    # MalformedRegistryResponse for both values, at the first `issuer_record` call: the class
+    # changed, and under require_trust=False a returned result became a raise.
+    suite, token, fetch, resolver, issuer_url = _chain(OTHER, about=OTHER)
+    with pytest.raises(OpenvcError) as exc_info:
+        verify_trust_chain(LEAF, ["OpenBadgeCredential"], resolver=resolver,
+                           proof_suite=suite, anchors={ROOT})
+    assert type(exc_info.value) is MalformedRegistryResponse
+    assert fetch.calls == [issuer_url]
+
+    for require_trust in (True, False):
         fetch.calls.clear()
         with pytest.raises(OpenvcError) as bexc:
             verify_ebsi_badge(token, resolver=resolver, proof_suite=suite,

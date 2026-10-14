@@ -244,6 +244,81 @@ def test_direct_entry_points_refuse_a_non_string_did(method: str, did: object) -
 
 
 # --------------------------------------------------------------------------- #
+# A str subclass is read as its characters: what is checked is what is requested
+# --------------------------------------------------------------------------- #
+
+class _Sneaky(str):
+    """Its characters are *text*, and everything the code could ask it says otherwise: an
+    f-string calls `__format__`, `str()` calls `__str__`, a comparison calls `__eq__`, a
+    message calls `__repr__`."""
+    STEER = f"{A}/../../../../evil-path?x=1"
+
+    def __format__(self, format_spec: str) -> str:
+        return self.STEER
+
+    def __str__(self) -> str:
+        return self.STEER
+
+    def __repr__(self) -> str:
+        return "SNEAKY-REPR"
+
+    def __eq__(self, other: object) -> bool:
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return True
+
+    __hash__ = str.__hash__
+
+
+def test_control_the_subclass_really_steers_an_f_string() -> None:
+    # The premise: a plain f-string over the subclass is the steered text, and the
+    # characters the pattern sees are the DID. Without this the test below proves nothing.
+    sneaky = _Sneaky(A)
+    assert f"{sneaky}" == _Sneaky.STEER
+    assert str.__str__(sneaky) == A and type(str.__str__(sneaky)) is str
+
+
+def test_resolve_puts_the_checked_characters_in_the_url_for_a_str_subclass() -> None:
+    sk = P256SigningKey.generate(kid=f"{A}#key-1")
+    requests: list[str] = []
+    client = _client(requests, {DID_PATH + A: _doc(A, sk)})
+    resolver = DidEbsiResolver(client.get_json, decode_jwt=VcJwtProofSuite().peek_claims,
+                               base=BASE)
+    doc = resolver.resolve(_Sneaky(A))
+    assert requests == [DID_PATH + A]               # unnormalised: ["/evil-path?x=1"]
+    assert doc.id == A
+    client.close()
+
+
+def test_issuer_record_puts_the_checked_characters_in_the_url_for_a_str_subclass() -> None:
+    requests: list[str] = []
+    client = _client(requests, {TIR_PATH + A: {"did": A, "hasAttributes": False}})
+    resolver = DidEbsiResolver(client.get_json, decode_jwt=VcJwtProofSuite().peek_claims,
+                               tir=TirV5(), base=BASE)
+    record = resolver.issuer_record(_Sneaky(A))
+    assert requests == [TIR_PATH + A]
+    assert record.did == A and type(record.did) is str      # the exact str, not the subclass
+    client.close()
+
+
+@pytest.mark.parametrize("method", ["resolve", "issuer_record"])
+def test_a_malformed_str_subclass_is_refused_and_its_repr_is_never_called(
+        method: str) -> None:
+    requests: list[str] = []
+    client = _client(requests)
+    resolver = DidEbsiResolver(client.get_json, decode_jwt=VcJwtProofSuite().peek_claims,
+                               base=BASE)
+    with pytest.raises(DidResolutionError, match="not a did:ebsi identifier") as exc_info:
+        getattr(resolver, method)(_Sneaky(A + "/x"))
+    assert type(exc_info.value) is DidResolutionError
+    assert "SNEAKY-REPR" not in str(exc_info.value)         # shown through the exact copy
+    assert A in str(exc_info.value)
+    assert requests == []
+    client.close()
+
+
+# --------------------------------------------------------------------------- #
 # Controls: what is accepted, and that the pattern is exactly the alphabet
 # --------------------------------------------------------------------------- #
 

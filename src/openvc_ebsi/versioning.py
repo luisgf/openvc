@@ -132,10 +132,21 @@ def _require_did_ebsi(did: object) -> str:
     (``did:ebsi:zX#key-1``) is not a DID, so it fails too. No normalisation: the
     identifier is case-sensitive and nothing is percent-decoded. The message shows the
     value through :func:`~openvc.proof._verify_common.safe_repr`: the DID is a token's
-    ``iss`` or a registry's ``accreditedBy``, so it is attacker-sized."""
-    if not (isinstance(did, str) and _DID_EBSI.fullmatch(did)):
+    ``iss`` or a registry's ``accreditedBy``, so it is attacker-sized.
+
+    The value returned is an exact ``str``. A ``str`` subclass can override ``__format__``,
+    ``__str__`` or ``__eq__``, and the adapters build the URL with an f-string, which calls
+    ``type(did).__format__``: the text that matched the pattern would not be the text put in
+    the URL. ``str.__str__`` is the plain slot (``str(did)`` itself can be overridden) and
+    copies the underlying characters into an exact ``str``, so what is checked, formatted into
+    the URL and compared with the document's ``id`` is one value. A subclass is read as its
+    characters, not refused."""
+    if not isinstance(did, str):
         raise DidResolutionError(f"not a did:ebsi identifier: {safe_repr(did)}")
-    return did
+    exact = str.__str__(did)
+    if not _DID_EBSI.fullmatch(exact):
+        raise DidResolutionError(f"not a did:ebsi identifier: {safe_repr(exact)}")
+    return exact
 
 
 def _flatten_accredited_for(accredited_for: Any) -> tuple[str, ...]:

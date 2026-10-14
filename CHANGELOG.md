@@ -58,6 +58,13 @@ All notable changes to **openvc** are documented here. The format follows
     `next` and `href` URLs, which never pass through the DID check.
   - **Messages are bounded**: the `safe_repr` cut now also covers the walk's last-resort
     message and the accreditation-subject mismatch.
+  - **A `str` subclass is read as its characters**, not refused: the check normalises the
+    argument with `str.__str__` (the plain slot; `str(did)` can be overridden) to an exact
+    `str` and uses that one for the pattern, the URL, the document-`id` comparison and the
+    message. Before, a subclass that overrode `__format__` matched the pattern and then
+    steered the URL, because the adapters build it with an f-string (not new in this change).
+    Reachable only from in-process code: a JSON-decoded `iss` or `accreditedBy` is an exact
+    `str`.
 
 - **The TIR issuer response is bound to the DID that was asked for**
   ([#267](https://github.com/luisgf/openvc/issues/267)). Found by the write-up of
@@ -122,10 +129,17 @@ All notable changes to **openvc** are documented here. The format follows
   - A TIR response whose `did` is another DID, or is absent, `null`, a non-string or empty,
     used to resolve and now raises `MalformedRegistryResponse` from `issuer_record`, from
     `verify_ebsi_badge` (with or without `require_trust`) and from `verify_trust_chain`.
-  - **Recursive mode, a misrouted record:** `MalformedRegistryResponse` instead of
-    `AccreditationInvalid`, at the first `issuer_record` call and before the accreditor is
-    resolved. The class changes and the outcome (refused) does not; the walk already let
-    `MalformedRegistryResponse` escape for other malformed TIR bodies.
+  - **Recursive mode, a misrouted record:** `MalformedRegistryResponse`, at the first
+    `issuer_record` call and before the accreditor is resolved. For another issuer's genuine
+    record (its signed accreditation names another subject) it replaces
+    `AccreditationInvalid`, so the class changes. With `require_trust=True` the outcome
+    (refused) does not; with `require_trust=False` a returned `trusted=False` result becomes
+    a `MalformedRegistryResponse` raise, because `verify_ebsi_badge` swallowed the trust error
+    of the later refusal and does not swallow this one (malformed input, not an untrusted
+    issuer: the same rule as in single-level mode). A record whose own `did` alone is wrong,
+    with the walked DID's `attributes` behind it, was accepted before this change and is now
+    refused too. The walk already let `MalformedRegistryResponse` escape for other malformed
+    TIR bodies.
   - Unchanged: a matching `did` resolves (the golden fixture, 3 accreditations, 5 fetches);
     the origin pin on `attributes`, `href` and `links.next`; the single-level and recursive
     trust policies.
