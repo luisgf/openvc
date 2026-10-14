@@ -348,8 +348,13 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   reused by later calls (#225, open); on the verify path the v1.30.2 inline-context
   rule refuses such a document, so it is not reachable there today.
 - **R10 — Untyped exits at the verification boundary. ✅ Resolved in v1.32.3
-  ([#219](https://github.com/luisgf/openvc/issues/219)).** The last known inputs that
-  escaped `OpenvcError`, so that I14 did not hold for them, are typed. Three EBSI exits
+  ([#219](https://github.com/luisgf/openvc/issues/219)).** The last known
+  attacker-controlled inputs that escaped `OpenvcError`, so that I14 did not hold for
+  them, are typed. (Caller configuration is a separate class: a string or `None`
+  `leeway_s` still raises a bare `TypeError` on the VP-JWT, status-list-token and
+  `check_jwt_temporal` lanes, tracked as
+  [#228](https://github.com/luisgf/openvc/issues/228) /
+  [#232](https://github.com/luisgf/openvc/issues/232).) Three EBSI exits
   were typed in v1.32.1 (§7): a registry URL that `_origin` could not parse (#243), a URL
   the HTTP client could not parse, reachable from a token's `iss` (#246), and a registry
   body that does not decompress (#248). The fourth, the only one that reached
