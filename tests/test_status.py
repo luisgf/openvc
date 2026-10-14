@@ -173,3 +173,58 @@ def test_no_status_is_clean():
     result = check_credential_status({"id": "urn:x"}, resolve_status_list=dict().__getitem__)
     assert result.revoked is False and result.suspended is False
     assert result.entries == ()
+
+
+# --------------------------------------------------------------------------- #
+# a credentialStatus member that is not an object is refused, never skipped
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("status", [
+    [[_entry("revocation", "42")]],                               # [[S]]
+    [_entry("revocation", "1"), [_entry("revocation", "42")]],    # [S1, [S2]]
+    [[_entry("revocation", "1"), _entry("revocation", "42")]],    # [[S1, S2]]
+    [_entry("revocation", "1"), LIST_URL + "#42"],                # a bare reference
+    [_entry("revocation", "1"), None],
+    [7],
+], ids=["wrapped", "second-wrapped", "pair-wrapped", "reference", "null", "number"])
+def test_non_object_status_member_is_refused_not_skipped(status):
+    # JSON-LD expansion flattens an array nested in an array, so an RDF-signed
+    # credential signs [S1, [S2]] as [S1, S2]: skipping the inner array hid S2's bit.
+    # The Data Integrity suites refuse the shape first; this is the format-agnostic
+    # backstop (VC-JWT, the JCS suites and any direct caller).
+    fetched = []
+
+    def resolve(url):
+        fetched.append(url)
+        return _status_vc("revocation", {42})
+
+    with pytest.raises(StatusListError, match="credentialStatus entries must be objects"):
+        parse_status_entries({"credentialStatus": status})
+    with pytest.raises(StatusListError, match="credentialStatus entries must be objects"):
+        check_credential_status({"credentialStatus": status}, resolve_status_list=resolve)
+    assert fetched == []
+
+
+@pytest.mark.parametrize("status", [
+    {"id": LIST_URL + "#42"},                                     # a node reference
+    [_entry("revocation", "1"), {"id": LIST_URL + "#42"}],
+    {"id": LIST_URL + "#42", "type": None},
+    [_entry("revocation", "1"), dict(_entry("revocation", "42"), type=[])],
+    {"type": "", "statusListIndex": "42", "statusListCredential": LIST_URL},
+    {"@list": [_entry("revocation", "42")]},                      # an RDF list object
+], ids=["id-only", "id-only-in-array", "null-type", "empty-type", "blank-type", "list"])
+def test_typeless_status_entry_is_refused_not_skipped(status):
+    # {"id": X} is the bare reference X to JSON-LD, and RDF lets the entry X names be
+    # described under another property: skipping it as "an unrelated status type" hid
+    # that entry's bit. VCDM requires a type, so its absence fails closed.
+    fetched = []
+
+    def resolve(url):
+        fetched.append(url)
+        return _status_vc("revocation", {42})
+
+    with pytest.raises(StatusListError, match="credentialStatus entry needs a type"):
+        parse_status_entries({"credentialStatus": status})
+    with pytest.raises(StatusListError, match="credentialStatus entry needs a type"):
+        check_credential_status({"credentialStatus": status}, resolve_status_list=resolve)
+    assert fetched == []

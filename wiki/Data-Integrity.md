@@ -169,10 +169,57 @@ raises `ProofMalformed`:
   - a member keyed by its full IRI;
   - a keyword spelling, such as `@type` for `type`;
   - a nested `@context`;
-  - a relative IRI, such as `"verificationMethod": "k"`.
+  - a relative IRI, such as `"verificationMethod": "k"`;
+  - an array directly inside another array, such as `"credentialStatus": [S1, [S2]]`
+    or `[[S]]`. JSON-LD flattens it, so it signs the same dataset as `[S1, S2]`, but a
+    reader looking for objects skips the inner array. A term your context declares with
+    `"@container": "@list"` may still hold a list of lists: compaction writes that one
+    back nested, so it is the compacted form. An `@json` value whose top-level array
+    holds arrays (`"_sd": [["x"]]`) is refused too, because pyld compacts it lossily
+    (to `"x"`); arrays nested deeper inside the JSON value are fine.
 
   Only two variations are accepted, because JSON-LD treats each pair as the same value:
-  a one-element array and its element, and `{"id": X}` and `X`.
+  a one-element array and its element (as a member's value, never inside another
+  array), and `{"id": X}` and `X`.
+- **A member a trusted context defines is spelled by its term.** Compaction keeps a
+  value that does not match its term's definition under the property's full IRI, a
+  compact IRI or an `@vocab` suffix: a `validUntil` written as a plain string under
+  `https://www.w3.org/2018/credentials#validUntil` (the term requires an
+  `xsd:dateTime`), or a `credentialStatus` given as a string. That spelling *is* the
+  compacted form, so the rule above accepts it, while the expiry and status checks read
+  only the term. Any key, or `type` value, that stands for an IRI one of the verifier's
+  contexts defines a term for must therefore be that term. That means every context
+  the loader serves (the bundled ones and your `extra_contexts`), whether or not the
+  document lists it: the `@context` is the holder's to edit, so a holder could
+  otherwise drop a status-list context you inject, add `{"@vocab":
+  "https://w3id.org/vc/"}`, and write the entry's type as
+  `status-list#StatusList2021Entry`. That is the same signed data, but the status
+  check would skip it as a type it does not know. When the VC base context defines a
+  term for the IRI, it must be the base context's term: a context you pass in
+  `extra_contexts` that gives `validUntil`'s IRI another name (`until`), or a shorter
+  one compaction would prefer over `credentialStatus`, is refused rather than allowed
+  to hide the member. The keys inside an `@json` value such as `_sd` are not checked.
+
+  The rule does not track which of your contexts a credential uses, nor where a scoped
+  term is in effect. An IRI that any served context defines a term for, in any scope,
+  must be written through a term everywhere: in a credential that never lists that
+  context, and at a node where that term is not active and the IRI spelling is what
+  compaction emits. The more contexts you inject, the more full-IRI spellings of their
+  IRIs are refused, and one you inject that cannot be read refuses every RDF
+  credential. For example, a `credentialSubject` property written `dcterms:created` or
+  `https://w3id.org/security#nonce` is refused, because the VC base context defines
+  `created` and `nonce` inside its `DataIntegrityProof` scope. For an IRI only your
+  own context defines, add a term for it to that context (in `extra_contexts`) and
+  write the term. An IRI the VC base context defines has no other accepted spelling,
+  so use a different property. An IRI no served context names a term for (your own
+  extension property) is not affected.
+- **A `credentialStatus` entry is described under `credentialStatus`.** RDF lets a
+  node be described under any property that references it, so an entry the issuer also
+  names from, say, `relatedResource` could otherwise be moved there, leaving only
+  `{"id": X}` where the status check looks. The status check reads only the
+  credential's own, top-level `credentialStatus`, so an entry there whose `id` is
+  described anywhere else in the document is refused, including under the
+  `credentialStatus` of a nested node (a subject typed `VerifiableCredential`, say).
 - **Nothing about the document is stated outside it.** `@included`, `@reverse`, a
   top-level `@graph`, and a second description of the document's own node nested
   inside it are all refused.
@@ -184,9 +231,10 @@ raises `ProofMalformed`:
 
 The bundled v2 context has no `@vocab`, so a custom claim needs a definition. Use an
 inline `{"@vocab": "…"}`, as in the selective-disclosure example above, or your own
-context through `extra_contexts`. openvc trusts what you put in `extra_contexts`. A
-context that gives a core VC term (`validUntil`, `credentialStatus`, …) a second,
-shorter name can still hide that member, so inject only contexts you have reviewed.
+context through `extra_contexts`. openvc trusts what you put in `extra_contexts`
+for IRIs the VC base context does not define: a term it gives such an IRI is taken as
+that IRI's spelling. A second name for a core VC term (`validUntil`,
+`credentialStatus`, …) is refused, as above. Inject only contexts you have reviewed.
 
 In a `VerifiablePresentation`, the embedded `verifiableCredential` entries are skipped
 here. Each one is verified on its own, under its own `@context`. The JCS suites sign

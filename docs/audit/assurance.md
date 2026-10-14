@@ -311,6 +311,29 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
   side: the policy reads only JSON the signature covers (threat model I20, R9). Pinned
   by `tests/test_di_context_validation.py`. The attack tests fail on v1.30.1 and pass
   here; the W3C golden vectors are unaffected.
+- GHSA-h9rq-wxcw-4rjc (v1.33.0) — **wrong-accept** — the same check folded a one-element
+  array into its element at any depth, so an array nested in an array (which JSON-LD
+  expansion flattens) passed: a holder re-spelled the issuer's `credentialStatus: [S1,
+  S2]` as `[S1, [S2]]` and S2's revocation bit was never read, on `eddsa-rdfc-2022`,
+  `ecdsa-rdfc-2019` and `ecdsa-sd-2023`. A status entry the issuer also named from
+  another property (another node's `credentialStatus` included) could be moved there,
+  leaving `{"id": X}` or only an unrelated type, which the status parser skipped. A
+  holder could also drop a context the verifier serves (or move a v2 credential onto a
+  VC 1.1 base it also serves) and spell a status entry's type and members through an
+  inline `@vocab`, so the parser skipped the entry as an unrelated type. And a value its
+  term cannot carry (an untyped `validUntil` / `validFrom` / proof `expires`) compacts
+  under its IRI, so an issuer-signed credential with that spelling verified as never
+  expiring; an injected context aliasing a core IRI did the same. Now an array element
+  never folds; a key or `type` value standing for an IRI any served context (bundled or
+  `extra_contexts`, listed by the document or not) defines a term for must be the term
+  (the VC base context's own term when it defines one); an entry under the top-level
+  `credentialStatus` described anywhere else is refused; and the status parser refuses a
+  non-object array member and a typeless entry (threat model I20, R9). Pinned by
+  sections 11–16 of `tests/test_di_context_validation.py`,
+  `test_non_object_status_member_is_refused_not_skipped` /
+  `test_typeless_status_entry_is_refused_not_skipped` in `tests/test_status.py` and
+  `test_loader_lists_what_it_serves_read_only` in `tests/test_contexts.py`; the attack
+  tests fail on v1.32.4 and pass here.
 - `#185` — *cross-caller bleed* — only the bundled, read-only contexts are tagged pyld-`static`: an injected `extra_contexts` document reached pyld's process-global cache keyed by URL, so two callers injecting different documents under one URL collided and a valid proof failed to verify (v1.27.1, follow-up to #183; `test_contexts.py`)
 
 **X.509 / trust anchoring**

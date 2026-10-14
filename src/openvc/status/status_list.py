@@ -63,24 +63,41 @@ class StatusResult:
 
 
 def _as_entry_list(raw: Any) -> list[dict]:
+    from .bitstring import StatusListError
     if raw is None:
         return []
     if isinstance(raw, dict):
         return [raw]
     if isinstance(raw, list):
-        return [e for e in raw if isinstance(e, dict)]
-    from .bitstring import StatusListError
+        # Fail closed on any non-object member rather than filter it away. JSON-LD
+        # expansion flattens an array nested in an array, so an RDF-signed credential
+        # signs [S1, [S2]] exactly as [S1, S2]: dropping the inner array skipped S2's
+        # revocation bit, and [[S]] left no entry at all (GHSA-h9rq-wxcw-4rjc).
+        if not all(isinstance(e, dict) for e in raw):
+            raise StatusListError("credentialStatus entries must be objects")
+        return list(raw)
     raise StatusListError("credentialStatus must be an object or an array")
 
 
 def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
     """Parse the credential's ``credentialStatus`` into typed entries. Entries
     whose type is not a recognised status-list entry are skipped (a credential
-    may carry unrelated status types)."""
+    may carry unrelated status types); a member that is not an object at all (an
+    array, a string reference, ``null``) or an object with no ``type`` raises
+    :class:`~openvc.status.bitstring.StatusListError` instead, since its entries
+    could not be read."""
     from .bitstring import StatusListError
     entries: list[StatusEntry] = []
     for raw in _as_entry_list(credential.get("credentialStatus")):
         types = raw.get("type")
+        if types is None or types == "" or types == []:
+            # VCDM requires a type on every status entry, so an object without one is
+            # not an unrelated status type to skip: it is a node reference ({"id": X},
+            # which JSON-LD signs exactly as the bare X), and RDF lets the entry it names
+            # be described under another property of the credential. Skipping it hid
+            # that entry's revocation bit (GHSA-h9rq-wxcw-4rjc), as credentialSchema's
+            # "entry needs a type" already prevented.
+            raise StatusListError("credentialStatus entry needs a type")
         if isinstance(types, str):
             types = [types]
         elif not isinstance(types, (list, tuple)):

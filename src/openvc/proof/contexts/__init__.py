@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from ...errors import OpenvcError
@@ -63,7 +64,12 @@ def document_loader(
     which the bundled files are, shipping read-only. A caller-injected document is
     **never** tagged, including one that shadows a bundled URL: tagging it would publish
     the first caller's term definitions to every later caller of that URL, and
-    canonicalization would silently use terms the signer never had."""
+    canonicalization would silently use terms the signer never had.
+
+    The returned callable also carries ``contexts``, a read-only ``url -> document`` view
+    of everything it serves. Context validation indexes the term definitions of every
+    one of them, not only those a document lists, since the document's ``@context`` is
+    what a holder can rewrite."""
     bundled = bundled_contexts()
     cache = dict(bundled)
     if extra_contexts:
@@ -71,10 +77,22 @@ def document_loader(
     # Identity, not URL membership: a caller may shadow a bundled URL with its own
     # document, and that document must not inherit the bundled URL's tag.
     static_urls = frozenset(url for url, doc in cache.items() if bundled.get(url) is doc)
+    return _OfflineLoader(cache, static_urls)
 
-    def _loader(url: str, options: Any = None) -> dict:
+
+class _OfflineLoader:
+    """The loader :func:`document_loader` returns: a pyld document loader over a fixed
+    ``url -> document`` map, which it exposes read-only as ``contexts``."""
+
+    __slots__ = ("contexts", "_static_urls")
+
+    def __init__(self, cache: dict[str, dict], static_urls: frozenset[str]) -> None:
+        self.contexts: Mapping[str, dict] = MappingProxyType(cache)
+        self._static_urls = static_urls
+
+    def __call__(self, url: str, options: Any = None) -> dict:
         try:
-            document = cache[url]
+            document = self.contexts[url]
         except KeyError:
             raise DocumentLoaderError(
                 f"refusing to fetch JSON-LD context over the network: {url!r} "
@@ -84,12 +102,10 @@ def document_loader(
             "documentUrl": url,
             "document": document,
         }
-        if url in static_urls:
+        if url in self._static_urls:
             loaded["static"] = True        # the jsonld.js shape; pyld itself reads ``tag``
             loaded["tag"] = "static"
         return loaded
-
-    return _loader
 
 
 __all__ = [

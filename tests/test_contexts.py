@@ -56,6 +56,21 @@ def test_unknown_url_fails_closed():
         document_loader()("https://evil.example/ctx", {})
 
 
+def test_loader_lists_what_it_serves_read_only():
+    """Context validation indexes every served context, listed by the document or not
+    (GHSA-h9rq-wxcw-4rjc), so the loader exposes them — and only for reading."""
+    url = "https://example.org/ctx/injected/v1"
+    doc = {"@context": {"@vocab": "https://example.org/#"}}
+    loader = document_loader({url: doc})
+    assert set(loader.contexts) == set(bundled_contexts()) | {url}
+    assert loader.contexts[url] is doc
+    with pytest.raises(TypeError):
+        loader.contexts[url] = {}
+    assert set(document_loader().contexts) == set(bundled_contexts())
+    shadow = {"@context": {"@vocab": "https://shadow.example/#"}}
+    assert document_loader({CREDS_V2: shadow}).contexts[CREDS_V2] is shadow
+
+
 def test_extra_contexts_cannot_pollute_the_bundled_cache():
     """``bundled_contexts()`` hands out a fresh top-level dict, so an injected override
     on one loader must not be visible to the next."""

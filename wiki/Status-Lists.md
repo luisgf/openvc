@@ -269,6 +269,13 @@ and read `result.status.revoked`; suspension still rejects. See
   openvc decodes (2^27 statuses) is a typed `StatusListError` — even under
   `require_status=False`: a malformed entry of a recognised type is never
   skipped. In `verify_many` it fails only that item.
+- **No unreadable `credentialStatus` member is skipped**: an array member that is not
+  an object (an array, a string reference, `null`, a number) and an entry with no
+  `type` (`{"id": X}`, an `{"@list": [...]}` object) are a typed `StatusListError`,
+  even under `require_status=False`, on every lane. JSON-LD treats `[S1, [S2]]` as
+  `[S1, S2]` and `{"id": X}` as the bare reference `X`, so on an RDF-signed credential
+  skipping either could hide an entry the issuer signed. An entry of a type openvc does
+  not know is still skipped, as before.
 - **Issuer binding (opt-in)**: by default a status list is authenticated but its
   issuer is unconstrained — delegation of status hosting is spec-legal. If your
   issuers self-host their status lists, set

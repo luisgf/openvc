@@ -272,7 +272,7 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I17 | An OID4VCI key proof is pinned to `typ: openid4vci-proof+jwt` and must carry **exactly one** of `jwk`/`kid`/`x5c`/`trust_chain`, with the key bound to the header `alg`'s (kty, crv) | `openid4vci.py:676,752,855` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
 | I18 | Key-proof `iat` freshness is enforced in **both** directions (stale *and* future-dated, non-finite rejected), and the nonce is consumed **exactly once per request, after every signature verifies** | `openid4vci.py:915,917,655` | `test_openid4vci.py`, `test_openid4vci_vectors.py`, `test_sd_jwt_kb_freshness.py` (the freshness helper, `check_iat_freshness`, is shared with the SD-JWT KB-JWT) |
 | I19 | A key proof carrying a `key_attestation` must be signed by one of its `attested_keys` (OID4VCI App. D), compared by RFC 7638 thumbprint. **Not an attacker control** — the attestation's signature is never checked here, so a forger attests their own key; this catches an honest wallet, or the caller's own `resolve_proof_key*`, yielding a key the wallet never claimed, and can only reject, never accept | `openid4vci.py:833` | `test_openid4vci.py`, `test_openid4vci_vectors.py` |
-| I20 | An RDF Data Integrity document is accepted, and signed, only in the compacted form of its own expansion under the VC base context plus loader-served URLs or absolute-IRI `@vocab`-only objects — no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, and nothing the RDF conversion drops (safe mode: every node id, type and property a well-formed absolute IRI, no blank-node property) — so every JSON member the policy reads is one the signature covers | `proof/_context_validation.py:67-175`; `proof/data_integrity.py:181,233`; `proof/di_ecdsa_rdfc.py:149,205`; `proof/ecdsa_sd.py:512,683` | `test_di_context_validation.py` |
+| I20 | An RDF Data Integrity document is accepted, and signed, only in the compacted form of its own expansion under the VC base context plus loader-served URLs or absolute-IRI `@vocab`-only objects — no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, no array directly inside an array (outside a `@list` of lists, which compaction emits nested too), every key or `type` value that stands for an IRI any loader-served context (bundled or `extra_contexts`, listed by the document or not, so a dropped context cannot be respelled through an inline `@vocab`) defines a term for spelled as that term (as the VC base context's own term when it defines one, so an injected alias is refused), no entry of the top-level `credentialStatus` also described anywhere else (a nested node's `credentialStatus` included), and nothing the RDF conversion drops (safe mode: every node id, type and property a well-formed absolute IRI, no blank-node property) — so every JSON member the policy reads is one the signature covers. The status check refuses a non-object `credentialStatus` array member and a typeless entry rather than skip them (GHSA-h9rq-wxcw-4rjc, v1.33.0) | `proof/_context_validation.py` (`validate_document`, `_check_compacted`, `_normalize`, `_term_index`, `_inline_vocabs`, `_misspelled_key`, `_is_misspelled`, `_check_status_in_place`); `proof/contexts/__init__.py` (`document_loader`'s `contexts`); `status/status_list.py` (`_as_entry_list`, `parse_status_entries`); `proof/data_integrity.py:181,233`; `proof/di_ecdsa_rdfc.py:149,205`; `proof/ecdsa_sd.py:512,683` | `test_di_context_validation.py`, `test_status.py` (`test_non_object_status_member_is_refused_not_skipped`, `test_typeless_status_entry_is_refused_not_skipped`), `test_contexts.py` (`test_loader_lists_what_it_serves_read_only`) |
 | I21 | WRPRC authorization fails closed: the WRPRC `sub` must equal the WRPAC entity identifier (absent on either side is a failure, never a match), and a DCQL request is authorized only if every credential query (a) has at least one registered entry with the same non-blank string `format` and a `meta` that covers the query's, (b) names at least one claim — a query naming none asks for every attribute and is always refused — and (c) has every requested claim path inside the union of the grants of the entries so matched; an entry with an empty grant, or registered for a different `meta`, contributes nothing. Grant-side spelling precedence is narrow and decided by key presence (`claim` over `claims`, never their union), while the request side reads the union | `check_matches_access_certificate`, `check_request_within_registration`, `_registered_paths` (`rp_registration.py`) | `test_rp_registration.py` |
 
 ## 9. Residual risks & known limitations
@@ -382,12 +382,61 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
     dropped from the dataset and so never signed.
 
   **Fixed:** context validation plus JSON-LD safe mode (I20).
+  **Follow-up, resolved in v1.33.0 (GHSA-h9rq-wxcw-4rjc), also a wrong-accept.** The
+  comparison folded a one-element array into its element at any depth, so an array
+  nested directly in an array — which expansion flattens — passed:
+  `credentialStatus: [S1, [S2]]` on the issuer's genuine credential skipped S2's
+  revocation bit, and `[[S]]` left no entry (`StatusUnavailable` by luck under
+  `require_status`, unchecked without it), on all three RDF suites. Separately, a value
+  that does not match its term's definition (an untyped `validUntil` / `validFrom` /
+  proof `expires`, a literal `credentialStatus`) compacts under the property's IRI, so
+  that spelling passed as the compacted form while the policy read only the term; an
+  issuer, openvc's own signers included, could sign a credential that never expired. A
+  caller-injected context that gave a core IRI another term hid the member the same
+  way, at any length (an uncoerced `until`, or a `statusRef` coerced like
+  `credentialStatus` but shorter, which compaction itself prefers). And when the
+  issuer's graph also referenced a status entry from another property, the holder could
+  move the entry's description there and leave `{"id": X}` under `credentialStatus`
+  (the same dataset as the bare `X`), which the status parser skipped as an unrelated
+  type; another node's `credentialStatus` served as a destination too. Finally, the
+  term rule first indexed only the contexts the document listed, which the holder
+  edits: dropping an injected status-list context (or moving a v2 credential onto a
+  VC 1.1 base the verifier also serves) and spelling the entry through an inline
+  `@vocab` kept the dataset and the compacted round trip, and the status parser
+  skipped the entry as an unrelated type, under the default policy.
+  **Fixed:** the fold applies to a property value only and never to an array element;
+  every key or `type` value that stands for an IRI any context the loader serves
+  (bundled or `extra_contexts`, listed by the document or not) defines a term for must
+  be the term, and the VC base context's own term when it defines one; an entry under
+  the top-level `credentialStatus` described anywhere else in the document, a nested
+  `credentialStatus` included, is refused; and the status parser refuses a non-object
+  array member and an entry with no `type` (I20).
   **Residual:** a node the issuer's own graph references from several places may be
   described in any of them (RDF semantics). Only the document node is pinned to the
-  top level. A `credentialStatus` left as a bare reference still fails closed
-  (`StatusListError`; inside an array, `StatusUnavailable` unless
-  `require_status=False`). Caller-supplied `extra_contexts` are trusted: one
-  that gives a core VC term a second, shorter name can still hide that member.
+  top level, and a top-level `credentialStatus` entry to it; any other node may
+  still move. For example, when the issuer also names a `credentialSchema` entry from
+  `relatedResource`, its `digestSRI` can be moved there and the schema is then fetched
+  unpinned (a `{"id": X}` left behind fails closed: the entry needs a type). Pinning
+  every policy-read entry the same way would refuse the VCDM pattern of restating a
+  schema's digest under `relatedResource`. A `credentialStatus` left as a bare
+  reference, `{"id": X}` or an `@list` object fails closed (`StatusListError`, whether
+  alone or inside an array, under either `require_status`). A compacted
+  `{"@list": [...]}` under a term not declared `@list` (only an issuer can sign one)
+  still passes the validation; the status check refuses it, but under another policy
+  member it is a shape the policy cannot read. The term rule is a superset that ignores
+  which served contexts a document lists and where a scoped term is in scope, so an IRI
+  any served context defines is refused under any other spelling, even in a document
+  that never lists that context and at a node where that term is not active (a
+  subject's `dcterms:created` or `sec:nonce`, both terms only inside the base context's
+  `DataIntegrityProof` scope); a verifier with many `extra_contexts` sees more such
+  refusals, and one it cannot read refuses every RDF credential. An `@json` value whose
+  top-level array holds arrays is refused, because pyld compacts it lossily. All fail
+  closed. A served term defined without `@id` is indexed under the `@vocab` values the
+  served contexts set and the inline `@vocab` in effect where the document lists a
+  context (and the last one); one an issuer's inline `@vocab` gave it, which the holder
+  has since dropped, is not. No IRI the policy reads is defined that way.
+  Caller-supplied `extra_contexts` are otherwise trusted: a term one defines for an IRI
+  the VC base context does not define is taken as that IRI's spelling.
   They are scoped to the call, though: since v1.27.1 only the bundled contexts are
   tagged `static` in pyld's process-global cache, so one caller's injected document
   never governs another caller's canonicalization through a URL it serves (#185). An
