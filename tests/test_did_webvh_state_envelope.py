@@ -85,11 +85,14 @@ def _b64u(data: bytes) -> str:
 
 
 def _forge_webvh_log(states_for: list[Callable[[str], dict]], *, host: str = HOST,
-                     private: ed25519.Ed25519PrivateKey | None = None) -> tuple[str, str]:
+                     private: ed25519.Ed25519PrivateKey | None = None,
+                     deactivate_last: bool = False) -> tuple[str, str]:
     """A valid did:webvh log with one entry per element of *states_for*, signed by its own
     updateKey (the attacker controls their own log). *states_for[i](did)* builds the DID
     document of version ``i + 1``. *private* is that updateKey (generated when omitted, so a
-    caller that needs the key in a state creates it first). Returns ``(did, did.jsonl)``."""
+    caller that needs the key in a state creates it first). *deactivate_last* sets
+    ``deactivated`` in the parameters of the last of two or more entries. Returns
+    ``(did, did.jsonl)``."""
     private = private or ed25519.Ed25519PrivateKey.generate()
     signer = Ed25519SigningKey(private, kid="_")
     multikey = encode_multibase(
@@ -115,9 +118,11 @@ def _forge_webvh_log(states_for: list[Callable[[str], dict]], *, host: str = HOS
     entries = [sign(genesis)]
     assert len(states_for) <= 9, "versionTime below is one digit of the day"
     for number, state_for in enumerate(states_for[1:], start=2):
+        deactivating = deactivate_last and number == len(states_for)
         update = {"versionId": entries[-1]["versionId"],
                   "versionTime": f"2026-01-0{number}T00:00:00Z",
-                  "parameters": {}, "state": state_for(did)}
+                  "parameters": {"deactivated": True} if deactivating else {},
+                  "state": state_for(did)}
         update["versionId"] = f"{number}-{_multihash_b58(_jcs(update))}"
         entries.append(sign(update))
     return did, "".join(json.dumps(entry) + "\n" for entry in entries)
@@ -329,6 +334,36 @@ def test_a_wrapper_in_the_last_state_is_refused_after_a_clean_history(state_for)
     assert type(exc.value) is DidWebvhError
     with pytest.raises(DidWebvhError, match="didDocument"):
         _resolve_async(did, log)
+
+
+def _deactivated(*states: Callable[[str, dict], dict]) -> tuple[str, str]:
+    control = Controller()
+    return _forge_webvh_log([lambda d, s=s: s(d, control.jwk) for s in states],
+                            private=control.private, deactivate_last=True)
+
+
+def test_a_deactivated_log_with_a_bare_last_state_still_reports_the_deactivation():
+    # control: the helper builds a log that really is deactivated, and the wrapper check does
+    # not touch a bare state, so this keeps "is deactivated" and the row below proves ordering
+    did, log = _deactivated(_bare, _bare)
+    with pytest.raises(DidWebvhError, match="is deactivated") as exc:
+        _resolve(did, log)
+    assert type(exc.value) is DidWebvhError
+    with pytest.raises(DidWebvhError, match="is deactivated"):
+        _resolve_async(did, log)
+
+
+@pytest.mark.parametrize("state_for", STATES, ids=IDS)
+def test_a_deactivated_log_with_a_wrapped_last_state_reports_the_wrapper(state_for):
+    # Ordering, as for the state `id` check that also comes first: the wrapper is refused
+    # where the state is checked, before the `deactivated` flag. Both fail closed with the
+    # same class; the message names the wrapper, not the deactivation.
+    did, log = _deactivated(_bare, state_for)
+    for resolve in (_resolve, _resolve_async):
+        with pytest.raises(DidWebvhError, match="didDocument") as exc:
+            resolve(did, log)
+        assert type(exc.value) is DidWebvhError
+        assert "deactivated" not in str(exc.value)
 
 
 # --------------------------------------------------------------------------- #

@@ -51,7 +51,10 @@ All notable changes to **openvc** are documented here. The format follows
   implementation produces one. A wrapper that was not an object (`null`, a list, a
   string, a number) was already a plain `DidResolutionError` from the parser; it is now
   a `DidWebvhError`, which is a `DidResolutionError`, so code that catches the parent is
-  unaffected.
+  unaffected. The wrapper is refused where the state's `id` is checked, before the
+  `deactivated` flag: a deactivated log whose last state is wrapped now fails with the
+  wrapper message, not "is deactivated". Both are a `DidWebvhError`, and a deactivated log
+  with a bare last state still reports the deactivation.
 
 ### Tests
 
@@ -65,8 +68,9 @@ All notable changes to **openvc** are documented here. The format follows
   document verified. A good neighbour in each batch still verifies, and the same
   credentials verify against a log without the wrapper. The earlier states of a log are
   not looked at and the last one is, and the `did:web` and EBSI envelope tolerance is
-  pinned as a control. Mutation-checked against `origin/main`: 51 cases fail there, the
-  23 controls pass.
+  pinned as a control. A deactivated log with a wrapped last state reports the wrapper,
+  and one with a bare last state still reports the deactivation. Mutation-checked
+  against `origin/main`: 61 cases fail there, the 24 controls pass.
 
 ## [1.32.3] — unreleased
 
