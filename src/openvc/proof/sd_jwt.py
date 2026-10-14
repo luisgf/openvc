@@ -84,6 +84,23 @@ _SALT_BYTES = 16                               # 128-bit salt (spec minimum)
 # object that carries the next _sd digest) so _unpack recurses far past what json.loads'
 # own limit bounds. Fail closed with a typed error before Python raises RecursionError.
 _MAX_DEPTH = 100
+# Claims that must never sit in a disclosure. A holder may withhold any disclosure, and a
+# withheld one is indistinguishable from a decoy (RFC 9901 §9.7), so a disclosable `exp` or
+# `status` makes an expired or revoked credential verify. issue() refuses them; verify()
+# rejects a presentation that discloses one, or a sub-claim of one. Withholding stays
+# undetectable, so the issuer-side refusal is the real fix.
+# draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3: these, "including any of their sub-claims", MUST
+# NOT be selectively disclosed (only `sub` and `iat` MAY be).
+_SD_JWT_VC_NON_DISCLOSABLE = frozenset({
+    "iss", "nbf", "exp", "cnf", "vct", "vct#integrity", "aka_vcts", "status"})
+# openvc policy: the pipeline enforces a W3C `credentialStatus` on SD-JWT too, and
+# `@context` is what makes _declares_vcdm enforce the VCDM validity window — withheld, it
+# would switch that window off (VC-JOSE-COSE §3.2.1: needed for validation, SHOULD NOT be
+# disclosable).
+_OPENVC_NON_DISCLOSABLE = frozenset({"credentialStatus", "@context"})
+# On a W3C VCDM payload only: the validity window the suite enforces (VCDM 1.1 names too).
+# On an IETF SD-JWT VC these names mean nothing and stay disclosable.
+_VCDM_VALIDITY_CLAIMS = frozenset({"validFrom", "validUntil", "issuanceDate", "expirationDate"})
 
 
 class SdJwtError(ProofError):
@@ -149,13 +166,21 @@ def _sd_digests(sd: Any) -> list[str]:
 
 
 def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[str],
-            depth: int = 0) -> Any:
+            depth: int = 0, top: str | None = None,
+            placed: list[tuple[str | None, bool]] | None = None) -> Any:
     """Rebuild *node*, replacing ``_sd`` digests and ``{"...": digest}`` array
     elements with the disclosed values. Rejects duplicate digests, digests reused
     by two disclosures, and disclosures that would overwrite an existing claim.
 
     ``depth`` bounds recursion (claims nesting *and* chained disclosures) so hostile
-    input fails closed with a typed :class:`SdJwtError` before Python's RecursionError."""
+    input fails closed with a typed :class:`SdJwtError` before Python's RecursionError.
+
+    *placed*, when given, records where every inserted disclosure landed, as
+    ``(top-level claim, nested)``: ``("exp", False)`` for a disclosed top-level ``exp``,
+    ``("status", True)`` for anything disclosed beneath ``status`` (array elements
+    included). *top* is the top-level claim the node lies under (None at the root).
+    That is generic RFC 9901 provenance: which names may be disclosed is the profile's
+    rule, applied by the caller."""
     if depth > _MAX_DEPTH:
         raise SdJwtError(f"claim/disclosure nesting exceeds the maximum depth of {_MAX_DEPTH}")
     if isinstance(node, dict):
@@ -165,7 +190,8 @@ def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[s
                 continue                       # processed below
             if key == "...":
                 raise SdJwtError("'...' is only valid as an array element")
-            result[key] = _unpack(value, disclosures, used, seen, depth + 1)
+            result[key] = _unpack(value, disclosures, used, seen, depth + 1,
+                                  key if top is None else top, placed)
         for digest in _sd_digests(node.get("_sd")):
             if digest in seen:
                 raise SdJwtError("duplicate digest in payload")
@@ -183,7 +209,10 @@ def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[s
             if name in result:
                 raise SdJwtError(f"disclosure would overwrite claim {name!r}")
             used.add(digest)
-            result[name] = _unpack(disclosure[2], disclosures, used, seen, depth + 1)
+            if placed is not None:
+                placed.append((name, False) if top is None else (top, True))
+            result[name] = _unpack(disclosure[2], disclosures, used, seen, depth + 1,
+                                   name if top is None else top, placed)
         return result
     if isinstance(node, list):
         out: list[Any] = []
@@ -201,11 +230,30 @@ def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[s
                 if len(disclosure) != 2:
                     raise SdJwtError("array disclosure must be [salt, value]")
                 used.add(digest)
-                out.append(_unpack(disclosure[1], disclosures, used, seen, depth + 1))
+                if placed is not None:          # the root is an object, so `top` is set
+                    placed.append((top, True))
+                out.append(_unpack(disclosure[1], disclosures, used, seen, depth + 1,
+                                   top, placed))
             else:
-                out.append(_unpack(element, disclosures, used, seen, depth + 1))
+                out.append(_unpack(element, disclosures, used, seen, depth + 1,
+                                   top, placed))
         return out
     return node
+
+
+def _disclosure_refusal(name: Any, *, vcdm: bool) -> str | None:
+    """Why the top-level claim *name* may not be selectively disclosed (nor any
+    sub-claim of it), or None when it may. *vcdm*: the payload is a W3C VCDM
+    credential (:func:`_declares_vcdm`), whose validity window the suite enforces."""
+    if not isinstance(name, str):
+        return None
+    if name in _SD_JWT_VC_NON_DISCLOSABLE:
+        return "draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3"
+    if name in _OPENVC_NON_DISCLOSABLE:
+        return "openvc enforces it on SD-JWT"
+    if vcdm and name in _VCDM_VALIDITY_CLAIMS:
+        return "the W3C VCDM validity window openvc enforces"
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -321,8 +369,14 @@ class SdJwtVcProofSuite:
 
         ``disclosable`` names the top-level claims to make selectively
         disclosable (each leaves the JWT for a disclosure + an ``_sd`` digest).
-        ``holder_jwk`` binds the credential to a holder key (``cnf``) for later
-        key binding. ``decoys`` adds that many decoy digests (privacy). The raw
+        It refuses (``SdJwtError``, nothing signed) the claims a verifier needs to judge
+        validity, since a holder could withhold them undetected: ``iss``, ``nbf``,
+        ``exp``, ``cnf``, ``vct``, ``vct#integrity``, ``aka_vcts`` and ``status``
+        (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.3), ``credentialStatus`` and ``@context``,
+        and — when ``@context`` makes the payload a W3C VCDM credential — ``validFrom``,
+        ``validUntil``, ``issuanceDate`` and ``expirationDate``. ``holder_jwk`` binds
+        the credential to a holder key (``cnf``) for later key binding.
+        ``decoys`` adds that many decoy digests (privacy). The raw
         signature is produced by ``signing_key`` — HSM/Vault friendly.
 
         ``x5c`` places an X.509 certificate chain (base64 DER, leaf first) in the
@@ -342,17 +396,30 @@ class SdJwtVcProofSuite:
             payload["vct"] = vct
         if not payload.get("iss"):
             raise SdJwtError("an SD-JWT VC needs an 'iss' claim")
-        if not payload.get("vct"):
-            raise SdJwtError("an SD-JWT VC needs a 'vct' claim")
+        if not (isinstance(payload.get("vct"), str) and payload["vct"]):
+            # what verify() requires of a dc+sd-jwt: anything else would not verify
+            raise SdJwtError("an SD-JWT VC needs a 'vct' claim (a non-empty string)")
         _check_aka_vcts(payload)
         if expires_in_s is not None:
             payload["exp"] = now + expires_in_s
         if holder_jwk is not None:
             payload["cnf"] = {"jwk": holder_jwk}
 
+        names = list(disclosable)
+        # Judge VCDM-ness on the payload as the verifier will parse it: a tuple
+        # `@context` is not a list here, but it is a JSON array once signed.
+        vcdm = _declares_vcdm(_ISSUER_TYP, json.loads(_json_bytes(payload)))
+        for name in names:                     # refuse before any disclosure is built
+            reason = _disclosure_refusal(name, vcdm=vcdm)
+            if reason is not None:
+                raise SdJwtError(
+                    f"claim {name!r} must not be selectively disclosable ({reason}): a "
+                    "holder could withhold it, and a verifier cannot tell a withheld "
+                    "disclosure from an absent claim")
+
         disclosures: list[str] = []
         digests: list[str] = []
-        for name in disclosable:
+        for name in names:
             if name not in payload:
                 raise SdJwtError(f"disclosable claim {name!r} is not in the claims")
             disclosure = make_object_disclosure(
@@ -457,6 +524,17 @@ class SdJwtVcProofSuite:
         The issuer JWT's ``exp``/``nbf``/``iat``, and any disclosed ``iat``, must each be
         a finite JSON number when present (``null`` included). An ``iat`` more than the
         leeway in the future is rejected. *check_temporal* waives only an expired ``exp``.
+
+        A presented disclosure of a claim :meth:`issue` refuses to make disclosable — or of
+        any sub-claim of one, array elements included — raises ``SdJwtError``: the issuer
+        made it withholdable. That catches the non-conformant issuer only when the holder
+        *presents* the disclosure; a withheld one is indistinguishable from a decoy (RFC
+        9901 §9.7), so a third-party credential whose ``exp`` or ``status`` was disclosable
+        still verifies when the holder omits it. Besides ``iss`` (without which nothing
+        verifies), the detectable case is ``vct``: it is REQUIRED, so a ``dc+sd-jwt`` that
+        is not a VCDM payload and whose processed payload has none raises
+        ``ClaimsInvalid``. With *require_key_binding*, a disclosed ``cnf`` fails earlier,
+        as the key-binding ``ClaimsInvalid`` (no ``cnf.jwk`` in the issuer JWT).
         """
         non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=SdJwtError)
         # A naive `now` is UTC. Unpinned, the KB-JWT window reads the clock unrounded, as
@@ -505,23 +583,45 @@ class SdJwtVcProofSuite:
 
         by_digest = self._index_disclosures(disclosures, hash_name)
         used: set[str] = set()
-        unpacked = _unpack(claims, by_digest, used, set())
+        placed: list[tuple[str | None, bool]] = []
+        unpacked = _unpack(claims, by_digest, used, set(), placed=placed)
         unreferenced = set(by_digest) - used
         if unreferenced:
             raise SdJwtError(
                 f"{len(unreferenced)} disclosure(s) not referenced by any digest")
         unpacked.pop("_sd_alg", None)
 
-        # RFC 9901 §7.1 step 6: nbf/exp are checked on the *processed* payload
-        # if present. The issuer-JWT body was already checked above; if
-        # `exp`/`nbf` were selectively disclosed they only appear after `_unpack`.
+        # The profile rule on what _unpack placed: a presented disclosure of `exp`,
+        # `status`, … (or of any sub-claim, array elements included) means the issuer made
+        # it withholdable — fail visibly now rather than open when a holder withholds it.
+        # `@context` is refused too, so the VCDM verdict below rests on issuer-signed
+        # plaintext. This cannot see a disclosure that was withheld.
+        vcdm = _declares_vcdm(typ, unpacked)
+        for name, nested in placed:
+            reason = _disclosure_refusal(name, vcdm=vcdm)
+            if reason is not None:
+                what = "a sub-claim of" if nested else "claim"
+                raise SdJwtError(
+                    f"{what} {name!r} is selectively disclosed ({reason}): the issuer "
+                    "made it withholdable, so its absence would go undetected")
+        vct = unpacked.get("vct")
+        if typ == _ISSUER_TYP and not vcdm and not (isinstance(vct, str) and vct):
+            # draft-19 §2.2.2.3: `vct` is REQUIRED and never disclosable, so a withheld
+            # disclosure of it is detectable: it is absent (like `iss`, without which the
+            # issuer JWT never verified at all).
+            # A VCDM payload is typed by `type` instead (_declares_vcdm reads it by content,
+            # whatever the typ), so this binds only an IETF SD-JWT VC.
+            raise ClaimsInvalid("an SD-JWT VC (dc+sd-jwt) needs a non-empty string vct")
+
+        # RFC 9901 §7.1 step 6: nbf/exp are checked on the *processed* payload if present.
+        # A disclosed `exp`/`nbf` was refused above, so this re-reads the issuer-JWT body's;
+        # it still checks a disclosed `iat`, and stays as defence in depth.
         expired = self._check_temporal(unpacked, check_temporal=check_temporal) or expired
 
         # A W3C credential secured as SD-JWT *is* this claim set (VC-JOSE-COSE §3.2.1), and
         # its `exp` dates the signature, not the data (§3.1.3, JOSE): an issuer may put the
         # expiry only in `validUntil`. Enforce the VCDM window as the VC-JWT lane does — on
         # the processed payload, same leeway, wall clock like `exp`.
-        vcdm = _declares_vcdm(header.get("typ"), unpacked)
         if vcdm:
             expired = check_validity_window(
                 unpacked, {}, now=None, leeway_s=self._leeway,
@@ -531,7 +631,6 @@ class SdJwtVcProofSuite:
             # The VC-JWT lane's reconciliation: a present `issuer` names the verified iss.
             VcJwtProofSuite._reconcile(unpacked, unpacked)
 
-        vct = unpacked.get("vct")
         if expected_vct is not None and vct != expected_vct:
             raise ClaimsInvalid(f"vct {vct!r} != expected {expected_vct!r}")
         _check_aka_vcts(unpacked)

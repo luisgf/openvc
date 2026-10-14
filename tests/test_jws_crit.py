@@ -115,7 +115,7 @@ def test_kb_jwt_rejects_unknown_crit() -> None:
     issuer, holder = _key(), _key("did:example:holder#k1")
     issuer_jwt = sign_compact(
         {"alg": issuer.alg, "typ": "dc+sd-jwt"},
-        {"iss": "did:example:issuer", "exp": _FAR_FUTURE,
+        {"iss": "did:example:issuer", "vct": "urn:example:vct", "exp": _FAR_FUTURE,
          "cnf": {"jwk": holder.public_jwk()}},
         signing_key=issuer)
     kb_jwt = sign_compact(

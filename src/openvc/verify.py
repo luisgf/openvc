@@ -603,7 +603,8 @@ def _verify_sd_jwt(sd_jwt: str, policy: VerificationPolicy, resolver: Any,
                            resolve_status_list, resolve_status_list_token,
                            credential_issuer=verified.issuer)
     # SD-JWT: only disclosed claims are visible; a withheld credentialSchema cannot
-    # be validated (same selective-disclosure caveat as status).
+    # be validated. (A status pointer can no longer be disclosable: the suite refuses
+    # it, #229 — though a third-party one the holder withheld is still unseen.)
     schema = _check_schema(verified.claims, policy, resolve_credential_schema,
                            verify_inner)
     return VerificationResult(
