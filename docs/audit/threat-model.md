@@ -211,7 +211,7 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 
 | # | Invariant | Enforced at | Pinned by |
 |---|---|---|---|
-| I1 | Alg allow-list `{ES256, ES384, EdDSA, Ed25519}` runs **before any crypto**; `alg:none`/RS\*/HS\* rejected; the value is type-checked first, so a JSON array/object `alg` is a typed `UnsupportedAlgorithm`, not a bare `TypeError` | `proof/vc_jwt.py:65,243`; `proof/_jws.py:89` | `test_hostile_input.py`, `test_cose.py:94`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py`, `test_unhashable_proof_purpose.py` |
+| I1 | Alg allow-list `{ES256, ES384, EdDSA, Ed25519}` runs **before any crypto**; `alg:none`/RS\*/HS\* rejected; the value is type-checked first, so a JSON array/object `alg` is a typed `UnsupportedAlgorithm`, not a bare `TypeError` | `proof/vc_jwt.py:65,243`; `proof/_jws.py:89` | `test_hostile_input.py`, `test_cose.py:94`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py` |
 | I2 | ES256/384 JOSE signature is raw R‖S (64/96 bytes), never DER | `keys.py:575-589` | `test_vc_jwt.py` |
 | I3 | PQ (ML-DSA) never in the default allow-list — opt-in only | `proof/vc_jwt.py:135` | `test_mldsa.py` |
 | I4 | DI `verificationMethod` bound to the credential `issuer` DID | `verify.py:628-641` | `test_di_*` |

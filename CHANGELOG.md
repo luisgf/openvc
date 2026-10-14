@@ -17,13 +17,14 @@ and 1.30.3.
   row for a JSON array or object in a JOSE `alg` or `typ`, an SD-JWT `_sd_alg`, a
   KB-JWT `alg`, an `ldp_vc` `cryptosuite`, an OpenID4VCI key-proof `typ` or a Data
   Integrity `proofPurpose`: formerly a bare `TypeError` that aborted a whole
-  `verify_many`, now the typed error a disallowed string gets.
+  `verify_many`, now the typed error a disallowed string gets on every lane but
+  `proofPurpose`, where a non-string is `ProofMalformed` (a wrong string is
+  `ProofPurposeMismatch`).
 - **The threat model's I1 row cites the allow-list checks where they are.** It still
   pointed at `proof/_jws.py:84` and at `proof/vc_jwt.py:55,198`; the checks are at
   `_jws.py:89` and `vc_jwt.py:243`, the constant at `vc_jwt.py:65`. I1 also lists the
   tests that pin the type check (`test_typed_error_unhashable_header.py`,
-  `test_typed_error_deep_headers.py`, `test_unhashable_proof_purpose.py`), and I14 and
-  I15 list the new file. The assurance case no longer calls #208 open.
+  `test_typed_error_deep_headers.py`), and I14 and I15 list the new file. The assurance case no longer calls #208 open.
 
 ### Tests
 
@@ -44,13 +45,17 @@ and 1.30.3.
   `proofPurpose` on all five suites. `verify_many` and `verify_many_async` are shown
   to isolate one deep-array item per lane, with a control either side. Controls pin
   that 90 levels parse, that one level past the cap is `MalformedToken`, and that a
-  well-formed token still verifies.
+  well-formed token still verifies. The OpenID4VCI key-proof `alg` had no array or
+  object case at all; `test_typed_error_unhashable_header.py` now runs the array,
+  object and empty-array shapes it already ran for the other lanes against it.
 
   Mutation-checked against an unmodified origin/main tree: with the tests overlaid,
   all 60 pass. Removing the `isinstance` guard at any one of ten lanes fails that
   lane's deep test, and the batch tests for the lanes they cover. Putting `repr()`
   back in `safe_repr` fails 18 of the 21 tests in the new file (the other three are
-  the controls) and the two WRPRC `typ` message tests.
+  the controls) and the two WRPRC `typ` message tests. The new key-proof `alg` cases
+  (array, object, empty array) fail with a bare `TypeError` when the `isinstance`
+  guard at `openid4vci.py:971` is removed.
 
 ## [1.32.3] — unreleased
 
