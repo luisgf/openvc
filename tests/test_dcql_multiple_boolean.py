@@ -9,8 +9,8 @@ it in one place, ``_presentation_list``, by truthiness:
   * a truthy non-boolean (``"false"``, ``"true"``, ``"0"``, ``1``, ``1.0``, ``2``, ``[0]``,
     ``{"a": 1}``) behaved as ``true``, so a wallet could return N Presentations, all
     verified and returned;
-  * a falsy non-boolean (``null``, ``""``, ``0``, ``[]``, ``{}``) was read as ``false`` by
-    accident, never reported as malformed;
+  * a falsy non-boolean (``null``, ``""``, ``0``, ``0.0``, ``[]``, ``{}``) was read as
+    ``false`` by accident, never reported as malformed;
   * a query the wallet did not answer (allowed by ``credential_sets``) never had
     ``multiple`` read at all.
 
@@ -45,9 +45,9 @@ SD, MDOC, JWT, LDP = "dc+sd-jwt", "mso_mdoc", "jwt_vc_json", "ldp_vc"
 
 ABSENT = object()       # "the query has no `multiple` member"
 
-# Every non-boolean the issue lists. Python literals, not JSON text, so 1.0 stays a float
-# and None is a JSON null. The ids spell out the type: 0, 1 and 1.0 (and False / True)
-# compare equal in Python, so only the id tells them apart.
+# Every non-boolean the issue lists, and 0.0. Python literals, not JSON text, so 1.0 stays
+# a float and None is a JSON null. The ids spell out the type: 0, 0.0, 1 and 1.0 (and
+# False / True) compare equal in Python, so only the id tells them apart.
 NON_BOOLEANS = [
     pytest.param("false", id="string-false"),
     pytest.param("true", id="string-true"),
@@ -55,6 +55,7 @@ NON_BOOLEANS = [
     pytest.param("0", id="string-zero"),
     pytest.param(0, id="int-zero"),
     pytest.param(1, id="int-one"),
+    pytest.param(0.0, id="float-zero"),
     pytest.param(1.0, id="float-one"),
     pytest.param(2, id="int-two"),
     pytest.param([], id="empty-array"),
@@ -130,7 +131,7 @@ def _run(vp_token, dcql, **kw):
 @pytest.mark.parametrize("n", [1, 2], ids=["one-presentation", "two-presentations"])
 @pytest.mark.parametrize("multiple", NON_BOOLEANS)
 def test_answered_query_with_a_non_boolean_multiple_is_rejected(good, multiple, n):
-    # One Presentation used to verify under all thirteen; two used to verify under the
+    # One Presentation used to verify under all fourteen; two used to verify under the
     # truthy ones (and be "single-valued" under the falsy ones).
     with _exact(VpTokenMalformed, BAD_Q):
         _run({"q": [good] * n}, _one(multiple))
@@ -214,6 +215,70 @@ def test_control_a_malformed_holder_binding_flag_on_the_same_query_is_reported_f
     with _exact(VpTokenMalformed,
                 r"Credential Query 'q': require_cryptographic_holder_binding"):
         _run({"q": [good]}, dcql)
+
+
+@pytest.mark.parametrize("fmt", [SD, MDOC, JWT, LDP])
+@pytest.mark.parametrize("multiple", [
+    pytest.param("false", id="string-false"),
+    pytest.param(1, id="int-one"),
+    pytest.param(None, id="null"),
+])
+def test_a_malformed_multiple_is_reported_before_the_same_querys_meta(multiple, fmt):
+    # #254's constraint reader (`_check_constraint`) runs on the same query right after
+    # the two flags; the flags go first. Same class, only the message differs, and a
+    # check moved below the reader would flip it (the mutant this test exists for).
+    dcql = {"credentials": [_query("q", fmt, multiple, meta=None)]}
+    with _exact(VpTokenMalformed, BAD_Q):
+        _run({"q": ["AAAA"]}, dcql)
+
+
+@pytest.mark.parametrize("fmt", [SD, MDOC, JWT, LDP])
+@pytest.mark.parametrize("multiple", [ABSENT, False, True],
+                         ids=["absent", "false", "true"])
+def test_control_the_same_querys_malformed_meta_fires_on_its_own(multiple, fmt):
+    # Control for the test above: with a boolean (or no) `multiple` the very same query
+    # fails on its `meta`, so the BAD_Q above is the flag's doing.
+    dcql = {"credentials": [_query("q", fmt, multiple, meta=None)]}
+    with _exact(VpTokenMalformed, r"Credential Query 'q': meta must be a JSON object"):
+        _run({"q": ["AAAA"]}, dcql)
+
+
+# A LATER query's own shape error: `_index_dcql` walks the queries in order and raises on
+# the first, so an earlier query's malformed `multiple` is reported ahead of it.
+# (the later query, the message it gives when "q" is sound)
+LATER_QUERIES = [
+    pytest.param("not-an-object", "each dcql_query.credentials entry must be an object",
+                 id="entry-not-an-object"),
+    pytest.param({"format": SD}, "each Credential Query needs a non-empty string id",
+                 id="missing-id"),
+    pytest.param({"id": "r", "format": 1}, r"Credential Query 'r' needs a string format",
+                 id="non-string-format"),
+    pytest.param({"id": "q", "format": SD}, r"duplicate Credential Query id 'q'",
+                 id="duplicate-id"),
+    pytest.param({"id": "r", "format": SD, "meta": None},
+                 r"Credential Query 'r': meta must be a JSON object",
+                 id="later-queries-meta"),
+]
+
+
+@pytest.mark.parametrize("later, _message", LATER_QUERIES)
+def test_a_malformed_multiple_is_reported_before_a_later_querys_shape_error(
+        later, _message):
+    dcql = {"credentials": [_query("q", SD, "false"), later]}
+    with _exact(VpTokenMalformed, BAD_Q):
+        _run({"q": ["AAAA"]}, dcql)
+
+
+@pytest.mark.parametrize("multiple", [ABSENT, False, True],
+                         ids=["absent", "false", "true"])
+@pytest.mark.parametrize("later, message", LATER_QUERIES)
+def test_control_the_later_querys_shape_error_fires_on_its_own(
+        later, message, multiple):
+    # Control for the test above: with a boolean (or no) `multiple` on "q" the very same
+    # dcql_query fails on the later query, so the BAD_Q above is the flag's doing.
+    dcql = {"credentials": [_query("q", SD, multiple), later]}
+    with _exact(VpTokenMalformed, message):
+        _run({"q": ["AAAA"]}, dcql)
 
 
 # (vp_token, credential_sets?, what the same token says when "b" is sound)

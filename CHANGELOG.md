@@ -54,11 +54,19 @@ All notable changes to **openvc** are documented here. The format follows
     both now raise, so a verifier that templated the flag has to emit `true` or
     `false`. No unverified credential was ever accepted: the Presentations went
     through the full pipeline either way.
-  - A malformed `multiple` also wins over a missing required query id, an unknown
-    `vp_token` key and a presentation list that is not an array or is empty. These
-    run after `_index_dcql` and are `VpTokenMalformed` already, so only the message
-    changes. If `require_cryptographic_holder_binding` is malformed on the same query,
-    that error still comes first.
+  - A malformed `multiple` also wins over a malformed `meta` on the same query (the
+    constraint reader of [#254](https://github.com/luisgf/openvc/issues/254) runs right
+    after it), over a *later* query's own shape error (an entry that is not an object,
+    a missing or duplicate id, a format that is not a string, a malformed `meta`:
+    `_index_dcql` walks the queries in order and raises on the first), and over a
+    missing required query id, an unknown `vp_token` key and a presentation list that is
+    not an array or is empty (these run after `_index_dcql`). All of them are
+    `VpTokenMalformed` already, so only the message changes. If
+    `require_cryptographic_holder_binding` is malformed on the same query, that error
+    still comes first, and so does a shape error that `_index_dcql` itself raises on an
+    earlier query (its id, format, duplicate id, either flag or `meta`) or on this
+    query's own id or format. An earlier query's *Presentation* failing does not: all
+    queries are indexed before any Presentation is read.
 
   Unchanged: an absent `multiple` is `false` (it is not required); `"multiple": true`
   still allows several Presentations; a boolean `false` still rejects a response with
@@ -73,20 +81,27 @@ All notable changes to **openvc** are documented here. The format follows
 
 - **`tests/test_dcql_multiple_boolean.py`** (#268). Negatives first, each pinning the
   query it names and the exact class, so none can pass on the "single-valued" message
-  or on a later failure: the thirteen non-booleans (`"false"`, `"true"`, `""`, `"0"`,
-  `0`, `1`, `1.0`, `2`, `[]`, `[0]`, `{}`, `{"a": 1}`, `null`) on an answered query with
-  one and with two Presentations, on an unanswered query (listed second and first),
-  and, for `"false"`, `1` and `null`, beside an earlier junk Presentation; `"false"` on
-  `mso_mdoc`, `ldp_vc`, `jwt_vc_json` and on an unanswered query of an unknown format;
-  and a malformed `multiple` against each later shape check. Controls that pass before
+  or on a later failure: the fourteen non-booleans (`"false"`, `"true"`, `""`, `"0"`,
+  `0`, `0.0`, `1`, `1.0`, `2`, `[]`, `[0]`, `{}`, `{"a": 1}`, `null`) on an answered
+  query with one and with two Presentations, on an unanswered query (listed second and
+  first), and, for `"false"`, `1` and `null`, beside an earlier junk Presentation;
+  `"false"` on `mso_mdoc`, `ldp_vc`, `jwt_vc_json` and on an unanswered query of an
+  unknown format; and a malformed `multiple` against each later shape check. The
+  ordering is pinned too: a malformed `multiple` (`"false"`, `1`, `null`) beside a
+  malformed `meta` on the same query, for all four known formats, and in front of each
+  of five shape errors on a later query (an entry that is not an object, a missing id,
+  a non-string format, a duplicate id, a malformed `meta`). Controls that pass before
   and after: `true` allows two Presentations, `false` and an absent `multiple` accept
   one and reject two as "single-valued" (also for the three string formats), a boolean
   `multiple` on an unanswered query, an unknown format with `multiple: true`, the
-  holder-binding flag still reported first, and the later shape checks firing on their
-  own. Mutation-checked against `origin/main` at 45b28be: 63 negatives fail and the 19
-  controls pass; removing the new check fails the same 63; accepting an `int`, reading
-  `multiple` without its `false` default, and checking only `dc+sd-jwt` queries each
-  fail their own rows (13, 33 and 4).
+  holder-binding flag still reported first, the later shape checks firing on their own,
+  and the same two orderings with `multiple` absent, `false` or `true`, where the
+  `meta` / the later query's error is the one reported. Mutation-checked against
+  `origin/main` at 45b28be: 84 negatives fail and the 46 controls pass; removing the
+  new check fails the same 84; accepting an `int`, accepting a `float`, reading
+  `multiple` without its `false` default, checking only `dc+sd-jwt` queries, moving the
+  check below the `meta` reader and moving it into a second pass after the walk each
+  fail their own rows (17, 8, 45, 13, 12 and 17).
 
 ## [1.32.4] — unreleased
 
