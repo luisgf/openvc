@@ -571,6 +571,17 @@ one of them is rejected (see [SD-JWT VC](SD-JWT-VC)). A nested `key_bound=True` 
 not mean that the presentation's signer controls the credential's `cnf` key. To
 require that the presenter is also the credential's `sub`, use `require_holder_binding`.
 
+**A W3C query does not choose what is nested.** A `jwt_vc_json` or `ldp_vc` query without
+`meta.type_values` puts no constraint on the type (see
+[Type constraints](#type-constraints-in-the-query)), so a presentation that embeds an IETF
+SD-JWT VC (`dc+sd-jwt`) answers it, and so does one that embeds a W3C VCDM credential
+secured as `vc+sd-jwt`. That is by design, not a gap: the nesting is part of the W3C data
+model, and openvc cascade-verifies every embedded credential the same way. To require a
+W3C credential type, set `type_values`. A nested SD-JWT never satisfies it, because its
+holder could reshape the `type` by withholding disclosures, so openvc reads no types from
+one. The `dc+sd-jwt` lane is the strict one: it answers only an issuer JWT typed
+`dc+sd-jwt` (see above).
+
 ## Replay: what the bindings buy you
 
 `aud`/`domain` pins the presentation to *your* verifier; `nonce`/`challenge`
