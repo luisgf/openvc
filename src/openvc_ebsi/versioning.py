@@ -38,8 +38,9 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
-from openvc.did.base import DidDocument, parse_did_document
+from openvc.did.base import DidDocument, DidResolutionError, parse_did_document
 from openvc.observability import logger
+from openvc.proof._verify_common import safe_repr
 from .errors import MalformedRegistryResponse
 from .models import Accreditation, IssuerRecord
 
@@ -351,8 +352,24 @@ class DidEbsiResolver:
         self._tir = tir or tir_adapter()
 
     def resolve(self, did: str) -> DidDocument:
+        """The DID document of *did*, or :class:`~openvc.did.base.DidResolutionError`.
+
+        The adapter parses the registry body; this method then holds the parsed
+        document's ``id`` to the DID that was asked for, exactly — no normalisation: a
+        ``did:ebsi`` method-specific id is case-sensitive base58btc. It is the same
+        contract ``did:web`` and ``did:webvh`` enforce, and it is version-agnostic, so
+        it lives here and a new registry adapter inherits it. A missing, empty or
+        non-string ``id`` never matches (the parser reads it as ``""``), and a DID URL
+        (``did:ebsi:zX#key-1``) is not a DID, so it fails too, although the registry
+        would answer it with ``zX``'s document once httpx drops the fragment. The
+        message shows both values through :func:`~openvc.proof._verify_common.safe_repr`:
+        the requested DID is a token's ``iss``, so it is attacker-sized."""
         raw = self._get(self._didr.identifiers_url(self._base, did))
-        return self._didr.parse_did_document(raw)          # no version logic here
+        doc = self._didr.parse_did_document(raw)           # no version logic here
+        if doc.id != did:                                   # bind the document to the request
+            raise DidResolutionError(
+                f"document id {safe_repr(doc.id)} != requested {safe_repr(did)}")
+        return doc
 
     def issuer_record(self, did: str) -> IssuerRecord:
         raw = self._get(self._tir.issuer_url(self._base, did))

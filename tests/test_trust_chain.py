@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from openvc.did.base import DidResolutionError
+from openvc.errors import OpenvcError
 from openvc.keys import P256SigningKey
 from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.status import encode_bitstring, set_status_bit
@@ -188,6 +190,43 @@ def test_chain_tampered_accreditor_key_fails():
     with pytest.raises(AccreditationInvalid):
         verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
                            proof_suite=c.suite, anchors={ROOT})
+
+
+_ABSENT = object()                          # the accreditor's document has no `id` member
+
+
+@pytest.mark.parametrize("doc_id", [
+    pytest.param("did:ebsi:zSomebodyElse", id="another-did"),
+    pytest.param(None, id="null"),
+    pytest.param("", id="empty"),
+    pytest.param(_ABSENT, id="absent"),
+])
+@pytest.mark.parametrize("accreditor", [MID, ROOT], ids=["mid", "root"])
+def test_chain_accreditor_document_for_another_did_fails(accreditor, doc_id):
+    # #257. The accreditor's DID Registry document carries the right key (so the
+    # accreditation's signature WOULD verify) but its `id` is not the accreditor's DID.
+    # The control is the unmodified chain, which reaches the anchor.
+    c = build_chain()
+    assert verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver, proof_suite=c.suite,
+                              anchors={ROOT}).anchor == ROOT
+    doc = _did_doc(accreditor, c.keys.mid if accreditor == MID else c.keys.root)
+    if doc_id is _ABSENT:
+        del doc["didDocument"]["id"]
+    else:
+        doc["didDocument"]["id"] = doc_id
+    c.routes[f"{BASE}/did-registry/v5/identifiers/{accreditor}"] = doc
+
+    with pytest.raises(OpenvcError) as exc:
+        verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
+                           proof_suite=c.suite, anchors={ROOT})
+    assert type(exc.value) is AccreditationInvalid
+    assert type(exc.value.__cause__) is DidResolutionError
+    assert "!= requested" in str(exc.value)
+
+    with pytest.raises(OpenvcError) as bexc:                 # and through the badge verifier
+        verify_ebsi_badge(c.token, resolver=c.resolver, proof_suite=c.suite,
+                          trust_anchors={ROOT})
+    assert type(bexc.value) is AccreditationInvalid
 
 
 def test_chain_revoked_mid_breaks_chain():

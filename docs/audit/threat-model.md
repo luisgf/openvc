@@ -201,7 +201,18 @@ finite input", with no explicit constant.
   unsigned token whose `iss` held a control character escaped `verify_ebsi_badge` as
   a bare `httpx.InvalidURL` (#246). A body httpx cannot decompress is a
   `MalformedRegistryResponse`; before v1.32.1 it escaped as a bare
-  `httpx.DecodingError` (#248).
+  `httpx.DecodingError` (#248). The allow-list says which host answers, not which
+  document: `DidEbsiResolver.resolve` holds the parsed document's `id` (after a
+  `didDocument` wrapper is unwrapped) to the DID it asked for, exactly, and raises
+  `DidResolutionError` otherwise, as `did:web` and `did:webvh` do. A missing, non-string
+  or empty `id` never matches; neither does a DID URL (`did:ebsi:zX#key-1`), which
+  resolved by accident before v1.32.4 because httpx drops the fragment. Compromise of
+  the registry itself is still out of scope (§10): it can serve a matching `id` with its
+  own key. What the check closes is a misrouted or steered response (a registry bug, a
+  wrong `base`, an unsigned token's `iss` such as `did:ebsi:zA/../did:ebsi:zB`, which
+  httpx turns into a request for B's resource) being accepted as the requested DID's
+  document. The DID is still put into the registry path unvalidated, and the TIR issuer
+  response's own `did` is still not read; both are outside #257 (#257, v1.32.4).
 
 ## 8. Fail-closed invariants catalog
 

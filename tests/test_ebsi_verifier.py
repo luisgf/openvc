@@ -31,7 +31,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from openvc.did.base import parse_did_document
+from openvc.did.base import DidResolutionError, parse_did_document
 from openvc.errors import OpenvcError
 from openvc.keys import P256SigningKey
 from openvc.proof.errors import CredentialExpired
@@ -45,7 +45,7 @@ from openvc_ebsi.http import (
     HttpNotFound,
     for_ebsi,
 )
-from openvc_ebsi.verify import verify_ebsi_badge
+from openvc_ebsi.verify import EbsiVerificationError, verify_ebsi_badge
 from openvc_ebsi.versioning import DidEbsiResolver, TirV5
 
 PILOT_BASE = "https://api-pilot.ebsi.eu"
@@ -643,6 +643,219 @@ def test_ssrf_guard_blocks_foreign_and_plaintext_hosts() -> None:
             client.get_json("http://api-pilot.ebsi.eu/anything")           # non-https
     finally:
         client.close()
+
+
+# --------------------------------------------------------------------------- #
+# Offline: the registry document is bound to the DID that was asked for (#257)
+# --------------------------------------------------------------------------- #
+#
+# `resolve(did)` must return the document OF `did`. did:web compares the parsed
+# document `id` with the DID, did:webvh compares the log state's, did:key / did:jwk derive
+# the document from the DID; the EBSI resolver compared nothing, so a document for another
+# subject (or with no usable `id`) resolved and `key_by_kid` found its keys. Every case
+# below serves a document that is otherwise good (it holds the signing key under the right
+# kid), and each negative is paired with a control carrying the right `id`, so the `id` is
+# the only thing that can make it fail.
+
+BIND_DID = "did:ebsi:zZeKyEJfUTGwajhNyNX928z"
+BIND_KID = f"{BIND_DID}#key-1"
+BIND_URL = f"{PILOT_BASE}/did-registry/v5/identifiers/{BIND_DID}"
+_ABSENT = object()                              # the document has no `id` member at all
+
+# the document `id` member: not the requested DID, or not a usable string at all
+WRONG_IDS = [
+    pytest.param("did:ebsi:zSomebodyElse", id="another-did"),
+    pytest.param(7, id="number"),
+    pytest.param(None, id="null"),
+    pytest.param([], id="list"),
+    pytest.param({}, id="object"),
+    pytest.param(True, id="bool"),
+    pytest.param("", id="empty"),
+    pytest.param(_ABSENT, id="absent"),
+    pytest.param(BIND_DID.lower(), id="case-folded"),        # base58btc is case-sensitive
+    pytest.param(BIND_DID + " ", id="trailing-space"),
+    pytest.param(BIND_KID, id="did-url"),                    # a DID URL is not the DID
+    pytest.param("did:web:example.com", id="another-method"),
+]
+
+
+def _bind_doc(sk: P256SigningKey, doc_id: object, *, wrapped: bool) -> dict:
+    """A registry document that holds *sk*'s public key under BIND_KID, with the `id`
+    member set to *doc_id* (left out for ``_ABSENT``), bare or in a `didDocument` wrapper."""
+    doc: dict = {
+        "verificationMethod": [{"id": BIND_KID, "type": "JsonWebKey2020",
+                                "controller": BIND_DID, "publicKeyJwk": sk.public_jwk()}],
+        "assertionMethod": [BIND_KID],
+    }
+    if doc_id is not _ABSENT:
+        doc = {"id": doc_id, **doc}
+    return {"didDocument": doc} if wrapped else doc
+
+
+def _bind_resolver(doc: dict, suite: VcJwtProofSuite) -> DidEbsiResolver:
+    # The route is keyed on the exact registry URL, so a request for anything else is a
+    # HttpNotFound (a different class), not a pass for the exact-class assertions.
+    return DidEbsiResolver(StubFetch({BIND_URL: doc}), decode_jwt=suite.peek_claims,
+                           base=PILOT_BASE)
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "wrapper"])
+def test_resolve_accepts_the_document_whose_id_is_the_did(wrapped: bool) -> None:
+    sk = P256SigningKey.generate(kid=BIND_KID)
+    doc = _bind_resolver(_bind_doc(sk, BIND_DID, wrapped=wrapped),
+                         VcJwtProofSuite()).resolve(BIND_DID)
+    assert doc.id == BIND_DID
+    vm = doc.key_by_kid(BIND_KID)
+    assert vm is not None and vm.public_key_jwk == sk.public_jwk()
+
+
+def test_resolve_accepts_the_recorded_registry_document() -> None:
+    # The golden fixture (verbatim from the pilot registry) has `id` == the DID it was
+    # fetched for, so the real registry passes the check.
+    recorded = _load("didr_v5_identifiers.json")
+    did = recorded["id"]
+    assert did == BIND_DID
+    resolver = DidEbsiResolver(
+        StubFetch({f"{PILOT_BASE}/did-registry/v5/identifiers/{did}": recorded}),
+        decode_jwt=VcJwtProofSuite().peek_claims, base=PILOT_BASE)
+    doc = resolver.resolve(did)
+    assert doc.id == did and doc.verification_methods
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "wrapper"])
+@pytest.mark.parametrize("doc_id", WRONG_IDS)
+def test_resolve_refuses_a_document_that_is_not_for_the_requested_did(
+        doc_id: object, wrapped: bool) -> None:
+    sk = P256SigningKey.generate(kid=BIND_KID)
+    suite = VcJwtProofSuite()
+    # control: the same document with the right `id` resolves and names the key ...
+    good = _bind_resolver(_bind_doc(sk, BIND_DID, wrapped=wrapped), suite)
+    assert good.resolve(BIND_DID).key_by_kid(BIND_KID) is not None
+    # ... so the `id` is the only thing wrong with this one
+    resolver = _bind_resolver(_bind_doc(sk, doc_id, wrapped=wrapped), suite)
+    with pytest.raises(DidResolutionError, match="!= requested") as exc_info:
+        resolver.resolve(BIND_DID)
+    assert type(exc_info.value) is DidResolutionError
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "wrapper"])
+@pytest.mark.parametrize("doc_id", WRONG_IDS)
+def test_verify_ebsi_badge_refuses_a_document_that_is_not_for_the_issuer(
+        doc_id: object, wrapped: bool) -> None:
+    sk = P256SigningKey.generate(kid=BIND_KID)
+    suite = VcJwtProofSuite()
+    token = suite.sign(
+        {"@context": ["https://www.w3.org/2018/credentials/v1"],
+         "id": "urn:uuid:2f8a1c30-0000-4000-8000-000000000257",
+         "type": ["VerifiableCredential", "VerifiableAttestation"], "issuer": BIND_DID,
+         "credentialSubject": {"id": "did:key:z6Mkexample"}},
+        signing_key=sk)
+
+    def resolver_for(doc: dict) -> DidEbsiResolver:
+        routes = {BIND_URL: doc,
+                  f"{PILOT_BASE}/trusted-issuers-registry/v5/issuers/{BIND_DID}":
+                      {"did": BIND_DID, "hasAttributes": False}}
+        return DidEbsiResolver(StubFetch(routes), decode_jwt=suite.peek_claims,
+                               base=PILOT_BASE)
+
+    # control: the token verifies against the document with the right `id` ...
+    ok = verify_ebsi_badge(
+        token, resolver=resolver_for(_bind_doc(sk, BIND_DID, wrapped=wrapped)),
+        proof_suite=suite, require_trust=False)
+    assert ok.issuer == BIND_DID
+    # ... and the signature is good against the wrong-`id` document too: only the binding
+    # stops it
+    resolver = resolver_for(_bind_doc(sk, doc_id, wrapped=wrapped))
+    with pytest.raises(OpenvcError) as exc_info:
+        verify_ebsi_badge(token, resolver=resolver, proof_suite=suite, require_trust=False)
+    assert type(exc_info.value) is EbsiVerificationError
+    assert type(exc_info.value.__cause__) is DidResolutionError
+    assert "!= requested" in str(exc_info.value)
+
+
+def _registry_client(routes: dict[str, dict], paths: list[str]) -> EbsiHttpClient:
+    """The real client over a mock transport: httpx does the URL handling (it drops a
+    fragment and collapses dot segments before the request is sent), the handler serves
+    a registry that answers the *path* it receives."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        body = routes.get(request.url.path)
+        return httpx.Response(404, json={}) if body is None else httpx.Response(200, json=body)
+    client = EbsiHttpClient(allowed_hosts={"api-pilot.ebsi.eu"})
+    client._client = httpx.Client(transport=httpx.MockTransport(handler))
+    return client
+
+
+def test_resolve_refuses_a_did_url_although_the_registry_answers_it() -> None:
+    # A DID URL passed as the DID resolved by accident: httpx drops the fragment, so the
+    # registry returned the DID's own document. A DID URL is not a DID (iss and
+    # accreditedBy are DIDs), and the document's `id` is not the string that was asked for.
+    sk = P256SigningKey.generate(kid=BIND_KID)
+    suite = VcJwtProofSuite()
+    paths: list[str] = []
+    registry_path = f"/did-registry/v5/identifiers/{BIND_DID}"
+    client = _registry_client({registry_path: _bind_doc(sk, BIND_DID, wrapped=False)}, paths)
+    resolver = DidEbsiResolver(client.get_json, decode_jwt=suite.peek_claims, base=PILOT_BASE)
+    assert resolver.resolve(BIND_DID).id == BIND_DID                  # control
+    with pytest.raises(DidResolutionError, match="!= requested") as exc_info:
+        resolver.resolve(BIND_KID)
+    assert type(exc_info.value) is DidResolutionError
+    assert paths == [registry_path, registry_path]    # the registry did answer: no fragment sent
+
+    token = suite.sign(
+        {"id": "urn:uuid:x", "type": ["VerifiableCredential"], "issuer": BIND_KID,
+         "credentialSubject": {"id": "did:key:zX"}}, signing_key=sk)
+    with pytest.raises(OpenvcError) as vexc:                          # a DID URL as `iss`
+        verify_ebsi_badge(token, resolver=resolver, proof_suite=suite, require_trust=False)
+    assert type(vexc.value) is EbsiVerificationError
+    assert type(vexc.value.__cause__) is DidResolutionError
+    client.close()
+
+
+def test_resolve_refuses_the_document_a_dot_segment_iss_steers_to() -> None:
+    # An unsigned token's `iss` is put into the registry path unvalidated (out of scope
+    # here), so `zA/../zB` makes httpx request B's resource. The registry then returns B's
+    # document, whose `id` is not the requested string: closed by the binding, not by
+    # validating the DID.
+    other = "did:ebsi:zOtherSubjectBBBBBBBB"
+    sk = P256SigningKey.generate(kid=BIND_KID)
+    other_doc = {"id": other, "verificationMethod": [{
+        "id": f"{other}#key-1", "type": "JsonWebKey2020", "controller": other,
+        "publicKeyJwk": sk.public_jwk()}], "assertionMethod": [f"{other}#key-1"]}
+    paths: list[str] = []
+    other_path = f"/did-registry/v5/identifiers/{other}"
+    client = _registry_client({other_path: other_doc}, paths)
+    resolver = DidEbsiResolver(client.get_json, decode_jwt=VcJwtProofSuite().peek_claims,
+                               base=PILOT_BASE)
+    assert resolver.resolve(other).id == other                        # control
+    steered = f"{BIND_DID}/../{other}"
+    with pytest.raises(DidResolutionError, match="!= requested") as exc_info:
+        resolver.resolve(steered)
+    assert type(exc_info.value) is DidResolutionError
+    assert paths == [other_path, other_path]            # the request did reach B's resource
+    client.close()
+
+
+def test_resolve_mismatch_message_is_bounded() -> None:
+    # The requested DID is a token's `iss` and the document `id` is registry-supplied:
+    # both are attacker-sized, and both are cut to 200 characters in the message.
+    long_did = "did:ebsi:" + "z" * 60_000
+    long_other = "did:ebsi:" + "y" * 60_000
+    sk = P256SigningKey.generate(kid=BIND_KID)
+    suite = VcJwtProofSuite()
+
+    def resolver_for(doc_id: str) -> DidEbsiResolver:
+        doc = _bind_doc(sk, doc_id, wrapped=False)
+        return DidEbsiResolver(lambda url: doc, decode_jwt=suite.peek_claims, base=PILOT_BASE)
+
+    assert resolver_for(long_did).resolve(long_did).id == long_did    # control: same size, matches
+    with pytest.raises(DidResolutionError) as exc_info:
+        resolver_for(long_other).resolve(long_did)
+    assert type(exc_info.value) is DidResolutionError
+    assert len(long_did) == len(long_other) == 60_009
+    assert str(exc_info.value) == (                    # each cut at 200 characters
+        f"document id {long_other[:200]!r}... (60009 chars) != "
+        f"requested {long_did[:200]!r}... (60009 chars)")
 
 
 # --------------------------------------------------------------------------- #

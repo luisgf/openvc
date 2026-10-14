@@ -4,6 +4,73 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.4] — unreleased
+
+### Security
+
+- **The EBSI DID Registry document is bound to the DID that was asked for**
+  ([#257](https://github.com/luisgf/openvc/issues/257)). Found by the adversarial
+  review of [#251](https://github.com/luisgf/openvc/pull/251) (issue #219), where it was
+  listed as a follow-up. Hardening and contract consistency; no wrong-accept was found.
+
+  `DidEbsiResolver.resolve` returned whatever `parse_did_document` made of the registry
+  body and compared nothing, so a document whose `id` was another DID, a number, `null`,
+  a list, empty or absent still resolved, bare or inside a `didDocument` wrapper, and
+  `key_by_kid` found its keys. `did:web` and `did:webvh` reject the same document, and
+  `did:key` / `did:jwk` derive it from the DID, so the EBSI resolver was the only
+  built-in one that did not hold to the `DidResolver` contract: `resolve(did)` returns
+  the document of `did`. A consumer reading `DidDocument.id` got a document about
+  another subject, and a misrouted response (a registry bug, a cache keyed wrongly, a
+  `base` pointing at the wrong environment) was accepted silently.
+
+  `resolve` now compares the parsed document's `id`, after the `didDocument` wrapper is
+  unwrapped, with the requested DID, exactly and with no normalisation (a `did:ebsi`
+  method-specific id is case-sensitive base58btc), and raises
+  `openvc.did.base.DidResolutionError` on any difference. A missing or non-string `id`
+  never matches, because the parser reads it as `""`. The message shows both values
+  through `safe_repr`, so a 60 KB DID is cut to 200 characters. The check is in the
+  resolver, not in `DidRegistryV5`: it is version-agnostic domain logic, so a future
+  registry adapter inherits it. `DidResolutionError` is what every caller already
+  handles: `verify_ebsi_badge` wraps it in `EbsiVerificationError`,
+  `verify_trust_chain` in `AccreditationInvalid`, and the generic pipeline maps
+  `DidError` to `KeyResolutionFailed`. The golden registry fixture has `id` equal to its
+  DID, so the real registry is unaffected.
+
+  This also closes a reachable steering path, though not its cause. `identifiers_url`
+  puts the DID into the registry path unvalidated, so an unsigned token whose `iss` is
+  `did:ebsi:zA/../did:ebsi:zB` made the client request B's resource (httpx collapses
+  the dot segment) and B's document resolved. B's `id` is not the string that was asked
+  for, so it is now refused. No impersonation was possible before: B's key still had to
+  verify the token. Validating the DID before it is put in a URL is a separate gap and
+  is not changed here.
+
+### Changed
+
+- **A DID URL passed to `DidEbsiResolver.resolve` is now refused.** `did:ebsi:zX#key-1`,
+  for example as a token's `iss`, resolved by accident: httpx drops the fragment, so the
+  registry answered with `zX`'s own document. It now raises `DidResolutionError`, as
+  `did:web` does, and `verify_ebsi_badge` reports `EbsiVerificationError`. `iss` and
+  `accreditedBy` are DIDs, not DID URLs, so a conforming credential is unaffected. The
+  same applies to any other input whose registry document `id` is not that exact string.
+
+### Tests
+
+- **The binding is pinned for every wrong `id`** (#257). `test_ebsi_verifier.py` serves
+  a registry document that is otherwise good (it holds the signing key under the right
+  `kid`) with `id` set to another DID, a number, `null`, a list, an object, a bool,
+  `""`, no `id` at all, a case-folded DID, a DID with a trailing space, a DID URL and
+  another method's DID, each bare and in a `didDocument` wrapper. `resolve` raises
+  exactly `DidResolutionError`, and `verify_ebsi_badge` exactly `EbsiVerificationError`
+  with that cause; each case is paired with a control carrying the right `id`, which
+  resolves and verifies. `test_trust_chain.py` serves the mismatched document as the
+  accreditor's, at the middle and the root hop, and requires exactly
+  `AccreditationInvalid`. The DID-URL and dot-segment cases go through the real
+  `EbsiHttpClient` on an `httpx.MockTransport`, so httpx does the URL handling, and
+  assert the registry was in fact asked. The recorded pilot document still resolves.
+  Mutation-checked: 59 of these cases fail against the previous code, each with
+  `DID NOT RAISE`, and the controls pass; a check that skips an empty `id`, and one
+  that ignores case or surrounding space, each fail their own rows.
+
 ## [1.32.3] — unreleased
 
 ### Security
