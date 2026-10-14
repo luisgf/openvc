@@ -71,17 +71,18 @@ _DEFAULT_HASH = "sha-256"
 _ISSUER_TYP = "dc+sd-jwt"                       # an IETF SD-JWT VC (draft-19 §2.2.1)
 _KB_TYP = "kb+jwt"
 # W3C VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload, and verify() accepts
-# it only for one: a payload with a VCDM `@context` (#264). The IETF drafts used it before
-# draft-06 renamed it, but draft-19 dropped the transitional acceptance of it.
+# it only for one: a conforming payload, see _vcdm_nonconformity (#264, #275). The IETF
+# drafts used it before draft-06 renamed it, but draft-19 dropped the transitional
+# acceptance of it.
 _W3C_TYP = "vc+sd-jwt"
 # The name the W3C Working Drafts of August-September 2023 gave that media type
 # (`application/vc+ld+json+sd-jwt`) before the rename. The Recommendation's Example 21 still
 # carries it, and issuers built on those drafts emit it (#289). Exact match, same rule.
 _W3C_DRAFT_TYP = "vc+ld+json+sd-jwt"
 _W3C_TYPS = frozenset({_W3C_TYP, _W3C_DRAFT_TYP})
-# The issuer JWT `typ` values verify() accepts. An absent `typ` is accepted too, for a VCDM
-# payload only (VC-JOSE-COSE §3.2.1 makes it a SHOULD, and the Recommendation's Examples 4 and 5
-# omit it, #288); a present one must be in this closed set.
+# The issuer JWT `typ` values verify() accepts. An absent `typ` is accepted too, for a
+# conforming VCDM payload only (VC-JOSE-COSE §3.2.1 makes it a SHOULD, and the
+# Recommendation's Examples 4 and 5 omit it, #288); a present one must be in this closed set.
 _ACCEPTED_ISSUER_TYP = frozenset({_ISSUER_TYP}) | _W3C_TYPS
 _VCDM_CONTEXTS = frozenset({
     "https://www.w3.org/ns/credentials/v2",            # VCDM 2.0
@@ -326,7 +327,11 @@ def _declares_vcdm(claims: Mapping[str, Any]) -> bool:
     and an absent ``typ`` unless this returns True (#264, #288, #289).
 
     An IETF SD-JWT VC that merely has a claim *named* ``validUntil`` is not VCDM: the name
-    means nothing in its vocabulary, so it is not read as a validity bound."""
+    means nothing in its vocabulary, so it is not read as a validity bound.
+
+    This is the lax test, on purpose: it decides which payloads get the validity window and
+    the issuer / subject consistency checks, so a base URL in second place still turns them
+    on. Being *read as* a W3C credential takes more (:func:`_vcdm_nonconformity`, #275)."""
     context = claims.get("@context")
     entries = context if isinstance(context, list) else [context]
     return any(isinstance(entry, str) and entry in _VCDM_CONTEXTS for entry in entries)
@@ -337,18 +342,58 @@ def _declares_credential(claims: Mapping[str, Any]) -> bool:
     an array) includes ``VerifiableCredential`` (VCDM 2.0 §4.5) and not
     ``VerifiablePresentation`` (§4.13).
 
-    Read only for an issuer JWT with no ``typ``. The ``typ`` is what tells a credential
-    from a presentation, and a VCDM 2.0 presentation secured with SD-JWT carries the same
-    ``@context`` as a credential, with no ``vp`` claim to ban: without this, a holder-signed
-    presentation with no ``typ`` would verify as a credential issued by the holder (#293,
-    found reviewing #292, before any release). It is a positive test, so a ``type`` that
-    is absent or withheld (the Recommendation's own Example 4 makes it selectively
-    disclosable) is refused, not waved through, and only the compact term counts: a full
-    IRI or a prefixed name is refused too."""
+    Read for every issuer JWT that is not a ``dc+sd-jwt`` (#275). With no ``typ`` it is what
+    tells a credential from a presentation: a VCDM 2.0 presentation secured with SD-JWT
+    carries the same ``@context`` as a credential, with no ``vp`` claim to ban, so without it
+    a holder-signed presentation with no ``typ`` would verify as a credential issued by the
+    holder (#293, found reviewing #292, before any release). With a W3C ``typ`` it keeps a
+    payload that is not a credential from passing under a ``typ`` that says it is. It is a
+    positive test, so a ``type`` that is absent or withheld (the Recommendation's own
+    Example 4 makes it selectively disclosable) is refused, not waved through, and only the
+    compact term counts: a full IRI or a prefixed name is refused too."""
     declared = claims.get("type")
     names = {entry for entry in (declared if isinstance(declared, list) else [declared])
              if isinstance(entry, str)}
     return "VerifiableCredential" in names and "VerifiablePresentation" not in names
+
+
+def _starts_with_base_context(claims: Mapping[str, Any]) -> bool:
+    """Whether the payload's ``@context`` starts with a VCDM base context (VCDM 2.0 §4.3:
+    "an ordered set where the first item" is the base URL; VCDM 1.1 §4.1 says the same of
+    its own). :func:`_declares_vcdm` accepts that URL *anywhere*, which is what keeps the
+    validity window and the consistency checks on; this is the stricter test a payload must
+    pass to be *read as* a W3C credential (#275). A string ``@context`` is its own first
+    item. An embedded context object, or an empty array, in first place does not count."""
+    context = claims.get("@context")
+    first = context[0] if isinstance(context, list) and context else context
+    return isinstance(first, str) and first in _VCDM_CONTEXTS
+
+
+def _vcdm_nonconformity(claims: Mapping[str, Any]) -> str | None:
+    """Which requirement a payload that names a VCDM base context somewhere still fails to
+    meet to be read as a W3C credential, or None when it meets them (#275). Judged on the
+    PROCESSED payload (what :meth:`SdJwtVcProofSuite.verify` returns as ``claims``):
+    ``@context`` is never disclosable (a presented disclosure of it is refused), and a
+    withheld ``type`` makes the payload fail the second requirement instead of passing it.
+    The message names the requirement, so a caller can tell a misplaced context from a
+    missing ``type``.
+
+    Not everything here is issuer-signed plaintext: an issuer that made an *array element*
+    of ``@context`` or ``type`` selectively disclosable lets the verdict depend on what the
+    holder presents, because a withheld element is gone and the positions shift. That needs
+    the signer's grant, ``vcdm`` stays True so the window still runs, and it is pinned in
+    ``tests/test_sd_jwt_vcdm_conformance.py`` as a documented limit.
+
+    Only two things are tested. Non-string ``type`` entries are ignored, a full-IRI
+    ``VerifiablePresentation`` is not recognised, ``[V1, V2]`` passes, later ``@context``
+    items are not looked at, and ``issuer`` / ``credentialSubject`` are not required."""
+    if not _starts_with_base_context(claims):
+        return ("needs a VCDM base context as the first `@context` entry "
+                "(VCDM 2.0 §4.3), not just somewhere in it")
+    if not _declares_credential(claims):
+        return ("needs a `type` that includes VerifiableCredential and not "
+                "VerifiablePresentation (VCDM 2.0 §4.5, §4.13)")
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -551,10 +596,15 @@ class SdJwtVcProofSuite:
         (VC-JOSE-COSE §6.1.3). The draft-era ``vc+ld+json+sd-jwt`` of the Recommendation's
         Example 21 and an absent ``typ`` (a SHOULD there; its Examples 4 and 5 omit it) are
         accepted like ``vc+sd-jwt``. All of these but ``dc+sd-jwt`` are accepted only for
-        a W3C VCDM payload, one with a VCDM ``@context``; otherwise ``SdJwtError``. A
-        ``typ`` that is present and anything else, ``null`` included, raises it too, and so
-        does an absent one on a payload with a ``vc`` or ``vp`` claim (§3.1.3). When the
-        payload is a W3C VCDM credential (a VCDM ``@context``, whatever the ``typ``), its
+        a payload that conforms to the VCDM (#275): a VCDM base ``@context`` somewhere in it
+        (otherwise ``SdJwtError``), as the FIRST ``@context`` entry (VCDM 2.0 §4.3), and a
+        ``type`` that includes ``VerifiableCredential`` and not ``VerifiablePresentation``
+        (§4.5, §4.13), each with its own ``SdJwtError`` message; a withheld ``type`` fails the
+        second. Nothing more is tested: ``issuer`` and ``credentialSubject`` are not required.
+        A ``typ`` that is present and anything else, ``null`` included, raises ``SdJwtError``
+        too, and so does an absent one on a payload with a ``vc`` or ``vp`` claim (§3.1.3).
+        When the payload names a VCDM ``@context`` anywhere (whatever the ``typ``, a
+        ``dc+sd-jwt`` included), it is a W3C VCDM credential for what follows, and its
         ``validFrom`` / ``validUntil`` are enforced too, like the VC-JWT suite does (current
         time, same leeway; ``check_temporal=False`` waives only the expiry). Its ``iss`` /
         ``jti`` / ``sub`` must not conflict with ``issuer`` / ``id`` /
@@ -647,7 +697,7 @@ class SdJwtVcProofSuite:
                 raise SdJwtError(
                     f"{what} {name!r} is selectively disclosed ({reason}): the issuer "
                     "made it withholdable, so its absence would go undetected")
-        if typ != _ISSUER_TYP and not vcdm:
+        if typ != _ISSUER_TYP:
             # VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload, and draft-19
             # dropped the transitional acceptance of it for an IETF SD-JWT VC. Read as VCDM
             # by its typ alone, a `vct`-less or `vct`-withheld token skipped the REQUIRED
@@ -656,25 +706,29 @@ class SdJwtVcProofSuite:
             # holds for the draft-era name and for an absent `typ` (#288, #289): none of them
             # says "IETF SD-JWT VC", so the payload has to say "W3C VC".
             shown = "without a typ" if typ is None else f"typ {typ!r}"
-            raise SdJwtError(
-                f"issuer JWT {shown} needs a W3C VCDM @context; an IETF SD-JWT VC "
-                "is typed 'dc+sd-jwt'")
-        if typ is None and ("vc" in unpacked or "vp" in unpacked):
-            # VC-JOSE-COSE §3.1.3: the claim names `vc` and `vp` MUST NOT be present.
-            # A token with a `vc` object and no `typ` would be an SD-JWT VC here and, with
-            # its `~` tail dropped, a VC-JWT in the VC-JWT lane, which refuses only a typed
-            # SD-JWT issuer JWT (#189): the holder could shed key binding. A token accepted
-            # here has no `vc` claim, so that lane refuses its stripped form ("no embedded
-            # `vc` object"). It cannot help one this lane never sees (#291).
-            raise SdJwtError(
-                "issuer JWT without a typ must not carry a `vc` or `vp` claim "
-                "(VC-JOSE-COSE §3.1.3)")
-        if typ is None and not _declares_credential(unpacked):
-            # No `typ` to tell a credential from a presentation, so the payload has to: a
-            # VCDM 2.0 presentation has the same `@context` and no `vp` claim to ban.
-            raise SdJwtError(
-                "issuer JWT without a typ needs a `type` that includes VerifiableCredential "
-                "and not VerifiablePresentation (VCDM 2.0 §4.5, §4.13)")
+            if not vcdm:
+                raise SdJwtError(
+                    f"issuer JWT {shown} needs a W3C VCDM @context; an IETF SD-JWT VC "
+                    "is typed 'dc+sd-jwt'")
+            if typ is None and ("vc" in unpacked or "vp" in unpacked):
+                # VC-JOSE-COSE §3.1.3: the claim names `vc` and `vp` MUST NOT be present.
+                # A token with a `vc` object and no `typ` would be an SD-JWT VC here and,
+                # with its `~` tail dropped, a VC-JWT in the VC-JWT lane, which refuses only
+                # a typed SD-JWT issuer JWT (#189): the holder could shed key binding. A
+                # token accepted here has no `vc` claim, so that lane refuses its stripped
+                # form ("no embedded `vc` object"). It cannot help one this lane never sees
+                # (#291).
+                raise SdJwtError(
+                    "issuer JWT without a typ must not carry a `vc` or `vp` claim "
+                    "(VC-JOSE-COSE §3.1.3)")
+            # A VCDM base URL somewhere in `@context` is enough to enforce the window below
+            # (the lax `vcdm`), but not to be read as a credential: the context has to START
+            # with it and the `type` has to say credential, whatever the `typ` claims (#275;
+            # #293 for an absent `typ`). Without this a payload with no `type`, no `issuer`
+            # and a base URL in second place verified as a W3C credential.
+            nonconformity = _vcdm_nonconformity(unpacked)
+            if nonconformity is not None:
+                raise SdJwtError(f"issuer JWT {shown} {nonconformity}")
         vct = unpacked.get("vct")
         if typ == _ISSUER_TYP and not (isinstance(vct, str) and vct):
             # draft-19 §2.2.2.3: `vct` is REQUIRED and never disclosable, so a withheld

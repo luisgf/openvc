@@ -67,7 +67,8 @@ All notable changes to **openvc** are documented here. The format follows
 
   An issuer JWT with no `typ` member, and one typed exactly `vc+ld+json+sd-jwt`, are now
   treated like `vc+sd-jwt` (#264):
-  - they are accepted only for a payload with a VCDM base `@context`, and get the VCDM
+  - they are accepted only for a payload with a VCDM base `@context` (a conforming one:
+    [#275](https://github.com/luisgf/openvc/issues/275), under Changed), and get the VCDM
     validity window and the issuer / id / subject checks;
   - otherwise they raise `SdJwtError` ("needs a W3C VCDM @context"), a `vct`-bearing IETF
     payload included: an IETF SD-JWT VC is typed `dc+sd-jwt`;
@@ -85,7 +86,8 @@ All notable changes to **openvc** are documented here. The format follows
     presentation with no `typ` would be read as a credential issued by the holder. The
     check is positive: a `type`, or its `VerifiableCredential` entry, that is missing or
     withheld is refused, and so is one that spells the term as a full IRI or a prefixed
-    name. It applies to a missing `typ` only.
+    name. Here it applies to a missing `typ`; #275 (under Changed) extends it to the
+    typed W3C cases.
 
   A `typ` that is present and anything else is still refused, `null` and any non-string
   included, and matching stays exact: no case folding, no `application/` prefix.
@@ -98,9 +100,122 @@ All notable changes to **openvc** are documented here. The format follows
   still needs a KB-JWT). The older gap in the VC-JWT lane, an issuer JWT with no `typ` and
   a `vc` object verifying there with its `~` tail dropped, is closed by
   [#291](https://github.com/luisgf/openvc/issues/291) (Security, above) for every token
-  that has a disclosure; a zero-disclosure token carries no marker and is its documented
-  limit. "VCDM" still means a VCDM base URL anywhere in `@context`; requiring a conforming
-  payload is #275.
+  that has a disclosure; a zero-disclosure token carries none of the markers and is its
+  documented limit. The validity window and the issuer / id / subject checks still count
+  a VCDM base URL anywhere in `@context` as VCDM; being read as a credential at all takes
+  a conforming payload (#275, under Changed).
+
+### Changed
+
+- **An SD-JWT issuer JWT is read as a W3C credential only when it conforms**
+  ([#275](https://github.com/luisgf/openvc/issues/275)). Until now a VCDM base context
+  (`https://www.w3.org/ns/credentials/v2`, or the VCDM 1.1 `…/2018/credentials/v1`)
+  *anywhere* in `@context` was enough. A `vc+sd-jwt` with the base URL in second place, or
+  with no `type` (or `issuer`, or `credentialSubject`) at all, verified as a W3C credential.
+  Hardening: no wrong-accept was found. The payload still had to be signed by the issuer,
+  the signature check is unchanged, and a holder cannot change signed plaintext, so what
+  was accepted is what the issuer signed. A pin did not close the gap: `expected_types`
+  checked that the pinned type was among the `type` entries, never where the context
+  starts or whether `VerifiableCredential` is there, so a policy pinned to
+  `ExampleAlumniCredential` accepted a `vc+sd-jwt` whose `@context` started with another
+  URL, and one whose `type` was `ExampleAlumniCredential` alone. The impact is a payload
+  that is not a conforming credential read as one.
+
+  An issuer JWT in any of the three W3C states (typed `vc+sd-jwt`, typed with the
+  draft-era `vc+ld+json+sd-jwt`, or with no `typ`) now has to pass two tests on its
+  processed payload, or `verify()` raises `SdJwtError`:
+  - the **first** `@context` entry is a VCDM base context (VCDM 2.0 §4.3: the context is
+    an ordered set whose first item is the base URL, and a string `@context` is its own
+    first item). An object, a number, an empty array or any other URL in first place
+    fails, whatever follows;
+  - the `type` includes `VerifiableCredential` and not `VerifiablePresentation` (VCDM 2.0
+    §4.5, §4.13; the compact term only). This was the rule for a token with no `typ`
+    (#293, above); it now holds for the typed cases as well.
+
+  Nothing else is tested. A `type` that lists `VerifiableCredential` next to an entry that
+  is not a string (`["VerifiableCredential", 7]`) passes, a `VerifiablePresentation` spelled
+  as a full IRI is not recognised, both base contexts (`[…/v1, …/v2]`) are accepted, the
+  second and later `@context` entries are not checked, and `issuer` and `credentialSubject`
+  are still not required.
+
+  The refusals before these keep their order and their text: no VCDM base context
+  anywhere ("needs a W3C VCDM @context; an IETF SD-JWT VC is typed 'dc+sd-jwt'"), then a
+  `vc` or `vp` claim on a token with no `typ`. The new ones name the requirement that
+  failed, so a caller can tell a misplaced context from a missing `type`: "issuer JWT
+  typ 'vc+sd-jwt' needs a VCDM base context as the first `@context` entry (VCDM 2.0 §4.3),
+  not just somewhere in it" (or "without a typ" in place of the typ) and "… needs a `type`
+  that includes VerifiableCredential and not VerifiablePresentation (VCDM 2.0 §4.5,
+  §4.13)". The context test runs first. `dc+sd-jwt` is unchanged: it follows the IETF
+  rules (`vct` required, no `type` rule, no context-position rule).
+
+  The lax test stays for the rest, on purpose. A base URL anywhere in `@context` still
+  turns on the VCDM validity window (`validFrom` / `validUntil`, `issuanceDate` /
+  `expirationDate`), the issuer / id / subject checks, the refusal in `issue()` to make
+  those claims selectively disclosable, and `VerifiedSdJwt.vcdm`, for every `typ`, a
+  `dc+sd-jwt` included. So a `dc+sd-jwt` with a base URL in second place still gets the
+  window, and a holder that withholds a disclosable `type` cannot turn it off.
+
+  The Recommendation's own examples still pass the gate once they carry a signature that
+  verifies. The issuer JWTs of Example 5 (no `typ`) and Example 21 (`vc+ld+json+sd-jwt`)
+  start `@context` with the v2 base context, and their `type` is a selectively disclosable
+  claim that the token presents, so the processed payload says credential. The gate runs
+  after the signature, and the Recommendation publishes no key, so the `SignatureInvalid`
+  a stranger key gets from either token proves nothing about it. Re-signed under a key of
+  our own, Example 21 as published passes (`vcdm` is true). Example 5 as published has no
+  `iss` claim, so `verify()` stops at "iss claim is missing or not a string" before the
+  gate ([#290](https://github.com/luisgf/openvc/issues/290)); with an `iss` added it
+  passes. Withhold the `type` disclosure and both are refused. The guards are
+  `test_example_21_verifies_end_to_end_under_a_key_of_our_own` and
+  `test_example_5_verifies_end_to_end_once_its_issuer_is_named_in_iss`, in
+  `tests/test_sd_jwt_vcdm_typ_interop.py`.
+
+  **Behaviour change.** Each case fails closed with `SdJwtError`, and in `verify_many` it
+  fails only its own item.
+  - A `vc+sd-jwt` that verified before this release is refused when its `@context` has the
+    base URL only in second place or later, or when its `type` is absent, withheld or not
+    a credential. (A token with no `typ`, or with the draft-era `vc+ld+json+sd-jwt`, was
+    refused before #288 and #289 anyway, so for them the gate only bounds what those
+    accept.)
+  - A holder that withholds a selectively-disclosable `type` now gets a refusal for a
+    typed token too. Before, only a token with no `typ` was refused for it (#293, above);
+    a typed one verified, or failed with `TypeMismatch` under `expected_types`. The
+    Recommendation's own Example 4 makes `type` disclosable, so an issuer should leave
+    `@context` and `type` in the clear, with the v2 base context first.
+  - Under `VerificationPolicy.expected_types` the gate runs before the pin looks, which
+    moves more than hostile types. A `type` on a `vc+sd-jwt` that is a number, a bool, an
+    object, or a string or array without `VerifiableCredential` used to reach the type
+    check. If it did not name a pinned type it raised `TypeMismatch`; if it did (a `type`
+    of `ExampleAlumniCredential` alone, with that type pinned) it **verified**. Both now
+    raise `SdJwtError`, so for the second an accept becomes a refusal and is not a move
+    between classes. A `vc+sd-jwt` whose `@context` has the base URL only in second place,
+    with a pin its `type` does not meet, raised `TypeMismatch` and now raises `SdJwtError`.
+    Both are `OpenvcError`; a caller that catches `TypeMismatch` for such input has to
+    catch `SdJwtError` too. A conforming credential that lacks an expected type is still
+    `TypeMismatch`.
+  - The gate also runs before the checks that follow it, so a non-conforming W3C payload
+    reports `SdJwtError` for each of them. Through `verify_credential`: an expired
+    `validUntil` (`CredentialExpired`, and with `require_not_expired=False` a result with
+    `expired=True`, which is now refused), a future `validFrom` (`CredentialNotYetValid`),
+    an `issuer` that conflicts with `iss` (`ClaimsInvalid`), an `expected_vct` mismatch or
+    an `aka_vcts` error (`ClaimsInvalid`), a KB-JWT `aud` or `nonce` error when
+    `require_key_binding` is false (`ClaimsInvalid`), a revoked status (`CredentialRevoked`)
+    and a missing status resolver (`StatusUnavailable`). All still fail closed and are
+    still `OpenvcError`, but a caller that branches on `CredentialExpired`,
+    `CredentialRevoked` or `StatusUnavailable` sees `SdJwtError` for such a token. What
+    comes first is unchanged: the signature, a JWT `exp` or `nbf`, a missing `iss`, and,
+    with `require_key_binding=True`, the KB-JWT.
+  - In OpenID4VP a non-conforming SD-JWT nested in a `jwt_vc_json` or `ldp_vc`
+    presentation, bare or enveloped, used to verify. It now fails the whole
+    `verify_vp_token` call with the `SdJwtError` itself (not `VpTokenMalformed`), and with
+    `multiple: true` the other credentials of the response go with it. The lane already
+    did this for the typ-less rule of #293 and for a payload with no VCDM `@context`.
+  - The gate judges the processed payload. An issuer that makes an array element of
+    `@context` or `type` selectively disclosable (not the whole claim: a withheld one is
+    refused) lets the verdict depend on what the holder presents; a flip to accepted needs
+    the signer to have made that element disclosable, and `vcdm` stays true, so the
+    validity window still runs.
+  - The new refusals name the requirement that failed, so tell them apart by their text,
+    not by the class. The two older refusals keep theirs.
 
 ### Fixed (docs)
 

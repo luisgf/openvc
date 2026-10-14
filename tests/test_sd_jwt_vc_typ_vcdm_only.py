@@ -1,7 +1,8 @@
 """
 tests/test_sd_jwt_vc_typ_vcdm_only.py — the ``vc+sd-jwt`` issuer typ is accepted only for a
-payload with a VCDM base ``@context`` (#264; a conforming VCDM payload is #275), and the
-``dc+sd-jwt`` typ always needs a ``vct`` (#272).
+payload with a VCDM base ``@context`` (#264), which has to be a conforming VCDM payload
+(#275: the base URL first, a credential ``type``), and the ``dc+sd-jwt`` typ always needs a
+``vct`` (#272).
 
 draft-ietf-oauth-sd-jwt-vc-19 §2.2.1 types an IETF SD-JWT VC ``dc+sd-jwt`` and dropped the
 transitional acceptance of the ``vc+sd-jwt`` that drafts before 06 used. W3C VC-JOSE-COSE
@@ -23,10 +24,17 @@ one, a ``vct`` or none. The other direction (#272): a ``dc+sd-jwt`` needs a non-
 string ``vct`` (``ClaimsInvalid``) whether or not it carries a VCDM ``@context``, because the
 typ says the payload follows the SD-JWT VC rules (draft-19 §2.2.1), and those make ``vct``
 REQUIRED (§2.2.2.3). One that has both verifies as VCDM, window and consistency checks
-included. A ``vc+sd-jwt`` that carries a VCDM context is still VCDM, with or without
-``vct``, with the validity window. Under OpenID4VP the ``dc+sd-jwt`` format answers only
-for an issuer JWT typed ``dc+sd-jwt`` (``result.raw.typ``): a W3C credential secured as
-``vc+sd-jwt`` is not an IETF SD-JWT VC, ``meta.vct_values`` or not.
+included. A ``vc+sd-jwt`` that carries a VCDM context *first* and a credential ``type`` is
+still VCDM, with or without ``vct``, with the validity window. "Carries" is the lax test of
+#264 (the base URL anywhere in ``@context``) and drives the window and the consistency
+checks for every typ; being read as a W3C credential takes more (#275, VCDM 2.0 §4.3, §4.5,
+§4.13): the base URL as the FIRST ``@context`` entry and a ``type`` that includes
+``VerifiableCredential``. A ``vc+sd-jwt`` that fails either is ``SdJwtError``, one whose
+base URL sits in second place included, while a ``dc+sd-jwt`` (the IETF rules: ``vct``
+required, no context-position rule, no ``type`` rule) is unchanged. Under OpenID4VP the
+``dc+sd-jwt`` format answers only for an issuer JWT typed ``dc+sd-jwt`` (``result.raw.typ``):
+a W3C credential secured as ``vc+sd-jwt`` is not an IETF SD-JWT VC, ``meta.vct_values`` or
+not.
 
 Helpers are self-contained (tests/ is not a package — no cross-import); issuers are
 ``did:jwk``, resolved offline by the default resolvers; ``asyncio.run`` drives the async
@@ -302,17 +310,60 @@ def test_a_presented_disclosable_vct_is_refused_as_a_disclosure(run, form, typ):
 @pytest.mark.parametrize("context", [
     [V2, "https://www.w3.org/ns/credentials/examples/v2"],
     V2,
-    ["https://example.org/ctx", V2],
     [V1],
-], ids=["v2-array", "v2-string", "v2-not-first", "v1"])
+], ids=["v2-array", "v2-string", "v1"])
 @pytest.mark.parametrize("with_vct", [False, True], ids=["no-vct", "with-vct"])
-def test_vc_sd_jwt_with_a_vcdm_context_verifies_as_vcdm(run, form, context, with_vct):
+def test_vc_sd_jwt_with_a_vcdm_context_first_verifies_as_vcdm(run, form, context, with_vct):
+    # The base URL is the first (or only) `@context` entry (VCDM 2.0 §4.3) and the `type`
+    # includes VerifiableCredential (_vcdm's does): what a vc+sd-jwt has to be (#275).
     doc = _vcdm(**{"@context": context})
     if with_vct:
         doc["vct"] = VCT
     result = run(form(_mint(doc, typ="vc+sd-jwt")), None)
     assert result.raw.vcdm is True
     assert result.raw.vct == (VCT if with_vct else None)
+
+
+@pytest.mark.parametrize("context", [
+    pytest.param(["https://example.org/ctx", V2], id="v2-not-first"),
+])
+@pytest.mark.parametrize("with_vct", [False, True], ids=["no-vct", "with-vct"])
+def test_vc_sd_jwt_with_the_vcdm_context_not_first_is_refused(run, form, context, with_vct):
+    # The row that was "v2-not-first" in the test above until #275. The base URL is in the
+    # `@context`, but VCDM 2.0 §4.3 makes it the FIRST item of an ordered set, so the
+    # payload is not read as a W3C credential. The class is SdJwtError and the message
+    # names the requirement, not the older "needs a W3C VCDM @context" (it has one).
+    def mint(entries):
+        doc = _vcdm(**{"@context": entries})
+        if with_vct:
+            doc["vct"] = VCT
+        return form(_mint(doc, typ="vc+sd-jwt"))
+
+    # The control: the same entries with the base URL put first. Only the order differs.
+    assert run(mint(context[::-1]), None).raw.vcdm is True
+    with pytest.raises(SdJwtError, match="first `@context` entry") as excinfo:
+        run(mint(context), None)
+    assert excinfo.type is SdJwtError
+    assert "typ 'vc+sd-jwt'" in str(excinfo.value)
+    assert REFUSED not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("context", [
+    pytest.param(["https://example.org/ctx", V2], id="v2-not-first"),
+])
+def test_a_dc_sd_jwt_with_the_vcdm_context_not_first_is_still_read_as_vcdm(
+        run, form, context):
+    # What the "v2-not-first" row used to prove for the vc+sd-jwt, now through the typ that
+    # keeps the lax reading (#275): the IETF rules have no context-position rule, and
+    # `_declares_vcdm` still counts the base URL anywhere. The payload is VCDM, so its
+    # window is enforced, and its REQUIRED vct is read.
+    doc = _vcdm(**{"@context": context}, vct=VCT)
+    result = run(form(_mint(doc, typ="dc+sd-jwt")), None)
+    assert result.raw.vcdm is True
+    assert result.raw.typ == "dc+sd-jwt"
+    assert result.raw.vct == VCT
+    with pytest.raises(CredentialExpired):
+        run(form(_mint({**doc, "validUntil": PAST}, typ="dc+sd-jwt")), None)
 
 
 def test_suite_result_reports_vcdm_for_a_vc_sd_jwt_with_a_vcdm_context():

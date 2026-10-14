@@ -84,7 +84,7 @@ whose payload carries an SD-JWT marker at any depth (a member named `_sd` or
 (#291). The walk covers the whole payload, so an embedded Data Integrity credential
 object is scanned; a nested VC-JWT is a string there and meets the same fence when the
 cascade verifies it. No real presentation carries these members. The limit stated on
-that page applies here too: a zero-disclosure SD-JWT issuer JWT carries no marker.
+that page applies here too: a zero-disclosure SD-JWT issuer JWT carries none of the markers.
 
 A VC-JWT nested in the presentation is checked against `policy.audience`, not the
 presentation's `audience`. If it carries its own `aud`, pass
@@ -591,6 +591,12 @@ W3C credential type, set `type_values`. A nested SD-JWT never satisfies it, beca
 holder could reshape the `type` by withholding disclosures, so openvc reads no types from
 one. The `dc+sd-jwt` lane is the strict one: it answers only an issuer JWT typed
 `dc+sd-jwt` (see above).
+
+A nested `vc+sd-jwt` (or draft-era, or untyped) credential still has to be a conforming
+W3C credential: one whose first `@context` entry is not a VCDM base context, or whose
+`type` does not say credential, raises `SdJwtError` for the whole `verify_vp_token` call,
+not for that item alone ([SD-JWT VC](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt-vcsd-jwt),
+#275).
 
 ## Replay: what the bindings buy you
 
