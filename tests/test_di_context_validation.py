@@ -1308,9 +1308,13 @@ def test_injected_alias_for_a_core_iri_is_rejected(suite_id, case, extra, doc, p
         ProofMalformed, ProofMalformed]
     assert _outcomes_with(secured, registry, extra) == [ProofMalformed, ProofMalformed]
     suite_cls, key_cls = _SUITES[suite_id]
-    with pytest.raises(ProofMalformed, match=f"spells a property .*/{alias}"):
+    # pyld 2.x compacts the alias differently, so the compacted-form check can
+    # fire before the term-spelling one; either way the alias is refused.
+    with pytest.raises(ProofMalformed,
+                       match=f"spells a property .*/{alias}|not in compacted form .*\\(at /"):
         suite_cls().verify(secured, resolver=registry, extra_contexts=extra)
-    with pytest.raises(ProofMalformed, match="spells a property"):
+    with pytest.raises(ProofMalformed,
+                       match=f"spells a property .*/{alias}|not in compacted form .*\\(at /"):
         suite_cls().add_proof(doc, signing_key=key_cls.generate(kid=VM),
                               verification_method=VM, extra_contexts=extra)
 
