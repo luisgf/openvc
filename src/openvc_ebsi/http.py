@@ -176,6 +176,10 @@ class EbsiHttpClient:
             except httpx.InvalidURL as exc:          # not a TransportError: never retried
                 # Backstop for any other urlparse/httpx disagreement (#246).
                 raise HttpForbiddenHost("URL rejected by the HTTP client", url=url) from exc
+            except httpx.DecodingError as exc:       # not a TransportError: never retried
+                # A corrupt gzip/deflate body, on the capped read or the error drain (#248).
+                raise MalformedRegistryResponse(
+                    f"registry returned a body that does not decode: {url}") from exc
             except httpx.TransportError as exc:      # network error / timeout
                 last_exc = exc
                 self._sleep_before_retry(attempt)

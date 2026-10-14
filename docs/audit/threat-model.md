@@ -199,7 +199,9 @@ finite input", with no explicit constant.
   a URL that is not visible ASCII, or that `urlparse` cannot read (port included), is
   `HttpForbiddenHost`, and `httpx.InvalidURL` is mapped to it. Before v1.31.4 an
   unsigned token whose `iss` held a control character escaped `verify_ebsi_badge` as
-  a bare `httpx.InvalidURL` (#246).
+  a bare `httpx.InvalidURL` (#246). A body httpx cannot decompress is a
+  `MalformedRegistryResponse`; before v1.31.4 it escaped as a bare
+  `httpx.DecodingError` (#248).
 
 ## 8. Fail-closed invariants catalog
 
@@ -339,9 +341,10 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   hold for it: a hostile DID-document shape — valid JSON, wrong structure — served
   for an unsigned token's own `did:web` issuer raises a bare exception, with no key
   needed (#219, open). It is not a wrong-accept: it fails closed, untyped. *Fix:* type
-  it at the boundary, with batch-isolation tests. Two EBSI exits are typed since
-  v1.31.4 (§7): a registry URL that `_origin` could not parse (#243), and a URL the
-  HTTP client could not parse, reachable from a token's `iss` (#246).
+  it at the boundary, with batch-isolation tests. Three EBSI exits are typed since
+  v1.31.4 (§7): a registry URL that `_origin` could not parse (#243), a URL the HTTP
+  client could not parse, reachable from a token's `iss` (#246), and a registry body
+  that does not decompress (#248).
 
 ## 10. Out of scope
 

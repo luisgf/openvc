@@ -56,6 +56,17 @@ All notable changes to **openvc** are documented here. The format follows
   port included. `httpx.InvalidURL` is mapped to `HttpForbiddenHost` as a backstop
   and is not retried.
 
+- **A registry body httpx cannot decompress is now `MalformedRegistryResponse`**
+  ([#248](https://github.com/luisgf/openvc/issues/248)). Found by the second
+  adversarial pass on #244. Present before it.
+
+  httpx decompresses a `gzip` / `deflate` body while streaming it, and the client
+  advertises both. A corrupt body raised `httpx.DecodingError`, a `RequestError` but
+  not a `TransportError`, so it escaped `get_json`, and `verify_ebsi_badge`, untyped.
+  It escaped from the capped read on a 200 and from the drain of any other status.
+  A broken or compromised allow-listed registry was enough. It is now a
+  `MalformedRegistryResponse` and is not retried.
+
 ### Fixed (docs)
 
 - **The audit pack catches up with the hardening shipped since July.**
