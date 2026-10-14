@@ -152,7 +152,39 @@ def _reject_sd_jwt_typ(header: dict[str, Any]) -> None:
     if media.startswith("application/"):           # RFC 7515 §4.1.9 allows the prefix
         media = media[len("application/"):]
     if media == "sd-jwt" or media.endswith("+sd-jwt") or media == "kb+jwt":
-        raise MalformedToken(f"a JWS typed {typ!r} is not a VC-JWT")
+        raise MalformedToken(f"a JWS typed {safe_repr(typ)} is not a VC-JWT")
+
+
+def _carries_sd_jwt_marker(node: Any) -> bool:
+    """Whether a decoded JSON value carries an SD-JWT marker at ANY depth: a member named
+    ``_sd`` or ``_sd_alg`` (RFC 9901 §4.2.4, §4.1.1: reserved), or an array-element digest
+    ``{"...": <digest>}`` (§4.2.4.2). Iterative, because the payload is attacker-controlled.
+    An issuer JWT that holds a ``vc`` object keeps its disclosable claims INSIDE it, so a
+    top-level test would miss exactly that shape."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            if "_sd" in current or "_sd_alg" in current or "..." in current:
+                return True
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return False
+
+
+def _reject_sd_jwt_payload(payload: dict[str, Any]) -> None:
+    """The payload-side twin of :func:`_reject_sd_jwt_typ`. Explicit typing only works while
+    the issuer sets a ``typ``: an SD-JWT issuer JWT with none (or one this filter does not
+    know) whose payload holds a ``vc`` object verified as a VC-JWT once its ``~`` tail was
+    dropped, with no key binding (#291, the same hole #189 closed for a typed one). A VC-JWT
+    never carries SD-JWT markers, so a payload that does is an SD-JWT issuer JWT whatever its
+    ``typ``. This cannot see a zero-disclosure SD-JWT, which has no marker: that one is
+    indistinguishable from a VC-JWT that carries a ``cnf``, which this lane never enforces."""
+    if _carries_sd_jwt_marker(payload):
+        raise MalformedToken(
+            "a JWS whose payload carries SD-JWT markers (_sd, _sd_alg, \"...\") is an "
+            "SD-JWT issuer JWT, not a VC-JWT")
 
 
 # --------------------------------------------------------------------------- #
@@ -250,7 +282,9 @@ class VcJwtProofSuite:
         # expiry waiver) skipped exp entirely, accepting NaN/Infinity/"abc". This reads
         # the untrusted payload but can only reject: the signature still gates everything
         # accepted, and peek_claims is the same parse peek_issuer already runs pre-crypto.
-        check_numeric_dates(self.peek_claims(token), "exp", "nbf", "iat")
+        payload = self.peek_claims(token)
+        _reject_sd_jwt_payload(payload)
+        check_numeric_dates(payload, "exp", "nbf", "iat")
 
         if alg in ALLOWED_ALGS_PQ:
             # ML-DSA is not a PyJWT algorithm — verify the signature through the

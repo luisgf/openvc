@@ -76,6 +76,16 @@ rejected, as on the credential lanes. These have no waiver: a `policy` passed to
 `verify` reaches only the embedded credentials, so `require_not_expired=False`
 leaves the presentation's dates enforced. `aud` and `nonce` are always required.
 
+A VP-JWT is not an SD-JWT issuer JWT. Before any holder key is resolved, `verify`
+raises `MalformedToken` for a JWS typed `sd-jwt`, `*+sd-jwt` or `kb+jwt`, and for one
+whose payload carries an SD-JWT marker at any depth (a member named `_sd` or
+`_sd_alg`, or an array-element digest object `{"...": …}`): the
+[VC-JWT lane's](VC-JWT) two tests, which the VP-JWT lane did not run before 1.34.0
+(#291). The walk covers the whole payload, so an embedded Data Integrity credential
+object is scanned; a nested VC-JWT is a string there and meets the same fence when the
+cascade verifies it. No real presentation carries these members. The limit stated on
+that page applies here too: a zero-disclosure SD-JWT issuer JWT carries no marker.
+
 A VC-JWT nested in the presentation is checked against `policy.audience`, not the
 presentation's `audience`. If it carries its own `aud`, pass
 `policy=VerificationPolicy(audience=...)` with a value from that `aud`, or it is

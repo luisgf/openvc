@@ -282,15 +282,23 @@ explicit `null` does not.
 A token with no `typ` must also not carry a `vc` or `vp` claim, a presented disclosure
 of one included (`SdJwtError`). VC-JOSE-COSE §3.1.3 forbids both names in a JWT Claims Set, and
 for `vc` there is a second reason. The VC-JWT lane refuses any JWS typed `*+sd-jwt`
-(#189), so it never takes a typed SD-JWT issuer JWT for a VC-JWT, but it has nothing to
-refuse in a token with no `typ`: one whose payload held a `vc` object would also verify
+(#189), so it never takes a typed SD-JWT issuer JWT for a VC-JWT, but it has no `typ` to
+refuse in a token without one: one whose payload held a `vc` object would also verify
 there once its `~` tail is dropped, with no key binding. Refusing it here keeps the two
 lanes apart, since without a `vc` claim the VC-JWT lane rejects the stripped token
 (`ClaimsInvalid`: no embedded `vc` object). The ban applies to a missing `typ` only. A
 token typed `vc+sd-jwt` or `vc+ld+json+sd-jwt` that carries a `vc` claim is not refused
-by it, and the VC-JWT lane is unchanged. The ban cannot help a token this lane never sees:
-an issuer JWT with no `typ` and a `vc` object already verifies as a VC-JWT with its tail
-dropped, on `main` too (#291).
+by it.
+
+The ban cannot help a token this lane never sees, and the VC-JWT lane does not rely on
+it. Since 1.34.0 (#291) that lane refuses a JWS whose payload carries an SD-JWT marker at
+any depth (`MalformedToken`): a member named `_sd` or `_sd_alg`, or an array-element
+digest object `{"...": …}`. So an issuer JWT with no `typ` and a `vc` object, which
+before 1.34.0 verified as a VC-JWT with its tail dropped, is refused there whenever it
+has a disclosure, since a disclosure needs a digest and a digest is a marker.
+**Limit:** a zero-disclosure issuer JWT with no `typ`, a `vc` object and a `cnf` has no
+marker, so it cannot be told from a VC-JWT that carries a `cnf`. It still verifies there,
+and that lane never enforces `cnf` ([VC-JWT](VC-JWT)).
 
 A token with no `typ` must also say it is a **credential**: its processed `type` (a string
 or an array) has to include `VerifiableCredential` and not `VerifiablePresentation`
@@ -308,7 +316,7 @@ withheld is refused, and so is one that spells the term as a full IRI or a prefi
 §9.11): for a VCDM payload the header no longer says the JWT is an SD-JWT. What stands in
 for it is the VCDM `@context` the issuer signed (a disclosed one is refused, and a
 withheld one leaves the payload not VCDM, so the token is refused), the `type` check, the
-`vc` / `vp` ban, `require_key_binding=True` still needing a KB-JWT, and the unchanged VC-JWT lane. An
+`vc` / `vp` ban, `require_key_binding=True` still needing a KB-JWT, and the VC-JWT lane's marker fence. An
 IETF SD-JWT VC is unaffected: it is recognised by `dc+sd-jwt` alone, and a token with no
 `typ` is never read as one. If your issuers always set a `typ` and you want to insist on
 it, reject an `sd-jwt-vc` result whose `result.raw.typ` is `None` (`result.raw` is a

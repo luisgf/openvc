@@ -6,6 +6,44 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.34.0] — unreleased
 
+### Security
+
+- **The VC-JWT lane refuses a JWS whose payload carries SD-JWT markers, and the VP-JWT
+  lane refuses an SD-JWT issuer JWT**
+  ([#291](https://github.com/luisgf/openvc/issues/291)). Hardening; no wrong-accept was
+  found, because it needs an issuer that signs a hybrid no spec defines. **This is a
+  behaviour change:** a payload that carries these markers and verified as a VC-JWT is
+  now refused (`MalformedToken`). No real VC-JWT carries them, but one that uses such a
+  member name for its own data (a JSON Schema that describes an SD-JWT payload, say) is
+  refused too.
+
+  Explicit typing (RFC 8725 §3.11, #189) works only while the issuer sets a `typ`. An
+  SD-JWT issuer JWT with none, or with one the typ filter does not know, whose payload
+  holds a `vc` object verified as a VC-JWT once its `~` tail was dropped, shedding key
+  binding: the holder sent the issuer JWT alone, and the lane that read it as a VC-JWT
+  asked for no KB-JWT. Before 1.34.0 that was so on `main` and in every earlier release;
+  #189 closed only the typed case.
+
+  - **VC-JWT lane.** `VcJwtProofSuite.verify` walks the decoded payload, iteratively and
+    at any depth, objects and arrays, and raises `MalformedToken` when some object has a
+    member named `_sd`, `_sd_alg` or `"..."` (RFC 9901 §4.2.4 and §4.1.1 reserve them;
+    `"..."` is the array-element digest object). It runs before the signature is checked
+    and before the suite loads its verification key (the `verify_credential` pipeline
+    resolves the issuer first), on the classic and the ML-DSA lane, sync and async. An issuer
+    JWT that holds a `vc` object keeps its disclosable claims inside it, so a top-level
+    test would miss exactly that shape. The stripped form of a token with disclosures is
+    now refused whatever its `typ`.
+  - **VP-JWT lane.** `VpJwtProofSuite.verify` never read `typ`. It now refuses a JWS typed
+    as an SD-JWT issuer JWT or a KB-JWT (the VC-JWT lane's filter) and a payload with the
+    same markers, before the holder key is resolved. The walk covers the whole payload,
+    so an embedded Data Integrity credential object is scanned; a nested VC-JWT is a
+    string there and meets the same fence when the cascade verifies it.
+  - **What this does not cover.** A zero-disclosure SD-JWT issuer JWT with no `typ`, a
+    `vc` object and a `cnf` carries none of those members (an `_sd_alg` alone, or a decoy
+    digest, is already refused), so it cannot be told from a VC-JWT that
+    carries a `cnf`, and it still verifies as a VC-JWT. The VC-JWT lane never enforces
+    `cnf`. This is a documented limitation, pinned in `tests/test_vc_jwt_sd_fence.py`.
+
 ### Added
 
 - **A W3C VCDM credential secured with SD-JWT verifies when its issuer JWT has no `typ`,
@@ -35,9 +73,10 @@ All notable changes to **openvc** are documented here. The format follows
     payload included: an IETF SD-JWT VC is typed `dc+sd-jwt`;
   - a token with no `typ` must not carry a `vc` or `vp` claim (VC-JOSE-COSE §3.1.3). With
     a `vc` object it would be an SD-JWT VC here and, with its `~` tail dropped, a VC-JWT in
-    the VC-JWT lane, which refuses only a typed SD-JWT issuer JWT (#189): the holder could
-    shed key binding. A token accepted here has no `vc` claim, so that lane refuses its
-    stripped form ("no embedded `vc` object");
+    the VC-JWT lane, which has no `typ` to refuse: the holder could shed key binding. A
+    token accepted here has no `vc` claim, so that lane refuses its stripped form ("no
+    embedded `vc` object"). That lane also refuses a payload that carries SD-JWT markers
+    (`_sd`, `_sd_alg`, `"..."`), whatever its `typ` (#291, under Security above);
   - a token with no `typ` must say it is a credential: its `type` has to include
     `VerifiableCredential` and not `VerifiablePresentation` (VCDM 2.0 §4.5, §4.13;
     [#293](https://github.com/luisgf/openvc/issues/293)). The `typ` is what tells the two
@@ -56,10 +95,12 @@ All notable changes to **openvc** are documented here. The format follows
   This drops an explicit-typing guard (RFC 9901 §9.11) for VCDM payloads. What stands in
   for it: the signed VCDM `@context`; the `type` check; the ban on `vc` and `vp`, which
   keeps a token accepted here from also being a valid VC-JWT; and key binding (`require_key_binding`
-  still needs a KB-JWT). It does not touch an older gap in the VC-JWT lane: an issuer JWT
-  with no `typ` and a `vc` object verifies there with its `~` tail dropped, on `main`
-  today ([#291](https://github.com/luisgf/openvc/issues/291)). "VCDM" still means a VCDM
-  base URL anywhere in `@context`; requiring a conforming payload is #275.
+  still needs a KB-JWT). The older gap in the VC-JWT lane, an issuer JWT with no `typ` and
+  a `vc` object verifying there with its `~` tail dropped, is closed by
+  [#291](https://github.com/luisgf/openvc/issues/291) (Security, above) for every token
+  that has a disclosure; a zero-disclosure token carries no marker and is its documented
+  limit. "VCDM" still means a VCDM base URL anywhere in `@context`; requiring a conforming
+  payload is #275.
 
 ### Fixed (docs)
 

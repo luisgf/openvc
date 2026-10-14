@@ -144,6 +144,7 @@ NO_ISS_TO_PEEK = "no iss in the issuer-signed JWT"             # the pipeline, M
 NO_ISS_CLAIM = "iss claim is missing or not a string"          # the suite, ClaimsInvalid
 NOT_IETF = "must be an IETF SD-JWT VC"            # OpenID4VP, VpTokenMalformed
 NO_VC_OBJECT = "no embedded `vc` object"          # VC-JWT lane, ClaimsInvalid
+SD_JWT_MARKERS = "carries SD-JWT markers"         # VC-JWT lane, MalformedToken (#291)
 NOT_A_VC_JWT = "is not a VC-JWT"                  # VC-JWT lane, MalformedToken
 
 
@@ -873,18 +874,22 @@ def test_a_dc_sd_jwt_with_a_vcdm_context_and_a_vct_still_verifies_as_vcdm(run, f
 # G. the VC-JWT lane is untouched: an issuer JWT whose ~ tail is dropped
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("disclose", [(), ("credentialSubject",)],
-                         ids=["plain", "with-disclosures"])
+@pytest.mark.parametrize("disclose, error, message", [
+    pytest.param((), ClaimsInvalid, NO_VC_OBJECT, id="plain"),
+    pytest.param(("credentialSubject",), MalformedToken, SD_JWT_MARKERS, id="with-disclosures"),
+])
 @WITH_VCT
-def test_a_no_typ_vcdm_sd_jwt_without_its_tail_is_refused_for_having_no_vc_claim(
-        run, form, disclose, with_vct):
+def test_a_no_typ_vcdm_sd_jwt_without_its_tail_is_refused_by_the_vc_jwt_lane(
+        run, form, disclose, error, message, with_vct):
     # A compact JWS goes to the VC-JWT lane. The payload is a VCDM credential itself, not a
-    # JWT carrying one under `vc`, so that lane has nothing to verify.
+    # JWT carrying one under `vc`, so with no disclosure that lane has nothing to verify
+    # ("no embedded vc object"); with one, its `_sd` / `_sd_alg` markers say it is an SD-JWT
+    # issuer JWT and the lane refuses it before that (#291).
     jws = _tail_dropped(_mint(_vcdm_vct() if with_vct else _vcdm(), disclose=disclose))
     assert "~" not in jws
-    with pytest.raises(ClaimsInvalid, match=NO_VC_OBJECT) as excinfo:
+    with pytest.raises(error, match=message) as excinfo:
         run(form(jws), None)
-    assert excinfo.type is ClaimsInvalid
+    assert excinfo.type is error
 
 
 @pytest.mark.parametrize("typ", ["vc+sd-jwt", DRAFT_TYP, "dc+sd-jwt"],
