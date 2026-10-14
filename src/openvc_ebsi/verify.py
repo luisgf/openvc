@@ -166,7 +166,16 @@ def verify_ebsi_badge(
         trusted = chain is not None
         accreditation = chain.hops[0].accreditation if (chain and chain.hops) else None
     else:
-        record = resolver.issuer_record(verified.issuer)
+        try:
+            record = resolver.issuer_record(verified.issuer)
+        except DidResolutionError as exc:
+            # `verified.issuer` was resolved in step 2, so this cannot be reached from a
+            # token; it is wrapped because `issuer_record` is public (#266). A
+            # MalformedRegistryResponse (a record that is not about the issuer, #267)
+            # is not caught: it is malformed input, not an untrusted issuer.
+            raise EbsiVerificationError(
+                f"could not read the registry record of issuer "
+                f"{safe_repr(verified.issuer)}: {exc}") from exc
         accreditation = evaluate_issuer_trust(record, cred_types)
         trusted = accreditation is not None
         if require_trust and not trusted:

@@ -201,18 +201,42 @@ finite input", with no explicit constant.
   unsigned token whose `iss` held a control character escaped `verify_ebsi_badge` as
   a bare `httpx.InvalidURL` (#246). A body httpx cannot decompress is a
   `MalformedRegistryResponse`; before v1.32.1 it escaped as a bare
-  `httpx.DecodingError` (#248). The allow-list says which host answers, not which
-  document: `DidEbsiResolver.resolve` holds the parsed document's `id` (after a
-  `didDocument` wrapper is unwrapped) to the DID it asked for, exactly, and raises
-  `DidResolutionError` otherwise, as `did:web` and `did:webvh` do. A missing, non-string
-  or empty `id` never matches, whatever was asked (not even `resolve("")`); neither
-  does a DID URL (`did:ebsi:zX#key-1`), which resolved by accident before v1.32.4
-  because httpx drops the fragment. Compromise of the registry itself is still out of scope (§10): it can serve a matching `id` with its
-  own key. What the check closes is a misrouted or steered response (a registry bug, a
-  wrong `base`, an unsigned token's `iss` such as `did:ebsi:zA/../did:ebsi:zB`, which
-  httpx turns into a request for B's resource) being accepted as the requested DID's
-  document. The DID is still put into the registry path unvalidated, and the TIR issuer
-  response's own `did` is still not read; both are outside #257 (#257, v1.32.4).
+  `httpx.DecodingError` (#248). The allow-list says which host answers, not which path
+  or which document, and the rest of this paragraph is what stands behind it.
+  **The DID is validated before it is put in a registry URL** (#266, v1.32.5):
+  `DidEbsiResolver.resolve` and `.issuer_record` accept only `did:ebsi:z` plus 22 or 23
+  base58btc characters (the legal-entity form of the EBSI DID method: a version byte and
+  16 random bytes, multibase-encoded), matched in full with an explicit ASCII class, and
+  raise `DidResolutionError` otherwise, before any request. The URL builders in the
+  adapters interpolate the DID verbatim, and `verify_ebsi_badge` takes it from an
+  unsigned token (`iss`) and the trust walk from the registry (`accreditedBy`), so before
+  the check a `/`, a `..` segment (httpx collapses it, so any path on the host was
+  addressable), a `?`, a `#`, a percent escape, another DID method, a whole URL or a
+  60 KB string chose the path and query of a GET to an allow-listed host. A malformed
+  walk subject is `NoTrustedAnchor`, a hostile `accreditedBy` is `AccreditationInvalid`
+  (no request names it), and `verify_ebsi_badge` reports `EbsiVerificationError`. The
+  network-qualified form of the method (`did:ebsi:<network>:z...`) is not accepted: the
+  DID Registry and TIR APIs the plugin reads serve the EBSI blockchain's own form.
+  **The registry document is held to the DID asked** (#257, v1.32.4):
+  `DidEbsiResolver.resolve` compares the parsed document's `id` (after a `didDocument`
+  wrapper is unwrapped) with it, exactly, and raises `DidResolutionError` otherwise, as
+  `did:web` and `did:webvh` do. A missing, non-string or empty `id` never matches.
+  **So is the TIR issuer response** (#267, v1.32.5): `DidEbsiResolver.issuer_record`
+  asks the adapter where the response names its DID (`TirAdapter.response_did`) and
+  compares it with the requested DID, exactly, before the adapter follows any link, so a
+  record that is not about the DID costs one request and no `attributes` page or revision
+  `href` is fetched. Another DID, an absent, `null`, non-string or empty one, and a body
+  that is not a JSON object, are `MalformedRegistryResponse` on every API version: a
+  mismatched body is malformed input, not an untrusted issuer, so `require_trust=False`
+  does not suppress it. Single-level mode verifies no accreditation signature, so this
+  field is what says whose record it is; `IssuerRecord.did` is now the DID the registry
+  named. Compromise of the registry itself is still out of scope (§10): it can serve a
+  matching `id` or `did` with its own key. What the checks close is a misrouted or
+  steered response (a registry bug, a wrong `base`, a cache keyed on less than the URL, an
+  unsigned token's `iss`) being accepted as the requested DID's document or record.
+  **Residual:** the TIR `attributes` URL and each revision `href` are pinned to the
+  listing's origin (#172), not to `.../issuers/{did}/`, and a revision's own `did` is not
+  read; both are outside #266 and #267.
 
 ## 8. Fail-closed invariants catalog
 

@@ -4,6 +4,132 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.5] — unreleased
+
+### Security
+
+- **The EBSI plugin validates the DID before it puts it in a registry URL**
+  ([#266](https://github.com/luisgf/openvc/issues/266)). Found by the review of
+  [#251](https://github.com/luisgf/openvc/pull/251) (issue #219) and listed as out of
+  scope by #257. Hardening and contract; no wrong-accept was found.
+
+  `DidRegistryV5.identifiers_url`, `TirV4.issuer_url` and `TirV5.issuer_url` interpolate the
+  DID into the path verbatim, and `DidEbsiResolver.resolve` / `.issuer_record` passed them
+  whatever string they were given. `verify_ebsi_badge` takes that string from an unsigned
+  token (`iss`) and the trust walk from the registry (`accreditedBy`), so no key was needed to
+  choose the path and query of a GET to an allow-listed EBSI host: `/` started a new path
+  segment, a `..` segment was collapsed by httpx (three of them reach the host root, so any
+  path on the host was addressable), `?` started a query that swallowed the TIR `/attributes`
+  suffix, `#` was dropped, `%2f` / `%2e%2e` were forwarded as written, another DID method or a
+  whole URL stayed inside the path, and a 60,000-character `iss` went out as a 60 KB request
+  line. Host, scheme and port never changed, and the signature still had to verify under a key
+  in the fetched document, so no impersonation was found. What it did produce: a verified
+  `issuer` that was not a DID with `trusted=True` (an accredited issuer behind a dot segment),
+  and, once this check types the failure, a 60,301-character error message for a 60,010-character
+  `iss` if the message were not cut.
+
+  Both methods now validate the identifier first and raise `DidResolutionError` before any
+  URL is built. Maintainer decisions, recorded here:
+  - **The pattern** is `did:ebsi:z` followed by 22 or 23 base58btc characters
+    (`[1-9A-HJ-NP-Za-km-z]`), matched with `re.fullmatch` and an explicit ASCII class (never
+    `\w` or `\d`, never `match` + `$`, which accepts a trailing newline). Alphabet and length
+    only: nothing is decoded, so the version byte is not checked and a future version byte
+    cannot make the check fail. Case-sensitive, no normalisation, no percent-decoding. The
+    length is the legal-entity form of the method as the EBSI DevHub page
+    ["The did:ebsi DID method"](https://hub.ebsi.eu/docs/onboarding/legal-entity/did-ebsi-method)
+    defines it (read 2026-10-14): `z` and the base58btc of a version byte (`1`) plus 16 random
+    bytes, 17 bytes in all. That value lies in [2^128, 2^129), which needs 22 digits below
+    58^22 and 23 above it, never 21 or 24, and the page's two example DIDs and the recorded
+    pilot DID are all `z` plus 22. The page also defines an optional `did:ebsi:[network]:`
+    segment, "fully omitted for the EBSI blockchain", which is what the DID Registry and TIR
+    APIs this plugin reads serve; a network-qualified DID is **not** accepted.
+  - **The error** is `DidResolutionError` from both methods, with the value cut by `safe_repr`.
+    `verify_ebsi_badge` reports it as `EbsiVerificationError`, and wraps one raised by
+    `issuer_record` the same way although a token cannot reach it (`issuer_record` is public).
+    In `verify_trust_chain` a malformed walk subject is `NoTrustedAnchor`, the class a 404 gave
+    before, with a message that says it is not a `did:ebsi` identifier rather than "not in the
+    registry"; a hostile `accreditedBy` that equals the accreditation's signed `iss` is
+    `AccreditationInvalid` through the existing wrapper, and no request names it.
+  - **No `supports()`** is added: `DidEbsiResolver` still does not satisfy the `DidResolver`
+    protocol or sit in a `DidResolverRegistry`. That is its own issue.
+  - **The adapters stay wire-only**: `identifiers_url` and `issuer_url` keep no validation of
+    their own (their docstrings now say they expect a validated DID), so a new API version
+    inherits the check, and `_guard_host` is unchanged: it still guards the TIR `attributes`,
+    `next` and `href` URLs, which never pass through the DID check.
+  - **Messages are bounded**: the `safe_repr` cut now also covers the walk's last-resort
+    message and the accreditation-subject mismatch.
+
+- **The TIR issuer response is bound to the DID that was asked for**
+  ([#267](https://github.com/luisgf/openvc/issues/267)). Found by the write-up of
+  [#257](https://github.com/luisgf/openvc/issues/257). A conditional wrong-accept: the
+  condition is a registry-side fault.
+
+  `DidEbsiResolver.issuer_record` handed the registry body to the adapter and returned what
+  came back; neither adapter read the response's own `did`, and `IssuerRecord.did` was filled
+  from the *request*. So a record about another issuer, or with no `did` at all, was accepted
+  and relabelled. In single-level mode (no `trust_anchors`), which verifies no accreditation
+  signature and reads only `has_attributes`, `issuer_type` and `credential_types`, that is the
+  trust decision: a badge signed by an issuer with no accreditation verified as `trusted=True`
+  on another issuer's record, with no error. Reachable through a registry fault, an injected
+  `Fetch`, a wrong `base` or a cache keyed on less than the URL (the built-in `TtlCache` is
+  keyed by the full URL); an operator who wants to lie can serve a matching `did`, so this adds
+  nothing against a compromised registry (still out of scope, threat model §10).
+
+  `TirAdapter` gains a **non-abstract** `response_did(raw)` hook (default: the top-level `did`,
+  as found and unchecked), so a third-party adapter written before it still instantiates and a
+  version that moves the field overrides one method. The **resolver** compares what it returns
+  with the requested DID, exactly, **before the adapter follows any link**, and raises
+  `MalformedRegistryResponse`, with both values cut by `safe_repr`, on any difference: another
+  DID, or an absent, `null`, non-string or empty `did`. A rejected record costs one request
+  (the issuer), not the `attributes` page and a revision per accreditation. The policy lives
+  once, in the resolver, with no `if version == ...`. `IssuerRecord.did` is now the DID the
+  registry named. Maintainer decisions, recorded here:
+  - **An absent `did` is refused for `TirV4` too**: one rule across versions. `TirV4` has no
+    recorded response in this repository, so its tests use synthetic inline bodies; if a real
+    v4 registry omits `did`, the override is one line in `TirV4.response_did` and the v5 rule
+    does not change.
+  - **The class is `MalformedRegistryResponse`**, not a trust error: nothing wraps
+    `issuer_record`, and a mismatched body is malformed input, not an "untrusted" issuer, so
+    `require_trust=False` does not suppress it either.
+  - `_require_object` moved up into the resolver for this body, so a non-object issuer body
+    (`null`, a list, a string, a number) is a `MalformedRegistryResponse` on `TirV4` as well
+    (it was a bare `AttributeError`). `TirV5.parse_issuer` keeps its own call: it is tested
+    directly.
+
+  Not changed: the `attributes` URL and each revision `href` are still pinned to the
+  listing's origin (#172), not to `.../issuers/{did}/`, so a record with the right `did` whose
+  `attributes` URL points into another issuer's listing is still read (a test documents it);
+  the revision's own `did` is not read; and single-level mode still verifies no accreditation
+  JWT, which is the documented policy of the default mode.
+
+### Changed
+
+- **Behaviour changes in `openvc_ebsi`, from the two fixes above.**
+  - `DidEbsiResolver.resolve` / `.issuer_record` now raise `DidResolutionError` for a DID URL
+    (`did:ebsi:zX#key-1`, which worked by accident because httpx drops the fragment), for any
+    string that is not a `did:ebsi` identifier, for `resolve("")` (v1.32.4 refused it only
+    when the document had no usable `id`; it is now refused on syntax, before any request),
+    for a network-qualified DID, and for a **placeholder DID** of another length or alphabet
+    (`did:ebsi:zLeafIssuerAAAA` has `I`, `l`, `O` and `0`, which are not base58btc). Test
+    code that used such placeholders needs well-formed ones, for example
+    `"did:ebsi:z" + b58btc_encode(bytes([1]) + bytes([seed]) * 16)`.
+  - A control character or an over-long `iss` through `verify_ebsi_badge` was
+    `HttpForbiddenHost` and is now `EbsiVerificationError`. Both are `EbsiError`, but code that
+    catches the first class by name must catch the second. `HttpForbiddenHost` is still what
+    the HTTP client raises for a TIR URL it refuses.
+  - `verify_trust_chain` on a malformed subject raises `NoTrustedAnchor` (a direct call used
+    to reach the registry and get its 404, mapped to the same class).
+  - A TIR response whose `did` is another DID, or is absent, `null`, a non-string or empty,
+    used to resolve and now raises `MalformedRegistryResponse` from `issuer_record`, from
+    `verify_ebsi_badge` (with or without `require_trust`) and from `verify_trust_chain`.
+  - **Recursive mode, a misrouted record:** `MalformedRegistryResponse` instead of
+    `AccreditationInvalid`, at the first `issuer_record` call and before the accreditor is
+    resolved. The class changes and the outcome (refused) does not; the walk already let
+    `MalformedRegistryResponse` escape for other malformed TIR bodies.
+  - Unchanged: a matching `did` resolves (the golden fixture, 3 accreditations, 5 fetches);
+    the origin pin on `attributes`, `href` and `links.next`; the single-level and recursive
+    trust policies.
+
 ## [1.32.4] — unreleased
 
 ### Security

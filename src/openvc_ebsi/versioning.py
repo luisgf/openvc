@@ -30,10 +30,17 @@ Principles baked in below
    be strict only about the fields you depend on.
 5. Per-version golden fixtures (recorded real responses) prove each adapter maps
    to the same domain model — the drift alarm.
+6. Method-level policy lives in the resolver, once, for every version: the DID is
+   validated as a ``did:ebsi`` identifier before any registry URL is built (#266), the
+   DID Registry document's ``id`` is bound to the requested DID (#257), and so is the
+   TIR issuer response's own DID (#267), which an adapter only *locates* on the wire
+   (``TirAdapter.response_did``). The adapters build URLs and map JSON; they expect a
+   DID the resolver has already validated, and a new version inherits all three checks.
 """
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
@@ -51,6 +58,20 @@ DecodeJwt = Callable[[str], dict[str, Any]]      # VC-JWT body -> claims (proof 
 # EBSI's registry URLs run to a few hundred characters; this is far below httpx's own
 # 64 KiB URL limit, so the origin pin never passes a URL the client then rejects.
 _MAX_URL_LENGTH = 8192
+
+# The ``did:ebsi`` identifier of a Legal Entity: ``z`` (multibase base58btc) followed by the
+# base58btc encoding of 17 bytes, a version byte (``1``) and 16 random bytes. EBSI DevHub,
+# "The did:ebsi DID method", "Method Syntax" / "Structure" (read 2026-10-14):
+# https://hub.ebsi.eu/docs/onboarding/legal-entity/did-ebsi-method. A value in
+# [2**128, 2**129) needs 22 base58 digits when it is below 58**22 and 23 above it, never
+# 21 or 24, so the identifier is ``z`` plus 22 or 23 characters. The recorded pilot DID
+# (``tests/fixtures/ebsi``, ``zZeKyEJfUTGwajhNyNX928z``) and the page's two examples are all
+# ``z`` plus 22. Alphabet and length only: nothing is decoded, so the version byte is not
+# checked. The page's optional ``did:ebsi:[network]:`` segment is "fully omitted for the
+# EBSI blockchain", which is what the DID Registry and TIR APIs serve: a network-qualified
+# DID is not accepted. An explicit ASCII class, never ``\w`` or ``\d``; matched with
+# ``fullmatch``, never ``match`` + ``$`` (``$`` accepts a trailing newline).
+_DID_EBSI = re.compile(r"did:ebsi:z[1-9A-HJ-NP-Za-km-z]{22,23}")
 
 
 def _origin(url: str) -> str:
@@ -99,6 +120,24 @@ def _require_object(value: Any, what: str) -> dict[str, Any]:
     return value
 
 
+def _require_did_ebsi(did: object) -> str:
+    """*did*, if it is a ``did:ebsi`` identifier; else :class:`DidResolutionError`.
+
+    DID syntax belongs to the method, not to an API version, so it is checked once, by
+    :class:`DidEbsiResolver`, before any registry URL is built. The URL builders in the
+    adapters put the DID into the path verbatim, so anything else would steer the
+    request: ``/`` and ``.``/``..`` segments (httpx collapses them), ``?`` (a query that
+    swallows the ``/attributes`` suffix), ``#`` (dropped by httpx), ``%2f`` and
+    ``%2e%2e`` (forwarded as written), and a length up to httpx's 64 KiB. A DID URL
+    (``did:ebsi:zX#key-1``) is not a DID, so it fails too. No normalisation: the
+    identifier is case-sensitive and nothing is percent-decoded. The message shows the
+    value through :func:`~openvc.proof._verify_common.safe_repr`: the DID is a token's
+    ``iss`` or a registry's ``accreditedBy``, so it is attacker-sized."""
+    if not (isinstance(did, str) and _DID_EBSI.fullmatch(did)):
+        raise DidResolutionError(f"not a did:ebsi identifier: {safe_repr(did)}")
+    return did
+
+
 def _flatten_accredited_for(accredited_for: Any) -> tuple[str, ...]:
     """The credential types an accreditation authorises.
 
@@ -122,6 +161,11 @@ def _flatten_accredited_for(accredited_for: Any) -> tuple[str, ...]:
 # --------------------------------------------------------------------------- #
 
 class DidRegistryAdapter(ABC):
+    """One DID Registry API version: where a document lives and how its JSON maps to
+    :class:`~openvc.did.base.DidDocument`. Wire-only: ``identifiers_url`` interpolates
+    the DID as given and expects one that :class:`DidEbsiResolver` has already validated
+    (#266); calling an adapter directly with an unvalidated string is the caller's
+    risk."""
     version: str
 
     @abstractmethod
@@ -146,10 +190,27 @@ class DidRegistryV5(DidRegistryAdapter):
 # --------------------------------------------------------------------------- #
 
 class TirAdapter(ABC):
+    """One Trusted Issuers Registry API version. Wire-only: ``issuer_url`` interpolates
+    the DID as given and expects one that :class:`DidEbsiResolver` has already validated
+    (#266), and ``parse_issuer`` is only handed a response the resolver has already bound
+    to that DID (#267)."""
     version: str
 
     @abstractmethod
     def issuer_url(self, base: str, did: str) -> str: ...
+
+    def response_did(self, raw: dict[str, Any]) -> Any:
+        """The DID the registry says this issuer response is about, as found and
+        UNCHECKED (any JSON value, or ``None`` when absent).
+
+        This says *where the DID sits on the wire* and nothing else. The policy, that it
+        must equal the DID that was requested, is :class:`DidEbsiResolver`'s: it compares
+        before ``parse_issuer`` is called, so no ``attributes`` page and no revision
+        ``href`` is fetched for a record that is not about the DID. Both shipped versions
+        carry it at the top level; a version that moves it overrides this method. Concrete
+        on purpose: a third-party adapter written before the hook existed still
+        instantiates, and gets the top-level ``did`` (#267)."""
+        return raw.get("did")
 
     @abstractmethod
     def parse_issuer(
@@ -161,6 +222,11 @@ class TirAdapter(ABC):
         `fetch`/`decode` are injected so an adapter can perform any extra calls its
         version requires (e.g. attribute -> revision -> body) without the caller
         knowing anything about it.
+
+        `did` is the DID that was requested, already validated as a ``did:ebsi``
+        identifier, and `raw` is a JSON object whose own DID (``response_did``) equals
+        it: the resolver checked both before calling. The record is built from `did`
+        because, after that check, it is also the DID the registry named.
         """
 
 
@@ -354,27 +420,64 @@ class DidEbsiResolver:
     def resolve(self, did: str) -> DidDocument:
         """The DID document of *did*, or :class:`~openvc.did.base.DidResolutionError`.
 
-        The adapter parses the registry body; this method then holds the parsed
-        document's ``id`` to the DID that was asked for, exactly — no normalisation: a
-        ``did:ebsi`` method-specific id is case-sensitive base58btc. It is the same
-        contract ``did:web`` and ``did:webvh`` enforce, and it is version-agnostic, so
-        it lives here and a new registry adapter inherits it. A missing, empty or
-        non-string ``id`` never matches, whatever was asked: the parser reads all three
-        as ``""``, which is refused outright, so not even ``resolve("")`` accepts a
-        document with no usable ``id``. A DID URL (``did:ebsi:zX#key-1``) is not a DID,
-        so it fails too, although the registry would answer it with ``zX``'s document
-        once httpx drops the fragment. The
-        message shows both values through :func:`~openvc.proof._verify_common.safe_repr`:
-        the requested DID is a token's ``iss``, so it is attacker-sized."""
+        *did* must be a ``did:ebsi`` identifier: ``z`` plus 22 or 23 base58btc characters
+        (EBSI DevHub, "The did:ebsi DID method",
+        https://hub.ebsi.eu/docs/onboarding/legal-entity/did-ebsi-method, which also
+        defines an optional network segment that is not accepted here). Anything else, a
+        DID URL (``did:ebsi:zX#key-1``), another DID method, a path, a query, ``..``, a
+        percent escape or a 60 KB string, raises :class:`DidResolutionError` before any
+        registry URL is built, so a token's unsigned ``iss`` cannot steer the request
+        (#266). The check is exact: case-sensitive, no normalisation, no decoding.
+
+        The adapter then parses the registry body, and this method holds the parsed
+        document's ``id`` to the DID that was asked for, exactly. It is the same contract
+        ``did:web`` and ``did:webvh`` enforce, and both checks are version-agnostic, so
+        they live here and a new registry adapter inherits them. A missing, empty or
+        non-string ``id`` never matches: the parser reads all three as ``""``, which is
+        never a validated DID. The messages show both values through
+        :func:`~openvc.proof._verify_common.safe_repr`: the requested DID is a token's
+        ``iss``, so it is attacker-sized.
+
+        Raises:
+            DidResolutionError: *did* is not a ``did:ebsi`` identifier, or the document's
+                ``id`` is not *did*. The registry's own failures (``HttpNotFound``,
+                ``MalformedRegistryResponse``, ...) propagate as they are."""
+        did = _require_did_ebsi(did)
         raw = self._get(self._didr.identifiers_url(self._base, did))
         doc = self._didr.parse_did_document(raw)           # no version logic here
-        if not doc.id or doc.id != did:                     # bind the document to the request
+        if doc.id != did:                                   # bind the document to the request
             raise DidResolutionError(
                 f"document id {safe_repr(doc.id)} != requested {safe_repr(did)}")
         return doc
 
     def issuer_record(self, did: str) -> IssuerRecord:
-        raw = self._get(self._tir.issuer_url(self._base, did))
+        """The Trusted Issuers Registry record of *did*.
+
+        *did* is validated as for :meth:`resolve`, before the URL is built, and a string
+        that is not a ``did:ebsi`` identifier raises :class:`DidResolutionError` (#266).
+        The response must then be a JSON object (:class:`MalformedRegistryResponse`
+        otherwise, for every version), and the DID it names itself,
+        ``TirAdapter.response_did``, must be exactly *did*: another DID, an absent, ``null``,
+        non-string or empty one, all raise :class:`MalformedRegistryResponse`, shown through
+        ``safe_repr``. That comparison runs before the adapter follows any link, so a
+        record that is not about *did* costs one request, not the ``attributes`` page and a
+        revision per accreditation. ``IssuerRecord.did`` is therefore the DID the registry
+        named, not just the one that was asked for (#267). A mismatched body is malformed
+        input, not an untrusted issuer, so it is not wrapped in a trust error. The
+        ``attributes`` / ``href`` path is still pinned to the listing's origin only, not
+        to the issuer.
+
+        Raises:
+            DidResolutionError: *did* is not a ``did:ebsi`` identifier.
+            MalformedRegistryResponse: the response is not an object, or is not about *did*.
+        """
+        did = _require_did_ebsi(did)
+        raw = _require_object(self._get(self._tir.issuer_url(self._base, did)),
+                              "TIR issuer response")
+        named = self._tir.response_did(raw)
+        if not (isinstance(named, str) and named == did):    # bind the record to the request
+            raise MalformedRegistryResponse(
+                f"TIR issuer response names {safe_repr(named)}, requested {safe_repr(did)}")
         return self._tir.parse_issuer(
             raw, base=self._base, did=did, fetch=self._get, decode=self._decode,
         )
@@ -390,6 +493,7 @@ class DidEbsiResolver:
 #       version = "v6"
 #       def issuer_url(self, base, did): ...
 #       def parse_issuer(self, raw, *, base, did, fetch, decode): ...
+#       # def response_did(self, raw): ...   # only if the response's own DID moves
 #
 #   TIR_ADAPTERS["v6"] = TirV6
 #

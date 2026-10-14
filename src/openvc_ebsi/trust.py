@@ -122,7 +122,8 @@ def _verify_accreditation(
 
     if verified.subject and verified.subject != subject:
         raise AccreditationInvalid(
-            f"accreditation subject {verified.subject!r} != accredited DID {subject!r}")
+            f"accreditation subject {safe_repr(verified.subject)} != "
+            f"accredited DID {safe_repr(subject)}")
     return verified.credential
 
 
@@ -161,6 +162,15 @@ def verify_trust_chain(
             # rather than a leaked 404. (At the leaf, the issuer isn't registered.)
             raise NoTrustedAnchor(
                 f"{current!r} is not in the Trusted Issuers Registry") from exc
+        except DidResolutionError as exc:
+            # The walk subject is not a did:ebsi identifier (#266): the resolver refused
+            # it before any request. The class stays the one a 404 gave before the check
+            # existed, but the message says the fact: it is not a DID, not "not registered".
+            # A record that is not about the DID (#267) is a MalformedRegistryResponse
+            # and is deliberately NOT caught here: it is malformed input, not an
+            # untrusted issuer.
+            raise NoTrustedAnchor(
+                f"{safe_repr(current)} is not a did:ebsi identifier") from exc
 
         is_leaf = scope is None
         needed = set(credential_types) if is_leaf else scope
@@ -202,4 +212,4 @@ def verify_trust_chain(
         current = accreditor
 
     raise NoTrustedAnchor(
-        f"no trusted anchor within {max_depth} hops from {subject_did!r}")
+        f"no trusted anchor within {max_depth} hops from {safe_repr(subject_did)}")
