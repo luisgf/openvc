@@ -4,6 +4,120 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.4] — unreleased
+
+### Changed
+
+- **A naive `datetime` is UTC in both status-list builders, so a non-UTC host now mints
+  a different `validFrom` / `validUntil`**
+  ([#255](https://github.com/luisgf/openvc/issues/255)). This is the one change in this
+  release that does not fail closed: the call still succeeds and signs a different
+  string. Decision: a naive value is *read as UTC* rather than refused, the one rule
+  every openvc clock check uses (the
+  [#187](https://github.com/luisgf/openvc/issues/187) precedent).
+
+  `build_status_list_credential` called `astimezone`, which reads a naive value as the
+  **host's local time**, while `build_status_list_token` already read it as UTC. The same
+  `datetime(2026, 1, 1, 12, 0)` minted `validFrom = 2026-01-01T03:00:00Z` under
+  `TZ=Asia/Tokyo` and `17:00:00Z` under `America/New_York`, and `iat = 12:00:00Z` in the
+  token on both: a host west of UTC kept a list valid for hours longer than intended, one
+  east of it expired the list early. Both builders now agree and the result no longer
+  depends on the host's zone: `12:00:00Z` everywhere. A caller that relied on the local
+  reading passes an aware `datetime` instead (`datetime(..., tzinfo=ZoneInfo("Asia/Tokyo"))`).
+  On a host already on UTC nothing changes, and neither does anything for an aware value:
+  `valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc)` is still `"2026-01-01T00:00:00Z"`,
+  byte for byte. Two edge inputs follow the same rule: a `tzinfo` whose `utcoffset()` is
+  `None` (naive by Python's own definition) is UTC in both builders, where it was a bare
+  `TypeError` in the token builder and local time in the credential one; and a naive
+  `datetime.min` / `datetime.max` builds (`0001-01-01T00:00:00Z`, `9999-12-31T23:59:59Z`),
+  where it was a bare `ValueError`.
+
+- **`ttl` is `None` or a positive `int`, on both builders**
+  ([#255](https://github.com/luisgf/openvc/issues/255)). Decision: an `int` only, never a
+  `bool`, rather than "also a finite float" (the IETF draft's "positive number"), which
+  matches the signature, and a CWT `ttl` is an unsigned integer. Anything else raises
+  `StatusListError`.
+  - `"5"`, `True`, `1.5`, `300.0`, `0`, `-1`, a `list`, a `dict` and `10**400` were
+    minted as given; `NaN` and `inf` were signed as non-JSON. Pass a positive `int`.
+  - a `timedelta`, a `Decimal`, a `Fraction` (pass `int(x)`) and `10**5000` were a bare
+    `TypeError` / `ValueError` in the token builder, and in the credential builder a
+    credential that failed later at `VcJwtProofSuite.sign`.
+  - `ttl=300` is unchanged. The IETF `ttl` is seconds and the W3C one milliseconds; the
+    builders do not convert.
+
+- **`issued_at` / `expires` take a `datetime` or a finite number**
+  ([#255](https://github.com/luisgf/openvc/issues/255)): the same NumericDate gate
+  (`is_numeric_date`) that `verify_status_list_token` applies to `iat` / `exp` / `nbf`.
+  A digit string (`"1700000000"`, which `int()` coerced), a `bool` (minted as `1` / `0`),
+  a `Decimal` or `Fraction` (pass `int(x)`) now raise `StatusListError`. `time.time()`
+  and any finite `float` still work and are truncated to whole seconds as before.
+
+- **`valid_from` / `valid_until` are a `datetime` or `None`**, as the signature says
+  ([#255](https://github.com/luisgf/openvc/issues/255)). A string, an epoch number or a
+  `date` was a bare `AttributeError` and is now a `StatusListError`.
+
+- **Callers that caught a builtin exception around a builder catch `OpenvcError`.** The
+  inputs that already raised now raise `StatusListError` (an `OpenvcError`) instead of
+  `ValueError` / `TypeError` / `OverflowError` / `AttributeError`.
+
+- `openvc.proof._verify_common.utc_instant` and `utc_epoch` gain an add-only `name=`
+  keyword (default `"now"`), so a caller that reads some other datetime the same way gets
+  an error that names its parameter. The default messages are unchanged.
+
+### Fixed
+
+- **The status-list builders' time inputs and `ttl` fail at build time, typed, and the
+  one signed value they could get wrong is fixed**
+  ([#255](https://github.com/luisgf/openvc/issues/255)). Found by the review of
+  [#250](https://github.com/luisgf/openvc/pull/250); #250 had narrowed its docs to say
+  these inputs were not covered. 140 builder calls probed on `main`: 66 raised a bare
+  exception and none a `StatusListError`.
+  - `build_status_list_token(issued_at=…, expires=…)`: a string, `NaN`, `±inf`, a
+    `date`, a `timedelta`, a list, a `bool` and an integer no float holds all raise
+    `StatusListError`. `10**400` was the one pure "minted what the verifier rejects" row
+    (`verify_status_list_token` refuses the token as not a finite numeric timestamp), and
+    `10**5000` died with a bare `ValueError` from `json.dumps` inside `sign_compact` (the
+    4300-digit limit). A `datetime` whose `tzinfo` raises is typed too.
+  - `build_status_list_credential(valid_from=…, valid_until=…)`: besides the non-`datetime`
+    values above, an aware value whose UTC form leaves years 1 to 9999 (year 1 at
+    `+01:00`, `9999-12-31T23:00` at `-05:00`) was a bare `OverflowError`; it and a
+    `datetime` whose `tzinfo` raises are now a `StatusListError`. The error names the
+    parameter (`valid_from cannot be read as an instant: date value out of range`).
+  - a non-finite `ttl` was signed as `"ttl":NaN` (not JSON, RFC 8259): the JOSE verifiers
+    accepted it while `eddsa-jcs-2022` and `eddsa-rdfc-2022` refused the same credential
+    at `add_proof`. The builder, the one place that can decide for every lane, now
+    refuses it before `sign_compact` is reached.
+  - `validFrom` / `validUntil` are rendered with `isoformat`, not `strftime("%Y")`, which
+    does not pad a year below 1000 on glibc (`999-01-01T00:00:00Z`, which the verifier
+    refuses as a `MalformedTimestamp`). The string for every aware-UTC input is the
+    same one the builder emitted before.
+  - An `int` or `float` subclass is reduced to the plain number it holds before it is
+    checked and signed (`int.__index__` / `float.__float__`), so the value checked is the
+    value emitted; the same rule #250 applies to an index.
+
+  Not changed, by design: the order of a window (a past `expires`, an `issued_at` in the
+  future, `expires` before `issued_at`, `valid_until` before `valid_from`) is still the
+  verifier's call at read time, and building such a list stays legitimate. `leeway_s` on
+  `verify_status_list_token` is [#228](https://github.com/luisgf/openvc/issues/228), and
+  the non-time string parameters (`contexts`, `issuer`, `subject_id`, an entry `id`) are
+  separate.
+
+### Tests
+
+- **`tests/test_status_builders_time.py`** pins every row of the three tables in the issue
+  (the time inputs of each of `issued_at`, `expires`, `valid_from` and `valid_until`, and
+  every `ttl` on both builders) against the exact class `StatusListError`, with the token
+  negatives signing through a key whose `sign` raises. A naive `datetime` is
+  checked with `TZ` pinned to UTC, to a POSIX UTC+9 and UTC-5 (DST) zone and to
+  `Asia/Tokyo` and `America/New_York`, and the check is made to fail if the pin did not
+  take effect. Build, sign, verify round trips cover an aware UTC, `+09:00` and `-05:00`
+  value, a naive one and years 1 and 9999. Hypothesis properties cover the accepted
+  `datetime`s (exactly those with a UTC form in years 1 to 9999), a window the builders
+  accept and the verifier reads inside it, the token's time inputs, and `ttl`.
+  Mutation-checked: 174 of the 208 cases fail against the previous code, and the 34 that
+  pass are the controls and the naive-`datetime` cases on a UTC host, where the bug is
+  invisible by construction.
+
 ## [1.32.3] — 2026-10-14
 
 ### Security

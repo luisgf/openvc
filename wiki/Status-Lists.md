@@ -73,8 +73,8 @@ fails at build time with a `StatusListError` instead of in the field:
   `build_status_list_credential` and `build_status_list_token`
   refuse a longer one, and `new_bitstring(size)` / `new_status_list(size, bits=...)`
   refuse a `size` that would need it: 2^27 one-bit statuses, but only 2^24 at 8 bits.
-- The time inputs (`issued_at`, `expires`, `valid_from`) and `ttl` are not checked
-  by this; a bad value there still fails with the plain Python error.
+- The time inputs and `ttl` follow the verifier's shape rules too, and a naive
+  `datetime` is read as UTC in both builders (the section below).
 
 `get_status_bit`, `set_status_bit`, `get_status` and `set_status` hold their `index` to
 the same type rule (the list's own length bounds it): a `bool` is no longer read as
@@ -96,6 +96,53 @@ because they were never the documented types. Pass these instead:
 
 The [CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for
 1.32.3 lists every case.
+
+### Times and `ttl`
+
+`valid_from` / `valid_until` (the credential) are a `datetime` or `None`;
+`issued_at` / `expires` (the token) are a `datetime` or a finite number of epoch
+seconds, so `time.time()` still works. A `datetime` is read the way every openvc
+clock check reads one: **a naive value is UTC**, never the host's local time, and an
+aware one is converted. Both builders agree, so one naive `datetime` is the same
+instant in the credential's `validFrom` and in the token's `iat`, on any host:
+
+```python
+from datetime import datetime
+
+from openvc.status import build_status_list_credential, new_bitstring
+
+naive = datetime(2026, 1, 1, 12, 0)             # UTC, whatever zone this host is in
+vc = build_status_list_credential(
+    id="https://issuer.example/status/1", issuer="did:example:issuer",
+    bitstring=new_bitstring(64), valid_from=naive, ttl=300)
+assert vc["validFrom"] == "2026-01-01T12:00:00Z"
+```
+
+These are a `StatusListError` at build time, before anything is signed:
+
+- a `valid_from` / `valid_until` that is not a `datetime` (an ISO string, an epoch
+  number, a `date`), and a `datetime` with no UTC equivalent: year 1 at `+01:00`, or
+  a `tzinfo` that raises;
+- an `issued_at` / `expires` that is a `bool`, a digit string (`"1700000000"`), a
+  `date`, a `timedelta`, `NaN`, `inf`, or an integer no float holds (`10**400`) — the
+  last would have been signed and then refused by `verify_status_list_token`, which
+  only accepts a finite NumericDate;
+- a `ttl` that is not `None` or a positive `int`: a `bool`, a `float` (`NaN` and `inf`
+  included, which are not JSON), a string, `0`, a negative number, a `list`. The IETF
+  `ttl` is seconds and the W3C one milliseconds; the builder does not convert.
+
+The order of a window is not checked: a past `expires`, an `issued_at` in the future
+or an `expires` before `issued_at` build, and `verify_status_list_token` /
+`VcJwtProofSuite.verify` refuse them when they read the artefact.
+
+This is a behaviour change in 1.32.4. A digit string or a `bool` for `issued_at` /
+`expires`, a `Decimal` or `Fraction` there (pass `int(x)`), and a `ttl` that is not a
+positive `int` used to build and are now refused. A naive `valid_from` / `valid_until`
+on a host that is not on UTC now yields its UTC reading, a different `validFrom` /
+`validUntil` string from before for the same call (it used the host's local zone): pass
+an aware `datetime` if you meant local time. The
+[CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for 1.32.4
+has the list.
 
 ## Fail-closed by default in the pipeline
 
