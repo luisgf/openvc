@@ -27,12 +27,34 @@ All notable changes to **openvc** are documented here. The format follows
   - an `href` is skipped and its revision never fetched;
   - a `links.next` ends the walk and keeps the items already read.
 
-  A non-ASCII URL is refused before `urlparse` reads it: on CPython 3.12 and earlier,
-  `urlparse` NFKC-normalizes a non-ASCII netloc in quadratic time (see 1.31.2). The
-  EBSI client's https host allow-list is unchanged.
+  So is a URL the HTTP client would read differently (#246, below): anything but
+  visible ASCII, or over 8 KiB. That check runs before `urlparse` reads the URL: on
+  CPython 3.12 and earlier, `urlparse` NFKC-normalizes a non-ASCII netloc in quadratic
+  time (see 1.31.2). The EBSI client's https host allow-list is unchanged.
 
   `threat-model.md` §7 and R10 no longer list it as an open residual; R10 keeps the
   hostile DID-document shape (#219).
+
+- **A URL the EBSI HTTP client cannot parse is refused, typed, before any request**
+  ([#246](https://github.com/luisgf/openvc/issues/246)). Found by the adversarial
+  review of [#244](https://github.com/luisgf/openvc/pull/244), the fix for #243.
+  Present before it.
+
+  `EbsiHttpClient.get_json` checked a URL with `urlparse` and fetched it with httpx.
+  `urlsplit` drops a tab or newline and ignores other control characters; httpx
+  rejects them, and a URL over 64 KiB, with `httpx.InvalidURL`. That is a plain
+  `Exception`, not an `httpx.TransportError`, so it escaped `get_json` untyped. No key
+  was needed: `verify_ebsi_badge` puts the issuer it peeks from an unsigned token
+  into the DID Registry URL, so an `iss` such as `did:ebsi:z\tx` aborted it with a bare
+  `httpx.InvalidURL`. A TIR `attributes`, `links.next` or `href` holding such a
+  character passed the origin pin the same way. The guard also left a broken IPv6
+  literal as a bare `ValueError`, and never read the port, so `:99999` went to the
+  transport.
+
+  The client now refuses, as `HttpForbiddenHost` and before any request, a URL that
+  is not visible ASCII (checked before `urlparse`) or that `urlparse` cannot read,
+  port included. `httpx.InvalidURL` is mapped to `HttpForbiddenHost` as a backstop
+  and is not retried.
 
 ### Fixed (docs)
 

@@ -47,6 +47,10 @@ from .models import Accreditation, IssuerRecord
 Fetch = Callable[[str], dict[str, Any]]          # GET a URL -> JSON
 DecodeJwt = Callable[[str], dict[str, Any]]      # VC-JWT body -> claims (proof suite)
 
+# EBSI's registry URLs run to a few hundred characters; this is far below httpx's own
+# 64 KiB URL limit, so the origin pin never passes a URL the client then rejects.
+_MAX_URL_LENGTH = 8192
+
 
 def _origin(url: str) -> str:
     """``scheme://host:port`` (lowercased) — used to keep pagination on the listing's
@@ -55,12 +59,17 @@ def _origin(url: str) -> str:
     the port is part of that origin, so a ``next`` that only changes the port is refused
     (the SSRF host allow-list matches host but not port).
 
-    A URL with no origin to compare — non-ASCII, an out-of-range or non-numeric port, a
-    broken IPv6 literal — raises a typed :class:`MalformedRegistryResponse`, never a bare
-    ``ValueError`` (#243). ASCII is checked first: on CPython ≤ 3.12 ``urlparse``
-    NFKC-normalizes a non-ASCII netloc in quadratic time."""
-    if not url.isascii():
-        raise MalformedRegistryResponse("registry URL is not ASCII")
+    A URL with no origin to compare — an out-of-range or non-numeric port, a broken IPv6
+    literal — raises a typed :class:`MalformedRegistryResponse`, never a bare
+    ``ValueError`` (#243). So does one the HTTP client would read differently (#246):
+    anything but visible ASCII (urlsplit drops a tab or newline and ignores other
+    control characters that httpx rejects), or longer than ``_MAX_URL_LENGTH``. That
+    check runs first: on CPython ≤ 3.12 ``urlparse`` NFKC-normalizes a non-ASCII netloc
+    in quadratic time."""
+    if len(url) > _MAX_URL_LENGTH:
+        raise MalformedRegistryResponse("registry URL is too long")
+    if not (url.isascii() and url.isprintable()) or " " in url:
+        raise MalformedRegistryResponse("registry URL is not visible ASCII")
     try:
         p = urlparse(url)                 # raises on a broken IPv6 literal
         port = "" if p.port is None else p.port   # raises on a bad port

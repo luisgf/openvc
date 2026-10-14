@@ -143,8 +143,10 @@ Example-based, but broad. Representative anchors:
   (`test_https_issuer_identifier.py`).
 - **EBSI TIR (plugin)** — an `attributes` URL or a revision `href` on another port of
   an allow-listed host is never fetched; a URL that does not parse (a bad port, a
-  broken IPv6 literal, non-ASCII) on `attributes`, `links.next` or `href` is typed or
-  skipped, never fetched (`test_ebsi_verifier.py`).
+  broken IPv6 literal) or that is not visible ASCII or over 8 KiB, on `attributes`,
+  `links.next` or `href`, is typed or skipped, never fetched (`test_ebsi_verifier.py`).
+  The client refuses such a URL, typed, before any request; a hostile token `iss`
+  through `verify_ebsi_badge` included (`test_ebsi_http.py`, `test_ebsi_verifier.py`).
 - **OpenID4VP `vp_token` (W3C lanes)** — a victim's credential re-wrapped in another
   holder's correctly bound `jwt_vc_json` / `ldp_vc` VP, including a KB-stripped
   SD-JWT VC, enveloped or over the DC API; a nested SD-JWT VC whose KB-JWT names
@@ -190,6 +192,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
+- `#246` — *untyped error, no key needed* — the EBSI client checked a URL with `urlparse` and fetched it with httpx, which rejects what urlsplit drops or ignores (a tab, NUL, DEL) and a URL over 64 KiB with a bare `httpx.InvalidURL`; an unsigned token whose `iss` held one escaped `verify_ebsi_badge`, and so did such a TIR `attributes` / `next` / `href`. The client now refuses a URL that is not visible ASCII or that `urlparse` cannot read (port included) as `HttpForbiddenHost` before any request, and maps `httpx.InvalidURL` to it; the TIR pin applies the same rule and an 8 KiB cap. Found by the adversarial review of #244 (v1.31.4; `test_ebsi_http.py`, `test_ebsi_verifier.py`)
 - `#243` — *untyped error* — an EBSI TIR v5 registry URL that does not parse (a port out of range or not numeric, a broken IPv6 literal, an NFKC delimiter) made the `_origin` pin raise a bare `ValueError` out of `verify_ebsi_badge`; it is now treated as off-origin: a `MalformedRegistryResponse` on `attributes`, skipped on `links.next` and `href`, and a non-ASCII URL is refused before `urlparse` (v1.31.4; `test_ebsi_verifier.py`)
 - `#218` — *batch abort* — a clock pin that is not an instant (an epoch number, a string, a `date`, a `datetime` with no UTC equivalent) or a non-numeric `leeway_s` raised a bare `AttributeError` / `OverflowError` / `TypeError` on every datetime validity window (Data Integrity, x5c, mdoc, WRPAC, WRPRC, the trust-list walks); each lane now raises its own typed error (v1.30.5; `test_typed_clock_pins.py`)
 - `#200` — *crash on caller configuration* — `VpJwtProofSuite.verify` with a pinned holder key and no resolver raised a bare `AttributeError`, a regression since v1.6.0; the resolver now defaults, and the pinned key alone still decides the VP signature (v1.30.4; `test_vp_jwt_pinned_holder_no_resolver.py`)
