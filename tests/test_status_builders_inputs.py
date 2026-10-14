@@ -57,10 +57,12 @@ from openvc.status import (
     build_status_list_credential,
     build_status_list_entry,
     build_status_list_token,
+    build_token_status_reference,
     new_bitstring,
     new_status_list,
     parse_status_entries,
 )
+from openvc.status._index import brief
 
 VC2 = "https://www.w3.org/ns/credentials/v2"
 VC1 = "https://www.w3.org/2018/credentials/v1"
@@ -503,6 +505,214 @@ def test_what_is_emitted_is_what_was_checked_for_a_container_subclass():
     assert type(vc["issuer"]) is dict and vc["issuer"] == {"id": DID, "name": "x"}
     assert type(vc["@context"]) is list and vc["@context"] == [VC2, "u"]
     json.dumps(vc)
+
+
+class _KeysRaiseDict(dict):
+    """Overrides ``keys()`` alone: ``dict()`` copies a dict subclass from its storage and
+    never asks."""
+
+    def keys(self):
+        raise RuntimeError("keys() is broken")
+
+
+class _IterRaiseDict(dict):
+    """Overrides ``__iter__`` alone: ``dict()`` then asks the inherited ``dict.keys()``."""
+
+    def __iter__(self):
+        raise RuntimeError("iteration is broken")
+
+
+class _GetitemRaiseDict(dict):
+    """Overrides ``__getitem__`` alone: the copy reads the storage, not the accessor."""
+
+    def __getitem__(self, key):
+        raise RuntimeError("__getitem__ is broken")
+
+
+@pytest.mark.parametrize("subclass", [_KeysRaiseDict, _IterRaiseDict, _GetitemRaiseDict],
+                         ids=["keys-only", "iter-only", "getitem-only"])
+def test_a_dict_subclass_that_overrides_one_accessor_is_copied_from_its_storage(subclass):
+    # the claim in the docstring and the CHANGELOG: only a COPY that raises is typed
+    # (``_BrokenDict`` above overrides both); the other overrides are never consulted
+    vc = cred(issuer=subclass({"id": DID, "name": "x"}))
+    assert type(vc["issuer"]) is dict and vc["issuer"] == {"id": DID, "name": "x"}
+
+
+class _HiddenKey(str):
+    """A key whose hash is not its characters': ``"@id" in issuer`` cannot find it, and the
+    encoder writes it as ``@id`` all the same."""
+
+    def __hash__(self):
+        return 12345
+
+
+def test_a_key_that_hides_from_lookup_is_copied_as_a_plain_str():
+    hidden = {"id": DID, _HiddenKey("@id"): "did:other"}
+    assert "@id" not in hidden                     # the premise: the lookup is blind to it
+    refused(lambda: cred_unsigned(issuer=hidden), names="issuer")
+    lone = {_HiddenKey("id"): DID}
+    assert "id" not in lone
+    vc = cred(issuer=lone)                         # found by its characters, emitted as such
+    assert vc["issuer"] == {"id": DID} and type(next(iter(vc["issuer"]))) is str
+
+
+# --------------------------------------------------------------------------- #
+# Hostile strings: the characters are what is tested and what is emitted
+# --------------------------------------------------------------------------- #
+# A ``str`` subclass can answer ``len()``, ``bool()``, ``[]``, ``==``, ``hash()``, ``str()``
+# and ``format()`` however it likes, but the JSON encoder writes the characters it holds.
+# The builders copy every string to a plain ``str`` (``plain_str``, the counterpart of
+# ``plain_int``) before testing it and emit the copy, so a subclass can neither escape as a
+# bare exception nor be checked as one value and written as another.
+
+REAL = "did:example:real"
+
+
+class _LenRaises(str):
+    def __len__(self):
+        raise RuntimeError("__len__ is broken")
+
+
+class _BoolRaises(str):
+    def __bool__(self):
+        raise RuntimeError("__bool__ is broken")
+
+
+class _GetitemRaises(str):
+    def __getitem__(self, index):
+        raise RuntimeError("__getitem__ is broken")
+
+
+class _EqHashRaise(str):
+    def __eq__(self, other):
+        raise RuntimeError("__eq__ is broken")
+
+    def __hash__(self):
+        raise RuntimeError("__hash__ is broken")
+
+
+class _SaysEmpty(str):
+    """Holds characters and claims it is empty and something else."""
+
+    def __len__(self):
+        return 0
+
+    def __bool__(self):
+        return False
+
+    def __str__(self):
+        return "LIE"
+
+    def __repr__(self):
+        return "LIE"
+
+    def __format__(self, spec):
+        return "LIE"
+
+    def __eq__(self, other):
+        return False
+
+    def __hash__(self):
+        return 0
+
+
+class _SaysFull(str):
+    """Holds no character and claims it is not empty."""
+
+    def __len__(self):
+        return 5
+
+    def __bool__(self):
+        return True
+
+    def __getitem__(self, index):
+        return "x"
+
+    def __eq__(self, other):
+        return True
+
+    def __hash__(self):
+        return 0
+
+
+_HOLDING = [_LenRaises, _BoolRaises, _GetitemRaises, _EqHashRaise, _SaysEmpty]
+
+# Each way a string reaches an artefact: the output holds what the encoder would write.
+# The first six are this change's parameters, the rest are #250's, which share ``_text``.
+_STRING_SLOTS = {
+    "issuer": lambda v: cred(issuer=v)["issuer"],
+    "issuer-id": lambda v: cred(issuer={"id": v})["issuer"]["id"],
+    "subject_id": lambda v: cred(subject_id=v)["credentialSubject"]["id"],
+    "contexts-second": lambda v: cred(contexts=[VC2, v])["@context"][1],
+    "entry-id": lambda v: entry(id=v)["id"],
+    "token-issuer": lambda v: claims_of(tok(issuer=v))["iss"],
+    "credential-id": lambda v: build_status_list_credential(
+        id=v, issuer=DID, bitstring=BITS)["id"],
+    "status-purpose": lambda v: build_status_list_credential(
+        id=LIST_URL, issuer=DID, bitstring=BITS,
+        status_purpose=v)["credentialSubject"]["statusPurpose"],
+    "entry-credential": lambda v: build_status_list_entry(
+        status_list_credential=v, index=1)["statusListCredential"],
+    "token-uri": lambda v: claims_of(
+        build_status_list_token(signing_key=SK, uri=v, status_list=LST))["sub"],
+    "reference-uri": lambda v: build_token_status_reference(
+        uri=v, index=1)["status"]["status_list"]["uri"],
+}
+
+
+@pytest.mark.parametrize("slot", _STRING_SLOTS)
+@pytest.mark.parametrize("subclass", _HOLDING)
+def test_a_str_subclass_is_read_by_its_characters_and_emitted_as_a_plain_str(slot, subclass):
+    got = _STRING_SLOTS[slot](subclass(REAL))
+    assert type(got) is str and got == REAL
+
+
+@pytest.mark.parametrize("slot", _STRING_SLOTS)
+def test_a_str_subclass_that_claims_to_hold_something_is_empty_when_it_is(slot):
+    refused(lambda: _STRING_SLOTS[slot](_SaysFull("")))
+
+
+def test_a_lying_format_does_not_reach_the_default_subject():
+    # ``f"{id}#list"``: a ``__format__`` / ``__str__`` that lies must not be asked
+    vc = build_status_list_credential(id=_SaysEmpty(LIST_URL), issuer=DID, bitstring=BITS)
+    assert vc["credentialSubject"]["id"] == f"{LIST_URL}#list"
+    assert type(vc["id"]) is str and vc["id"] == LIST_URL
+
+
+@pytest.mark.parametrize("subclass", _HOLDING)
+def test_a_str_subclass_as_the_first_context_is_tested_by_its_characters(subclass):
+    got = cred(contexts=[subclass(VC2), subclass("https://x/ctx")])["@context"]
+    assert got == [VC2, "https://x/ctx"] and {type(c) for c in got} == {str}
+
+
+class _ClaimsToBeVc2(str):
+    """Holds another URL and claims, through ``__eq__`` and ``__hash__``, to be the VC 2.0
+    context: a set lookup believes it."""
+
+    def __hash__(self):
+        return hash(VC2)
+
+    def __eq__(self, other):
+        return other == VC2
+
+
+@pytest.mark.parametrize("first", [
+    pytest.param(_ClaimsToBeVc2("https://x/"), id="claims-to-be-vc2"),
+    pytest.param(_GetitemRaises("https://x/"), id="getitem-raises"),
+    pytest.param(_LenRaises("https://x/"), id="len-raises"),
+    pytest.param(_EqHashRaise("https://x/"), id="eq-hash-raise"),
+    pytest.param(_SaysFull(""), id="says-full"),
+])
+def test_a_str_subclass_that_is_not_a_base_context_is_refused(first):
+    exc = refused(lambda: cred_unsigned(contexts=[first]), names="first contexts entry")
+    assert len(str(exc)) < 400
+
+
+def test_a_str_subclass_in_a_message_is_rendered_from_its_characters():
+    long = _GetitemRaises("x" * 50)
+    assert brief(long) == repr("x" * 32) + "..."
+    assert brief(_SaysEmpty("abc")) == "'abc'"
+    refused(lambda: cred(subject_id=_SaysFull("")), names="subject_id")
 
 
 # --------------------------------------------------------------------------- #

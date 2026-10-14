@@ -173,9 +173,14 @@ one place that can decide for all of them, so it holds these to what the verifie
 `None` is the only way to ask for a default. An empty or falsy value (`subject_id=""`,
 `contexts=[]`, `contexts=0`) used to be replaced by the default without a word and is now
 an error. A VC base context is `https://www.w3.org/ns/credentials/v2` or
-`https://www.w3.org/2018/credentials/v1`; the RDF suites and the credential type need one
-first. A context URL that is not bundled with openvc still needs `extra_contexts` on the
-`eddsa-rdfc-2022` suite.
+`https://www.w3.org/2018/credentials/v1`, the rule the RDF suites apply to the first entry.
+It is a shape rule, not a promise that the list verifies on every lane: only the VC 2.0
+context defines `BitstringStatusListCredential`, `encodedList` and `statusPurpose`, and
+only it is bundled, so pass it first. A list that starts with the VC 1.1 context builds and
+is read by VC-JWT and `eddsa-jcs-2022`, which load no context, and `eddsa-rdfc-2022`
+refuses it at `add_proof` (`DocumentLoaderError`: the 1.1 document is not bundled). A context
+URL that is not bundled with openvc still needs `extra_contexts` on the `eddsa-rdfc-2022`
+suite.
 
 ```python
 from openvc.status import StatusListError, build_status_list_credential, new_bitstring
@@ -196,9 +201,15 @@ except StatusListError as exc:
     print(exc)          # contexts must be None or a non-empty list of context URLs ...
 ```
 
+The builders read a copy of what you pass and emit that copy: the `issuer` object and the
+`contexts` list are new containers, and every string is an exact `str`, so a `dict`, `list`
+or `str` subclass cannot be checked as one value and written as another (one whose copy
+raises is a `StatusListError`).
+
 Not checked, by design: that an identifier is a URI (`"not a uri"` builds; only key
-resolution, and the RDF suites at `add_proof`, refuse one), its length, and the members of
-an `issuer` object besides `id` and `@id`. A token built without `issuer` is still allowed,
+resolution, and the RDF suites at `add_proof`, refuse one), its length, the members of
+an `issuer` object besides `id` and `@id`, and the members of an inline context object (a
+member that is not JSON, such as `{"id": b"x"}`, builds and fails at sign). A token built without `issuer` is still allowed,
 and `default_status_list_token_resolver` refuses it (`StatusListError`: no `iss` to find
 the key with), so pass the issuer unless you resolve the key some other way.
 

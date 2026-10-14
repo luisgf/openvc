@@ -64,12 +64,17 @@ All notable changes to **openvc** are documented here. The format follows
     `None`, so `None` is now the only way to ask for it. A caller that relied on the
     fallback passes `None` or leaves the argument out.
   - **(b) The first `@context` entry must be a VC base context**
-    (`VC_BASE_CONTEXTS`: the VC 2.0 or the VC 1.1 context), as the RDF suites require
-    and the credential type needs. Without it `contexts=["https://x/"]` still minted a
-    list the RDF suites refuse and the other lanes accept. The entries after the first
-    are checked for shape only (a non-empty string or an object), the common ground of
-    every lane; the RDF suites go further and accept only `@vocab` objects, and say so
-    themselves.
+    (`VC_BASE_CONTEXTS`: the VC 2.0 or the VC 1.1 context), the rule the RDF suites apply.
+    Without it `contexts=["https://x/"]` still minted a list the RDF suites refuse and the
+    other lanes accept. The entries after the first are checked for shape only (a
+    non-empty string or an object), the common ground of every lane; the RDF suites go
+    further and accept only `@vocab` objects, and say so themselves. This is a shape
+    rule, not a promise that the list verifies on every lane: only the VC 2.0 context
+    defines the `BitstringStatusListCredential`, `encodedList` and `statusPurpose` terms,
+    and only it is bundled. A list that starts with the VC 1.1 context builds and is read
+    by VC-JWT and `eddsa-jcs-2022`, which load no context, and is refused by
+    `eddsa-rdfc-2022` at `add_proof` with a typed `DocumentLoaderError` (the 1.1 document
+    is not bundled). The docstring and the wiki say to pass the VC 2.0 context first.
   - **(c) No URI-shape check.** `"not a uri"` still builds as an issuer, a subject or an
     entry `id`, and so does a 100 000-character string: the JOSE and JCS lanes and the
     check side have no shape rule (key resolution refuses an unresolvable issuer), and
@@ -80,8 +85,21 @@ All notable changes to **openvc** are documented here. The format follows
   The artefact no longer shares its top-level containers with the call: an `issuer` object
   and the `contexts` list are shallow-copied, the checks read the copy, and the copy is what
   is emitted (nested objects, such as an `image` member or an inline context, are still the
-  caller's), so a `dict` or `list` subclass cannot be checked as one thing and signed as another,
-  and one whose `keys()` or `__iter__` raises is a `StatusListError`. A `tuple` of
+  caller's), so a `dict` or `list` subclass cannot be checked as one thing and signed as another.
+  A container that cannot be copied is a `StatusListError`: a `list` subclass whose
+  `__iter__` raises, or a `dict` subclass that overrides `__iter__` and whose `keys()`
+  raises. Any other `dict` subclass is copied from the entries it stores (an override of
+  `keys()` alone, of `__getitem__` alone or of `__iter__` alone is never consulted), and
+  what it holds is what is checked and emitted. The same holds for a string:
+  every string the builders test is copied to an exact `str` first (`plain_str` in
+  `status/_index.py`, the counterpart of `plain_int`) and the copy is what is emitted, so a
+  `str` subclass whose `__len__`, `__bool__`, `__getitem__`, `__eq__` or `__hash__` raises
+  or lies is read by the characters it holds, as the JSON encoder reads it, and neither
+  escapes as that exception nor passes as another value (an empty string that claims a
+  length is refused; a `contexts` entry that claims to be the VC 2.0 context is not).
+  This covers the strings #250 added too (`id`, `status_purpose`, `status_list_credential`
+  and `uri`), which went through the same `_text` helper, and the keys of an `issuer`
+  object, so that a key whose hash hides it cannot slip an `@id` past the check. A `tuple` of
   contexts is accepted and written as a list. The `contexts` annotation now says
   `list | tuple`. Exposure is small: across `tests/`, `examples/` and `src/` none of the
   23 builder calls passes `contexts`, `subject_id` or an entry `id`, and every `issuer`
@@ -89,9 +107,11 @@ All notable changes to **openvc** are documented here. The format follows
 
 Not changed, by design: `signing_key` of `build_status_list_token` (a duck-typed
 `SigningKey` protocol; `None` is still a bare `AttributeError`, and the algorithm
-allow-list is already typed); the members of an `issuer` object besides `id` and `@id`;
-a length cap on identifiers; the codec primitives (`set_status_bit(bits, 3, "0")` still
-sets the bit); whether the token `issuer` should become required; and the verifier-side
+allow-list is already typed); the members of an `issuer` object besides `id` and `@id`, and
+the members of an inline context object (a non-JSON member, `{"id": b"x"}`, still builds
+and fails at sign with a bare `TypeError`); a length cap on identifiers; the codec
+primitives (`set_status_bit(bits, 3, "0")` still sets the bit); whether the token `issuer`
+should become required; and the verifier-side
 leniency this issue noted, that the VC-JWT and `eddsa-jcs-2022` lanes accept a list whose
 `@context` is a character list and `eddsa-jcs-2022` a non-string `credentialSubject.id`.
 That is a separate question; this only stops the builder from producing such a list.
@@ -106,6 +126,19 @@ That is a separate question; this only stops the builder from producing such a l
   `sign_compact`. They are now `StatusListError`, an `OpenvcError`, raised at build time,
   so a job that publishes lists on a schedule can `except OpenvcError` around the build.
   A caller that caught a builtin exception there catches `OpenvcError` instead.
+- **A `str` subclass no longer escapes the status-list builders as the exception its own
+  method raises, or passes a check it should fail**
+  ([#269](https://github.com/luisgf/openvc/issues/269), found by the review of the PR).
+  `_text` tested `not value`, and `brief()` sliced the value, so a subclass whose
+  `__len__`, `__bool__` or `__getitem__` raised was that `RuntimeError` out of `issuer`,
+  `subject_id`, an entry `id` or a token `issuer` (and of #250's `id`, `status_purpose`,
+  `statusListCredential` and `uri`); one whose `__len__` answered `5` for the empty string
+  was minted as `""`; and a `contexts` entry whose `__eq__` and `__hash__` claimed to be
+  the VC 2.0 context passed the base-context test with another URL, which the encoder then
+  wrote. Every string is now copied to an exact `str` before it is tested and the copy is
+  emitted; see the paragraph on containers above. The inputs are the issuing application's
+  own (a hostile subclass is a bug in its code), so this is hardening, the same as `plain_int`
+  for an `int` subclass in #250.
 
 ### Tests
 
@@ -127,16 +160,25 @@ That is a separate question; this only stops the builder from producing such a l
   properties check each parameter against a model written in the test, and that whatever
   the builder accepts is JSON and is accepted by the VC-JWT and `eddsa-jcs-2022` pipelines
   with a registry that serves the key for any `did:` string. Container subclasses (a
-  `dict` / `list` that lies through its accessors, or whose iteration raises) and the
-  60 KB message bound are covered.
-  Mutation-checked in a scratch copy of the `ff59357` tree: against the code before this
-  change 168 of the 213 cases fail (the 45 that pass are the controls). On the fixed code,
-  22 mutants: restoring `list(contexts) if contexts` (and dropping its check) fails 57
-  cases, restoring `subject_id or …` (with its guard tested by truthiness) 11, each removed
-  check between 2 and 44, decision (b) 13, and decision (a) on the entry `id` and on the
-  token `issuer` 7 each. Two mutants survive and are equivalent: restoring the old
-  expression while keeping the new guard in front of it changes nothing, because the guard
-  has already refused every value the old expression would have replaced.
+  `dict` / `list` that lies through its accessors or whose iteration raises, a `dict` that
+  overrides `keys()`, `__iter__` or `__getitem__` alone and is copied from its storage, an
+  `issuer` key whose hash hides an `@id`), `str` subclasses (every way a string reaches an
+  artefact, across this change's six parameters and #250's five: a `__len__`, `__bool__`,
+  `__getitem__` or `__eq__` / `__hash__` that raises, one that lies about the characters,
+  an empty string that claims a length, a `contexts` entry that claims to be the VC 2.0
+  context) and the 60 KB message bound are covered.
+  Mutation-checked in scratch copies, with `openvc.__file__` asserted inside each: against
+  the `ff59357` tree 243 of the 295 cases fail (the 52 that pass are the controls), and
+  against the PR head before this round (`fb97dae`) 74 do (the string and key cases). On
+  the fixed code, 38 mutants of `issue.py` and `_index.py`: 35 are killed, by 1 to 74
+  cases each (a falsy `contexts` made the default again fails 11, decision (b) 18, `subject_id or …`
+  with its guard tested by truthiness 14, no `plain_str` copy 58 or 74).
+  The counts come from one Hypothesis run and move by one or two between runs. Three
+  mutants survive and are equivalent: restoring `subject_id or …` while keeping the
+  new guard in front of it changes nothing, because the guard has already refused every
+  value the old expression would have replaced; and the token's `uri` and `issuer` are only
+  read by `json.dumps`, which writes the characters, so emitting the copy or the original
+  is the same token.
 
 ## [1.32.4] — 2026-10-14
 
