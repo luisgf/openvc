@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.33.2] — 2026-10-15
+## [1.33.2] — 2026-10-14
 
 ### Fixed
 
@@ -16,7 +16,7 @@ All notable changes to **openvc** are documented here. The format follows
   refused with `ProofMalformed` on every pyld version; only the message differed.
   The test now accepts either message. No library code changed.
 
-## [1.33.1] — 2026-10-15
+## [1.33.1] — 2026-10-14
 
 ### Security
 
