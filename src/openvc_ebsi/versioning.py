@@ -53,10 +53,29 @@ def _origin(url: str) -> str:
     own origin. A belt-and-suspenders check on top of the HTTP client's SSRF allow-list:
     a ``links.next`` cursor may only advance within the same web origin as the listing —
     the port is part of that origin, so a ``next`` that only changes the port is refused
-    (the SSRF host allow-list matches host but not port)."""
-    p = urlparse(url)
-    port = "" if p.port is None else p.port
+    (the SSRF host allow-list matches host but not port).
+
+    A URL with no origin to compare — non-ASCII, an out-of-range or non-numeric port, a
+    broken IPv6 literal — raises a typed :class:`MalformedRegistryResponse`, never a bare
+    ``ValueError`` (#243). ASCII is checked first: on CPython ≤ 3.12 ``urlparse``
+    NFKC-normalizes a non-ASCII netloc in quadratic time."""
+    if not url.isascii():
+        raise MalformedRegistryResponse("registry URL is not ASCII")
+    try:
+        p = urlparse(url)                 # raises on a broken IPv6 literal
+        port = "" if p.port is None else p.port   # raises on a bad port
+    except ValueError as exc:
+        raise MalformedRegistryResponse("registry URL does not parse") from exc
     return f"{p.scheme.lower()}://{(p.hostname or '').lower()}:{port}"
+
+
+def _on_origin(url: str, origin: str) -> bool:
+    """Whether ``url`` sits on ``origin``. A URL that does not parse has no origin, so it
+    is off-origin: the walk skips it exactly as it skips a well-formed foreign URL."""
+    try:
+        return _origin(url) == origin
+    except MalformedRegistryResponse:
+        return False
 
 
 def _require_object(value: Any, what: str) -> dict[str, Any]:
@@ -224,7 +243,7 @@ class TirV5(TirAdapter):
                 break
             links = page.get("links")
             nxt = links.get("next") if isinstance(links, dict) else None
-            url = nxt if isinstance(nxt, str) and nxt and _origin(nxt) == origin else None
+            url = nxt if isinstance(nxt, str) and nxt and _on_origin(nxt, origin) else None
 
     def parse_issuer(self, raw: Any, *, base: str, did: str, fetch: Any,
                      decode: Any) -> IssuerRecord:
@@ -237,7 +256,9 @@ class TirV5(TirAdapter):
             # The HTTP client allow-list is hostname-only; `links.next` is already
             # pinned to scheme://host:port. The same pin must apply to `attributes`
             # and each `href` or a compromised body can pivot to another port on
-            # an allow-listed EBSI host (#172).
+            # an allow-listed EBSI host (#172). An `attributes` URL that does not
+            # parse raises from `_origin`; an `href` or `next` that does not parse is
+            # off-origin, so it is skipped (#243).
             listing_origin = _origin(self.issuer_url(base, did))
             raw_attrs = raw.get("attributes")
             if not raw_attrs:
@@ -251,7 +272,7 @@ class TirV5(TirAdapter):
                 href = item.get("href")
                 if not isinstance(href, str) or not href:
                     continue
-                if _origin(href) != listing_origin:
+                if not _on_origin(href, listing_origin):
                     continue
                 revision = _require_object(fetch(href), "TIR attribute revision")  # v5 hop
                 # v5 nests the accreditation under `attribute`: the signed VC-JWT

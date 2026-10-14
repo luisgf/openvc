@@ -142,7 +142,9 @@ Example-based, but broad. Representative anchors:
   and never binding an x5c `dNSName`; a non-string `iss` typed
   (`test_https_issuer_identifier.py`).
 - **EBSI TIR (plugin)** — an `attributes` URL or a revision `href` on another port of
-  an allow-listed host is never fetched (`test_ebsi_verifier.py`).
+  an allow-listed host is never fetched; a URL that does not parse (a bad port, a
+  broken IPv6 literal, non-ASCII) on `attributes`, `links.next` or `href` is typed or
+  skipped, never fetched (`test_ebsi_verifier.py`).
 - **OpenID4VP `vp_token` (W3C lanes)** — a victim's credential re-wrapped in another
   holder's correctly bound `jwt_vc_json` / `ldp_vc` VP, including a KB-stripped
   SD-JWT VC, enveloped or over the DC API; a nested SD-JWT VC whose KB-JWT names
@@ -188,6 +190,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
+- `#243` — *untyped error* — an EBSI TIR v5 registry URL that does not parse (a port out of range or not numeric, a broken IPv6 literal, an NFKC delimiter) made the `_origin` pin raise a bare `ValueError` out of `verify_ebsi_badge`; it is now treated as off-origin: a `MalformedRegistryResponse` on `attributes`, skipped on `links.next` and `href`, and a non-ASCII URL is refused before `urlparse` (v1.31.4; `test_ebsi_verifier.py`)
 - `#218` — *batch abort* — a clock pin that is not an instant (an epoch number, a string, a `date`, a `datetime` with no UTC equivalent) or a non-numeric `leeway_s` raised a bare `AttributeError` / `OverflowError` / `TypeError` on every datetime validity window (Data Integrity, x5c, mdoc, WRPAC, WRPRC, the trust-list walks); each lane now raises its own typed error (v1.30.5; `test_typed_clock_pins.py`)
 - `#200` — *crash on caller configuration* — `VpJwtProofSuite.verify` with a pinned holder key and no resolver raised a bare `AttributeError`, a regression since v1.6.0; the resolver now defaults, and the pinned key alone still decides the VP signature (v1.30.4; `test_vp_jwt_pinned_holder_no_resolver.py`)
 - `#208` — *batch abort* — a Data Integrity `proofPurpose` that is a JSON array or object raised a bare `TypeError` on all five suites, before any crypto; it is now `ProofMalformed`, checked before the DID is resolved (v1.30.3, PR #210 — the Data Integrity slice; #208 is still open; `test_unhashable_proof_purpose.py`)

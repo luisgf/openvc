@@ -6,6 +6,34 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.31.4] — unreleased
 
+### Security
+
+- **A TIR v5 registry URL that does not parse is now a typed error or an
+  off-origin skip, never a bare `ValueError`**
+  ([#243](https://github.com/luisgf/openvc/issues/243)). Found by the audit-pack
+  catch-up below, which recorded it as an untracked residual.
+
+  The EBSI plugin pins three registry-supplied URLs to the listing's
+  `scheme://host:port` (#172): the HATEOAS `attributes` URL, each `links.next`
+  cursor and each revision `href`. The pin called `urlparse(url).port`. A port out
+  of range (`:99999`) or not numeric (`:abc`), a broken IPv6 literal
+  (`https://[::1/x`) or a character that NFKC folds into a delimiter made it raise a
+  bare `ValueError`. That is not an `OpenvcError`, so a compromised or broken
+  registry made `verify_ebsi_badge` fail closed but untyped, past code that catches
+  `EbsiError` / `OpenvcError`. It was never a wrong-accept.
+
+  A URL with no origin to compare is now handled like an off-origin one, hop by hop:
+  - an `attributes` URL raises `MalformedRegistryResponse`;
+  - an `href` is skipped and its revision never fetched;
+  - a `links.next` ends the walk and keeps the items already read.
+
+  A non-ASCII URL is refused before `urlparse` reads it: on CPython 3.12 and earlier,
+  `urlparse` NFKC-normalizes a non-ASCII netloc in quadratic time (see 1.31.2). The
+  EBSI client's https host allow-list is unchanged.
+
+  `threat-model.md` §7 and R10 no longer list it as an open residual; R10 keeps the
+  hostile DID-document shape (#219).
+
 ### Fixed (docs)
 
 - **The audit pack catches up with the hardening shipped since July.**
@@ -22,7 +50,7 @@ All notable changes to **openvc** are documented here. The format follows
   - The threat model gains **I21** (WRPRC authorization fails closed) with the
     relying-party surface across §1–§6, an attack row for re-wrapping someone else's
     credential (#196), and evidence for I5–I18. A new **R10** names the open untyped
-    exits at the boundary (#219 and the EBSI `_origin` `ValueError`), R9 names #225,
+    exits at the boundary (#219, and the EBSI `_origin` `ValueError` fixed above), R9 names #225,
     and the §9 summary no longer says no residual is a wrong-accept. **R7** now says a *withheld* disclosable `exp` / `nbf` still
     verifies as if absent (#229, open). New entries cite symbols and test names, not
     line numbers.
