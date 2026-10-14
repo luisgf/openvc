@@ -40,6 +40,19 @@ no UTC equivalent is refused. *ttl* is ``None`` or a positive ``int``, never a `
 The ordering of a window (``expires`` before ``issued_at``, a past ``valid_until``) is the
 verifier's call at read time and is not checked here.
 
+The strings an artefact names are held to what the verifier reads too, so that the
+proof lane you sign with does not decide whether they mattered. The credential's *issuer* is
+a non-empty ``str``, or an object whose ``id`` is a non-empty ``str`` and which carries no
+``@id`` (``id`` is the one spelling every lane reads the same; the object's other members
+are the caller's and are not inspected). *subject_id*, an entry's *id* and the token's
+*issuer* are ``None`` (the default) or a non-empty ``str``: ``None`` is the only way to ask
+for the default (a subject of ``<id>#list``, no entry ``id``, no ``iss``), and an empty or
+falsy value is an error. *contexts* is ``None`` (the VC 2.0 context) or a non-empty ``list``
+or ``tuple`` whose first entry is a VC base context (``https://www.w3.org/ns/credentials/v2``
+or ``https://www.w3.org/2018/credentials/v1``) and whose other entries are a non-empty
+``str`` or an object. An identifier's URI shape is not checked: key resolution refuses an
+issuer it cannot resolve, and only the RDF suites require an IRI.
+
 This is the only :mod:`openvc.status` module that touches :mod:`openvc.proof` (to
 sign/verify the token); the codecs and the check side stay pure stdlib.
 """
@@ -50,6 +63,7 @@ import time
 from datetime import datetime
 from typing import Any
 
+from ..proof._context_validation import VC_BASE_CONTEXTS
 from ..proof._jws import sign_compact, verify_compact
 from ..proof._verify_common import (
     check_jwt_temporal,
@@ -92,6 +106,79 @@ def _text(value: Any, *, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise StatusListError(f"{field} must be a non-empty string, got {brief(value)}")
     return value
+
+
+def _snapshot(value: Any, kind: type, *, field: str) -> Any:
+    """``kind(value)`` (``dict`` or ``list``): the plain container the checks read and the
+    artefact carries, so the value checked is the value emitted and the artefact does not
+    alias the caller's object. A subclass whose own ``keys`` / ``__iter__`` raises is a
+    typed error, not that exception."""
+    try:
+        return kind(value)
+    except Exception as exc:
+        raise StatusListError(
+            f"{field} could not be read: {type(exc).__name__}") from None
+
+
+def _credential_issuer(value: Any) -> str | dict[str, Any]:
+    """The ``issuer`` of a status-list credential: a non-empty ``str``, or an object
+    whose ``id`` is a non-empty ``str`` and that has no ``@id``.
+
+    ``VcJwtProofSuite.sign`` writes only ``issuer["id"]`` into ``iss``; the status
+    binding (``_authenticated_list``) and the JOSE reconciliation compare every
+    identifier :func:`~openvc.proof._verify_common.issuer_identifiers` returns (``id`` and
+    ``@id``); and ``eddsa-rdfc-2022`` refuses the ``@id`` spelling. ``id`` alone is the one
+    form every lane reads the same. An object is shallow-copied, and the other members it
+    carries are the caller's: not inspected."""
+    if isinstance(value, str):
+        return _text(value, field="issuer")
+    if not isinstance(value, dict):
+        raise StatusListError(
+            f"issuer must be a non-empty string or an object with a string id, "
+            f"got {brief(value)}")
+    issuer = _snapshot(value, dict, field="issuer")
+    if "@id" in issuer:
+        raise StatusListError(
+            "issuer must name itself with `id` alone, not `@id`: the verifier compares "
+            "every identifier it finds, and eddsa-rdfc-2022 refuses the `@id` spelling")
+    if "id" not in issuer:
+        raise StatusListError("issuer object has no `id`: it names no one")
+    _text(issuer["id"], field="issuer id")
+    return issuer
+
+
+def _contexts(value: Any) -> list[str | dict[str, Any]]:
+    """The ``@context`` of a status-list credential: ``None`` is ``[VC2]``; otherwise a
+    non-empty ``list`` / ``tuple`` whose first entry is a VC base context and whose other
+    entries are a non-empty ``str`` or an object.
+
+    The first-entry rule is the one the RDF suites apply (``_check_context``) and the
+    credential type needs; the shape of the rest is the common ground of every lane (the
+    RDF suites go further and accept only ``@vocab`` objects: their own check says so).
+    A ``str`` is refused, not read one character at a time, and so is a ``dict`` (its
+    keys), an iterator or a ``set``."""
+    if value is None:
+        return [_VC2_CONTEXT]
+    if not isinstance(value, (list, tuple)):
+        raise StatusListError(
+            f"contexts must be None or a non-empty list of context URLs and objects, "
+            f"got {brief(value)}")
+    entries = _snapshot(value, list, field="contexts")
+    if not entries:
+        raise StatusListError(
+            "contexts is empty: pass None for the default "
+            f"[{_VC2_CONTEXT!r}], or a list that starts with a VC base context")
+    first = entries[0]
+    if not isinstance(first, str) or first not in VC_BASE_CONTEXTS:
+        raise StatusListError(
+            f"the first contexts entry must be a VC base context "
+            f"({' or '.join(sorted(VC_BASE_CONTEXTS))}), got {brief(first)}")
+    for position, entry in enumerate(entries[1:], start=1):
+        if not (isinstance(entry, dict) or (isinstance(entry, str) and entry)):
+            raise StatusListError(
+                f"contexts[{position}] must be a non-empty string or an object, "
+                f"got {brief(entry)}")
+    return entries
 
 
 def _packed(value: Any, *, field: str) -> bytes:
@@ -180,7 +267,7 @@ def build_status_list_credential(
     valid_until: datetime | None = None,
     subject_id: str | None = None,
     ttl: int | None = None,
-    contexts: list[str] | None = None,
+    contexts: list[str | dict[str, Any]] | tuple[str | dict[str, Any], ...] | None = None,
 ) -> dict[str, Any]:
     """Build an UNSIGNED W3C ``BitstringStatusListCredential`` wrapping *bitstring*.
 
@@ -199,8 +286,23 @@ def build_status_list_credential(
     the host's local time; an aware one is converted. *ttl* is ``None`` or a positive
     ``int`` (the W3C list gives it in milliseconds).
 
+    *issuer* is a non-empty string (a DID, say) or an object with a non-empty string
+    ``id`` and no ``@id``; other members of the object (``name``) are carried as given.
+    *subject_id* is the ``credentialSubject.id``: ``None`` gives ``<id>#list``, and an
+    explicit value is a non-empty string. *contexts* is the ``@context``: ``None`` gives
+    ``["https://www.w3.org/ns/credentials/v2"]``, and an explicit value is a non-empty
+    ``list`` or ``tuple`` that starts with a VC base context, followed by context URLs or
+    inline context objects. A context URL that is not bundled needs ``extra_contexts`` on
+    the ``eddsa-rdfc-2022`` suite.
+
     Raises :class:`~openvc.status.bitstring.StatusListError` for an *id* or
-    *status_purpose* that is not a non-empty string, for a *bitstring* that is not
+    *status_purpose* that is not a non-empty string, for an *issuer* that is not a
+    non-empty string or an object whose ``id`` is one and which has no ``@id``, for a
+    *subject_id* that is neither ``None`` nor a non-empty string (``""``, ``0``, ``[]``
+    and ``{}`` are errors, not the default), for *contexts* that is neither ``None`` nor a
+    non-empty ``list`` / ``tuple`` of that shape (a ``str``, a ``dict``, an iterator, an
+    empty list, a first entry that is not a VC base context, an entry that is not a
+    non-empty string or an object), for a *bitstring* that is not
     a buffer or is longer than the 16 MiB the verifier inflates, for a *valid_from* /
     *valid_until* that is not a ``datetime`` (a string, an epoch number, a ``date``), has
     a ``tzinfo`` that raises or has no UTC equivalent (year 1 at ``+01:00``), and for a
@@ -209,13 +311,17 @@ def build_status_list_credential(
     """
     _text(id, field="status list credential id")
     _text(status_purpose, field="statusPurpose")
+    issuer = _credential_issuer(issuer)
+    if subject_id is not None:                       # tested with ``is``: "" and 0 are errors
+        _text(subject_id, field="subject_id")
+    context = _contexts(contexts)
     raw_bits = _packed(bitstring, field="bitstring")
     ttl = _ttl(ttl)
     valid_from_iso = _iso(valid_from, name="valid_from") if valid_from is not None else None
     valid_until_iso = (
         _iso(valid_until, name="valid_until") if valid_until is not None else None)
     subject: dict[str, Any] = {
-        "id": subject_id or f"{id}#list",
+        "id": subject_id if subject_id is not None else f"{id}#list",
         "type": BITSTRING_SUBJECT_TYPE,
         "statusPurpose": status_purpose,
         "encodedList": encode_bitstring(raw_bits),
@@ -223,7 +329,7 @@ def build_status_list_credential(
     if ttl is not None:
         subject["ttl"] = ttl
     credential: dict[str, Any] = {
-        "@context": list(contexts) if contexts else [_VC2_CONTEXT],
+        "@context": context,
         "id": id,
         "type": ["VerifiableCredential", BITSTRING_CREDENTIAL_TYPE],
         "issuer": issuer,
@@ -254,10 +360,16 @@ def build_status_list_entry(
     as the base-10 string the spec asks for. A ``bool``, a ``float`` (``NaN``
     included), a string, a negative or an oversized index, or a *status_list_credential*
     / *status_purpose* that is not a non-empty string, raises
-    :class:`~openvc.status.bitstring.StatusListError`."""
+    :class:`~openvc.status.bitstring.StatusListError`.
+
+    *id* is the entry's own identifier: ``None`` (the default) leaves it out, and an
+    explicit value is a non-empty string (``""``, ``0`` and ``[]`` raise, they are not
+    "absent"). Nothing reads it back, so it is not checked for a URI shape."""
     index = status_index(index, field="statusListIndex", allow_string=False)
     _text(status_list_credential, field="statusListCredential")
     _text(status_purpose, field="statusPurpose")
+    if id is not None:                               # tested with ``is``: "" and 0 are errors
+        _text(id, field="status list entry id")
     entry: dict[str, Any] = {
         "type": BITSTRING_ENTRY_TYPE,
         "statusPurpose": status_purpose,
@@ -298,18 +410,27 @@ def build_status_list_token(
     every openvc clock check, not the host's local time. *ttl* is ``None`` or a positive
     ``int`` of seconds.
 
+    *issuer* (``iss``) is ``None`` or a non-empty string, which is what
+    :func:`~openvc.resolvers.default_status_list_token_resolver` needs to find the key.
+    ``None`` is allowed and leaves the claim out, but a token without ``iss`` is refused
+    by that resolver (``StatusListError``): pass it unless the caller resolves the key
+    some other way.
+
     *status_list* is a ``bytes``, ``bytearray``, ``memoryview`` or ``array.array`` (wrap
     any other buffer in ``memoryview()``), read as in
     :func:`build_status_list_credential`. Raises
-    :class:`~openvc.status.bitstring.StatusListError` for a *uri* that is not a
-    non-empty string, a bad *bits*, a *status_list* that is not a buffer or is
-    longer than the 16 MiB the verifier inflates, an *issued_at* / *expires* that is
-    neither a ``datetime`` nor a finite number (a ``bool``, a string, a ``date``, ``NaN``,
-    ``inf``, an integer no float holds), a ``datetime`` whose ``tzinfo`` raises or that has
-    no UTC equivalent (year 1 at ``+01:00``, as for *valid_from*), and a
-    *ttl* that is a ``bool``, a ``float`` (``NaN`` included), a string, zero, negative or
-    an integer no float holds. Every input is checked before anything is signed."""
+    :class:`~openvc.status.bitstring.StatusListError` for a *uri* or an *issuer* that is
+    not a non-empty string (``None`` aside, for *issuer*), a bad *bits*, a *status_list*
+    that is not a buffer or is longer than the 16 MiB the verifier inflates, an
+    *issued_at* / *expires* that is neither a ``datetime`` nor a finite number (a ``bool``,
+    a string, a ``date``, ``NaN``, ``inf``, an integer no float holds), a ``datetime``
+    whose ``tzinfo`` raises or that has no UTC equivalent (year 1 at ``+01:00``, as for
+    *valid_from*), and a *ttl* that is a ``bool``, a ``float`` (``NaN`` included), a
+    string, zero, negative or an integer no float holds. Every input is checked before
+    anything is signed."""
     _text(uri, field="status list token uri")
+    if issuer is not None:                           # tested with ``is``: "" and 0 are errors
+        _text(issuer, field="status list token issuer")
     bits = _check_bits(bits)
     packed = _packed(status_list, field="status_list")
     iat = _epoch(issued_at, name="issued_at") if issued_at is not None else int(time.time())
