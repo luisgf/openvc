@@ -11,9 +11,14 @@ read only ``exp`` / ``nbf``, so such a credential whose only expiry was a past
 VCDM window; this pins the SD-JWT lane to the same rule, on both pipelines, bare and
 inside an ``EnvelopedVerifiableCredential``.
 
-The other direction matters as much: an IETF SD-JWT VC (``dc+sd-jwt``, or the legacy
-``vc+sd-jwt`` typ with a ``vct``) that merely carries a claim *named* ``validUntil``
-must keep verifying, and must not be flagged ``expired`` under the waiver.
+The other direction matters as much: an IETF SD-JWT VC (``dc+sd-jwt``) that merely
+carries a claim *named* ``validUntil`` must keep verifying, and must not be flagged
+``expired`` under the waiver.
+
+What makes a payload VCDM is its ``@context`` and nothing else. ``vc+sd-jwt`` is the W3C
+typ and is accepted only for such a payload (#264): the typ alone no longer reads as
+VCDM, and the pre-draft-06 IETF use of it (a ``vct`` but no VCDM ``@context``) is refused
+with ``SdJwtError``, as draft-ietf-oauth-sd-jwt-vc-19 dropped its transitional acceptance.
 
 Helpers are self-contained (tests/ is not a package — no cross-import); issuers are
 ``did:jwk``, resolved offline by the default resolvers; ``asyncio.run`` drives the
@@ -197,13 +202,35 @@ def test_selectively_disclosed_valid_until_is_refused(run, form):
 
 def test_withheld_context_does_not_switch_the_window_off():
     # An issuer that (against VC-JOSE-COSE §3.2.1's SHOULD NOT) makes @context disclosable:
-    # the holder withholds it, but the vc+sd-jwt typ with no vct still says VCDM.
-    sd_jwt = _mint(_vcdm(validUntil=PAST), disclose=["@context"])
+    # the holder withholds it. Without the @context nothing says VCDM, and the token is
+    # refused, not read as a payload with no window: a vc+sd-jwt needs the @context (#264),
+    # a dc+sd-jwt needs a vct, which this VCDM payload does not carry. One that does carry
+    # a vct is the known limit pinned below.
+    for typ, error, message in [
+        ("vc+sd-jwt", SdJwtError, "needs a W3C VCDM @context"),
+        ("dc+sd-jwt", ClaimsInvalid, "needs a non-empty string vct"),
+    ]:
+        sd_jwt = _mint(_vcdm(validUntil=PAST), typ=typ, disclose=["@context"])
+        issuer_jwt, context_disclosure, _ = sd_jwt.split("~")
+        assert context_disclosure
+        for pipeline in PIPELINES.values():
+            with pytest.raises(error, match=message):
+                pipeline(issuer_jwt + "~", None)
+
+
+def test_withheld_context_on_a_vct_bearing_dc_sd_jwt_is_a_known_limit():
+    # The same third-party issuer error on a dc+sd-jwt that also carries a vct: with the
+    # @context withheld, the payload is a well-formed IETF SD-JWT VC, so its validUntil
+    # is not a validity bound. A withheld disclosure is indistinguishable from a decoy
+    # (RFC 9901 §9.7); openvc's issue() refuses a disclosable @context. Pinned as a
+    # limitation (threat model R7), as in test_sdjwt_non_disclosable.py.
+    sd_jwt = _mint(_vcdm(validUntil=PAST, vct="https://credentials.example/membership"),
+                   typ="dc+sd-jwt", disclose=["@context"])
     issuer_jwt, context_disclosure, _ = sd_jwt.split("~")
-    withheld = issuer_jwt + "~"
     assert context_disclosure
-    with pytest.raises(CredentialExpired):
-        _sync(withheld, None)
+    for pipeline in PIPELINES.values():
+        result = pipeline(issuer_jwt + "~", None)
+        assert result.raw.vcdm is False and result.raw.expired is False
 
 
 def test_valid_until_inside_the_leeway_verifies(run):
@@ -215,19 +242,32 @@ def test_valid_until_inside_the_leeway_verifies(run):
 @pytest.mark.parametrize("typ, context, extra", [
     pytest.param("vc+sd-jwt", V2, {}, id="context-as-a-string"),
     pytest.param("vc+sd-jwt", ["https://example.org/ctx", V2], {}, id="v2-not-first"),
-    pytest.param("vc+sd-jwt", None, {}, id="w3c-typ-no-context-no-vct"),
-    pytest.param("vc+sd-jwt", None, {"vct": ""}, id="w3c-typ-empty-vct"),
+    pytest.param("vc+sd-jwt", [V2], {"vct": "urn:x"}, id="w3c-typ-context-and-vct"),
     pytest.param("dc+sd-jwt", [V2], {}, id="ietf-typ-but-vcdm-context"),
     pytest.param("dc+sd-jwt", [V2], {"vct": "urn:x"}, id="vcdm-context-wins-over-vct"),
 ])
 def test_every_vcdm_signal_enforces_the_window(run, typ, context, extra):
+    # The @context is the only signal (#264); the typ, either one, does not matter here.
     doc = _vcdm(validUntil=PAST, **extra)
-    if context is None:
-        del doc["@context"]
-    else:
-        doc["@context"] = context
+    doc["@context"] = context
     with pytest.raises(CredentialExpired):
         run(_mint(doc, typ=typ), None)
+
+
+@pytest.mark.parametrize("extra", [
+    pytest.param({}, id="no-vct"),
+    pytest.param({"vct": ""}, id="empty-vct"),
+    pytest.param({"vct": "urn:x"}, id="vct"),
+])
+def test_w3c_typ_without_a_vcdm_context_is_refused(run, extra):
+    # #264: `vc+sd-jwt` used to read as VCDM when the payload had no vct, which let a
+    # token skip the REQUIRED vct of an IETF SD-JWT VC and the checks that go with it. It
+    # is the W3C typ now and needs a VCDM @context, however the window would have read.
+    doc = _vcdm(validUntil=PAST, **extra)
+    del doc["@context"]
+    for policy in (None, WAIVED):         # refused whole: the waiver waives only the expiry
+        with pytest.raises(SdJwtError, match="needs a W3C VCDM @context"):
+            run(_mint(doc, typ="vc+sd-jwt"), policy)
 
 
 def test_envelope_media_type_is_not_consulted_for_a_vcdm_payload(run):
@@ -287,15 +327,34 @@ IETF_CASES = {
 
 
 @pytest.mark.parametrize("claims", IETF_CASES.values(), ids=IETF_CASES.keys())
-@pytest.mark.parametrize("typ", ["dc+sd-jwt", "vc+sd-jwt"])
-def test_ietf_sd_jwt_vc_claims_are_not_a_validity_window(run, form, claims, typ):
-    # "vc+sd-jwt" here is the pre-draft-06 IETF typ: it comes with a vct.
-    credential = form(_mint(claims, typ=typ))
+def test_ietf_sd_jwt_vc_claims_are_not_a_validity_window(run, form, claims):
+    credential = form(_mint(claims, typ="dc+sd-jwt"))
     strict = run(credential, None)
     assert strict.expired is False
     waived = run(credential, WAIVED)
     assert waived.expired is False     # nothing was waived: strict accepted it
     assert waived == strict
+
+
+@pytest.mark.parametrize("claims", IETF_CASES.values(), ids=IETF_CASES.keys())
+def test_legacy_vc_sd_jwt_typ_on_an_ietf_payload_is_refused(run, form, claims):
+    # "vc+sd-jwt" on a vct-bearing IETF payload is the pre-draft-06 typ. Draft-19 dropped
+    # its transitional acceptance and the typ is the W3C one now (#264): refused, not
+    # verified as a dc+sd-jwt. The cases above verify with the typ they should carry.
+    credential = form(_mint(claims, typ="vc+sd-jwt"))
+    for policy in (None, WAIVED):
+        with pytest.raises(SdJwtError, match="needs a W3C VCDM @context"):
+            run(credential, policy)
+
+
+def test_w3c_typ_with_a_withheld_vct_is_refused(run, form):
+    # vct is non-disclosable, so a presented disclosure of it is refused; a withheld one
+    # leaves the payload without a vct, and `vc+sd-jwt` no longer vouches for that (#264).
+    sd_jwt = _mint(_ietf(), typ="vc+sd-jwt", disclose=["vct"])
+    issuer_jwt, vct_disclosure, _ = sd_jwt.split("~")
+    assert vct_disclosure
+    with pytest.raises(SdJwtError, match="needs a W3C VCDM @context"):
+        run(form(issuer_jwt + "~"), None)
 
 
 def test_ietf_credential_from_the_suites_own_issuer_keeps_verifying(run, form):
@@ -311,7 +370,7 @@ def test_ietf_credential_from_the_suites_own_issuer_keeps_verifying(run, form):
 
 def test_ietf_jwt_exp_still_enforced(run, form):
     # Not reading validUntil does not loosen the IETF lane: its exp is the gate.
-    credential = form(_mint(_ietf(exp=1_600_000_000)))
+    credential = form(_mint(_ietf(exp=1_600_000_000), typ="dc+sd-jwt"))
     with pytest.raises(ClaimsInvalid, match="expired"):
         run(credential, None)
     assert run(credential, WAIVED).expired is True
@@ -327,28 +386,24 @@ def test_envelope_media_type_does_not_turn_ietf_claims_into_vcdm(run):
 # the gate itself
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("typ, claims, expected", [
-    ("vc+sd-jwt", {"@context": [V2]}, True),
-    ("dc+sd-jwt", {"@context": V2}, True),
-    ("dc+sd-jwt", {"@context": [V1]}, True),
-    ("vc+sd-jwt", {}, True),
-    ("vc+sd-jwt", {"vct": None}, True),
-    ("vc+sd-jwt", {"vct": ""}, True),           # not a vct: an IETF vct is a non-empty string
-    ("vc+sd-jwt", {"vct": 0}, True),
-    ("vc+sd-jwt", {"vct": []}, True),
-    ("vc+sd-jwt", {"vct": {"id": "urn:x"}}, True),
-    ("vc+sd-jwt", {"vct": "urn:x"}, False),
-    ("dc+sd-jwt", {}, False),
-    ("dc+sd-jwt", {"@context": ["https://www.w3.org/ns/credentials/v2/"]}, False),
-    ("dc+sd-jwt", {"@context": {"@vocab": V2}}, False),
-    ("dc+sd-jwt", {"@context": [[V2]]}, False),
-    ("dc+sd-jwt", {"@context": [{"@vocab": "x"}, 7, None]}, False),
-    ("dc+sd-jwt", {"@context": 7}, False),
-    (None, {"@context": [V2]}, True),
-    (["vc+sd-jwt"], {}, False),
+@pytest.mark.parametrize("claims, expected", [
+    ({"@context": [V2]}, True),
+    ({"@context": V2}, True),
+    ({"@context": [V1]}, True),
+    ({"@context": ["https://example.org/ctx", V2]}, True),
+    ({"@context": [V2], "vct": "urn:x"}, True),     # the context wins over a vct
+    ({}, False),                                    # the typ no longer counts: no @context
+    ({"vct": None}, False),
+    ({"vct": ""}, False),
+    ({"vct": "urn:x"}, False),
+    ({"@context": ["https://www.w3.org/ns/credentials/v2/"]}, False),
+    ({"@context": {"@vocab": V2}}, False),
+    ({"@context": [[V2]]}, False),
+    ({"@context": [{"@vocab": "x"}, 7, None]}, False),
+    ({"@context": 7}, False),
 ])
-def test_declares_vcdm(typ, claims, expected):
-    assert _declares_vcdm(typ, claims) is expected
+def test_declares_vcdm(claims, expected):
+    assert _declares_vcdm(claims) is expected
 
 
 # --------------------------------------------------------------------------- #
