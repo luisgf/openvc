@@ -68,11 +68,12 @@ from .vc_jwt import ALLOWED_ALGS, ALLOWED_ALGS_PQ, SigningKey, VcJwtProofSuite
 DEFAULT_LEEWAY_S = 60
 _HASHES = {"sha-256": hashlib.sha256, "sha-384": hashlib.sha384, "sha-512": hashlib.sha512}
 _DEFAULT_HASH = "sha-256"
-_ISSUER_TYP = "dc+sd-jwt"                       # current draft (older: vc+sd-jwt)
+_ISSUER_TYP = "dc+sd-jwt"                       # an IETF SD-JWT VC (draft-19 §2.2.1)
 _ACCEPTED_ISSUER_TYP = frozenset({"dc+sd-jwt", "vc+sd-jwt"})
 _KB_TYP = "kb+jwt"
-# W3C VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload. It is also the typ the
-# IETF drafts used before draft-06 renamed it, so on its own it does not mean VCDM.
+# W3C VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload, and verify() accepts
+# it only for one: a payload with a VCDM `@context` (#264). The IETF drafts used it before
+# draft-06 renamed it, but draft-19 dropped the transitional acceptance of it.
 _W3C_TYP = "vc+sd-jwt"
 _VCDM_CONTEXTS = frozenset({
     "https://www.w3.org/ns/credentials/v2",            # VCDM 2.0
@@ -271,8 +272,8 @@ class VerifiedSdJwt:
     # VCDM payload, its ``validUntil`` — i.e. the expiry check that was skipped would
     # have failed. An IETF SD-JWT VC's claim merely named ``validUntil`` never sets it.
     expired: bool = False
-    # the payload is a W3C VCDM credential (``vc+sd-jwt``, see ``_declares_vcdm``), whose
-    # validity window and issuer / id / subject consistency the suite enforced
+    # the payload is a W3C VCDM credential (a VCDM ``@context``, see ``_declares_vcdm``),
+    # whose validity window and issuer / id / subject consistency the suite enforced
     vcdm: bool = False
 
 
@@ -297,24 +298,22 @@ def _check_aka_vcts(payload: Mapping[str, Any]) -> None:
         raise ClaimsInvalid("aka_vcts must not contain the credential's vct")
 
 
-def _declares_vcdm(typ: Any, claims: Mapping[str, Any]) -> bool:
+def _declares_vcdm(claims: Mapping[str, Any]) -> bool:
     """Whether a processed SD-JWT payload is a W3C VCDM credential (VC-JOSE-COSE §3.2.1),
     whose ``validFrom`` / ``validUntil`` (VCDM 1.1: ``issuanceDate`` / ``expirationDate``)
-    are then enforced as on the VC-JWT lane. Either issuer-signed signal is enough:
+    are then enforced as on the VC-JWT lane: its ``@context`` names a VCDM base context
+    (as a string or anywhere in an array). ``@context`` is never disclosable, so the
+    verdict rests on issuer-signed plaintext.
 
-    * its ``@context`` names a VCDM base context (as a string or anywhere in an array); or
-    * the ``typ`` is ``vc+sd-jwt`` and it has no ``vct``. The typ alone is ambiguous: an
-      IETF SD-JWT VC from before draft-06 carries it too, but always with a ``vct`` — a
-      non-empty string, so ``""``, ``0`` or ``[]`` do not count as one.
+    The ``typ`` is not a signal. ``vc+sd-jwt`` without a VCDM ``@context`` used to count,
+    which let a ``vct``-less (or ``vct``-withheld) token skip the REQUIRED ``vct`` of an
+    IETF SD-JWT VC; verify() now refuses that ``typ`` unless this returns True (#264).
 
-    An IETF SD-JWT VC that merely has a claim *named* ``validUntil`` is neither: the name
+    An IETF SD-JWT VC that merely has a claim *named* ``validUntil`` is not VCDM: the name
     means nothing in its vocabulary, so it is not read as a validity bound."""
     context = claims.get("@context")
     entries = context if isinstance(context, list) else [context]
-    if any(isinstance(entry, str) and entry in _VCDM_CONTEXTS for entry in entries):
-        return True
-    vct = claims.get("vct")
-    return typ == _W3C_TYP and not (isinstance(vct, str) and vct)
+    return any(isinstance(entry, str) and entry in _VCDM_CONTEXTS for entry in entries)
 
 
 # --------------------------------------------------------------------------- #
@@ -408,7 +407,7 @@ class SdJwtVcProofSuite:
         names = list(disclosable)
         # Judge VCDM-ness on the payload as the verifier will parse it: a tuple
         # `@context` is not a list here, but it is a JSON array once signed.
-        vcdm = _declares_vcdm(_ISSUER_TYP, json.loads(_json_bytes(payload)))
+        vcdm = _declares_vcdm(json.loads(_json_bytes(payload)))
         for name in names:                     # refuse before any disclosure is built
             reason = _disclosure_refusal(name, vcdm=vcdm)
             if reason is not None:
@@ -513,8 +512,10 @@ class SdJwtVcProofSuite:
         every KB-JWT fresh and switch the window off. The issuer JWT's ``exp``/``nbf``/``iat``
         still use the current time, as on every JOSE suite.
 
-        When the payload is a W3C VCDM credential (``vc+sd-jwt`` per VC-JOSE-COSE: a
-        VCDM ``@context``, or the ``vc+sd-jwt`` typ with no ``vct``), its ``validFrom`` /
+        The issuer JWT ``typ`` is ``dc+sd-jwt`` (an IETF SD-JWT VC) or ``vc+sd-jwt``. The
+        latter is accepted only for a W3C VCDM payload, one with a VCDM ``@context``
+        (VC-JOSE-COSE §6.1.3); otherwise it raises ``SdJwtError``. When the payload is a
+        W3C VCDM credential (a VCDM ``@context``, whatever the ``typ``), its ``validFrom`` /
         ``validUntil`` are enforced too, like the VC-JWT suite does (current time, same
         leeway; ``check_temporal=False`` waives only the expiry). Its ``iss`` / ``jti`` /
         ``sub`` must not conflict with ``issuer`` / ``id`` / ``credentialSubject.id``
@@ -596,7 +597,7 @@ class SdJwtVcProofSuite:
         # it withholdable — fail visibly now rather than open when a holder withholds it.
         # `@context` is refused too, so the VCDM verdict below rests on issuer-signed
         # plaintext. This cannot see a disclosure that was withheld.
-        vcdm = _declares_vcdm(typ, unpacked)
+        vcdm = _declares_vcdm(unpacked)
         for name, nested in placed:
             reason = _disclosure_refusal(name, vcdm=vcdm)
             if reason is not None:
@@ -604,13 +605,22 @@ class SdJwtVcProofSuite:
                 raise SdJwtError(
                     f"{what} {name!r} is selectively disclosed ({reason}): the issuer "
                     "made it withholdable, so its absence would go undetected")
+        if typ == _W3C_TYP and not vcdm:
+            # VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload, and draft-19
+            # dropped the transitional acceptance of it for an IETF SD-JWT VC. Read as VCDM
+            # by its typ alone, a `vct`-less or `vct`-withheld token skipped the REQUIRED
+            # `vct` below (#264). The verdict rests on a `@context` refused as a disclosure.
+            raise SdJwtError(
+                "issuer JWT typ 'vc+sd-jwt' needs a W3C VCDM @context; an IETF SD-JWT VC "
+                "is typed 'dc+sd-jwt'")
         vct = unpacked.get("vct")
-        if typ == _ISSUER_TYP and not vcdm and not (isinstance(vct, str) and vct):
+        if not vcdm and not (isinstance(vct, str) and vct):
             # draft-19 §2.2.2.3: `vct` is REQUIRED and never disclosable, so a withheld
             # disclosure of it is detectable: it is absent (like `iss`, without which the
-            # issuer JWT never verified at all).
-            # A VCDM payload is typed by `type` instead (_declares_vcdm reads it by content,
-            # whatever the typ), so this binds only an IETF SD-JWT VC.
+            # issuer JWT never verified at all). Only a `dc+sd-jwt` gets here: a
+            # `vc+sd-jwt` is VCDM or was refused above. A VCDM payload is typed by `type`
+            # instead (_declares_vcdm reads it by content), so this binds only an IETF
+            # SD-JWT VC.
             raise ClaimsInvalid("an SD-JWT VC (dc+sd-jwt) needs a non-empty string vct")
 
         # RFC 9901 §7.1 step 6: nbf/exp are checked on the *processed* payload if present.

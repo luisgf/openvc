@@ -4,6 +4,38 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.0] — unreleased
+
+### Security
+
+- **`vc+sd-jwt` is accepted only for a W3C VCDM payload: one with a VCDM `@context`**
+  ([#264](https://github.com/luisgf/openvc/issues/264)). Found by the spec-pin
+  freshness check of 2026-10-14. **This is a behaviour change:** an SD-JWT that
+  verified before can now be refused.
+
+  `draft-ietf-oauth-sd-jwt-vc-19` dropped the -18 sentence that let verifiers accept
+  both `vc+sd-jwt` and `dc+sd-jwt` "for a reasonable transitional period". An IETF
+  SD-JWT VC is typed `dc+sd-jwt` (§2.2.1). W3C VC-JOSE-COSE §6.1.3 registers
+  `vc+sd-jwt` for a payload conforming to the VCDM, and the VCDM requires `@context`.
+
+  openvc used to read `typ: vc+sd-jwt` with no `vct` as a VCDM payload on the typ
+  alone. That defeated the REQUIRED `vct` of draft-19 §2.2.2.3. A `vc+sd-jwt` with
+  no `vct` and no `@context` verified as `vcdm=True, vct=None`, and so did one whose
+  issuer made `vct` disclosable and whose holder withheld it. Typed `dc+sd-jwt`, the
+  same payload is refused. In OpenID4VP such a token answered a `dc+sd-jwt` DCQL query
+  with no `meta.vct_values`, labelled `format='dc+sd-jwt'`. No check the caller had
+  configured was bypassed: an `expected_vct`, `vct_values` or `expected_types` pin
+  refused it. Status, KB-JWT / `cnf` and the disclosure refusals still ran.
+
+  `SdJwtVcProofSuite.verify` now raises `SdJwtError` when the issuer `typ` is
+  `vc+sd-jwt` and the payload carries no VCDM `@context`. That includes a
+  `vct`-bearing IETF payload from a pre-draft-06 issuer: re-issue it as `dc+sd-jwt`.
+  VCDM classification reads only `@context`, which is never disclosable, so it rests
+  on issuer-signed plaintext. A `vc+sd-jwt` with a VCDM `@context`, with or without
+  `vct`, verifies as before, with the VCDM validity window and consistency checks.
+  `dc+sd-jwt` is unchanged here. Its other direction, that a `dc+sd-jwt` always
+  needs a `vct` even with a VCDM `@context`, is #272.
+
 ## [1.32.4] — unreleased
 
 ### Security
