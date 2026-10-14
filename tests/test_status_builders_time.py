@@ -15,9 +15,11 @@ the pointer strings and the list size. It left the time inputs and ``ttl``::
 and, worse, a wrong signed value: ``_epoch`` read a naive ``datetime`` as UTC while ``_iso``
 called ``astimezone``, which reads it as the HOST's local time. The same
 ``datetime(2026, 1, 1, 12, 0)`` minted ``validFrom = 03:00Z`` and ``iat = 12:00Z`` under
-``TZ=Asia/Tokyo``. Both builders now read a ``datetime`` through ``utc_instant`` /
-``utc_epoch`` (a naive value is UTC), ``issued_at`` / ``expires`` must otherwise pass the
-verifier's NumericDate gate, and ``ttl`` is ``None`` or a positive ``int``.
+``TZ=Asia/Tokyo``. Both builders now read a ``datetime`` through ``utc_instant`` (a naive
+value is UTC, one with no UTC form is refused, and the token takes its epoch from the
+plain ``datetime`` that returns, never from the caller's object), ``issued_at`` /
+``expires`` must otherwise pass the verifier's NumericDate gate, and ``ttl`` is ``None``
+or a positive ``int``.
 
 Every refusal is asserted against the EXACT class ``StatusListError`` (it has no
 subclasses), never ``ValueError`` / ``TypeError`` / ``OverflowError`` /
@@ -39,7 +41,7 @@ from fractions import Fraction
 from typing import Any, Callable
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from openvc.errors import OpenvcError
@@ -207,25 +209,43 @@ def test_credential_refuses_what_is_not_a_datetime(field, value):
     refused(lambda: cred(**{field: value}), names=field)
 
 
-@pytest.mark.parametrize("field", ["valid_from", "valid_until"])
-@pytest.mark.parametrize("value", [
+class _BadOffsetDatetime(datetime):
+    """A naive ``datetime`` whose ``utcoffset()`` answers something that is not a
+    ``timedelta``: Python's own test for "naive" (``utcoffset() is None``) is not met,
+    so a reader that trusted it fell through to the host's local zone."""
+
+    def utcoffset(self) -> Any:                                 # type: ignore[override]
+        return "x"
+
+
+# A ``datetime`` with no UTC reading: refused by BOTH builders, for the same four fields'
+# worth of reasons (a UTC form outside years 1..9999 was a bare OverflowError in the
+# credential and a minted ``iat`` of -62135600400 in the token; a tzinfo that raises
+# escaped as itself).
+_NO_UTC_READING = [
     pytest.param(datetime(1, 1, 1, tzinfo=PLUS_ONE), id="year1-at-+01:00"),
     pytest.param(datetime(9999, 12, 31, 23, tzinfo=MINUS_FIVE), id="year9999-at--05:00"),
     pytest.param(datetime(1, 1, 1, 0, 30, tzinfo=timezone(timedelta(hours=14))),
                  id="year1-at-+14:00"),
     pytest.param(datetime(2026, 1, 1, tzinfo=_RaisingTz()), id="raising-tzinfo"),
     pytest.param(_LyingDatetime(2026, 1, 1, tzinfo=PLUS_ONE), id="astimezone-lies"),
-])
+    pytest.param(_BadOffsetDatetime(2026, 1, 1), id="naive-utcoffset-lies"),
+]
+
+
+@pytest.mark.parametrize("field", ["valid_from", "valid_until"])
+@pytest.mark.parametrize("value", _NO_UTC_READING)
 def test_credential_refuses_a_datetime_with_no_utc_reading(field, value):
-    # a UTC form outside years 1..9999 was a bare OverflowError; a tzinfo that raises
-    # escaped as itself
     refused(lambda: cred(**{field: value}), names=field)
 
 
 @pytest.mark.parametrize("field", ["issued_at", "expires"])
-def test_token_refuses_a_datetime_whose_tzinfo_raises(field):
-    refused(lambda: tok_unsigned(**{field: datetime(2026, 1, 1, tzinfo=_RaisingTz())}),
-            names=field)
+@pytest.mark.parametrize("value", _NO_UTC_READING)
+def test_token_refuses_a_datetime_with_no_utc_reading(field, value):
+    # the token read an aware value by ``timestamp()``, so it minted year 1 at +01:00 as
+    # ``iat = -62135600400`` and 9999-12-31T23:00-05:00 as 253402315200 where the
+    # credential refused them, and it asked the caller's object for the epoch
+    refused(lambda: tok_unsigned(**{field: value}), names=field)
 
 
 def test_the_error_names_the_parameter_and_the_value_safely():
@@ -359,6 +379,47 @@ def test_a_number_subclass_time_is_signed_as_the_number_it_holds():
     refused(lambda: tok_unsigned(expires=_LiarFloat(NAN)), names="expires")
 
 
+class _TimestampLiar(datetime):
+    """A ``datetime`` that is right about everything but the one method the token builder
+    used to ask it for. ``timestamp()`` answers whatever the class says: a bignum, a
+    digit string, or an assertion that it must never be called."""
+
+    answer: Any = None
+
+    def timestamp(self) -> float:
+        if self.answer is None:
+            raise AssertionError("the builder asked the caller's datetime for its epoch")
+        return self.answer
+
+
+def _timestamp_liar(answer: Any, *args: Any, **kw: Any) -> datetime:
+    return type("TimestampLiar", (_TimestampLiar,), {"answer": answer})(*args, **kw)
+
+
+@pytest.mark.parametrize("field", ["issued_at", "expires"])
+@pytest.mark.parametrize("answer", [
+    pytest.param(None, id="raises"),
+    pytest.param(HUGE, id="bignum-1e5000"),               # bare ValueError out of json.dumps
+    pytest.param(10 ** 400, id="bignum-1e400"),           # minted: the verifier refuses it
+    pytest.param("1700000000", id="digit-str"),           # silently coerced by int()
+    pytest.param(NAN, id="nan"),
+    pytest.param(-1.0, id="negative"),
+])
+@pytest.mark.parametrize("tz", [UTC, PLUS_NINE, None], ids=["aware-utc", "aware-+09:00", "naive"])
+def test_token_epoch_is_the_instant_held_not_what_timestamp_says(field, answer, tz):
+    # utc_instant rebuilds a plain datetime, so the epoch is taken from that and the
+    # caller's ``timestamp()`` is never consulted (the credential builder was immune
+    # already: it only ever read the fields)
+    liar = _timestamp_liar(answer, 2026, 1, 1, 12, tzinfo=tz)
+    twin = datetime(2026, 1, 1, 12, tzinfo=tz)
+    claim = "iat" if field == "issued_at" else "exp"
+    expected = {UTC: 1767268800, PLUS_NINE: 1767236400, None: 1767268800}[tz]   # 12:00 / 03:00Z
+    assert claims_of(tok(**{field: twin}))[claim] == expected
+    got = claims_of(tok(**{field: liar}))[claim]
+    assert got == expected and type(got) is int
+    assert cred(valid_from=liar)["validFrom"] == cred(valid_from=twin)["validFrom"]
+
+
 # --------------------------------------------------------------------------- #
 # Controls: what built before still builds, byte for byte
 # --------------------------------------------------------------------------- #
@@ -415,9 +476,10 @@ def test_token_datetime_controls():
         expires=datetime(2026, 1, 1, 21, tzinfo=PLUS_NINE)))
     assert claims["iat"] == 1767268800                              # 2026-01-01T12:00:00Z
     assert claims["exp"] == 1767268800                              # 21:00+09:00 is 12:00Z
-    # the token reads an aware value as an epoch, so year 1 at +01:00 has one (the
-    # credential, which needs a UTC *string*, refuses it)
-    assert claims_of(tok(issued_at=datetime(1, 1, 1, tzinfo=PLUS_ONE)))["iat"] == -62135600400
+    # year 1 at +01:00 has an epoch (-62135600400) but no UTC form: both builders refuse it
+    # (test_token_refuses_a_datetime_with_no_utc_reading), where the token used to mint it
+    refused(lambda: tok_unsigned(issued_at=datetime(1, 1, 1, tzinfo=PLUS_ONE)),
+            names="issued_at")
 
 
 def test_a_tzinfo_with_no_offset_is_naive_so_utc_in_both_builders():
@@ -697,7 +759,12 @@ def test_property_a_credential_window_the_builder_accepts_is_readable_inside_it(
 
 @settings(max_examples=300, deadline=None)
 @given(a=_when, b=_when)
+@example(a=datetime(1, 1, 1, tzinfo=PLUS_ONE), b=1700000000)         # no UTC form: refused
+@example(a=1700000000, b=datetime(9999, 12, 31, 23, tzinfo=MINUS_FIVE))
+@example(a=datetime(1, 1, 1, tzinfo=UTC), b=datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC))
 def test_property_a_token_window_the_builder_accepts_is_readable_inside_it(a, b):
+    if any(isinstance(v, datetime) and _utc_form(v) is None for v in (a, b)):
+        return                                         # refused above: nothing to read back
     ea = claims_of(tok(issued_at=a))["iat"]
     eb = claims_of(tok(issued_at=b))["iat"]
     lo, hi = (a, b) if ea <= eb else (b, a)
@@ -710,8 +777,13 @@ def test_property_a_token_window_the_builder_accepts_is_readable_inside_it(a, b)
 
 @settings(max_examples=300, deadline=None)
 @given(value=st.one_of(_when, _junk))
+@example(value=datetime(1, 1, 1, tzinfo=PLUS_ONE))                    # no UTC form: refused
+@example(value=datetime(9999, 12, 31, 23, tzinfo=MINUS_FIVE))
+@example(value=datetime(1, 1, 1, tzinfo=UTC))                         # the edge that builds
+@example(value=datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC))
 def test_property_a_token_time_is_typed_or_read_back_by_the_verifier(value):
-    built = isinstance(value, datetime) or _is_finite_number(value)
+    built = (_utc_form(value) is not None if isinstance(value, datetime)
+             else _is_finite_number(value))        # the credential's rule for a datetime
     for field in ("issued_at", "expires"):
         if not built:
             refused(lambda: tok_unsigned(**{field: value}), names=field)
@@ -745,6 +817,7 @@ def test_every_builder_error_is_an_openvc_error_never_a_builtin():
     # the class a revocation-publishing job catches around a rebuild
     calls = [
         lambda: tok(issued_at="soon"), lambda: tok(expires=NAN), lambda: tok(ttl=0),
+        lambda: tok(issued_at=datetime(1, 1, 1, tzinfo=PLUS_ONE)),
         lambda: cred(valid_from="2026-01-01"), lambda: cred(valid_until=1790000000),
         lambda: cred(valid_from=datetime(1, 1, 1, tzinfo=PLUS_ONE)), lambda: cred(ttl=NAN),
     ]

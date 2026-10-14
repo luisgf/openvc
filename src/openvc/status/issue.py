@@ -122,8 +122,12 @@ def _packed(value: Any, *, field: str) -> bytes:
 def _epoch(value: Any, *, name: str) -> int:
     """*value* as the integer epoch seconds of a JWT ``iat`` / ``exp``.
 
-    A ``datetime`` is read by :func:`~openvc.proof._verify_common.utc_epoch` (a naive one
-    is UTC). Anything else must pass the verifier's own NumericDate gate,
+    A ``datetime`` is read by :func:`~openvc.proof._verify_common.utc_instant`, the same
+    call :func:`_iso` makes (a naive one is UTC, one with no UTC equivalent is refused),
+    and the epoch is taken from the plain aware ``datetime`` that returns, never from the
+    caller's object: a ``datetime`` subclass cannot answer ``timestamp()`` with a bignum, a
+    string or an instant of its own, and both builders accept and refuse the same values.
+    Anything else must pass the verifier's own NumericDate gate,
     :func:`~openvc.proof._verify_common.is_numeric_date`: an ``int`` or finite ``float``,
     never a ``bool``, a digit string, ``NaN``, ``±inf`` or an integer no float holds, so
     openvc never signs a token its own ``verify_status_list_token`` then refuses. The
@@ -132,7 +136,7 @@ def _epoch(value: Any, *, name: str) -> int:
     ``float.__float__``), which the subclass cannot override, so the value checked is the
     value signed."""
     if isinstance(value, datetime):
-        return utc_epoch(value, error=StatusListError, name=name)
+        return int(utc_instant(value, error=StatusListError, name=name).timestamp())
     if isinstance(value, int) and not isinstance(value, bool):
         value = plain_int(value)
     elif isinstance(value, float):
@@ -301,7 +305,8 @@ def build_status_list_token(
     non-empty string, a bad *bits*, a *status_list* that is not a buffer or is
     longer than the 16 MiB the verifier inflates, an *issued_at* / *expires* that is
     neither a ``datetime`` nor a finite number (a ``bool``, a string, a ``date``, ``NaN``,
-    ``inf``, an integer no float holds), a ``datetime`` whose ``tzinfo`` raises, and a
+    ``inf``, an integer no float holds), a ``datetime`` whose ``tzinfo`` raises or that has
+    no UTC equivalent (year 1 at ``+01:00``, as for *valid_from*), and a
     *ttl* that is a ``bool``, a ``float`` (``NaN`` included), a string, zero, negative or
     an integer no float holds. Every input is checked before anything is signed."""
     _text(uri, field="status list token uri")

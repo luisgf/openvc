@@ -153,7 +153,10 @@ All notable changes to **openvc** are documented here. The format follows
   (`is_numeric_date`) that `verify_status_list_token` applies to `iat` / `exp` / `nbf`.
   A digit string (`"1700000000"`, which `int()` coerced), a `bool` (minted as `1` / `0`),
   a `Decimal` or `Fraction` (pass `int(x)`) now raise `StatusListError`. `time.time()`
-  and any finite `float` still work and are truncated to whole seconds as before.
+  and any finite `float` still work and are truncated to whole seconds as before. A
+  `datetime` whose UTC form is outside years 1 to 9999 (year 1 at `+01:00`,
+  `9999-12-31T23:00` at `-05:00`) is refused too, as `valid_from` / `valid_until` already
+  refuse it; the token used to sign an epoch for it (see Fixed).
 
 - **`valid_from` / `valid_until` are a `datetime` or `None`**, as the signature says
   ([#255](https://github.com/luisgf/openvc/issues/255)). A string, an epoch number or a
@@ -194,6 +197,23 @@ All notable changes to **openvc** are documented here. The format follows
     (`verify_status_list_token` refuses the token as not a finite numeric timestamp), and
     `10**5000` died with a bare `ValueError` from `json.dumps` inside `sign_compact` (the
     4300-digit limit). A `datetime` whose `tzinfo` raises is typed too.
+  - `build_status_list_token` reads a `datetime` the way the credential builder does:
+    `utc_instant` rebuilds a plain aware `datetime`, and the epoch is taken from that,
+    never from the caller's object. Before, the token asked the object for `timestamp()`,
+    so a `datetime` subclass answering a 5000-digit integer died with the same bare
+    `ValueError`, one answering `10**400` was minted as a 1329-bit `iat` / `exp` (which
+    `verify_status_list_token` refuses as not a finite NumericDate), and one answering the
+    string `"1700000000"` was coerced by `int()`. All three now mint the instant the
+    object holds, and `timestamp()` is not called. A naive subclass whose `utcoffset()`
+    answers something that is not a `timedelta` was read in the host's local zone (an
+    hour off on a UTC+1 host) and is now a `StatusListError`.
+  - Both builders now refuse the same `datetime`s: exactly those with no UTC form in years
+    1 to 9999. The token used to mint year 1 at `+01:00` as `iat = -62135600400` and
+    `9999-12-31T23:00` at `-05:00` as `253402315200`, which the credential builder
+    refused. A caller that relied on those two edge values passes the UTC instant
+    (`datetime(1, 1, 1, tzinfo=timezone.utc)`) or the epoch number; no other `datetime`
+    changes, and an aware or naive value in years 1 to 9999 mints the same `iat` / `exp`
+    byte for byte.
   - `build_status_list_credential(valid_from=…, valid_until=…)`: besides the non-`datetime`
     values above, an aware value whose UTC form leaves years 1 to 9999 (year 1 at
     `+01:00`, `9999-12-31T23:00` at `-05:00`) was a bare `OverflowError`; it and a
@@ -267,11 +287,20 @@ All notable changes to **openvc** are documented here. The format follows
   `Asia/Tokyo` and `America/New_York`, and the check is made to fail if the pin did not
   take effect. Build, sign, verify round trips cover an aware UTC, `+09:00` and `-05:00`
   value, a naive one and years 1 and 9999. Hypothesis properties cover the accepted
-  `datetime`s (exactly those with a UTC form in years 1 to 9999), a window the builders
-  accept and the verifier reads inside it, the token's time inputs, and `ttl`.
-  Mutation-checked: 174 of the 208 cases fail against the previous code, and the 34 that
-  pass are the controls and the naive-`datetime` cases on a UTC host, where the bug is
-  invisible by construction.
+  `datetime`s (exactly those with a UTC form in years 1 to 9999, for the token as for the
+  credential, with the edge values pinned as `@example`s), a window the builders accept and
+  the verifier reads inside it, the token's time inputs, and `ttl`. A `datetime` subclass
+  whose `timestamp()` raises, answers `10**5000`, `10**400`, a digit string, `NaN` or a
+  negative number is built for each of an aware UTC, an aware `+09:00` and a naive value,
+  in `issued_at` and `expires`, and must mint the instant it holds; a naive subclass whose
+  `utcoffset()` is not a `timedelta` is refused by both builders.
+  Mutation-checked in a scratch copy of `src`: 223 of the 256 cases fail against the code
+  before this PR (`a815089`). The 33 that pass are the controls, the naive-`datetime` cases
+  on a UTC host (the bug is invisible by construction) and the year-padding rows on a host
+  whose `strftime` pads, such as macOS (glibc fails them). The token's `datetime` reading
+  is checked separately: with `_epoch` back on `utc_epoch`, 49 cases fail (the 36
+  `timestamp()` rows, the 10 no-UTC-reading rows, the token control that used to expect
+  `iat = -62135600400`, the error-class test and the token property).
 
 ## [1.32.3] — 2026-10-14
 

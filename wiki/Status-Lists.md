@@ -121,8 +121,11 @@ assert vc["validFrom"] == "2026-01-01T12:00:00Z"
 These are a `StatusListError` at build time, before anything is signed:
 
 - a `valid_from` / `valid_until` that is not a `datetime` (an ISO string, an epoch
-  number, a `date`), and a `datetime` with no UTC equivalent: year 1 at `+01:00`, or
-  a `tzinfo` that raises;
+  number, a `date`);
+- in any of the four parameters, a `datetime` with no UTC equivalent between years 1 and
+  9999 (year 1 at `+01:00`, `9999-12-31T23:00` at `-05:00`) or whose `tzinfo` raises.
+  Both builders read a `datetime` the same way, and the token takes its epoch from the
+  plain `datetime` that reading returns, never from the object the caller passed;
 - an `issued_at` / `expires` that is a `bool`, a digit string (`"1700000000"`), a
   `date`, a `timedelta`, `NaN`, `inf`, or an integer no float holds (`10**400`) — the
   last would have been signed and then refused by `verify_status_list_token`, which
@@ -131,13 +134,18 @@ These are a `StatusListError` at build time, before anything is signed:
   included, which are not JSON), a string, `0`, a negative number, a `list`. The IETF
   `ttl` is seconds and the W3C one milliseconds; the builder does not convert.
 
-The order of a window is not checked: a past `expires`, an `issued_at` in the future
-or an `expires` before `issued_at` build, and `verify_status_list_token` /
-`VcJwtProofSuite.verify` refuse them when they read the artefact.
+The order of a window is not checked, by the builders or by the verifiers: a past
+`expires`, an `issued_at` in the future, an `expires` before `issued_at` and a
+`valid_until` before `valid_from` all build. `verify_status_list_token` /
+`VcJwtProofSuite.verify` refuse the artefact when the time they read it at falls outside
+the window by more than their leeway (60 seconds by default), so a window inverted by less
+than the leeway is still accepted.
 
 This is a behaviour change in 1.32.4. A digit string or a `bool` for `issued_at` /
 `expires`, a `Decimal` or `Fraction` there (pass `int(x)`), and a `ttl` that is not a
-positive `int` used to build and are now refused. A naive `valid_from` / `valid_until`
+positive `int` used to build and are now refused, and so is a `datetime` that has no UTC
+equivalent, which `build_status_list_token` used to sign as an `iat` / `exp` (year 1 at
+`+01:00` as `-62135600400`). A naive `valid_from` / `valid_until`
 on a host that is not on UTC now yields its UTC reading, a different `validFrom` /
 `validUntil` string from before for the same call (it used the host's local zone): pass
 an aware `datetime` if you meant local time. The
