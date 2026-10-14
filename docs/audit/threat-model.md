@@ -193,14 +193,14 @@ finite input", with no explicit constant.
   A URL with no origin to compare is treated as off-origin: a typed
   `MalformedRegistryResponse` on the `attributes` hop, skipped on `links.next` and
   `href`. That covers a port that does not parse (`:99999`, `:abc`) and a broken IPv6
-  literal, which raised a bare `ValueError` before v1.31.4 (#243). It also covers a URL
+  literal, which raised a bare `ValueError` before v1.32.1 (#243). It also covers a URL
   the client would read differently: anything but visible ASCII (refused before
   `urlparse`) or over 8 KiB (#246). The client applies the same rule before any I/O:
   a URL that is not visible ASCII, or that `urlparse` cannot read (port included), is
-  `HttpForbiddenHost`, and `httpx.InvalidURL` is mapped to it. Before v1.31.4 an
+  `HttpForbiddenHost`, and `httpx.InvalidURL` is mapped to it. Before v1.32.1 an
   unsigned token whose `iss` held a control character escaped `verify_ebsi_badge` as
   a bare `httpx.InvalidURL` (#246). A body httpx cannot decompress is a
-  `MalformedRegistryResponse`; before v1.31.4 it escaped as a bare
+  `MalformedRegistryResponse`; before v1.32.1 it escaped as a bare
   `httpx.DecodingError` (#248).
 
 ## 8. Fail-closed invariants catalog
@@ -342,7 +342,7 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   for an unsigned token's own `did:web` issuer raises a bare exception, with no key
   needed (#219, open). It is not a wrong-accept: it fails closed, untyped. *Fix:* type
   it at the boundary, with batch-isolation tests. Three EBSI exits are typed since
-  v1.31.4 (§7): a registry URL that `_origin` could not parse (#243), a URL the HTTP
+  v1.32.1 (§7): a registry URL that `_origin` could not parse (#243), a URL the HTTP
   client could not parse, reachable from a token's `iss` (#246), and a registry body
   that does not decompress (#248).
 

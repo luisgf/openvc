@@ -6,59 +6,12 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.32.1] — unreleased
 
-Tests and docs only: no behaviour change. The library side is a docstring and a
-comment in `rp_registration.py`.
-
-### Fixed (docs)
-
-- **`check_request_within_registration` describes the rule it enforces.** Its
-  docstring said each requested claim path must fall inside *one* matching
-  `credentials` entry. The code pools the grants of every entry whose `meta` covers
-  the whole query — two entries for the same `vct`, one granting `name` and one
-  `age`, authorize a query for both — and that rule is kept. TS 119 475 scopes the
-  registered credentials to the intended use (clause B.2.7), not to an entry, and
-  defines no either/or between entries. Pooling never borrows from an entry
-  registered for another `vct`, or for only part of the query's `meta`. A
-  one-entry rule would add no protection, because the relying party could split
-  the query in two. The Relying-Party Certificates wiki page says the same.
-
-### Tests
-
-- **The pooling rule is pinned.** One test covers entries with identical `meta`:
-  their grants pool, and an unregistered path is still refused. A second covers
-  overlapping `meta`: an entry for `vct` A alone lends nothing to a query that a
-  `vct` B credential may answer. Both were mutation-checked: a one-entry rule fails
-  both, and pooling every entry of a format, whatever its `meta`, fails the second.
-
-## [1.32.0] — 2026-10-14
-
-### Added
-
-- **Python 3.15 is supported**
-  ([#241](https://github.com/luisgf/openvc/issues/241)). CPython 3.15.0 shipped on
-  2026-10-09. Since #126 it had been an *advisory* CI leg that installed only
-  `[ebsi,dev]`, because lxml had no cp315 wheel. lxml, rpds-py and cryptography now
-  publish one, so 3.15 is a regular, blocking leg with `[all]` and the full 85 %
-  coverage floor. A `Programming Language :: Python :: 3.15` classifier is added.
-
-### Deprecated
-
-- **Python 3.10** ([#241](https://github.com/luisgf/openvc/issues/241)). It reached
-  end-of-life upstream on 2026-10-01. Importing openvc on 3.10 now emits a
-  `FutureWarning` naming the end-of-life date and the removal in 2.0
-  ([#74](https://github.com/luisgf/openvc/issues/74)). It is a `FutureWarning`
-  because a `DeprecationWarning` raised during import is hidden by default outside
-  test runners. Nothing is removed: 1.x still installs and is still tested on 3.10.
-  `wiki/Versioning-and-Deprecation.md` gains a *Supported Python versions* section
-  with the rule: a version that reaches end-of-life is deprecated in the next MINOR
-  release and dropped at the next MAJOR.
-
 ### Security
 
 - **A TIR v5 registry URL that does not parse is now a typed error or an
   off-origin skip, never a bare `ValueError`**
   ([#243](https://github.com/luisgf/openvc/issues/243)). Found by the audit-pack
-  catch-up below, which recorded it as an untracked residual.
+  catch-up in 1.32.0 (#240), which recorded it as an untracked residual.
 
   The EBSI plugin pins three registry-supplied URLs to the listing's
   `scheme://host:port` (#172): the HATEOAS `attributes` URL, each `links.next`
@@ -116,6 +69,50 @@ comment in `rp_registration.py`.
 
 ### Fixed (docs)
 
+- **`check_request_within_registration` describes the rule it enforces.** Its
+  docstring said each requested claim path must fall inside *one* matching
+  `credentials` entry. The code pools the grants of every entry whose `meta` covers
+  the whole query — two entries for the same `vct`, one granting `name` and one
+  `age`, authorize a query for both — and that rule is kept. TS 119 475 scopes the
+  registered credentials to the intended use (clause B.2.7), not to an entry, and
+  defines no either/or between entries. Pooling never borrows from an entry
+  registered for another `vct`, or for only part of the query's `meta`. A
+  one-entry rule would add no protection, because the relying party could split
+  the query in two. The Relying-Party Certificates wiki page says the same.
+
+### Tests
+
+- **The pooling rule is pinned.** One test covers entries with identical `meta`:
+  their grants pool, and an unregistered path is still refused. A second covers
+  overlapping `meta`: an entry for `vct` A alone lends nothing to a query that a
+  `vct` B credential may answer. Both were mutation-checked: a one-entry rule fails
+  both, and pooling every entry of a format, whatever its `meta`, fails the second.
+
+## [1.32.0] — 2026-10-14
+
+### Added
+
+- **Python 3.15 is supported**
+  ([#241](https://github.com/luisgf/openvc/issues/241)). CPython 3.15.0 shipped on
+  2026-10-09. Since #126 it had been an *advisory* CI leg that installed only
+  `[ebsi,dev]`, because lxml had no cp315 wheel. lxml, rpds-py and cryptography now
+  publish one, so 3.15 is a regular, blocking leg with `[all]` and the full 85 %
+  coverage floor. A `Programming Language :: Python :: 3.15` classifier is added.
+
+### Deprecated
+
+- **Python 3.10** ([#241](https://github.com/luisgf/openvc/issues/241)). It reached
+  end-of-life upstream on 2026-10-01. Importing openvc on 3.10 now emits a
+  `FutureWarning` naming the end-of-life date and the removal in 2.0
+  ([#74](https://github.com/luisgf/openvc/issues/74)). It is a `FutureWarning`
+  because a `DeprecationWarning` raised during import is hidden by default outside
+  test runners. Nothing is removed: 1.x still installs and is still tested on 3.10.
+  `wiki/Versioning-and-Deprecation.md` gains a *Supported Python versions* section
+  with the rule: a version that reaches end-of-life is deprecated in the next MINOR
+  release and dropped at the next MAJOR.
+
+### Fixed (docs)
+
 - **The audit pack catches up with the hardening shipped since July.**
   `docs/audit/assurance.md` and `docs/audit/threat-model.md` had kept up with
   only part of it. Of the 33 `security` / `fix` commits since the last full update
@@ -130,7 +127,7 @@ comment in `rp_registration.py`.
   - The threat model gains **I21** (WRPRC authorization fails closed) with the
     relying-party surface across §1–§6, an attack row for re-wrapping someone else's
     credential (#196), and evidence for I5–I18. A new **R10** names the open untyped
-    exits at the boundary (#219, and the EBSI `_origin` `ValueError` fixed above), R9 names #225,
+    exits at the boundary (#219 and the EBSI `_origin` `ValueError`), R9 names #225,
     and the §9 summary no longer says no residual is a wrong-accept. **R7** now says a *withheld* disclosable `exp` / `nbf` still
     verifies as if absent (#229, open). New entries cite symbols and test names, not
     line numbers.
