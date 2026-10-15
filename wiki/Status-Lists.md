@@ -287,9 +287,21 @@ and read `result.status.revoked`; suspension still rejects. See
   resolvers refuse a list whose body names an issuer other than the one its
   signature was verified for (`StatusListError`). Before 1.31.0, an IETF
   `dc+sd-jwt` list signed by an attacker could name the victim there and clear
-  the revocation bit. A custom `resolve_status_list` must uphold the same rule:
-  return a list whose `issuer` you have authenticated, for example by comparing it
-  with the `result.issuer` of the `verify_credential` call that checked the list.
+  the revocation bit.
+  A list secured as a VC-JWT in the VCDM 1.1 JWT encoding may carry its issuer only
+  in the JWT `iss`: its body has no `issuer`, or an object with no `id` such as
+  `{"name": "Example University"}`. Since 1.35.0 the default resolvers fill in the
+  signer the pipeline verified the list for where the body names no one (an
+  `{"name": …}` object keeps its members and gains the `id`), on a copy. So a list
+  the credential's own issuer signed is accepted, and one an attacker signed is
+  still refused, now by `StatusListIssuerUntrusted` naming the attacker, unless the
+  attacker is in `status_issuer_allowlist`. A custom `resolve_status_list` must
+  uphold the same rule: return a list whose `issuer` you have authenticated, for
+  example by comparing it with the `result.issuer` of the `verify_credential` call
+  that checked the list, and fill in that `result.issuer` yourself where the body
+  names no one. The pipeline does not do it for you: an issuer-less body from a
+  custom resolver still fails closed (`StatusListIssuerUntrusted`, "no issuer to
+  bind against").
 - **SD caveat**: a selectively disclosable status pointer is one the holder can
   withhold, and a withheld one looks like no status at all. openvc's SD-JWT VC
   `issue()` refuses to make `status` or `credentialStatus` disclosable, and

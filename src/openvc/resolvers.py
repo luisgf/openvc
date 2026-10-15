@@ -89,7 +89,12 @@ def default_status_list_resolver(
     credential over the SSRF-guarded https fetch and **verifies** it through the
     pipeline before returning it — a fetched-but-unverified status list would let a
     forged one clear revocation. Status-of-status recursion is turned off
-    (``require_status=False``); *resolver* resolves the status issuer's key."""
+    (``require_status=False``); *resolver* resolves the status issuer's key.
+
+    The returned body names its issuer: a list whose body names a different one than its
+    signer is refused (``StatusListError``), and one whose body names no one (the issuer is
+    in the JWT ``iss`` only) gets the verified signer filled in, on a copy, so
+    ``require_status_issuer_binding`` can bind it (ADR-0006, #226)."""
     def resolve(url: str) -> dict:
         from .verify import VerificationPolicy, verify_credential
         credential = _as_credential(fetch(url))
@@ -130,19 +135,44 @@ def default_status_list_token_resolver(
 
 
 def _authenticated_list(result: Any) -> dict:
-    """The verified status-list credential, once the ``issuer`` its body names is the
-    issuer the pipeline authenticated (``result.issuer``). The ADR-0006 binding reads
-    that field, and an IETF SD-JWT's ``issuer`` claim is not reconciled with its
-    ``iss``: a list signed by A that names B must not pass as B's."""
+    """The verified status-list credential, with an ``issuer`` that is the issuer the
+    pipeline authenticated (``result.issuer``). The ADR-0006 binding reads that field
+    from the body, and an IETF SD-JWT's ``issuer`` claim is not reconciled with its
+    ``iss``: a list signed by A that names B must not pass as B's.
+
+    * A body whose ``issuer`` names someone else is refused (``StatusListError``).
+    * A body that names the signer is returned as it is.
+    * A body that names no one (``issuer`` absent, or an object with no ``id`` / ``@id``,
+      which is what the VCDM 1.1 JWT encoding leaves behind when it moves the issuer's
+      id to ``iss``) gets ``result.issuer`` filled in, on a copy: the signer is the only
+      identity the list has proved. The binding then compares that signer with the
+      credential's issuer, so a list signed by an attacker is still refused, naming the
+      attacker (#226).
+
+    ``result.credential`` is never written to: it is the verified claim set, and an
+    SD-JWT result shares it with ``result.claims``."""
     from .proof._verify_common import issuer_identifiers, safe_repr
     credential: dict = result.credential
-    if "issuer" in credential and any(
-            name != result.issuer for name in issuer_identifiers(credential["issuer"])):
+    signer = result.issuer
+    if "issuer" not in credential:
+        return {**credential, "issuer": signer} if _is_identity(signer) else credential
+    issuer = credential["issuer"]
+    identifiers = issuer_identifiers(issuer)
+    if any(name != signer for name in identifiers):
         from .status import StatusListError
         raise StatusListError(
-            f"status list names issuer {safe_repr(credential['issuer'])} "
-            f"but is signed by {result.issuer!r}")
-    return credential
+            f"status list names issuer {safe_repr(issuer)} "
+            f"but is signed by {signer!r}")
+    if identifiers or not isinstance(issuer, dict) or not _is_identity(signer):
+        return credential
+    return {**credential, "issuer": {**issuer, "id": signer}}
+
+
+def _is_identity(signer: Any) -> bool:
+    """Whether *signer* can stand as an issuer id: a non-empty string. Every lane that
+    reaches :func:`_authenticated_list` reports one; this keeps a missing one failing
+    closed at the binding ("no issuer to bind against") rather than filling in garbage."""
+    return isinstance(signer, str) and bool(signer)
 
 
 def _require_expected_issuer(claimed: str | None, expected: str | None) -> None:
@@ -222,7 +252,8 @@ def default_status_list_resolver_async(
 ) -> AsyncResolveStatusList:
     """Async :func:`default_status_list_resolver` — fetches the status-list credential
     over the SSRF-guarded async fetch and **verifies** it through the async pipeline
-    before returning it. *resolver* is an :class:`AsyncDidResolver`."""
+    before returning it. *resolver* is an :class:`AsyncDidResolver`. The returned body
+    names its issuer exactly as :func:`default_status_list_resolver`'s does."""
     async def resolve(url: str) -> dict:
         from .aio import verify_credential_async
         from .verify import VerificationPolicy

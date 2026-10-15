@@ -4,6 +4,62 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] — unreleased
+
+### Fixed
+
+- **The status-list issuer binding accepts a list its own issuer signed with no `issuer`
+  in the body** ([#226](https://github.com/luisgf/openvc/issues/226), found by the
+  adversarial review of #221; it predates it). `VerificationPolicy(
+  require_status_issuer_binding=True)` (ADR-0006) reads the list's issuer from its body.
+  A legitimate list secured as a VC-JWT in the VCDM 1.1 JWT encoding may carry its
+  issuer only in the JWT `iss`, which leaves `vc.issuer` absent or an object with no
+  `id` such as `{"name": "Example University"}`. The pipeline had authenticated that
+  issuer, but the default resolvers returned the body as it was, so the binding refused
+  with `StatusListIssuerUntrusted` ("has no issuer to bind against"). It failed closed,
+  so this was interop, not a vulnerability; it also contradicted #221, which accepts the
+  same two shapes on a credential. `default_status_list_resolver` and its async twin now
+  fill in the issuer the pipeline verified the list for (`result.issuer`) where the body
+  names no one: `issuer` is set to it when absent, and `id` is added to an id-less
+  object, which keeps its other members. The change is made on a copy;
+  `result.credential` (shared with `result.claims` on an SD-JWT) is never written to.
+  What the binding decides:
+
+  - a list signed by the credential's issuer is accepted, so the bit is read
+    (`CredentialRevoked`, or `status.revoked is True` under `require_not_revoked=False`);
+  - a list an attacker signed gets the **attacker's** id and is refused with
+    `StatusListIssuerUntrusted` naming the attacker, as before, unless the attacker is in
+    `status_issuer_allowlist`; a list signed by an allow-listed delegate is accepted;
+  - a list whose body names an issuer other than its signer is refused with
+    `StatusListError` (#221), a custom `resolve_status_list` that returns an issuer-less
+    body still fails closed with `StatusListIssuerUntrusted`, the IETF Token Status List
+    path (bound on the token's `iss`) is unaffected, and a Data Integrity list cannot be
+    issuer-less (`IssuerBindingError` earlier).
+
+  Without the binding nothing changes: the bit is read as before. A caller of a default
+  resolver who reads the returned dict itself now sees an `issuer` where the body had
+  none. A custom `resolve_status_list` that wants the same interop must fill in the
+  `result.issuer` of the `verify_credential` call that checked the list; see
+  [Status lists](https://github.com/luisgf/openvc/wiki/Status-Lists) and the 1.35.0
+  amendment to ADR-0006.
+
+  *Decisions.* The fill-in lives in the default resolvers' shared `_authenticated_list`, not
+  in the pipeline: `_enforce_status_issuer` and the `resolve(url) -> dict` contract of a
+  custom resolver are not relaxed, and no richer return type is introduced. It fills in
+  only from `result.issuer` and only when that is a non-empty string; a present
+  identifier is never rewritten. An object that names itself only by `@id` is left alone
+  (the binding reads `id`, so it still fails closed: `{"@id": <signer>}` is not an
+  issuer-less shape). Copies are shallow: nothing downstream writes to a resolved list.
+
+### Tests
+
+- `tests/test_status_issuer_binding_issuerless.py` runs every case through the sync and
+  async default resolvers and pipelines, and `verify_many` / `verify_many_async` (two
+  credentials, two status URLs, both orders): the shapes that must still be refused, the
+  shapes now accepted, delegation, the shape and non-mutation of the returned body,
+  hostile `issuer` values, a custom resolver, the IETF token path, the Data Integrity
+  lane, and no binding.
+
 ## [1.34.0] — 2026-10-15
 
 **Upgrading from 1.33.2.** Five things can change what a caller sees (each is detailed in

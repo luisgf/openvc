@@ -61,6 +61,24 @@ issuer its signature was verified for. Without that check, an IETF `dc+sd-jwt` l
 could carry an unreconciled `issuer` claim naming the victim while being signed by the
 attacker.
 
+*Amendment (1.35.0).* The 1.31.0 rule left one legitimate shape fail-closed: a list
+secured as a VC-JWT in the VCDM 1.1 JWT encoding may carry its issuer only in the JWT
+`iss`, so its body has no `issuer`, or an object with no `id` or `@id` (`{"name": …}`).
+The pipeline has authenticated that issuer (`result.issuer`), but the binding read the
+body and found no one ([#226](https://github.com/luisgf/openvc/issues/226)). Where the
+body names no one, the default status-list resolvers now return a **copy** with
+`result.issuer` filled in (`issuer` set to it when absent, `id` added to an id-less
+object, which keeps its other members). `result.credential` is never written to. This
+admits nothing the signature did not already prove: `result.issuer` is the identity the
+list was verified for, so a list an attacker signed gets the attacker's id and the
+binding refuses it, naming them, unless they are in `status_issuer_allowlist`. A present
+identifier is not touched (the 1.31.0 comparison still refuses a foreign one), the IETF
+token path binds on `iss` as before, and a Data Integrity list cannot be issuer-less (the
+lane requires the issuer to bind the proof's key). `_enforce_status_issuer` is not
+relaxed: the pipeline does not fill anything in, so a custom `resolve_status_list` that
+returns an issuer-less body still fails closed and should fill in the issuer it
+authenticated the same way. With the binding off nothing changes.
+
 Default **off** is deliberate and documented: the binding is a *hardening opt-in*, not a
 silent behaviour change. The `docs/threat-model` / Security-Model note the residual gap
 when it is off.
