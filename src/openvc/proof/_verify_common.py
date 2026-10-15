@@ -392,6 +392,16 @@ def check_jwt_audience(
         raise ClaimsInvalid(f"{subject} aud does not include {audience!r}")
 
 
+def _plain_datetime(value: datetime) -> datetime:
+    """The wall-clock fields and ``tzinfo`` of *value* as a plain ``datetime``, read
+    through the base class: ``datetime.date`` and ``datetime.timetz`` called on the
+    class, not on the object. A subclass that overrides ``utcoffset`` / ``astimezone`` /
+    ``replace`` / ``timestamp`` / a field cannot change what is read, and none of its
+    methods is called, so the reading is the one a plain ``datetime`` with the same fields
+    and ``tzinfo`` would get. ``fold`` is kept."""
+    return datetime.combine(datetime.date(value), datetime.timetz(value))
+
+
 def utc_epoch(
     now: Any, *, error: type[Exception] = ProofError, name: str = "now",
 ) -> int:
@@ -407,6 +417,14 @@ def utc_epoch(
     ``tzinfo`` raises, becomes *error*: typed, so a misconfigured pin cannot escape
     ``verify_many`` as a bare exception.
 
+    The value is read from its fields and ``tzinfo`` through the base class, so a
+    ``datetime`` **subclass** is read as the plain ``datetime`` it holds: its own
+    ``utcoffset()``, ``timestamp()``, ``replace()`` and ``astimezone()`` are never called,
+    and cannot move the pin (a naive subclass whose ``utcoffset()`` said ``timedelta(0)``
+    was read in the host's local zone). Only the ``tzinfo`` the caller attached is asked.
+    An object that is not a ``datetime`` but only answers ``isinstance`` (a class with
+    ``__class__ = datetime``, ``MagicMock(spec=datetime)``) is the typed *error*.
+
     *name* is how the messages call the value (default ``"now"``): a caller that reads
     some other datetime the same way, such as an issuer-side ``valid_from``, passes its
     own parameter name so the error points at it.
@@ -416,9 +434,10 @@ def utc_epoch(
     if not isinstance(now, datetime):
         raise error(f"{name} must be a datetime or None, not {type(now).__name__}")
     try:
-        if now.utcoffset() is None:
-            now = now.replace(tzinfo=timezone.utc)
-        return int(now.timestamp())
+        plain = _plain_datetime(now)
+        if plain.utcoffset() is None:
+            plain = plain.replace(tzinfo=timezone.utc)
+        return int(plain.timestamp())
     except Exception as exc:                  # a caller's tzinfo may raise anything
         raise error(f"{name} cannot be read as an instant: {exc}") from exc
 
@@ -438,6 +457,14 @@ def utc_instant(
     The result is a plain ``datetime`` in ``timezone.utc``, so no caller subclass or
     ``tzinfo`` is consulted again by the comparisons downstream.
 
+    The value is read from its fields and ``tzinfo`` through the base class, as in
+    :func:`utc_epoch`: a ``datetime`` **subclass** is read as the plain ``datetime`` it
+    holds, and none of its methods is called, so one that lies about ``utcoffset()`` or
+    ``astimezone()`` cannot change the instant (it used to be read in the host's local
+    zone, or refused). Only the ``tzinfo`` the caller attached is asked.
+    An object that is not a ``datetime`` but only answers ``isinstance`` is the typed
+    *error*, as in :func:`utc_epoch`.
+
     *name* is how the messages call the value (default ``"now"``), as in
     :func:`utc_epoch`.
     """
@@ -446,10 +473,9 @@ def utc_instant(
     if not isinstance(now, datetime):
         raise error(f"{name} must be a datetime or None, not {type(now).__name__}")
     try:
-        aware = (now.replace(tzinfo=timezone.utc) if now.utcoffset() is None
-                 else now.astimezone(timezone.utc))
-        if aware.utcoffset() != timedelta(0):          # a subclass that lied about UTC
-            raise ValueError(f"astimezone(UTC) gave offset {aware.utcoffset()}")
+        plain = _plain_datetime(now)
+        aware = (plain.replace(tzinfo=timezone.utc) if plain.utcoffset() is None
+                 else plain.astimezone(timezone.utc))
         return datetime(aware.year, aware.month, aware.day, aware.hour, aware.minute,
                         aware.second, aware.microsecond, tzinfo=timezone.utc)
     except Exception as exc:                  # a caller's tzinfo may raise anything
