@@ -46,6 +46,7 @@ from typing import Any, Iterable, Mapping
 from .. import _json
 from ..keys import KeyBackendError, verify_signature
 from ._verify_common import (
+    issuer_identifiers,
     DEFAULT_KB_MAX_AGE_S,
     check_iat_freshness,
     check_jwt_temporal,
@@ -273,7 +274,7 @@ def _disclosure_refusal(name: Any, *, vcdm: bool) -> str | None:
 @dataclass(frozen=True)
 class VerifiedSdJwt:
     claims: dict[str, Any]         # the fully-disclosed claim set (``_sd`` resolved)
-    issuer: str                    # ``iss``
+    issuer: str                    # ``iss``, or the VCDM ``issuer`` when there is none (#290)
     vct: str | None                # verifiable credential type
     key_bound: bool                # a valid KB-JWT was present and verified
     confirmation: dict[str, Any] | None   # the ``cnf`` claim, if any
@@ -357,6 +358,53 @@ def _declares_credential(claims: Mapping[str, Any]) -> bool:
     return "VerifiableCredential" in names and "VerifiablePresentation" not in names
 
 
+def _vcdm_issuer(body: Mapping[str, Any]) -> str | None:
+    """The issuer a W3C credential names in its VCDM ``issuer`` property, or None when it
+    names no one usable (#290). A string is itself; an object is identified by its ``id`` /
+    ``@id`` members that are present (``id`` aliases ``@id`` in JSON-LD), which must all be
+    the same non-empty string: an object with neither, or whose two members disagree, names
+    no one and is refused rather than guessed at, as the reconciliation reads it.
+
+    Used only for an issuer JWT whose body has NO ``iss`` and whose ``typ`` is a W3C state
+    (VC-JOSE-COSE §4.1.2 makes ``iss`` optional there and §4.2 identifies the issuer by
+    ``issuer``). Always read from the issuer-JWT *body*: a disclosure is never consulted, so
+    a holder cannot supply the identifier that selects the key, and the value is exactly as
+    unauthenticated as ``iss`` is until the signature verifies."""
+    identifiers = issuer_identifiers(body.get("issuer"))
+    if not identifiers or not all(isinstance(i, str) and i for i in identifiers):
+        return None
+    return identifiers[0] if len(set(identifiers)) == 1 else None
+
+
+def _may_use_vcdm_issuer(body: Mapping[str, Any], header: Mapping[str, Any]) -> bool:
+    """Whether the VCDM ``issuer`` may stand in for ``iss`` (#290): the body has no ``iss``
+    member at all and the header ``typ`` is a W3C state, absent, ``vc+sd-jwt`` or the draft-era
+    ``vc+ld+json+sd-jwt``. A present ``iss`` that is null, empty or not a string is NOT
+    replaced by ``issuer``: the caller refuses it. A ``typ`` that is present and anything
+    else, ``null`` and a non-string included, is not a W3C state either: ``dc+sd-jwt`` keeps
+    requiring ``iss``, and an unaccepted ``typ`` is refused by verify() before it matters.
+    Both headers and bodies are untrusted here, so *typ* may be any JSON value."""
+    if "iss" in body:
+        return False
+    if "typ" not in header:
+        return True
+    typ = header["typ"]
+    return isinstance(typ, str) and typ in _W3C_TYPS
+
+
+def _issuer_from_body(body: Mapping[str, Any], header: Mapping[str, Any]) -> Any:
+    """The identifier that selects the issuer key and names the issuer: the ``iss`` claim,
+    or, where :func:`_may_use_vcdm_issuer` allows it, the VCDM ``issuer`` of the body
+    (:func:`_vcdm_issuer`). Whatever ``iss`` holds when it is present is returned as it is,
+    for the caller to refuse."""
+    if _may_use_vcdm_issuer(body, header):
+        return _vcdm_issuer(body)
+    return body.get("iss")
+
+
+_NO_USABLE_ISSUER = " (and no usable VCDM `issuer` for a W3C credential)"
+
+
 def _starts_with_base_context(claims: Mapping[str, Any]) -> bool:
     """Whether the payload's ``@context`` starts with a VCDM base context (VCDM 2.0 §4.3:
     "an ordered set where the first item" is the base URL; VCDM 1.1 §4.1 says the same of
@@ -420,11 +468,20 @@ class SdJwtVcProofSuite:
 
     def peek_issuer(self, sd_jwt: str) -> tuple[str, str | None]:
         """Return (iss, kid) from the issuer-signed JWT WITHOUT verifying.
-        UNTRUSTED — use only to select which key to resolve."""
+        UNTRUSTED — use only to select which key to resolve.
+
+        For a W3C credential (``typ`` absent, ``vc+sd-jwt`` or ``vc+ld+json+sd-jwt``) whose
+        body has no ``iss`` at all, the first item is the VCDM ``issuer`` (a string, or an
+        object's ``id``): VC-JOSE-COSE §4.1.2 makes ``iss`` optional there (#290). Stricter
+        than the VC-JWT lane's peek, which reads ``vc.issuer`` for any falsy ``iss``: only
+        when ``iss`` is ABSENT, and an object's ``id`` / ``@id`` must all agree. A
+        ``dc+sd-jwt`` still needs ``iss``."""
         header, payload, _, _ = self._decode_jws(sd_jwt.split("~", 1)[0])
-        iss = payload.get("iss")
+        iss = _issuer_from_body(payload, header)
         if not iss or not isinstance(iss, str):
-            raise MalformedToken("no iss in the issuer-signed JWT")
+            raise MalformedToken(
+                "no iss in the issuer-signed JWT"
+                + (_NO_USABLE_ISSUER if _may_use_vcdm_issuer(payload, header) else ""))
         kid = header.get("kid")
         if kid is not None and not isinstance(kid, str):
             raise MalformedToken("kid must be a string")
@@ -620,8 +677,9 @@ class SdJwtVcProofSuite:
         made it withholdable. That catches the non-conformant issuer only when the holder
         *presents* the disclosure; a withheld one is indistinguishable from a decoy (RFC
         9901 §9.7), so a third-party credential whose ``exp`` or ``status`` was disclosable
-        still verifies when the holder omits it. Besides ``iss`` (without which nothing
-        verifies), the detectable case is ``vct``: it is REQUIRED, so a ``dc+sd-jwt`` whose
+        still verifies when the holder omits it. Besides the issuer identifier (``iss``, or for
+        a W3C credential with no ``iss`` its VCDM ``issuer``, #290), without which nothing
+        verifies, the detectable case is ``vct``: it is REQUIRED, so a ``dc+sd-jwt`` whose
         processed payload has none raises ``ClaimsInvalid``, even one that also carries a
         VCDM ``@context``. With *require_key_binding*, a disclosed ``cnf`` fails earlier,
         as the key-binding ``ClaimsInvalid`` (no ``cnf.jwk`` in the issuer JWT).
@@ -650,9 +708,12 @@ class SdJwtVcProofSuite:
                                what="issuer JWT")
 
         def _iss_and_hash() -> tuple[str, str]:
-            iss_claim = claims.get("iss")
-            if not isinstance(iss_claim, str):
-                raise ClaimsInvalid("iss claim is missing or not a string")
+            # `header["typ"]` was accepted above: absent, a W3C name or dc+sd-jwt (#290)
+            iss_claim = _issuer_from_body(claims, header)
+            if not isinstance(iss_claim, str) or not iss_claim:
+                raise ClaimsInvalid(
+                    "iss claim is missing or not a string"
+                    + (_NO_USABLE_ISSUER if _may_use_vcdm_issuer(claims, header) else ""))
             alg_name = claims.get("_sd_alg", _DEFAULT_HASH)
             if not isinstance(alg_name, str) or alg_name not in _HASHES:
                 raise SdJwtError(f"unsupported _sd_alg {safe_repr(alg_name)}")
@@ -755,7 +816,7 @@ class SdJwtVcProofSuite:
             # §4.1.2: `iss`, if present, MUST match `issuer` (or `issuer.id`); §3.1.3 (non-
             # normative) advises the same for `jti`/`id` and `sub`/`credentialSubject.id`.
             # The VC-JWT lane's reconciliation: a present `issuer` names the verified iss.
-            VcJwtProofSuite._reconcile(unpacked, unpacked)
+            VcJwtProofSuite._reconcile({**unpacked, "iss": iss}, unpacked)
 
         if expected_vct is not None and vct != expected_vct:
             raise ClaimsInvalid(f"vct {vct!r} != expected {expected_vct!r}")

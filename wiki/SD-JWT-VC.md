@@ -92,7 +92,9 @@ that comparison itself.
 The pipeline also accepts SD-JWT presentations directly —
 `verify_credential(presentation, ...)` detects the format and resolves the
 issuer key from `iss` (see
-[Resolving issuer keys](Resolving-Issuer-Keys)).
+[Resolving issuer keys](Resolving-Issuer-Keys)). A W3C credential that has no `iss` is
+resolved from its VCDM `issuer` instead
+([below](#the-issuer-when-a-w3c-credential-has-no-iss)).
 
 **What `key_bound` attests.** `key_bound=True` means a KB-JWT was present,
 verified against the credential's `cnf` key over the disclosures you received, and
@@ -224,8 +226,11 @@ against conflicts, but openvc enforces them as policy, as it does on VC-JWT. A
 conflict raises `ClaimsInvalid`. Every identifier a present `issuer` carries must be
 `iss`: the string itself, or an object's `id` and `@id`. A null, empty or non-string
 one is rejected, not skipped. An object with no `id` identifies no one, and is
-accepted like an absent `issuer`. Without this check, an attacker could sign with its own key
-(`iss` = the attacker) and name a university as `issuer`. `result.issuer` would then
+accepted like an absent `issuer` when the token has an `iss`. A token with no `iss` is
+different: its `issuer` is then the issuer, and an object that names no one leaves
+nothing to resolve, so it is refused
+([below](#the-issuer-when-a-w3c-credential-has-no-iss)). Without this check, an attacker
+could sign with its own key (`iss` = the attacker) and name a university as `issuer`. `result.issuer` would then
 be the attacker and `result.credential["issuer"]` the university. The check reads the
 processed payload, so a disclosed `issuer` counts too. Neither the expiry waiver nor
 key binding changes it.
@@ -270,8 +275,9 @@ Examples 4 and 5 carry no `typ`, and Example 21 carries `vc+ld+json+sd-jwt` insi
 `data:` URI typed `application/vc+sd-jwt`. That is the name the W3C Working Drafts of
 August and September 2023 gave the media type before the rename to `vc+sd-jwt`. Before
 1.34.0 `verify()` refused both at the `typ` check (`unexpected issuer JWT typ`), so a
-credential built like those examples could not verify. (Example 5's payload carries no
-`iss`, which `verify()` requires, so that token still cannot verify as published.)
+credential built like those examples could not verify. (Example 5's payload also carries
+no `iss`, and `verify()` used to require one. It no longer does for a W3C credential:
+[below](#the-issuer-when-a-w3c-credential-has-no-iss).)
 
 All three W3C rows are accepted **only** for a payload that conforms to the VCDM, and
 that payload gets the VCDM validity window and the `issuer` / `id` / `sub` checks above.
@@ -321,7 +327,8 @@ the whole test for a typed token, so a `vc+sd-jwt` with it in second place, or w
 this: it has no `type` rule and no context-position rule (below). An IETF SD-JWT VC is
 typed `dc+sd-jwt`.
 
-The tests run after the signature, the JWT `exp` / `nbf`, the `iss` claim and, with
+The tests run after the signature, the JWT `exp` / `nbf`, the issuer identifier (the
+`iss` claim, or the `issuer` that stands in for it when there is none) and, with
 `require_key_binding=True`, the KB-JWT, and before the later checks: the VCDM validity
 window, the `issuer` reconciliation, `expected_vct` and
 `aka_vcts`, a KB-JWT checked on the optional path, and, through `verify_credential`,
@@ -427,9 +434,9 @@ not consulted either, because it sits outside the issuer's signature.
 Likewise, an IETF SD-JWT VC's claims named `issuer`, `id` or `credentialSubject` are
 not reconciled with `iss`, `jti` or `sub`. Such a credential may legitimately name,
 say, the authority behind an underlying document. On every lane, the authenticated
-issuer is **`result.issuer`**, the verified `iss`. Never read it from
-`result.credential`. `result.raw.vcdm` (`VerifiedSdJwt.vcdm`) tells you which rules
-the suite applied. It is the lax base-URL test, so it says nothing about the position of
+issuer is **`result.issuer`**, the verified `iss` (or, for a W3C credential with no `iss`,
+the `issuer` whose key verified). Never read it from `result.credential`.
+`result.raw.vcdm` (`VerifiedSdJwt.vcdm`) tells you which rules the suite applied. It is the lax base-URL test, so it says nothing about the position of
 the base URL, and it is always `True` for a token that passed under a W3C `typ`.
 `result.raw.typ` (`VerifiedSdJwt.typ`) is the issuer JWT `typ` that was verified:
 `dc+sd-jwt`, `vc+sd-jwt` or `vc+ld+json+sd-jwt`, or `None` when the token
@@ -457,6 +464,146 @@ policy=...)`, applies that policy to every credential it carries. So if the poli
 `expected_types` and the presentation mixes an IETF SD-JWT VC with a W3C credential,
 the whole presentation is rejected. Leave `expected_types` unset there and check each
 `result.credentials` entry yourself.
+
+### The issuer when a W3C credential has no `iss`
+
+VC-JOSE-COSE makes the JWT `iss` claim optional. §4.1.2 says that `iss`, if present, MUST
+match `issuer` (or `issuer.id`), and §4.2 says that when `iss` is absent the issuer is
+identified by the VCDM `issuer`. The Recommendation's own SD-JWT credential (Examples 4
+and 5) has an `issuer` and no `iss`. Before 1.34.0 every SD-JWT lane needed an `iss` to
+choose the issuer key, so such a credential was refused before any key was looked up.
+
+Now the issuer is taken from `issuer` when all of these hold, and in no other case:
+
+- the issuer JWT's `typ` is one of the three W3C states (none, `vc+sd-jwt`,
+  `vc+ld+json+sd-jwt`). A `dc+sd-jwt` keeps requiring `iss`. A header `"typ": null` is a
+  `typ` that is *present*, not an absent one, and it is not a state: no fallback, and
+  `verify()` refuses it as a `typ` anyway;
+- the issuer JWT has **no `iss` member at all**. A present `iss` that is `null`, a number,
+  a bool, an object or an empty string is still refused, never replaced by `issuer`;
+- the `issuer` is in the issuer JWT's own signed claims. A disclosure is never consulted,
+  so an `issuer` the holder reveals cannot choose the key, and a token whose only `issuer`
+  is a disclosure is refused;
+- the `issuer` is a non-empty string, or an object whose `id` and `@id` members, the ones
+  that are present (`id` is an alias of `@id`), are all the same non-empty string. An
+  object with neither, one whose two members disagree, a number and an empty string name
+  no one, and the token is refused.
+
+`peek_issuer` then returns that string as its first item, and the pipeline resolves the key
+from it exactly as it does from `iss`: the DID methods, the `/.well-known/jwt-vc-issuer`
+metadata of an https issuer, or an `x5c` chain bound to it. There is no new resolution path.
+`result.issuer` is that identifier, the one whose key verified. When the token has both, they
+must still agree (`ClaimsInvalid`, as above).
+
+What a caller sees for such a token:
+
+- **There is no `iss` in the claims.** `result.claims`, `result.credential` and
+  `result.raw.claims` (`VerifiedSdJwt.claims`) hold the signed claims and the disclosures
+  as they are, so they have no `iss` member, and code that reads `result.claims["iss"]`
+  gets a `KeyError`. Before 1.34.0 every SD-JWT that verified had a string `iss` there.
+  The issuer is `result.issuer` (or `result.raw.issuer`), the identifier above, as it is for
+  every other token.
+- **An https `issuer` goes through `jwt_vc_issuer_fetch`, as an https `iss` does.** Without
+  that argument the pipeline raises `KeyResolutionFailed` (`pass jwt_vc_issuer_fetch`). For
+  the Recommendation's Example 5 as published, whose issuer is an https URL, that is the first
+  thing a caller sees: it used to be `MalformedToken` ("no iss in the issuer-signed JWT") at
+  the peek. A payload with no `typ`, a `vct` and a claim that happens to be called `issuer`
+  (an IETF-shaped payload that forgot its `typ`) changes in the same way. It is still
+  refused, but at `verify()` as `SdJwtError` ("needs a W3C VCDM @context; an IETF SD-JWT VC
+  is typed 'dc+sd-jwt'") and no longer at the peek as `MalformedToken`, so a key is resolved
+  first, and for an https `issuer` its metadata is fetched, before the refusal.
+- **`verify()` refuses an empty `iss` too.** Until now only the pipeline's `peek_issuer` did,
+  so the suite called on its own accepted `iss: ""` and reported `issuer == ""` (a W3C body
+  with an `issuer` failed the `iss` / `issuer` reconciliation instead). It is now a
+  `ClaimsInvalid` ("iss claim is missing or not a string") for every `typ`, a `dc+sd-jwt`
+  included.
+
+Like `iss`, the `issuer` is **unauthenticated until the signature verifies**. Whoever builds
+a token names whatever issuer they like; the key resolved for that name has to verify the
+signature, and `result.issuer` is the name of that key. Read the issuer from `result.issuer`
+here too, not from `result.credential`.
+
+A token like Example 5 verifies offline when its issuer is a DID (the token is minted by hand
+here because `issue()` writes a `dc+sd-jwt` that needs an `iss`):
+
+```python
+import base64
+import json
+
+from openvc import verify_credential
+from openvc.keys import P256SigningKey
+
+
+def b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+key = P256SigningKey.generate(kid="issuer-key")
+did = "did:jwk:" + b64(json.dumps(key.public_jwk()).encode())
+
+# The issuer is named in `issuer` only: no `iss` claim, and no `typ` header.
+claims = {"@context": ["https://www.w3.org/ns/credentials/v2"],
+          "type": ["VerifiableCredential"], "issuer": did,
+          "credentialSubject": {"id": "did:example:123"}}
+header = {"alg": "ES256", "kid": f"{did}#0"}
+signing_input = b64(json.dumps(header).encode()) + "." + b64(json.dumps(claims).encode())
+token = signing_input + "." + b64(key.sign(signing_input.encode("ascii"))) + "~"
+
+result = verify_credential(token)
+assert result.format == "sd-jwt-vc" and result.issuer == did
+assert "iss" not in result.claims            # the issuer is result.issuer, not claims["iss"]
+```
+
+The Recommendation's Example 5 itself is issued by `https://university.example/issuers/565049`.
+`verify_credential` fetches the issuer metadata for that URL
+(`https://university.example/.well-known/jwt-vc-issuer/issuers/565049`), through your
+`jwt_vc_issuer_fetch`, and looks the key up by the token's `kid`. The Recommendation publishes
+no key, so a stranger's key fails at the signature (`SignatureInvalid`), and the token verifies
+only under a key of your own, with its header, payload and disclosures as published and no
+`iss` added.
+
+What this does not do:
+
+- It does not take the issuer from `kid`. A token with no `iss` and no usable `issuer` is
+  refused even when its `kid` is a DID URL.
+- It does not relax `dc+sd-jwt` (an IETF SD-JWT VC still needs `iss`, and an issuer named
+  only by an `x5c` header is still refused), and it does not change `issue()`.
+- The refusals keep their classes (`MalformedToken` from `peek_issuer`, `ClaimsInvalid` from
+  `verify()`) and their texts. The clause ``(and no usable VCDM `issuer` for a W3C
+  credential)`` is appended to them, giving
+  ``no iss in the issuer-signed JWT (and no usable VCDM `issuer` for a W3C credential)`` and
+  ``iss claim is missing or not a string (and no usable VCDM `issuer` for a W3C credential)``,
+  **only when the fallback was available**: the issuer JWT has no `iss` member and its `typ`
+  is a W3C state, so that the clause tells the caller that `issuer` was tried. A present
+  but unusable `iss` (`null`, `""`, a number, a bool, an object), a `dc+sd-jwt`, a
+  `"typ": null` and any other `typ` get the bare text.
+
+Known limits of the fallback:
+
+- **The issuer JWT's own `aud` is not checked on this lane.** That is an open item of
+  [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)
+  (RFC 7519 §4.1.3 on SD-JWT VC): a token with `aud=https://other-rp.example` verifies for
+  any verifier, and for a caller that passes `policy.audience` too. What the fallback adds
+  is a way in: a W3C credential secured as a plain JWS (VC-JOSE-COSE) that has no `iss`
+  and no `typ` is refused as a bare JWS on the VC-JWT lane (no issuer to resolve), but
+  verifies here once `~` is appended, so an audience restriction its issuer put in `aud`
+  is not enforced. (With an `iss` that was already so for a JWS with no `typ`.) If you
+  rely on it, read `result.claims.get("aud")` and compare it yourself.
+- **The `kid` rule of §4.2 is not enforced.** The Recommendation says that for an `iss`-less
+  token the `kid` is an absolute URL to a verification method. Example 5's `kid` is a bare
+  thumbprint, and it is used as before, to pick the key out of the issuer's own document
+  (a DID's verification methods, matched by id or by fragment) or published JWKS. That is
+  fail-safe: the resolver is only ever asked about the issuer, and a `kid` that names
+  another DID selects nothing of that DID. It is matched, by its fragment, against the
+  issuer's own keys. Signed with the other DID's key the token fails with
+  `SignatureInvalid`, and a fragment the issuer lacks, or an absolute URL without one, is a
+  `KeyResolutionFailed`.
+- **The subject comes from `sub` alone.** For an SD-JWT result, `result.subject` is the
+  `sub` claim, never `credentialSubject.id`. So `require_holder_binding=True` on a
+  `jwt_vc_json` or `ldp_vc` presentation ([Presentations](Presentations)) refuses a
+  fallback token that names its subject only in `credentialSubject.id`, because
+  `result.subject` is `None`. That is how every SD-JWT result already behaved, with or
+  without `iss`, and it fails closed.
 
 ## Validity claims are never disclosable
 
@@ -494,12 +641,17 @@ non-conformant issuer then fails visibly instead of only failing open.
 
 It cannot catch the disclosure a holder **withholds**. A credential whose issuer
 made `exp` or `status` disclosable still verifies as never-expiring, or with no
-status, when the holder leaves that disclosure out. The exceptions are `iss`,
-without which nothing verifies, and `vct`: it is REQUIRED, so a `dc+sd-jwt` that
+status, when the holder leaves that disclosure out. The exceptions are `iss`, which a
+token needs in its signed body (a W3C credential may instead carry an `issuer` there to stand
+in for it, see [above](#the-issuer-when-a-w3c-credential-has-no-iss)), and `vct`: it is REQUIRED, so a `dc+sd-jwt` that
 has no `vct` is rejected (`ClaimsInvalid`), whoever left it out and whatever its
 `@context` (a `vc+sd-jwt` or `vc+ld+json+sd-jwt` token, or one with no `typ`, that is not
 a conforming VCDM payload is refused outright, as above).
-`issue()` likewise requires `vct` to be a non-empty string. If you accept SD-JWT VCs
+`issue()` likewise requires `vct` to be a non-empty string. One consequence of the `issuer`
+fallback: a W3C credential whose issuer made `iss` disclosable, and whose signed body carries
+an `issuer`, verifies when the holder withholds the `iss` disclosure, and is identified by that
+`issuer`, which the signer wrote into the signed body. A presented `iss` disclosure is still
+refused (`SdJwtError`). If you accept SD-JWT VCs
 from issuers you do not control and rely on expiry or status, check that the verified
 `claims` actually carry them.
 

@@ -20,9 +20,10 @@ media type as an input instead of reading it from the header. Its examples show 
 ``typ: vc+ld+json+sd-jwt``, the name the 2023 Working Drafts gave the media type before
 ``vc+sd-jwt`` (§6.1.3) replaced it. openvc refused both before any crypto ("unexpected
 issuer JWT typ"). The credentials of Examples 4 and 5 carry no ``iss`` either, which this
-lane needs to select the key, so they still do not verify end to end (#290). RFC 9901
-§9.11 recommends explicit typing for SD-JWT, so the gate is relaxed, not removed. What
-``SdJwtVcProofSuite.verify`` does now:
+lane needed to select the key; since #290 the VCDM ``issuer`` stands in for it (see
+tests/test_sd_jwt_issuer_fallback.py), so Example 5 verifies end to end as published (section
+I). RFC 9901 §9.11 recommends explicit typing for SD-JWT, so the gate is relaxed, not
+removed. What ``SdJwtVcProofSuite.verify`` does now:
 
 * **No ``typ`` member.** Accepted only if the processed payload declares a W3C VCDM base
   ``@context`` (VCDM 2.0 or 1.1, as a string or anywhere in an array: the lax test that
@@ -1090,13 +1091,14 @@ def test_openid4vp_control_a_dc_sd_jwt_with_a_vcdm_context_and_a_vct_still_answe
 #       example. Header {alg: ES384, kid, typ: vc+ld+json+sd-jwt, cty: vc+ld+json}; 6
 #       disclosures. (The draft-era media type name; the section 6.1.3 name is vc+sd-jwt.)
 #
-# The Recommendation publishes no signing key for either, so neither can verify here. Each
-# is verified against an unrelated key of the right curve with check_temporal=False, and
-# must fail at the signature (`SignatureInvalid`), which comes right after the typ gate: that
-# pins that a real W3C header gets through the gate. The suite is called directly, not the
-# pipeline: Example 5's payload names its issuer only in `issuer`, with no `iss` claim, and
-# the pipeline selects the key from `iss` (peek_issuer), as does the suite afterwards; and
-# Example 21's `iss` is an https URL, which the offline DID resolvers do not resolve. A P-256
+# The Recommendation publishes no signing key for either, so neither can verify here as
+# published. Each is verified against an unrelated key of the right curve with
+# check_temporal=False, and must fail at the signature (`SignatureInvalid`), which comes right
+# after the typ gate: that pins that a real W3C header gets through the gate. The suite is
+# called directly, not the pipeline: both tokens name an https URL as their issuer, which the
+# offline DID resolvers do not resolve (Example 5 names it only in `issuer`, with no `iss`
+# claim, and since #290 that is what selects the key and names the issuer; the pipeline runs
+# are in tests/test_sd_jwt_issuer_fallback.py, with a stubbed jwt_vc_issuer_fetch). A P-256
 # key for the ES384 token would be a ProofError ("malformed public key"), not a bad
 # signature, which is why Example 21 gets a P-384 one.
 FIXTURES = Path(__file__).parent / "fixtures" / "vc_jose_cose"
@@ -1263,14 +1265,31 @@ def test_example_21_verifies_through_the_async_pipeline_with_its_https_issuer_re
     assert result.expired is True
 
 
-def test_example_5_verifies_end_to_end_once_its_issuer_is_named_in_iss():
-    # Example 5 has no `iss` claim, and this lane reads the verified issuer from `iss`, so
-    # the published token cannot verify under any key. The one amendment here adds `iss`
-    # (equal to the payload's `issuer`); every other member of the header, payload and
-    # disclosures is the Recommendation's, and the signature is ours.
+def test_example_5_verifies_end_to_end_under_a_key_of_our_own():
+    # Example 5 has no `iss` claim: its issuer is named only by the VCDM `issuer` property
+    # (VC-JOSE-COSE §4.1.2: `iss` is optional there), which is what names the verified issuer
+    # since #290. Nothing is amended: header, payload and disclosures are the
+    # Recommendation's, only the signature is ours (it publishes no key), and a stubbed fetch
+    # that publishes that key for the payload's `issuer` stands in for the issuer's metadata.
     key = P256SigningKey.generate(kid="resigned")
-    token = _resigned(_fixture(EXAMPLE_5), key,
-                      amend=lambda payload: payload.__setitem__("iss", payload["issuer"]))
+    token = _resigned(_fixture(EXAMPLE_5), key)
+    assert "iss" not in _payload(token)
+    issuer = _payload(token)["issuer"]
+    kid = _header(token)["kid"]
+    assert issuer == "https://university.example/issuers/565049"
+    assert SdJwtVcProofSuite().peek_issuer(token) == (issuer, kid)
+    # the whole pipeline: the issuer in `issuer` selects the key
+    fetched = []
+
+    def fetch(url):
+        fetched.append(url)
+        return {"issuer": issuer, "jwks": {"keys": [{**key.public_jwk(), "kid": kid}]}}
+
+    piped = verify_credential(token, jwt_vc_issuer_fetch=fetch)
+    assert fetched == [ISSUER_METADATA_URL]
+    assert piped.issuer == issuer
+    assert piped.raw.typ is None and piped.raw.vcdm is True
+    # ... and the suite, with the key given
     result = SdJwtVcProofSuite().verify(token, public_key_jwk=key.public_jwk())
     assert result.typ is None
     assert result.vcdm is True
@@ -1618,17 +1637,20 @@ def test_a_presented_exp_or_nbf_disclosure_is_refused_as_a_disclosure_not_by_the
 
 
 @VCDM_TYPS
-def test_a_disclosed_iss_never_gets_as_far_as_the_disclosure_rule(run, form, typ):
-    # `iss` is on the suite's list, but a token whose `iss` is in a disclosure is out before
-    # that rule runs: the pipeline finds no issuer to select a key with, and the suite no `iss`
-    # claim to verify. A holder cannot present it either way.
+def test_a_disclosed_iss_is_refused_by_the_disclosure_rule_once_the_issuer_selects_the_key(
+        run, form, typ):
+    # `iss` is on the suite's list. A token whose `iss` is in a disclosure has no `iss` in
+    # its body, so since #290 the VCDM `issuer` (which this payload carries) selects the key
+    # and names the issuer, the signature verifies, and the presented disclosure of `iss` is
+    # refused by that rule: before #290 the pipeline found no issuer to select a key with
+    # (MalformedToken) and the suite no `iss` claim to verify (ClaimsInvalid).
     sd_jwt = _mint(_vcdm_vct(), typ=typ, disclose=["iss"])
-    with pytest.raises(MalformedToken, match=NO_ISS_TO_PEEK) as excinfo:
+    with pytest.raises(SdJwtError, match="claim 'iss' is selectively disclosed") as excinfo:
         run(form(sd_jwt), None)
-    assert excinfo.type is MalformedToken
-    with pytest.raises(ClaimsInvalid, match=NO_ISS_CLAIM) as excinfo:
+    assert excinfo.type is SdJwtError
+    with pytest.raises(SdJwtError, match="claim 'iss' is selectively disclosed") as excinfo:
         _suite_verify(sd_jwt)
-    assert excinfo.type is ClaimsInvalid
+    assert excinfo.type is SdJwtError
 
 
 @VCDM_TYPS

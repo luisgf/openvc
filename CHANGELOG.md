@@ -61,9 +61,10 @@ All notable changes to **openvc** are documented here. The format follows
   typ`). The Recommendation publishes no key for them, so the new tests pin the real
   tokens through the `typ` gate, which they now pass, and they fail only at the signature
   check. The credentials of Examples 4 and 5 carry no `iss` claim either, which the SD-JWT
-  lane needs to select the issuer key, so they still do not verify end to end
-  ([#290](https://github.com/luisgf/openvc/issues/290)). A VCDM SD-JWT with an `iss` and
-  no `typ` does.
+  lane needed to select the issuer key; the next entry
+  ([#290](https://github.com/luisgf/openvc/issues/290)) lets such a credential name its
+  issuer in `issuer` alone. A VCDM SD-JWT with an `iss` and no `typ` verified with this
+  entry alone.
 
   An issuer JWT with no `typ` member, and one typed exactly `vc+ld+json+sd-jwt`, are now
   treated like `vc+sd-jwt` (#264):
@@ -104,6 +105,118 @@ All notable changes to **openvc** are documented here. The format follows
   documented limit. The validity window and the issuer / id / subject checks still count
   a VCDM base URL anywhere in `@context` as VCDM; being read as a credential at all takes
   a conforming payload (#275, under Changed).
+
+- **A W3C credential secured with SD-JWT verifies when its issuer JWT has no `iss` and its
+  VCDM `issuer` names the issuer**
+  ([#290](https://github.com/luisgf/openvc/issues/290)). This accepts input that was
+  refused before; it is not hardening.
+
+  Until now the SD-JWT lane chose the issuer key from `iss` alone, on every lane:
+  `peek_issuer` raised `MalformedToken` ("no iss in the issuer-signed JWT") and `verify()`
+  raised `ClaimsInvalid` ("iss claim is missing or not a string"). W3C VC-JOSE-COSE
+  (Recommendation of 13 October 2026) makes `iss` optional: §4.1.2 says that `iss`, if
+  present, MUST match `issuer` (or `issuer.id`), and §4.2 identifies the issuer by the
+  VCDM `issuer` when `iss` is absent (for a URL issuer the `kid` is then an absolute URL to
+  a verification method). Its own SD-JWT credential, Examples 4 and 5, has an `issuer` and
+  no `iss`. So #288 and #289 let those examples' headers through and their payloads still
+  stopped at the issuer.
+
+  **The rule.** The issuer is the `iss` claim. When the issuer JWT has none, it is the VCDM
+  `issuer` of its body, under four conditions that all have to hold:
+  - the `typ` is a W3C state: absent, `vc+sd-jwt` or `vc+ld+json+sd-jwt`. A `dc+sd-jwt`
+    keeps requiring `iss`, with the old texts. A header `"typ": null` is a `typ` that is
+    present, not an absent one, and is not a state: no fallback (and `verify()` refuses it
+    as a `typ`);
+  - the issuer JWT has no `iss` member at all. A present `iss` that is `null`, a number, a
+    bool, an object or `""` is still refused, and is not replaced by `issuer`;
+  - the `issuer` is in the body of the issuer JWT. One in a disclosure is never used, so a
+    holder cannot supply the identifier that selects the key, and a token whose only `issuer`
+    is disclosed is refused as before;
+  - it is a non-empty string, or an object whose `id` and `@id` members that are present
+    (`id` aliases `@id` in JSON-LD) are all the same non-empty string. An object with
+    neither, one whose two members disagree, and any other value are refused.
+
+  `peek_issuer` returns that identifier, which is what the pipeline resolves the key from,
+  and `verify()` uses it as the issuer (`VerifiedSdJwt.issuer`) and as the `iss` the
+  `issuer` / `jti` / `sub` reconciliation (#221) runs with. When the token has both an `iss`
+  and an `issuer`, they must still agree (`ClaimsInvalid`, as on the VC-JWT lane).
+  `VerifiedSdJwt.issuer` is the identifier whose key verified. There is no new key
+  resolution path: the same DID methods, `/.well-known/jwt-vc-issuer` metadata and `x5c`
+  binding run on the identifier, sync and async. The identifier is unauthenticated until the
+  signature verifies, exactly as `iss` is: it only selects the key to try.
+
+  **What it does not do.** It does not derive the issuer from the `kid`: a token with no
+  `iss` and no usable `issuer` is refused even when its `kid` is a DID URL, and §4.2's rule
+  that the `kid` be an absolute URL is not enforced. It does not relax `dc+sd-jwt`, so an
+  IETF SD-JWT VC that names its issuer only in an `x5c` header is still refused. It does not
+  change `issue()`.
+
+  **Messages.** The two old texts and their classes are kept. They gain a clause only when
+  the fallback was available, that is, when the issuer JWT has no `iss` member and its `typ`
+  is a W3C state:
+  ``no iss in the issuer-signed JWT (and no usable VCDM `issuer` for a W3C credential)``
+  (`MalformedToken`, from `peek_issuer`) and
+  ``iss claim is missing or not a string (and no usable VCDM `issuer` for a W3C credential)``
+  (`ClaimsInvalid`, from `verify()`). A present but unusable `iss` (`null`, `""`, a number, a
+  bool, an object), a `dc+sd-jwt`, a `"typ": null` and any other `typ` get the bare old text.
+
+  **What a caller sees.** For a token verified through the fallback:
+  - `result.claims`, `result.credential` and `VerifiedSdJwt.claims` have no `iss` key, so
+    code that reads `claims["iss"]` gets a `KeyError`. Before this release every SD-JWT that
+    verified had a string `iss` there. The issuer is `result.issuer` (`result.raw.issuer`),
+    the identifier whose key verified.
+  - An https `issuer` resolves its key through `jwt_vc_issuer_fetch`, as an https `iss`
+    does, and without that argument the pipeline raises `KeyResolutionFailed` ("pass
+    jwt_vc_issuer_fetch"). For Example 5 as published that is the first thing a caller
+    sees; it used to be `MalformedToken` at the peek. Likewise a payload with no `typ`, a
+    `vct` and a claim called `issuer` (an IETF-shaped payload that forgot its `typ`) now has
+    a key resolved, and for an https `issuer` its metadata fetched, and is then refused at
+    `verify()` as `SdJwtError` ("needs a W3C VCDM @context; an IETF SD-JWT VC is typed
+    'dc+sd-jwt'"), where it used to be refused at the peek as `MalformedToken`.
+  - `verify()` refuses an empty-string `iss` too (`ClaimsInvalid`, the bare text), for every
+    `typ`, a `dc+sd-jwt` included. Only the pipeline's `peek_issuer` did before: a caller of
+    the suite directly got `issuer == ""` back (a W3C body that also had an `issuer` failed
+    the `iss` / `issuer` reconciliation instead).
+
+  **The Recommendation's examples.** Example 5 as published gets past the issuer.
+  Through `verify_credential`, `peek_issuer` now returns its `issuer` (it raised
+  `MalformedToken` before) and the pipeline fetches
+  `https://university.example/.well-known/jwt-vc-issuer/issuers/565049` for it through your
+  `jwt_vc_issuer_fetch`, or raises `KeyResolutionFailed` when you passed none. The
+  Recommendation publishes no key, so with any other key it fails only at the signature
+  (`SignatureInvalid`). On the suite directly that was already so, because `verify()` checks
+  the signature before the issuer. Re-signed under a key of our own, with its header,
+  payload and disclosures as published and no `iss` added, it verifies: `issuer` is
+  `https://university.example/issuers/565049`, `typ` is `None` and `vcdm` is true. A
+  credential issued by a DID verifies end to end through `verify_credential` and
+  `verify_credential_async`, as a string `issuer` or as an object with an `id`, with no
+  `typ` or with `vc+sd-jwt`. The guard for Example 5 is
+  `test_example_5_as_published_verifies_without_adding_an_iss` in
+  `tests/test_sd_jwt_issuer_fallback.py` (with the pipelines, the stranger key and the missing
+  fetch in the tests beside it), and `test_example_5_verifies_end_to_end_under_a_key_of_our_own`
+  in `tests/test_sd_jwt_vcdm_typ_interop.py` runs the same unamended payload through the
+  pipeline and the suite; the rest of the first file pins the other cases.
+
+  **Behaviour change.** A token that has a usable `iss` is read as before. A W3C-typed token
+  that has none and names its issuer in the body, which raised `MalformedToken` or
+  `ClaimsInvalid`, now verifies if its signature does: a caller that read that error as "the
+  credential has no issuer" no longer gets it. That includes a credential whose issuer made
+  `iss` selectively disclosable, when the holder withholds the disclosure and the body
+  carries an `issuer`; a presented `iss` disclosure is still refused (`SdJwtError`). The
+  other changes are the ones under "What a caller sees": no `iss` in the claims, a key
+  resolved before an IETF-shaped payload with no `typ` is refused, and the empty `iss` that
+  `verify()` now refuses.
+
+  **Known limits.** The issuer JWT's own `aud` is not checked on the SD-JWT lane (an open
+  item of ADR-0008), and this entry lets a W3C JWS with no `iss` and no `typ`, refused as a
+  bare JWS on the VC-JWT lane, reach that lane by appending `~`, so an audience restriction
+  its issuer put in `aud` is not enforced there; the `kid` rule of §4.2 is not enforced
+  either (the `kid` only picks a key inside the issuer's own document, and one naming
+  another DID never makes the resolver look at that DID); and an SD-JWT result's `subject`
+  is its `sub`
+  alone, so `require_holder_binding` on a `jwt_vc_json` or `ldp_vc` presentation refuses a
+  fallback token that names its subject only in `credentialSubject.id` (as it did for every
+  SD-JWT result, and it fails closed).
 
 ### Changed
 
@@ -161,13 +274,15 @@ All notable changes to **openvc** are documented here. The format follows
   claim that the token presents, so the processed payload says credential. The gate runs
   after the signature, and the Recommendation publishes no key, so the `SignatureInvalid`
   a stranger key gets from either token proves nothing about it. Re-signed under a key of
-  our own, Example 21 as published passes (`vcdm` is true). Example 5 as published has no
-  `iss` claim, so `verify()` stops at "iss claim is missing or not a string" before the
-  gate ([#290](https://github.com/luisgf/openvc/issues/290)); with an `iss` added it
-  passes. Withhold the `type` disclosure and both are refused. The guards are
-  `test_example_21_verifies_end_to_end_under_a_key_of_our_own` and
-  `test_example_5_verifies_end_to_end_once_its_issuer_is_named_in_iss`, in
-  `tests/test_sd_jwt_vcdm_typ_interop.py`.
+  our own, Example 21 as published passes (`vcdm` is true). Example 5 as published names
+  its issuer only in `issuer`, which the entry under Added
+  ([#290](https://github.com/luisgf/openvc/issues/290)) lets select the key, so it passes
+  too, with no `iss` added. Withhold the `type` disclosure and both are refused. The
+  guards are `test_example_21_verifies_end_to_end_under_a_key_of_our_own` and
+  `test_example_5_verifies_end_to_end_under_a_key_of_our_own` in
+  `tests/test_sd_jwt_vcdm_typ_interop.py`, both on the payload as published, and
+  `test_example_5_as_published_verifies_without_adding_an_iss` in
+  `tests/test_sd_jwt_issuer_fallback.py`.
 
   **Behaviour change.** Each case fails closed with `SdJwtError`, and in `verify_many` it
   fails only its own item.
