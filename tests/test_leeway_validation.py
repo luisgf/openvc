@@ -83,6 +83,8 @@ from openvc.status.issue import build_status_list_token
 from openvc.status.token_status_list import new_status_list
 from openvc.verify import default_resolver
 
+# Only for the helper tests, which pass it as `now=` themselves. The builders read the
+# clock when they run: a CI run is minutes long, and an import-time instant goes stale.
 NOW = int(time.time())
 VC2 = "https://www.w3.org/ns/credentials/v2"
 VCT = "https://credentials.example/membership"
@@ -175,7 +177,8 @@ CRED = {"@context": [VC2], "type": ["VerifiableCredential"], "issuer": DID,
 def _vc_jwt(exp_in_s: int | None = None, *, nbf_in_s: int | None = None) -> str:
     """A VC-JWT from the did:jwk issuer; *exp_in_s* is relative to now (negative: lapsed)."""
     if nbf_in_s is not None:
-        payload = {"iss": DID, "vc": CRED, "iat": NOW, "nbf": NOW + nbf_in_s}
+        now = int(time.time())
+        payload = {"iss": DID, "vc": CRED, "iat": now, "nbf": now + nbf_in_s}
         return sign_compact({"alg": "ES256", "typ": "JWT", "kid": KEY.kid}, payload,
                             signing_key=KEY)
     return VcJwtProofSuite().sign(CRED, signing_key=KEY, expires_in_s=exp_in_s)
@@ -192,9 +195,10 @@ def _vp_jwt(exp_in_s: int) -> str:
 
 
 def _status_token(exp_in_s: int) -> str:
+    now = int(time.time())
     return build_status_list_token(
         signing_key=KEY, uri=STATUS_URI, status_list=new_status_list(8),
-        issued_at=NOW - 7200, expires=NOW + exp_in_s)
+        issued_at=now - 7200, expires=now + exp_in_s)
 
 
 def _leb128(code: int) -> bytes:
