@@ -325,10 +325,12 @@ def _pyld() -> Any:
 
 # How much of the canonicalizer's own error text a ProofMalformed message quotes. pyld puts
 # the context it refused into its message (a 1 MB @context made a 1 MB error), and
-# derive_proof and verify read a credential a third party chose. An ordinary pyld refusal
-# (its message plus the Type / Code / Details lines) runs to about 470 characters and is
-# kept whole; the cause is chained untouched, so nothing is lost to a debugger.
-_DETAIL_MAX = 500
+# derive_proof and verify read a credential a third party chose. An ordinary pyld 3.x
+# refusal (130 to 470 characters) is kept whole; pyld 2.0.4 appends the traceback of its
+# inner error and runs to about 2600, so its longest are cut after the message, the Type
+# and the head of the Cause. The cause is chained untouched, so nothing is lost to a
+# debugger.
+_DETAIL_MAX = 2000
 
 
 def _canonicalization_failure(subject: str, exc: Exception) -> ProofMalformed:

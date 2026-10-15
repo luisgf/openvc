@@ -304,7 +304,7 @@ or a string, an inline object with a bad term definition) raises `ProofMalformed
 verification alike, so one `except ProofError` covers all three. The two RDF suites
 raise `DocumentLoaderError` for a context nobody serves and `DataIntegrityError` for
 one JSON-LD refuses. The `ecdsa-sd-2023` message quotes JSON-LD's own error text, cut
-at 500 characters with the full length shown (the whole error is the `__cause__`). An
+at 2000 characters with the full length shown (the whole error is the `__cause__`). An
 error from your signing key (an HSM or Vault failure) is not wrapped: it surfaces as
 itself.
 

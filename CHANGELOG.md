@@ -37,15 +37,18 @@ included (under #281, below); it is text only.
     the `pyld` error chained as `__cause__`. The message tail is the `pyld` error text, as
     in `verify`. The escaping class changes from `pyld.jsonld.JsonLdError` to
     `ProofMalformed`; it was never documented. No accept-set changes.
-  - **Decision (message length):** the `pyld` text in the message is cut at 500
+  - **Decision (message length):** the `pyld` text in the message is cut at 2000
     characters, with the full length shown (`... (1000000 chars)`), in all three arms,
     `verify`'s included. `pyld` quotes the context it refused, so a 1 000 000-character
     `@context` string made a message of about 1 000 000 characters in all three arms, and
     a 1 000 000-character URL in `derive_proof` (`derive_proof` and `verify` read a
-    credential a third party chose). An ordinary refusal is 130 to 470 characters and is
-    kept whole, so `verify`'s message is unchanged unless it was longer than 500
-    characters. The cause keeps the full text.
-    `safe_repr` was not used: it cuts at 200 and would add quotes around the text.
+    credential a third party chose). An ordinary `pyld` 3.x refusal is 130 to 470
+    characters and is kept whole. `pyld` 2.0.4, the floor, appends the traceback of its
+    inner error (133 to 2577 characters, measured on eight of the issue's `@context`
+    values in the three arms), so its longest are cut after the message, the `Type` and
+    the head of the `Cause`: `verify`'s message changes for those, and only those. The
+    cause keeps the full text, and the class, the prefix and the accept-set do not
+    change. `safe_repr` was not used: it cuts at 200 and would add quotes around the text.
   - **Decision (RDF siblings' messages, left as they were):** the two RDF siblings'
     issuers carry the same unbounded text, in their `DataIntegrityError`
     (`canonicalization failed: ...`) and `DocumentLoaderError` messages (1 000 076 and
@@ -130,6 +133,13 @@ included (under #281, below); it is text only.
   returned (a subclass answering `astimezone` with a `+03:00` year-2000 value signed
   `2000-01-01T00:00:00Z`). It is `utc_instant`'s existing rule, which this release does
   not change; whether it should is [#286](https://github.com/luisgf/openvc/issues/286).
+- **The `could not canonicalize` message of `ecdsa-sd-2023` quotes at most 2000
+  characters of the `pyld` text**, `verify`'s `could not canonicalize the derived
+  credential` included ([#281](https://github.com/luisgf/openvc/issues/281)). Class,
+  prefix and accept-set are unchanged; a longer text ends in `... (N chars)`. It
+  changes `verify`'s message only for the longest `pyld` 2.0.4 refusals (traceback
+  tail) and for a hostile oversized `@context`. Code that reads the tail of that message
+  should read `__cause__`, which keeps the whole error.
 - **`except (AttributeError, OverflowError, ValueError)` around `add_proof` /
   `add_base_proof` for a bad `created` no longer catches it**: it is `ProofMalformed`
   (an `OpenvcError` and a `ProofError`).
@@ -142,7 +152,7 @@ included (under #281, below); it is text only.
   holding an integer, a numeric `credentialSubject.id` / `@id`, a `@reverse` that expands
   but does not compact, and a nested node spelled `urn:bnid:c14n0`, which ended in a bare
   `KeyError` in the last guarded step), each asserted as exactly `ProofMalformed` with the
-  prefix; the message cut in all three arms (a synthetic error text around the 500
+  prefix; the message cut in all three arms (a synthetic error text around the 2000
   boundary, up to 1 000 000 characters, and a real 1 MB `@context` and URL, with the
   oversized text shown to reach the cause); controls for the round trip, the
   `validate_document` refusals that keep their message (the `add_base_proof` body

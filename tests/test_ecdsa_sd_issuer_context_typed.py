@@ -17,7 +17,7 @@ raise ``ProofMalformed`` with the prefix ``could not canonicalize the credential
 class ``verify`` and ``_utf8_nquads`` already use. Only the canonicalization is guarded:
 a signing-backend error (an HSM or Vault failure) surfaces as itself, and a ``ProofError``
 raised inside the guarded block (a bad pointer, a ``validate_document`` refusal) keeps its
-own class and message. The pyld text in the message is cut at 500 characters in the three
+own class and message. The pyld text in the message is cut at 2000 characters in the three
 arms (``verify`` included), because pyld quotes the context it refused and a 1 MB
 ``@context`` made a 1 MB message.
 
@@ -346,11 +346,11 @@ def test_the_rdf_siblings_keep_their_classes(sibling, name, context):
 #
 # pyld puts the context it refused into its error text, so a 1 MB @context made a 1 MB
 # ProofMalformed (derive_proof and verify read a credential a third party chose). All
-# three arms now quote at most 500 characters and show the full length; the pyld error is
+# three arms now quote at most 2000 characters and show the full length; the pyld error is
 # the __cause__, whole. The cap is written out here, not imported, so a change to it shows
 # up as a failing test.
 
-_CAP = 500
+_CAP = 2000
 _BIG = 1_000_000
 
 
@@ -385,7 +385,7 @@ def _raising(error: Exception) -> Callable[..., Any]:
 
 
 @pytest.mark.parametrize("target, call, prefix", ARMS)
-@pytest.mark.parametrize("size", [0, 1, 499, _CAP])
+@pytest.mark.parametrize("size", [0, 1, _CAP - 1, _CAP])
 def test_a_canonicalizer_text_up_to_the_cap_is_quoted_whole(
         monkeypatch, target, call, prefix, size):
     original = ValueError(_text(size))
@@ -433,9 +433,10 @@ def test_verify_cuts_a_pyld_message_quoting_a_huge_context():
     _cut(exc, _DERIVED_PREFIX)
 
 
-def test_an_ordinary_pyld_refusal_is_quoted_whole_by_every_arm():
-    # the cap leaves the usual 130 to 470 character refusal alone: the text after the
-    # prefix is exactly what pyld said, and the three arms agree on it
+def test_a_real_pyld_refusal_follows_the_same_rule_in_every_arm():
+    # pyld 3.x refusals are 130 to 470 characters and fit whole; pyld 2.0.4 appends the
+    # traceback of its inner error (up to about 2600), so its longest are cut. Either way
+    # the message is the rule applied to the cause, and the cause is whole.
     for call, prefix in (
             (lambda: SUITE.derive_proof(with_context(BASE, [V2, 5]),
                                         selective_pointers=SELECTIVE), _PREFIX),
@@ -444,5 +445,7 @@ def test_an_ordinary_pyld_refusal_is_quoted_whole_by_every_arm():
             (lambda: issue(credential([V2, 5])), _PREFIX)):
         exc = refused(call, prefix=prefix)
         cause_text = str(exc.__cause__)
-        assert len(cause_text) <= _CAP
-        assert str(exc) == f"{prefix}: {cause_text}"
+        assert cause_text
+        shown = (cause_text if len(cause_text) <= _CAP
+                 else f"{cause_text[:_CAP]}... ({len(cause_text)} chars)")
+        assert str(exc) == f"{prefix}: {shown}"
