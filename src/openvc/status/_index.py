@@ -45,15 +45,31 @@ _MAX_DIGITS = len(str(MAX_STATUS_INDEX))
 def brief(value: Any) -> str:
     """A short, safe rendering of a hostile status value for an error message. Never calls
     ``repr()`` on a container (deep nesting overflows it) or on a huge int (past
-    ``sys.get_int_max_str_digits`` it raises a bare ``ValueError``)."""
-    if isinstance(value, str):
-        value = plain_str(value)       # a subclass's __getitem__ / __len__ may raise or lie
-        return repr(value[:32]) + ("..." if len(value) > 32 else "")
-    if isinstance(value, int) and not isinstance(value, bool) and value.bit_length() > 64:
-        return f"a {value.bit_length()}-bit integer"
-    if isinstance(value, (bool, int, float)):
-        return repr(value)
-    return f"a {type(value).__name__}"
+    ``sys.get_int_max_str_digits`` it raises a bare ``ValueError``).
+
+    Total for any object a caller can pass, not only for what a JSON parser yields: a
+    ``str``, ``int`` or ``float`` subclass is read through the built-in's own methods
+    (``str.__str__``, ``int.bit_length``, ``int.__repr__``, ``float.__repr__``), never
+    its own, so a subclass whose ``__repr__``, ``__len__`` or ``bit_length`` raises,
+    lies or returns megabytes is shown as the characters or the number it holds. Anything
+    that still fails (a type whose metaclass ``__name__`` raises, a test double that
+    claims to be an ``int``) is ``an object``: reporting a bad value must not itself
+    raise."""
+    try:
+        if isinstance(value, str):
+            value = plain_str(value)       # a subclass's __getitem__ / __len__ may raise or lie
+            return repr(value[:32]) + ("..." if len(value) > 32 else "")
+        if value is True or value is False:
+            return repr(value)
+        if isinstance(value, int):
+            bits = int.bit_length(value)   # before any decimal conversion: 10**5000 has no str
+            return f"a {bits}-bit integer" if bits > 64 else int.__repr__(value)
+        if isinstance(value, float):
+            return float.__repr__(value)
+        name = type(value).__name__
+        return f"a {name}" if type(name) is str else "an object"
+    except Exception:
+        return "an object"
 
 
 def plain_str(value: str) -> str:

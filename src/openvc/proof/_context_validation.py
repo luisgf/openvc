@@ -383,7 +383,17 @@ def _collect_described_elsewhere(value: Any, entries: dict[str, set[str]],
 
 
 def _brief(value: Any) -> str:
-    return repr(value)[:100] if isinstance(value, str) else type(value).__name__
+    """*value* for an error message: a string is cut to 100 characters (before ``repr()``,
+    so a huge one is never copied whole), anything else is named by its type. Total for a
+    caller's object too: a ``str`` subclass is read through ``str.__str__``, never its own
+    ``__repr__``, ``__len__`` or ``__getitem__``, and what still fails is ``an object``."""
+    try:
+        if isinstance(value, str):
+            return repr(str.__str__(value)[:100])[:100]
+        name = type(value).__name__
+        return name if type(name) is str else "an object"
+    except Exception:
+        return "an object"
 
 
 def _normalize(value: Any, *, element: bool = False) -> Any:

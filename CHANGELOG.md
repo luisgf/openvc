@@ -4,6 +4,108 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] — unreleased
+
+### Fixed
+
+- **The helpers that turn a value into error-message text are total for a caller's object**
+  ([#282](https://github.com/luisgf/openvc/issues/282)). Hardening, caller-only, no
+  wrong-accept: nothing a JSON, CBOR or XML parser returns can carry a custom dunder, so no
+  credential, token or response reaches this, and every path that failed was a refusal (the
+  one false refusal is the `did:web` case below). `brief()` (`openvc.status`, 32 call sites), `safe_repr()`
+  (`openvc.proof`, 91 call sites in 20 modules, `openvc_ebsi` included) and `_brief()` (the
+  Data Integrity context check, 6 call sites) exist so that reporting a bad value cannot itself
+  fail. They bounded the length and named a container by its type, which settled deep nesting
+  (#213) and huge ints, but not a value whose own class answers `repr()`, `len()` or
+  `bit_length()` badly: the exception that method raised, the `ValueError` of the int-to-str
+  limit (an `int` subclass of 5000 digits whose `bit_length()` says 1) or a megabyte of `repr`
+  text came out of the `raise` that was meant to report the problem. #269 closed the `str` side
+  of `brief`; this is the rest. Two public effects:
+  - **The status builders and codec.** Every parameter whose error path formats the caller's
+    object (`ttl`, `valid_from`, `valid_until`, `issued_at`, `issuer`, `id`, `subject_id`,
+    `contexts` and its entries, `bitstring`, `status_list`, `status_purpose`, an entry or reference
+    `index` / `uri`, `bits`, `size`, the `get_status*` / `set_status*` arguments, and what a
+    resolver hands back to `check_credential_status` / `check_token_status`) raised the
+    hostile method's exception: `build_status_list_credential(ttl=BadInt(0))` with a
+    raising `__repr__` was that `RuntimeError`, and `id=Mock(spec=int)` a bare `TypeError`
+    (`'>' not supported between 'Mock' and 'int'`). They are `StatusListError`, as the same
+    value as a plain `int` always was. A job that publishes lists on a schedule and wraps the
+    build in `except OpenvcError` sees a typed error again; a caller that caught a builtin
+    exception there catches `OpenvcError` instead.
+  - **A success path.** `did_web._check_host` formatted the DID with `safe_repr()` before any
+    check, so `DidWebResolver.resolve` and `AsyncDidWebResolver.resolve` failed on a *valid* DID
+    given as a `str` subclass whose `__repr__` raises. They resolve it; an invalid one is a
+    `DidResolutionError`.
+
+  `non_negative_seconds` (`SdJwtVcProofSuite(leeway_s=...)`, `SdJwtVcProofSuite.verify(
+  kb_max_age_s=...)`, `verify_vp_token(leeway_s=..., kb_max_age_s=...)`) formatted its value
+  with a raw `{value!r}`: `-(10**5000)` was a bare `ValueError` and `BadInt(-1)` the dunder's
+  exception, instead of `ProofError` / `SdJwtError` / `OpenID4VPError`. This is a one-line
+  change to the message; the leeway semantics (#228, #232) are untouched.
+
+  Each helper now reads a value only through the built-in's unbound methods, never its own
+  (`str.__str__`, `int.bit_length`, `int.__repr__`, `float.__repr__`; the `int` size is read
+  before any decimal conversion), and catches `Exception` as the last resort, so a value that
+  still cannot be read (a test double that claims to be an `int`, a type whose metaclass
+  `__name__` raises or is not a string) is `an object`. `_brief` also cuts before `repr()`
+  now: it is reached from RDF credential JSON (`@id`, `@type` or a property name), and the
+  helper's transient peak on a 16 MB string of NULs was 64 MB (four times the string); it is
+  below 1 MiB.
+
+  **Behaviour change, message text only.** Plain values render byte for byte as before
+  (pinned by controls that pass on the unfixed tree). What changes:
+  - A subclass is shown as the number or characters it holds, not by its own `repr()`, the
+    stance `plain_int` / `plain_str` already take: `brief(E.A)` for an `IntEnum` was
+    `<E.A: 1>` and is `1`; `safe_repr(S.A)` and `_brief(S.A)` for a `StrEnum` were
+    `<S.A: 'a'>` and are `'a'`.
+  - `non_negative_seconds` names a container or an int past 64 bits by its type, as
+    `safe_repr` does everywhere else: `leeway_s must be a non-negative int (seconds), got
+    list`, where it used to print the list; `got int` for `-(2**64)`.
+  - `_brief` cuts a string to 100 characters *before* `repr()`, so on a string longer than
+    100 characters the quote style (`'` or `"`) is chosen from its first 100 characters, not
+    from the whole string. Diagnostic text only.
+
+  **Maintainer decisions taken in this change:**
+  - The fallback word is `an object`, in all three helpers, although `brief` says
+    `a <type>` and `safe_repr` says `<type>` elsewhere: when the type's name cannot be read
+    there is no type to name.
+  - A type whose `__name__` is not a `str` falls back to `an object` too, so the three
+    helpers return a `str` whatever a metaclass says (the issue named only a `__name__` that
+    raises).
+  - The three helpers stay three. Their limits differ (32, 200 and 100 characters) and `status`
+    cannot import from `proof`.
+  - Left as it is, out of this issue's scope: the raw `!r` fields and the inline
+    `type(x).__name__` sites besides these helpers (a mechanical sweep with no accept-set
+    change, its own issue); data-path consumers of a `str` subclass, such as `_did_web_url`
+    slicing the DID through the subclass's own `__getitem__` (a question of which bytes are
+    used, not of a message); and a `Mock(spec=int)` passed as a *numeric* argument (`index`,
+    `ttl`, `size`), which `plain_int` still turns into a bare `TypeError` before any message
+    is built.
+
+### Tests
+
+- **`tests/test_message_helpers_total.py`** (#282). 137 tests, self-contained (`tests/` is not
+  a package), with the hostile objects built inside the tests because pytest builds a
+  parameter id by calling `str()`, which on an `int` subclass calls its `__repr__`. The helper
+  matrix runs 13 objects (an `int` and a `float` subclass with a raising `__repr__`; a `str`
+  subclass with a raising `__repr__`, `__len__` and `__getitem__`; an `int` subclass with a
+  raising `bit_length`; one of 10**5000 whose `bit_length` returns 1; an `int` and a `float`
+  subclass whose `__repr__` returns a non-`str`; an `int` and a `str` subclass whose `__repr__`
+  returns 1 MB; a type whose metaclass `__name__` raises, and one whose `__name__` is not a
+  string) through each of the three helpers, asserting the exact text. 46 status entry points
+  (the builders, the codecs and the checks, one hostile object per parameter that reaches
+  `brief`) assert the exact class `StatusListError` and the message. `did:web` resolves a
+  valid DID given as a hostile `str` subclass (sync and async) and refuses an invalid one with
+  exactly `DidResolutionError`. `non_negative_seconds`, `SdJwtVcProofSuite(leeway_s=...)`,
+  `SdJwtVcProofSuite.verify(kb_max_age_s=...)` and `verify_vp_token(leeway_s=..., kb_max_age_s=...)`
+  raise exactly `ProofError`, `SdJwtError` and `OpenID4VPError` with the exact message. Controls
+  that pass before and after pin the plain-value text of all three helpers and of
+  `non_negative_seconds`. Against `65c1e03` 116 fail and 21 pass (the 6 controls, the structural
+  check and 14 cells that were already total: the `str` cells of `brief`, the numeric cells of
+  `_brief`, a lying `str.__getitem__` on `safe_repr`); 24 targeted mutants of the fix (each
+  call of a method of the value restored, each `try` / `except` and `str`-name guard removed,
+  each limit moved by one) are each killed.
+
 ## [1.34.0] — 2026-10-15
 
 **Upgrading from 1.33.2.** Five things can change what a caller sees (each is detailed in
