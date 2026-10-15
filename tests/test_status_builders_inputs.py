@@ -32,6 +32,11 @@ whose ``sign`` fails the test, which proves the error comes BEFORE the key is as
 controls show the well-formed inputs still build, sign and verify on the VC-JWT,
 ``eddsa-jcs-2022`` and (with ``pyld``) ``eddsa-rdfc-2022`` lanes. Helpers are self-contained
 (tests/ is not a package: no cross-import).
+
+#309 added one rule to the model: an ``issuer`` or inline context object that carries a member
+named ``_sd``, ``_sd_alg`` or ``...`` at any depth is refused too (the VC-JWT lane refuses such
+a payload), so ``_model_issuer``, ``_model_contexts`` and the "valid" strategies exclude them.
+The negatives and the end-to-end pins live in ``test_status_builder_sd_markers.py``.
 """
 from __future__ import annotations
 
@@ -42,7 +47,7 @@ from typing import Any, Callable
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from openvc import VerificationPolicy, verify_credential
@@ -877,10 +882,35 @@ def _is_text(value: Any) -> bool:
     return isinstance(value, str) and bool(value)
 
 
+_MARKERS = ("_sd", "_sd_alg", "...")      # the member names the VC-JWT lane reserves (#309)
+
+
+def _has_marker(node: Any) -> bool:
+    """The model of the SD-JWT marker rule, written out here and not imported: a member
+    named ``_sd``, ``_sd_alg`` or ``...`` in a dict at any depth, in a dict or a list. (The
+    strategies below only build dicts and lists.)"""
+    if isinstance(node, dict):
+        return any(k in _MARKERS or _has_marker(v) for k, v in node.items())
+    if isinstance(node, (list, tuple)):
+        return any(_has_marker(v) for v in node)
+    return False
+
+
+def _plant(extra: dict[str, Any], marker: str, where: int) -> dict[str, Any]:
+    """*extra* with a marker member planted at the top (0), inside a nested object (1) or
+    inside an object that is an array element (2)."""
+    if where == 0:
+        return {**extra, marker: None}
+    if where == 1:
+        return {**extra, "n": {"m": {marker: []}}}
+    return {**extra, "n": [1, {marker: "x"}]}
+
+
 def _model_issuer(value: Any) -> bool:
     if isinstance(value, str):
         return bool(value)
-    return (isinstance(value, dict) and "@id" not in value and _is_text(value.get("id")))
+    return (isinstance(value, dict) and "@id" not in value and _is_text(value.get("id"))
+            and not _has_marker(value))
 
 
 def _model_contexts(value: Any) -> bool:
@@ -890,17 +920,21 @@ def _model_contexts(value: Any) -> bool:
         return False
     if not (isinstance(value[0], str) and value[0] in (VC2, VC1)):
         return False
-    return all(isinstance(e, dict) or _is_text(e) for e in value[1:])
+    return all((isinstance(e, dict) and not _has_marker(e)) or _is_text(e) for e in value[1:])
 
 
 _ISSUERS = st.one_of(
     _DID, _JUNK,
     st.builds(lambda i, extra: {**extra, "id": i}, _DID, _JSON_OBJECT),
     st.builds(lambda i, extra, at: {**extra, "id": i, "@id": at}, _DID, _JSON_OBJECT, _JSON),
-    st.builds(lambda i, extra: {**extra, "id": i}, _JUNK, _JSON_OBJECT))
+    st.builds(lambda i, extra: {**extra, "id": i}, _JUNK, _JSON_OBJECT),
+    # a well-formed issuer that carries a marker, at the top, nested or in an array (#309)
+    st.builds(lambda i, extra, marker, where: _plant({**extra, "id": i}, marker, where),
+              _DID, _JSON_OBJECT, st.sampled_from(_MARKERS), st.integers(0, 2)))
 _TEXTS = st.one_of(st.none(), st.text(max_size=20), _JUNK)
 _CONTEXT_ENTRY = st.one_of(
-    st.sampled_from([VC2, VC1, "https://x/ctx"]), st.text(max_size=12), _JSON_OBJECT, _JUNK)
+    st.sampled_from([VC2, VC1, "https://x/ctx"]), st.text(max_size=12), _JSON_OBJECT, _JUNK,
+    st.builds(_plant, _JSON_OBJECT, st.sampled_from(_MARKERS), st.integers(0, 2)))
 _CONTEXTS = st.one_of(
     st.none(), _JUNK,
     st.builds(lambda first, rest, as_tuple: tuple([first, *rest]) if as_tuple
@@ -910,7 +944,16 @@ _CONTEXTS = st.one_of(
     st.lists(_CONTEXT_ENTRY, max_size=3))
 
 
+# The two ``@example``s are the #309 counterexamples, and they sit on the REFUSAL properties
+# because that is where they belong now: an issuer or a context object with a marker is not
+# one the builder accepts, so it is not a draw of the "whatever it accepts, the pipeline
+# accepts" property below (whose first line asserts the model). Before #309 the model said
+# ``{"...": None, "id": ...}`` was a valid issuer, the strategy drew one now and then, and
+# that property failed on the VC-JWT lane.
 @settings(max_examples=300, deadline=None)
+@example(issuer={"...": None, "id": "did:a:0"})
+@example(issuer={"_sd": [], "id": "did:a:0"})
+@example(issuer={"_sd_alg": "sha-256", "id": "did:a:0"})
 @given(issuer=_ISSUERS)
 def test_property_credential_issuer_matches_the_rule(issuer):
     if _model_issuer(issuer):
@@ -933,6 +976,9 @@ def test_property_subject_id_matches_the_rule(subject_id):
 
 
 @settings(max_examples=300, deadline=None)
+@example(contexts=[VC2, {"...": None}])
+@example(contexts=[VC2, {"@vocab": "https://x/", "n": {"_sd": []}}])
+@example(contexts=(VC2, {"n": [{"_sd_alg": "sha-256"}]}))
 @given(contexts=_CONTEXTS)
 def test_property_contexts_matches_the_rule(contexts):
     if _model_contexts(contexts):
@@ -959,7 +1005,12 @@ def test_property_entry_id_and_token_issuer_match_the_rule(value):
 # (and any JSON members besides), a non-empty subject, a context list that starts with a
 # base context. The model properties above cover the refusals; here the point is the
 # other half of the contract, that EVERYTHING the builders accept is read by the pipeline.
-_EXTRAS = _JSON_OBJECT.map(lambda d: {k: v for k, v in d.items() if k not in ("id", "@id")})
+# A member named ``_sd`` / ``_sd_alg`` / ``...`` is not a valid member (#309): the VC-JWT lane
+# refuses the payload, so the builder refuses the object. The filter drops a draw that holds
+# one (``text(max_size=6)`` draws a marker name rarely, which is why this property used to
+# fail only now and then), and ``_model_issuer`` / ``_model_contexts`` say the same.
+_EXTRAS = _JSON_OBJECT.map(lambda d: {k: v for k, v in d.items() if k not in ("id", "@id")}
+                           ).filter(lambda d: not _has_marker(d))
 _VALID_ISSUERS = st.one_of(
     _DID, st.builds(lambda i, extra: {**extra, "id": i}, _DID, _EXTRAS))
 _VALID_SUBJECTS = st.one_of(st.none(), st.text(min_size=1, max_size=20))
@@ -968,7 +1019,9 @@ _VALID_CONTEXTS = st.one_of(
     st.builds(lambda first, rest, as_tuple: tuple([first, *rest]) if as_tuple
               else [first, *rest],
               st.sampled_from([VC2, VC1]),
-              st.lists(st.one_of(st.text(min_size=1, max_size=12), _JSON_OBJECT), max_size=3),
+              st.lists(st.one_of(st.text(min_size=1, max_size=12),
+                                 _JSON_OBJECT.filter(lambda d: not _has_marker(d))),
+                       max_size=3),
               st.booleans()))
 
 
