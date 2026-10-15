@@ -11,7 +11,9 @@ the body as it was, so the binding refused a list its own issuer had signed (fai
 interop, not a vulnerability). ``_authenticated_list`` now fills in the *verified signer*
 where the body names no one, on a copy. Everything else is unchanged:
 
-* a present identifier is compared with the signer, as #221 made it (``StatusListError``);
+* a present identifier is compared with the signer, as #221 made it (``StatusListError``
+  on a ``dc+sd-jwt`` list; the VC-JWT and ``vc+sd-jwt`` lanes reconcile ``iss`` and
+  ``issuer`` first and raise ``ClaimsInvalid``);
 * an attacker-signed issuer-less list gets the **attacker's** id filled in, so the binding
   still refuses it, naming the attacker, unless the attacker is allow-listed;
 * ``_enforce_status_issuer`` and the contract of a custom ``resolve_status_list`` are not
@@ -251,10 +253,14 @@ def test_one_wrong_identifier_among_two_is_refused(pipeline):
     _exact(caught, StatusListError)
 
 
+@pytest.mark.parametrize("lane", ["vc-jwt", "vc+sd-jwt"])
 @pytest.mark.parametrize("pipeline", PIPELINES)
-def test_a_vc_jwt_list_that_names_another_issuer_never_gets_that_far(pipeline):
-    # The VC-JWT lane reconciles `iss` and `issuer` at verification (VC-JOSE-COSE §4.1.2).
-    served = vc_jwt_list(ATTACKER_KEY, ATTACKER, VICTIM, revoked=False)
+def test_a_w3c_list_that_names_another_issuer_never_gets_that_far(pipeline, lane):
+    # The VC-JWT lane reconciles `iss` and `issuer` at verification (VC-JOSE-COSE §4.1.2),
+    # and #221 gave a W3C `vc+sd-jwt` the same reconciliation: both raise `ClaimsInvalid`
+    # from the inner verification, before `_authenticated_list` is reached (which is where
+    # the `dc+sd-jwt` lane, with no such reconciliation, raises `StatusListError`).
+    served = BUILDERS[lane](ATTACKER_KEY, ATTACKER, VICTIM, revoked=False)
     with pytest.raises(ClaimsInvalid, match="issuer") as caught:
         _verify(pipeline, served)
     _exact(caught, ClaimsInvalid)
@@ -388,8 +394,27 @@ def test_a_body_with_an_identifier_is_the_same_object():
 def test_an_at_id_only_issuer_is_left_to_the_binding_as_before():
     # `{"@id": <signer>}` names the signer, so the body is returned untouched; the binding
     # reads `id` only and still fails it closed. Nothing here fills `id` in beside `@id`.
+    # This is a known interop gap, left on purpose (CHANGELOG 1.35.0): the end-to-end
+    # consequence is pinned below.
     body = _authenticated_list(_fake_result({"issuer": {"@id": VICTIM}}, VICTIM))
     assert body == {"issuer": {"@id": VICTIM}}
+
+
+@pytest.mark.parametrize("lane", list(BUILDERS))
+@pytest.mark.parametrize("pipeline", PIPELINES)
+def test_an_at_id_only_issuer_is_still_refused_under_the_binding(pipeline, lane):
+    # The victim itself signed this list and the body names the victim, by `@id` alone. The
+    # binding reads `id`, and `_authenticated_list` has nothing to fill in (the body names
+    # someone), so it fails closed, as it did before #226. Changing that is a decision, not
+    # a side effect: if `@id` is ever read or copied into `id`, this test changes with it.
+    served = BUILDERS[lane](VICTIM_KEY, VICTIM, {"@id": VICTIM})
+    # Control: the list is valid and the victim's own, so without the binding its bit is read.
+    with pytest.raises(CredentialRevoked) as read:
+        _verify(pipeline, served, VerificationPolicy())
+    _exact(read, CredentialRevoked)
+    with pytest.raises(StatusListIssuerUntrusted, match="no issuer to bind against") as caught:
+        _verify(pipeline, served)
+    _exact(caught, StatusListIssuerUntrusted)
 
 
 @pytest.mark.parametrize("signer", [None, "", 5, ["did:ex:a"], {"id": "did:ex:a"}],

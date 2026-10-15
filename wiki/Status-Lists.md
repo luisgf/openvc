@@ -285,7 +285,9 @@ and read `result.status.revoked`; suspension still rejects. See
   [ADR-0006](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0006-status-list-issuer-binding.md).
   The binding compares the `issuer` named in the list's **body**. The default
   resolvers refuse a list whose body names an issuer other than the one its
-  signature was verified for (`StatusListError`). Before 1.31.0, an IETF
+  signature was verified for: a VC-JWT or `vc+sd-jwt` list with `ClaimsInvalid`
+  (the pipeline reconciles its `iss` and `issuer` first), a `dc+sd-jwt` list with
+  `StatusListError`. Before 1.31.0, an IETF
   `dc+sd-jwt` list signed by an attacker could name the victim there and clear
   the revocation bit.
   A list secured as a VC-JWT in the VCDM 1.1 JWT encoding may carry its issuer only
@@ -301,7 +303,10 @@ and read `result.status.revoked`; suspension still rejects. See
   that checked the list, and fill in that `result.issuer` yourself where the body
   names no one. The pipeline does not do it for you: an issuer-less body from a
   custom resolver still fails closed (`StatusListIssuerUntrusted`, "no issuer to
-  bind against").
+  bind against"). An issuer object that names the signer only by `@id`
+  (`{"@id": "did:…"}`) is not filled in either: the binding reads `id`, so it is
+  refused with the same `StatusListIssuerUntrusted`. Spell it `issuer: "did:…"` or
+  `{"id": "did:…"}`.
 - **SD caveat**: a selectively disclosable status pointer is one the holder can
   withhold, and a withheld one looks like no status at all. openvc's SD-JWT VC
   `issue()` refuses to make `status` or `credentialStatus` disclosable, and

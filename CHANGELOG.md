@@ -30,11 +30,16 @@ All notable changes to **openvc** are documented here. The format follows
   - a list an attacker signed gets the **attacker's** id and is refused with
     `StatusListIssuerUntrusted` naming the attacker, as before, unless the attacker is in
     `status_issuer_allowlist`; a list signed by an allow-listed delegate is accepted;
-  - a list whose body names an issuer other than its signer is refused with
-    `StatusListError` (#221), a custom `resolve_status_list` that returns an issuer-less
-    body still fails closed with `StatusListIssuerUntrusted`, the IETF Token Status List
-    path (bound on the token's `iss`) is unaffected, and a Data Integrity list cannot be
-    issuer-less (`IssuerBindingError` earlier).
+  - a list whose body names an issuer other than its signer is refused (#221); the class
+    depends on the lane. A VC-JWT or `vc+sd-jwt` list has its `iss` reconciled with its
+    `issuer` by the pipeline before the resolver sees it, so it raises `ClaimsInvalid`
+    from the inner verification. A `dc+sd-jwt` list has no such reconciliation, so
+    `_authenticated_list` raises `StatusListError`. Both are `OpenvcError`s, but a caller
+    that catches one class only misses the other lane.
+    A custom `resolve_status_list` that returns an issuer-less body still fails closed
+    with `StatusListIssuerUntrusted`, the IETF Token Status List path (bound on the
+    token's `iss`) is unaffected, and a Data Integrity list cannot be issuer-less
+    (`IssuerBindingError` earlier).
 
   Without the binding nothing changes: the bit is read as before. A caller of a default
   resolver who reads the returned dict itself now sees an `issuer` where the body had
@@ -47,9 +52,21 @@ All notable changes to **openvc** are documented here. The format follows
   in the pipeline: `_enforce_status_issuer` and the `resolve(url) -> dict` contract of a
   custom resolver are not relaxed, and no richer return type is introduced. It fills in
   only from `result.issuer` and only when that is a non-empty string; a present
-  identifier is never rewritten. An object that names itself only by `@id` is left alone
-  (the binding reads `id`, so it still fails closed: `{"@id": <signer>}` is not an
-  issuer-less shape). Copies are shallow: nothing downstream writes to a resolved list.
+  identifier is never rewritten. Copies are shallow: nothing downstream writes to a
+  resolved list.
+
+  *Known gap, left on purpose.* An issuer object that names the signer only by `@id`
+  (`{"@id": <signer>}`) is not filled in, and under the binding it is still refused with
+  `StatusListIssuerUntrusted` ("no issuer to bind against"), as it was before this change.
+  It is not the issuer-less shape #226 fixes: it names someone, so `_authenticated_list`
+  has nothing to fill in. Copying a signer-matching `@id` into `id` there would admit
+  nothing the signature did not already prove, but how the binding reads an issuer object
+  (`_enforce_status_issuer` reads `id` only, for every resolver) is a separate decision,
+  and reading `@id` in `_enforce_status_issuer` itself would widen what a custom
+  resolver's body can bind on. Neither is taken here. Spell the issuer `<id>` or
+  `{"id": <id>}`, or leave it out and let the signer be filled in.
+  `test_an_at_id_only_issuer_is_still_refused_under_the_binding` pins this on every lane,
+  so a later change to it has to be deliberate.
 
 ### Tests
 
@@ -58,7 +75,10 @@ All notable changes to **openvc** are documented here. The format follows
   credentials, two status URLs, both orders): the shapes that must still be refused, the
   shapes now accepted, delegation, the shape and non-mutation of the returned body,
   hostile `issuer` values, a custom resolver, the IETF token path, the Data Integrity
-  lane, and no binding.
+  lane, and no binding. The refusal of a foreign body issuer is pinned per lane
+  (`ClaimsInvalid` on VC-JWT and `vc+sd-jwt`, `StatusListError` on `dc+sd-jwt`), and a
+  victim-signed list whose issuer is `{"@id": <victim>}` is pinned as still refused
+  under the binding on every lane.
 
 ## [1.34.0] — 2026-10-15
 

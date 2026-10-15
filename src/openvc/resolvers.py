@@ -92,7 +92,9 @@ def default_status_list_resolver(
     (``require_status=False``); *resolver* resolves the status issuer's key.
 
     The returned body names its issuer: a list whose body names a different one than its
-    signer is refused (``StatusListError``), and one whose body names no one (the issuer is
+    signer is refused (``ClaimsInvalid`` on a VC-JWT or ``vc+sd-jwt`` list, where the
+    pipeline reconciles ``iss`` and ``issuer`` first; ``StatusListError`` on a
+    ``dc+sd-jwt`` list, where it does not), and one whose body names no one (the issuer is
     in the JWT ``iss`` only) gets the verified signer filled in, on a copy, so
     ``require_status_issuer_binding`` can bind it (ADR-0006, #226)."""
     def resolve(url: str) -> dict:
@@ -140,7 +142,9 @@ def _authenticated_list(result: Any) -> dict:
     from the body, and an IETF SD-JWT's ``issuer`` claim is not reconciled with its
     ``iss``: a list signed by A that names B must not pass as B's.
 
-    * A body whose ``issuer`` names someone else is refused (``StatusListError``).
+    * A body whose ``issuer`` names someone else is refused (``StatusListError``; a VC-JWT
+      or ``vc+sd-jwt`` list never gets here with one, the pipeline having refused the
+      ``iss`` / ``issuer`` conflict with ``ClaimsInvalid`` first).
     * A body that names the signer is returned as it is.
     * A body that names no one (``issuer`` absent, or an object with no ``id`` / ``@id``,
       which is what the VCDM 1.1 JWT encoding leaves behind when it moves the issuer's
