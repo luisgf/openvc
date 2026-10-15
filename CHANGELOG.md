@@ -97,8 +97,11 @@ caller sees in two ways (each is detailed below):
   one (`null`, `false`, `0`, `""`, `[]`, `{}`) used to read as absent, with every query
   required. To get "every query is required", leave the key out; to say "any one of", pass
   `[{"options": [["a"], ["b"]]}]`; to make a query optional, give it a set with
-  `"required": false`. A well-formed `credential_sets` is unchanged by #284 alone; #285
-  (above) is what makes it bite.
+  `"required": false`. The arrays must be lists, as `credentials` already has to be: a
+  `dcql_query` built in Python with a tuple for `credential_sets`, for an `options` or for
+  an option (it used to read as truthy, and so switched the check off) raises
+  `VpTokenMalformed` too; pass lists. A well-formed `credential_sets` is unchanged by #284
+  alone; #285 (above) is what makes it bite.
 
 - **Maintainer decisions (#284, #285).** Each takes the option the issue proposed.
   1. **`null` and `[]` are rejected (#284).** Both used to read as absent. A present

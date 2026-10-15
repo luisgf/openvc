@@ -348,8 +348,10 @@ def verify_vp_token(
     of ids, every id naming a Credential Query of ``credentials``; ``required``, when
     present, is a JSON boolean. Anything else (``null`` and ``[]`` included) is
     :class:`VpTokenMalformed`, naming the path (``dcql_query.credential_sets[0].options``).
-    ``purpose`` and unknown members are not read. Before 1.35.0 a present
-    ``credential_sets`` switched the completeness check off, whatever it held.
+    ``purpose`` and unknown members are not read. The arrays must be Python lists, as for
+    ``credentials``: a tuple is :class:`VpTokenMalformed`. Before 1.35.0 any truthy
+    ``credential_sets``, whatever it held, switched the completeness check off; ``null``,
+    ``[]`` and the other falsy values read as absent, with every query required.
     """
     if not nonce:
         raise ClaimsInvalid("verify_vp_token requires a non-empty nonce")

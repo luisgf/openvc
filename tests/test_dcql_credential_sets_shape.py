@@ -121,6 +121,7 @@ TOP_LEVEL = [
     pytest.param([], id="empty-array"),
     pytest.param({}, id="empty-object"),
     pytest.param({"a": 1}, id="object"),
+    pytest.param(({"options": [["a"]]},), id="tuple-of-sets"),   # lists only, as credentials
 ]
 
 
@@ -174,6 +175,7 @@ NOT_AN_ARRAY_OF_OPTIONS = [
     pytest.param({"options": {}}, id="empty-object"),
     pytest.param({"options": {"a": ["a"]}}, id="object"),
     pytest.param({"options": 1}, id="number"),
+    pytest.param({"options": (["a"],)}, id="tuple"),             # lists only
 ]
 
 
@@ -190,6 +192,7 @@ def test_options_must_be_a_non_empty_array(good, entry, answered):
     pytest.param(["a"], id="flat-array-of-ids"),
     pytest.param([None], id="null-option"),
     pytest.param([{"a": 1}], id="object-option"),
+    pytest.param([("a",)], id="tuple-option"),                   # lists only
 ])
 def test_each_option_must_be_a_non_empty_array(good, options, answered):
     with _exact(VpTokenMalformed,

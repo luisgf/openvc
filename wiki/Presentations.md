@@ -187,8 +187,9 @@ calls every SD-JWT `sd-jwt-vc` and the lane did not look at the typ (#272). A
   `dcql_query.credential_sets[1].options must be a non-empty array`, `…options[0] names
   Credential Query 'zzz', which is not in dcql_query.credentials`,
   `….required must be a boolean`. `null` and `[]` are malformed too; leave the key out to
-  require every query. `purpose` and unknown members are not read. Before 1.35.0 any
-  truthy value (`true`, `"false"`, `[[]]`, …) silently switched the completeness check off.
+  require every query. The arrays must be lists, as `credentials` must: a tuple is
+  malformed. `purpose` and unknown members are not read. Before 1.35.0 any truthy value
+  (`true`, `"false"`, `[[]]`, a tuple, …) silently switched the completeness check off.
 - **Completeness** (since 1.35.0). With no `credential_sets`, every Credential Query is
   required. With it, **every set whose `required` is `true` or omitted must be satisfied**:
   at least one of its `options` must have **every** id answered in the `vp_token`. A set
