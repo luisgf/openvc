@@ -46,7 +46,7 @@ from ._verify_common import (
     prepare_di_proof,
     resolve_verification_key,
 )
-from .contexts import DocumentLoaderError, document_loader
+from .contexts import DocumentLoaderError, document_loader, pyld_options
 from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
 from .vc_jwt import SigningKey
 
@@ -101,8 +101,7 @@ def _canonize(document: dict[str, Any], loader: Any) -> bytes:
     try:
         nquads = jsonld.normalize(
             document,
-            {"algorithm": "URDNA2015", "format": "application/n-quads",
-             "documentLoader": loader})
+            pyld_options(loader, algorithm="URDNA2015", format="application/n-quads"))
     except Exception as exc:
         # pyld wraps a loader refusal in its own JsonLdError; surface the clear
         # "unbundled context" error if it caused this, else wrap generically.

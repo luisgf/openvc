@@ -112,7 +112,7 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
 
-from .contexts import DocumentLoaderError
+from .contexts import DocumentLoaderError, pyld_options
 from .errors import ProofError, ProofMalformed
 
 VC_BASE_CONTEXTS = frozenset({
@@ -221,15 +221,14 @@ def _check_compacted(document: dict[str, Any], loader: Any, *, what: str,
                      indexes: dict[str, _TermIndex]) -> None:
     from pyld import jsonld          # the caller already canonicalized with pyld
 
-    options = {"documentLoader": loader}
     try:
-        expanded = jsonld.expand(document, options)
+        expanded = jsonld.expand(document, pyld_options(loader))
         if not (isinstance(expanded, list) and len(expanded) == 1
                 and isinstance(expanded[0], dict)):
             raise ProofMalformed(f"the {what} must describe exactly one top-level node")
         node = expanded[0]
         _check_expanded(node, node.get("@id"), what=what, top=True)
-        compacted = jsonld.compact(expanded, document["@context"], options)
+        compacted = jsonld.compact(expanded, document["@context"], pyld_options(loader))
         same = _canonical(compacted) == _canonical(document)
         where = "" if same else _first_difference(
             _normalize(document), _normalize(compacted), "")[:200]
@@ -239,7 +238,8 @@ def _check_compacted(document: dict[str, Any], loader: Any, *, what: str,
             # not properties: stub it out first (rare, so a second compaction only then).
             stubbed = _stub_json_literals(expanded)
             if stubbed is not expanded:
-                compacted = jsonld.compact(stubbed, document["@context"], options)
+                compacted = jsonld.compact(
+                    stubbed, document["@context"], pyld_options(loader))
             context_key = _canonical(document["@context"])
             if context_key not in indexes:
                 indexes[context_key] = _term_index(document["@context"], loader)
@@ -762,7 +762,7 @@ def missing_types(document: dict[str, Any], expected: Sequence[str],
     if _is_presentation(unsecured):
         unsecured.pop(_EMBEDDED_CREDENTIALS, None)
     try:
-        expanded = jsonld.expand(unsecured, {"documentLoader": loader})
+        expanded = jsonld.expand(unsecured, pyld_options(loader))
     except Exception as exc:         # pyld's JsonLdError, ... — validated already
         raise ProofMalformed(f"cannot expand the document's types: {exc}") from exc
     node = expanded[0] if isinstance(expanded, list) and len(expanded) == 1 else None

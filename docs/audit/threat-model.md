@@ -496,10 +496,11 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   IRI's spelling.
   They are scoped to the call, though: since v1.27.1 only the bundled contexts are
   tagged `static` in pyld's process-global cache, so one caller's injected document
-  never governs another caller's canonicalization through a URL it serves (#185). An
-  inline context that `@import`s a URL is still resolved once into that cache and
-  reused by later calls (#225, open); on the verify path the v1.30.2 inline-context
-  rule refuses such a document, so it is not reachable there today.
+  never governs another caller's canonicalization through a URL it serves (#185). Since
+  v1.35.0 every pyld call also gets a resolver of its own (`pyld_options`, #225), so an
+  inline context that `@import`s a URL, in the document or in a context a caller serves,
+  is no longer cached for the next caller either; the only entry kept across calls is the
+  resolution of a bundled context, which references no other URL.
 - **R10 — Untyped exits at the verification boundary. ✅ Resolved in v1.33.1
   ([#219](https://github.com/luisgf/openvc/issues/219) in v1.32.3,
   [#279](https://github.com/luisgf/openvc/issues/279) in v1.33.0, then the

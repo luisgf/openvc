@@ -4,6 +4,109 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] — unreleased
+
+### Security
+
+- **Every pyld call gets a JSON-LD context resolver of its own, so one caller's contexts
+  no longer reach the next caller's**
+  ([#225](https://github.com/luisgf/openvc/issues/225)). Hardening, severity low; the
+  follow-up to the 1.30.2 context-validation fix (the RDF suites advisory) and to the
+  1.27.1 fix for tagged URL documents. pyld keeps a **process-global** resolved-context
+  cache. It stores an inline (object) `@context` under its JSON, together with the
+  processed result of any `@import` inside it, tagged `static` whatever the document
+  loader said. openvc's loader is per
+  call (`document_loader(extra_contexts)`), but the pyld calls shared that cache, so an
+  inline context that `@import`s a URL was resolved once, with whichever caller's
+  `extra_contexts` came first, and every later call in the process took the same result.
+  The issue's repro gives the same output on pyld 2.0.4 and 3.1.0, and so do the new
+  tests.
+  - **A credential that carries the inline `@import` itself** was canonicalized with
+    another caller's terms, or, with no `extra_contexts`, without the `DocumentLoaderError`
+    its loader owed. The 1.30.2 inline-context rule refuses such a credential afterwards
+    (`ProofMalformed`), so nothing was wrongly accepted this way: only the error it failed
+    with depended on who had run first (a credential signed with another tenant's terms came
+    back `ProofMalformed`, not `SignatureInvalid`).
+  - **A context a caller *serves* that holds the inline `@import`** is trusted, so that
+    rule does not refuse it, and there the leak reached the verdict. With two callers in
+    one process serving the same two URLs with different definitions of a term, the second
+    could not issue a credential of its own (`ProofMalformed`), and a credential signed
+    under the first caller's definition of a *property* verified under the second caller's
+    contexts, which define it as another IRI. Both callers' contexts are the verifier's own
+    configuration, so no hostile document creates the situation; it is a verifier checking
+    against terms it had not configured.
+  - **The change.** `openvc.proof.contexts.pyld_options(loader, **options)` builds the
+    options of one pyld call: the caller's options, the `documentLoader`, and a
+    `ContextResolver` created for that call. Every call goes through it: the canonization
+    in `data_integrity._canonize` (and so `ecdsa-rdfc-2019`), the four in `ecdsa-sd-2023`
+    (`to_rdf`, `expand`, `compact`, `normalize`), the three in the context validation, the
+    `missing_types` expansion behind `expected_types`, and the OpenID4VP `type_values`
+    expansion (which already built its own resolver by hand). Both pyld lines accept the
+    resolver (2.0.4 reads an incoming one with `setdefault`, as 3.x does). A new call site
+    cannot leave it out: the source is scanned for pyld calls whose options do not come
+    from the helper, a recorder checks every call openvc makes across all suites, and no
+    other file may spell `documentLoader`, `contextResolver` or `ContextResolver`.
+  - **Behaviour change:** see *Changed*, below. One caller with one set of contexts sees
+    nothing different, and the W3C golden vectors are untouched.
+  - **Decisions taken.**
+    - *One resolver per pyld call*, not per verification: the three calls of the context
+      validation each get their own, so no call can pick up what another resolved.
+    - *A cache of the bundled contexts only, kept for the life of the process.* A resolver
+      that starts from nothing also loses the processed form of the VC v2 context, which
+      most of a verification's time goes to: with it, a verification of an
+      `eddsa-rdfc-2022` credential took 7.0 ms instead of 2.1 ms (3.3 times, on both pyld
+      lines). The issue allowed a module-level cache keyed by the bundled documents alone;
+      with it the median is 2.2 ms (up to 9% over 1.34.0, see the table below). The window
+      onto that store opens on a URL only when the loader serves the *bundled object* for
+      it (the same identity test that gates the `static` tag, not URL membership), and any
+      other key, an inline context included, is read as absent and written nowhere. The
+      store holds the VC v2 resolution and nothing else; it is sound because a bundled
+      document references no other URL, which a test now enforces for every bundled file.
+      Sharing that one entry across threads is what pyld's own cache already did; no
+      thread-safety claim is made beyond that.
+    - *`pyld_options` fixes the two keys it sets:* a caller's `documentLoader` or
+      `contextResolver` option is overridden, so a call cannot opt out through the helper.
+    - *Not touched,* as the issue asks: the 1.30.2 inline-context rule, which contexts are
+      bundled, and the network (nothing is fetched).
+    - *This entry names the 1.30.2 advisory without its GHSA id:* `test_docs_claims` takes
+      any GHSA id under an unreleased heading for an advisory fixed in that version.
+
+    Median verify time, 300 runs on one machine (ms, `pyld 3.1.0` / `pyld 2.0.4`), before
+    this change and after:
+
+    | verify | 1.34.0 | with a resolver per call | this change |
+    |---|---|---|---|
+    | `eddsa-rdfc-2022` credential | 2.13 / 2.10 | 7.00 / 6.98 | 2.24 / 2.24 |
+    | `ecdsa-rdfc-2019` credential | 2.09 / 2.05 | 6.92 / 6.94 | 2.14 / 2.07 |
+    | `eddsa-rdfc-2022` presentation (holder proof + embedded credential) | 4.62 / 4.42 | 14.10 / 14.00 | 4.70 / 4.52 |
+    | `ecdsa-sd-2023` derived credential | 2.19 / 2.12 | 7.03 / 7.08 | 2.29 / 2.31 |
+
+### Changed
+
+- **A call that another caller's cache used to answer now raises**
+  ([#225](https://github.com/luisgf/openvc/issues/225), above). It concerns a process in
+  which two callers pass different `extra_contexts` for the same URLs, one of them through
+  a context that holds an inline `@import`:
+  - A credential verified there under contexts that differ from the ones it was signed
+    under now fails with `SignatureInvalid`. It used to verify when the term was a
+    property, and to fail with `ProofMalformed` when it was a type. Pass the contexts the
+    credential was signed under.
+  - A call that reached an `@import` only because an earlier call had cached it now raises
+    `DocumentLoaderError`, as its loader says. Pass the imported context in
+    `extra_contexts`.
+
+### Tests
+
+- `tests/test_pyld_context_isolation.py` runs the issue's repro through the real pipeline,
+  in one process and in the order that exposes the cache (tenant A's contexts, then tenant
+  B's for the same URLs, then none), for an inline `@import` in the credential, a served
+  context that holds one (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `ecdsa-sd-2023`), the
+  `expected_types` pin, and the cross-caller property case; each call must see only its
+  own loader, and each assertion names the exact exception class. It names no new API and
+  fails on 1.34.0. `tests/test_pyld_options.py` pins the structural half (the source scan
+  and its own tests, the run-time recorder, the bundled-only store and its window, and the
+  rule that bundled documents reference no other URL). Both run on the pyld 2.0.4 floor.
+
 ## [1.34.0] — 2026-10-15
 
 **Upgrading from 1.33.2.** Five things can change what a caller sees (each is detailed in

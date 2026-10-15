@@ -23,11 +23,14 @@ byte-for-byte golden fixtures, with CI exercising both edges.
 
 Bundled contexts are handed to pyld tagged `static`, so their term definitions are
 resolved once per process instead of on every canonicalization. A context you supply
-through `extra_contexts` is served but **never** tagged: pyld keeps a tagged document in
-a process-global cache keyed by context URL, so tagging caller-supplied documents would
-let one caller's terms be used for another caller's document at the same URL. Injected
-contexts therefore cost a little more per call and stay isolated from each other — the
-only safe trade in a library that canonicalizes documents it did not author.
+through `extra_contexts` is served but **never** tagged: a tagged document is kept in a
+cache keyed by context URL, so tagging caller-supplied documents would let one caller's
+terms be used for another caller's document at the same URL. Every pyld call openvc makes
+also gets a context resolver of its own (since 1.35.0), so nothing a call resolves — not
+an injected context, and not an inline context that `@import`s a URL — is kept for the next
+caller; only the resolution of the bundled contexts is shared. Injected contexts therefore
+cost a little more per call and stay isolated from each other — the only safe trade in a
+library that canonicalizes documents it did not author.
 
 ## RDF-canonicalized (`eddsa-rdfc-2022`)
 
