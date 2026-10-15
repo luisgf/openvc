@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from ..errors import OpenvcError
@@ -38,8 +38,9 @@ from ._verify_common import (
     match_alg,
     prepare_di_proof,
     resolve_verification_key,
+    utc_iso,
 )
-from .data_integrity import PROOF_TYPE, VerifiedDataIntegrity, _iso, _unsecured
+from .data_integrity import PROOF_TYPE, VerifiedDataIntegrity, _unsecured
 from .errors import ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
 from .vc_jwt import SigningKey
 
@@ -123,6 +124,12 @@ class _JcsProofSuite:
         Unlike the RDF suite this needs no ``@context`` term resolution, but the
         document must still carry ``@context`` — it is canonicalized (and signed)
         as an ordinary member, so tampering with it breaks the proof.
+
+        *created* is a ``datetime`` or ``None`` (the current UTC time): a naive value is
+        UTC, never the host's local time, an aware one is converted, and the signed
+        string is whole seconds (truncated). Anything else, or a value with no UTC
+        equivalent, is :class:`ProofMalformed` before anything is signed. No openvc
+        verifier reads ``created`` back.
         """
         if signing_key.alg not in self._allowed_algs:
             raise UnsupportedCryptosuite(
@@ -136,7 +143,7 @@ class _JcsProofSuite:
         proof: dict[str, Any] = {
             "type": PROOF_TYPE,
             "cryptosuite": self._cryptosuite,
-            "created": _iso(created if created is not None else datetime.now(timezone.utc)),
+            "created": utc_iso(created, error=ProofMalformed, name="created"),
             "verificationMethod": verification_method,
             "proofPurpose": proof_purpose,
         }
