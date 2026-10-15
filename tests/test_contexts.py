@@ -6,12 +6,15 @@ The loader never fetches: an unlisted URL fails closed. Bundled contexts are tag
 canonicalization.
 
 That tag is **provenance-gated**, and the gate is a correctness property rather than a
-micro-optimisation: pyld promotes a tagged document into a *process-global* cache keyed
-by context URL (``pyld.jsonld._resolved_context_cache``, via ``ContextResolver``), so a
-tagged caller-injected document would serve the first caller's term definitions to every
-later caller of that URL — canonicalizing with terms the signer never had. The bundled
-files may be tagged because they ship read-only, so every loader in the process serves
-the same bytes for a given URL. The last test pins the isolation end to end.
+micro-optimisation: pyld promotes a tagged document into a resolved-context cache keyed
+by context URL (its *process-global* one, ``pyld.jsonld._resolved_context_cache``, for a
+call that is handed a bare loader; since #225 openvc's calls get a resolver of their own,
+which shares only the bundled entries, see ``test_pyld_options.py``), so a tagged
+caller-injected document would serve the first caller's term definitions to every later
+caller of that URL — canonicalizing with terms the signer never had. The bundled files
+may be tagged because they ship read-only, so every loader in the process serves the
+same bytes for a given URL. The last test pins the isolation of the loader's tag with a
+bare loader, the case the tag gate alone has to cover.
 """
 from __future__ import annotations
 

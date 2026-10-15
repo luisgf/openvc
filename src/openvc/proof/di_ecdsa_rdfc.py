@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Mapping
 
 from ..errors import OpenvcError
@@ -43,9 +43,10 @@ from ._verify_common import (
     match_alg,
     prepare_di_proof,
     resolve_verification_key,
+    utc_iso,
 )
 from .contexts import document_loader
-from .data_integrity import PROOF_TYPE, VerifiedDataIntegrity, _canonize, _iso, _unsecured
+from .data_integrity import PROOF_TYPE, VerifiedDataIntegrity, _canonize, _unsecured
 from .errors import ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
 from .vc_jwt import SigningKey
 
@@ -119,6 +120,12 @@ class EcdsaRdfcProofSuite:
         signature. The input is not mutated. Like the ``eddsa-rdfc-2022`` suite this
         canonicalizes over RDF, so any non-bundled ``@context`` term must be supplied via
         *extra_contexts*.
+
+        *created* is a ``datetime`` or ``None`` (the current UTC time): a naive value is
+        UTC, never the host's local time, an aware one is converted, and the signed
+        string is whole seconds (truncated). Anything else, or a value with no UTC
+        equivalent, is :class:`ProofMalformed` before anything is signed. No openvc
+        verifier reads ``created`` back.
         """
         if signing_key.alg not in self._allowed_algs:
             raise UnsupportedCryptosuite(
@@ -132,7 +139,7 @@ class EcdsaRdfcProofSuite:
         proof: dict[str, Any] = {
             "type": PROOF_TYPE,
             "cryptosuite": ECDSA_RDFC_CRYPTOSUITE,
-            "created": _iso(created if created is not None else datetime.now(timezone.utc)),
+            "created": utc_iso(created, error=ProofMalformed, name="created"),
             "verificationMethod": verification_method,
             "proofPurpose": proof_purpose,
         }

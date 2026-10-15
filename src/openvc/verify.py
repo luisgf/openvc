@@ -43,7 +43,13 @@ Errors: a proof/temporal/purpose failure raises a
 :class:`~openvc.proof.errors.ProofError` subclass (shared by every suite); a
 pipeline-level failure (unknown format, key resolution, type mismatch, missing
 status resolver) raises a :class:`VerificationError` subclass; a revoked
-credential raises :class:`~openvc.status.CredentialRevoked`.
+credential raises :class:`~openvc.status.CredentialRevoked`. A key-resolution failure is
+a :class:`KeyResolutionFailed` on **every** lane: the JOSE lanes raise it, and the Data
+Integrity lanes (sync and async alike) raise its subclass
+:class:`~openvc.proof.errors.KeyResolutionError`, which is also a ``ProofError``, so
+``except KeyResolutionFailed``, ``except VerificationError`` and ``except ProofError``
+each catch a Data Integrity key-resolution failure. (The asynchronous API raises the same
+classes as the synchronous one.)
 """
 from __future__ import annotations
 
@@ -57,7 +63,7 @@ if TYPE_CHECKING:
 
 from . import _json
 from .cache import batch_resolvers
-from .errors import OpenvcError
+from .errors import KeyResolutionFailed, OpenvcError, VerificationError
 from .observability import logger, span
 from .proof._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
@@ -109,12 +115,11 @@ _CRYPTOSUITE_FORMAT = {
 # Errors
 # --------------------------------------------------------------------------- #
 
-class VerificationError(OpenvcError):
-    """A pipeline-level failure (not a proof-signature failure)."""
-
-
+# VerificationError and KeyResolutionFailed are defined in openvc.errors, because
+# openvc.proof.errors.KeyResolutionError subclasses the second and openvc.proof cannot
+# import this module. They are re-exported here (and in __all__) and keep
+# __module__ == "openvc.verify".
 class UnknownCredentialFormat(VerificationError): ...
-class KeyResolutionFailed(VerificationError): ...
 class TypeMismatch(VerificationError): ...
 class IssuerBindingError(VerificationError): ...
 
@@ -157,7 +162,9 @@ class VerificationPolicy:
     5.5). ``audience`` and ``nonce`` bind an SD-JWT KB-JWT together (step 5.6): a
     KB-JWT checked against only one of them, or an empty one, is rejected
     (``ClaimsInvalid``), while ``audience`` alone still pins a VC-JWT's ``aud``. That
-    does not make the KB-JWT required — ``require_key_binding`` does.
+    does not make the KB-JWT required — ``require_key_binding`` does. ``audience`` is also
+    the audience an SD-JWT VC issuer JWT's own ``aud`` must name, when it has one (RFC 7519
+    §4.1.3; nested in a presentation, that presentation's audience).
     ``expected_types`` pins a W3C credential's ``type`` (a bare string is one type); an
     IETF SD-JWT VC is typed by ``vct``, so a policy that sets it rejects one — pin those
     with ``expected_vct``. On the RDF Data Integrity suites a name matches by IRI,

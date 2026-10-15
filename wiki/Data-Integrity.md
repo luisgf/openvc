@@ -23,11 +23,14 @@ byte-for-byte golden fixtures, with CI exercising both edges.
 
 Bundled contexts are handed to pyld tagged `static`, so their term definitions are
 resolved once per process instead of on every canonicalization. A context you supply
-through `extra_contexts` is served but **never** tagged: pyld keeps a tagged document in
-a process-global cache keyed by context URL, so tagging caller-supplied documents would
-let one caller's terms be used for another caller's document at the same URL. Injected
-contexts therefore cost a little more per call and stay isolated from each other — the
-only safe trade in a library that canonicalizes documents it did not author.
+through `extra_contexts` is served but **never** tagged: a tagged document is kept in a
+cache keyed by context URL, so tagging caller-supplied documents would let one caller's
+terms be used for another caller's document at the same URL. Every pyld call openvc makes
+also gets a context resolver of its own (since 1.35.0), so nothing a call resolves — not
+an injected context, and not an inline context that `@import`s a URL — is kept for the next
+caller; only the resolution of the bundled contexts is shared. Injected contexts therefore
+cost a little more per call and stay isolated from each other — the only safe trade in a
+library that canonicalizes documents it did not author.
 
 ## RDF-canonicalized (`eddsa-rdfc-2022`)
 
@@ -130,6 +133,24 @@ print(result.credential["credentialSubject"])   # name disclosed, birthDate with
 Make `credentialStatus` a **mandatory** pointer if you need it enforceable —
 a selectively-disclosable status pointer can be withheld by the holder (see
 the [Security model](Security-Model)).
+
+## Signing: `created`
+
+Every issuer (`add_proof` on the four whole-document suites, `add_base_proof` on
+`ecdsa-sd-2023`) takes `created=` as a `datetime` or `None`. `None` is the current
+UTC time. A naive `datetime` is **UTC**, never the host's local time, so the same call
+signs the same string, and on the deterministic suites the same `proofValue`, on any
+host. An aware one is converted to UTC. The signed value is whole seconds: the
+microseconds are truncated, not rounded. Anything that is not a `datetime`, such as an
+ISO string or an epoch `int`, and a value with no UTC equivalent (`0001-01-01` at
+`+01:00`), raises `ProofMalformed` before anything is canonicalized or signed. To sign
+a wall-clock time from a zone, pass an aware value, such as
+`datetime(2026, 1, 1, 21, 0, tzinfo=ZoneInfo("Asia/Tokyo"))`. `created` is covered by
+the signature, so it cannot be corrected afterwards.
+
+No openvc verifier reads `created` back: it is neither checked to be well formed nor
+compared with the clock or the validity window. A proof dated in the year 2999 verifies.
+If your own code compares it, treat it as the issuer's claim.
 
 ## What verification enforces
 
@@ -281,6 +302,18 @@ that IRI's spelling. A second name for a core VC term (`validUntil`,
 In a `VerifiablePresentation`, the embedded `verifiableCredential` entries are skipped
 here. Each one is verified on its own, under its own `@context`. The JCS suites sign
 the JSON itself, so none of this applies to them.
+
+A document that cannot be canonicalized at all is refused the same way, before anything
+is signed or derived. An `@context` that JSON-LD cannot process (a URL that is neither
+bundled nor passed through `extra_contexts`, a typo'd one, a value that is not an array
+or a string, an inline object with a bad term definition) raises `ProofMalformed` for
+`ecdsa-sd-2023` at issuance (`add_base_proof`), at derivation (`derive_proof`) and at
+verification alike, so one `except ProofError` covers all three. The two RDF suites
+raise `DocumentLoaderError` for a context nobody serves and `DataIntegrityError` for
+one JSON-LD refuses. The `ecdsa-sd-2023` message quotes JSON-LD's own error text, cut
+at 2000 characters with the full length shown (the whole error is the `__cause__`). An
+error from your signing key (an HSM or Vault failure) is not wrapped: it surfaces as
+itself.
 
 ## Conformance
 

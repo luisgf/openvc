@@ -54,6 +54,7 @@ from ._verify_common import (
     issuer_identifiers,
     DEFAULT_KB_MAX_AGE_S,
     check_iat_freshness,
+    check_jwt_audience,
     check_jwt_temporal,
     check_numeric_dates,
     check_validity_window,
@@ -682,6 +683,16 @@ class SdJwtVcProofSuite:
         a finite JSON number when present (``null`` included). An ``iat`` more than the
         leeway in the future is rejected. *check_temporal* waives only an expired ``exp``.
 
+        The issuer JWT's own ``aud``, when it has one, is held to RFC 7519 §4.1.3 (ADR-0008
+        D4): it must be a string or an array of strings, and the *audience* you pass must be
+        one of them, else ``ClaimsInvalid``. With no *audience* a credential that names an
+        audience is refused, since you cannot be one of them. An issuer JWT with no ``aud``
+        verifies as before, with or without an *audience*. The check reads the processed
+        payload, runs after the KB-JWT when binding is required, is not an expiry (so
+        *check_temporal* does not waive it, and its message does not describe an expiry), and
+        cannot see an ``aud`` disclosure the holder withholds. The KB-JWT's ``aud`` is a
+        separate check: it binds the holder's presentation, not the issuer's restriction.
+
         A presented disclosure of a claim :meth:`issue` refuses to make disclosable — or of
         any sub-claim of one, array elements included — raises ``SdJwtError``: the issuer
         made it withholdable. That catches the non-conformant issuer only when the holder
@@ -817,6 +828,17 @@ class SdJwtVcProofSuite:
         # A disclosed `exp`/`nbf` was refused above, so this re-reads the issuer-JWT body's;
         # it still checks a disclosed `iat`, and stays as defence in depth.
         expired = self._check_temporal(unpacked, check_temporal=check_temporal) or expired
+
+        # RFC 7519 §4.1.3 on the issuer JWT's own `aud` (ADR-0008 D4): an issuer that
+        # restricted the credential to a relying party is obeyed, whatever the KB-JWT says
+        # (its `aud` binds the holder's presentation, not the issuer's restriction). Present
+        # only: an issuer JWT without `aud` is the norm and stays as it was. It reads the
+        # processed payload: a plaintext `aud` always reaches it (a disclosure can never
+        # overwrite a claim), an `aud` the issuer made disclosable is judged once
+        # disclosed, and an array whose entries are digests (RFC 9901 §9.7 lets an issuer
+        # do that) is judged on the entries the holder disclosed, not as a malformed array.
+        # No waiver applies, and the message does not describe an expiry (wiki/SD-JWT-VC.md).
+        check_jwt_audience(unpacked, audience, subject="issuer JWT", require_present=False)
 
         # A W3C credential secured as SD-JWT *is* this claim set (VC-JOSE-COSE §3.2.1), and
         # its `exp` dates the signature, not the data (§3.1.3, JOSE): an issuer may put the

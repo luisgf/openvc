@@ -26,7 +26,7 @@ from __future__ import annotations
 import copy
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Mapping
 
 from .. import _json
@@ -46,8 +46,9 @@ from ._verify_common import (
     leeway_seconds,
     prepare_di_proof,
     resolve_verification_key,
+    utc_iso,
 )
-from .contexts import DocumentLoaderError, document_loader
+from .contexts import DocumentLoaderError, document_loader, pyld_options
 from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
 from .vc_jwt import SigningKey
 
@@ -83,10 +84,6 @@ class VerifiedDataIntegrity:
     expired: bool = False
 
 
-def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _require_pyld() -> Any:
     try:
         from pyld import jsonld
@@ -102,8 +99,7 @@ def _canonize(document: dict[str, Any], loader: Any) -> bytes:
     try:
         nquads = jsonld.normalize(
             document,
-            {"algorithm": "URDNA2015", "format": "application/n-quads",
-             "documentLoader": loader})
+            pyld_options(loader, algorithm="URDNA2015", format="application/n-quads"))
     except Exception as exc:
         # pyld wraps a loader refusal in its own JsonLdError; surface the clear
         # "unbundled context" error if it caused this, else wrap generically.
@@ -155,6 +151,12 @@ class DataIntegrityProofSuite:
         verifier can resolve). For a presentation proof (``proof_purpose=
         "authentication"``) pass *challenge* / *domain* to bind it to a verifier
         session; both are covered by the signature. The input is not mutated.
+
+        *created* is a ``datetime`` or ``None`` (the current UTC time): a naive value is
+        UTC, never the host's local time, an aware one is converted, and the signed
+        string is whole seconds (truncated). Anything else, or a value with no UTC
+        equivalent, is :class:`ProofMalformed` before anything is signed. No openvc
+        verifier reads ``created`` back.
         """
         if signing_key.alg != _ED25519_ALG:
             raise UnsupportedCryptosuite(
@@ -168,7 +170,7 @@ class DataIntegrityProofSuite:
         proof = {
             "type": PROOF_TYPE,
             "cryptosuite": CRYPTOSUITE,
-            "created": _iso(created if created is not None else datetime.now(timezone.utc)),
+            "created": utc_iso(created, error=ProofMalformed, name="created"),
             "verificationMethod": verification_method,
             "proofPurpose": proof_purpose,
         }

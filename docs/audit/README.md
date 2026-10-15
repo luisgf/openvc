@@ -70,8 +70,8 @@ batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openv
 **R9** (the RDF Data Integrity wrong-accept) in v1.30.2 and **R10** (untyped
 exits at the verification boundary, reachable from attacker-controlled input) in v1.33.1, its
 first sites in v1.32.3, leaving the typed-error-hygiene items **R2–R3** at the top of the
-harden-next list. **R11** records two open, documented caveats at the seam between the SD-JWT
-and VC-JWT lanes.
+harden-next list. **R11** records one open, documented caveat at the seam between the SD-JWT
+and VC-JWT lanes (a second, the issuer JWT's `aud`, closed in v1.35.0).
 
 ## 4. How to reproduce the evidence
 

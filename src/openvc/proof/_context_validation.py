@@ -112,7 +112,7 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
 
-from .contexts import DocumentLoaderError
+from .contexts import DocumentLoaderError, pyld_options
 from .errors import ProofError, ProofMalformed
 
 VC_BASE_CONTEXTS = frozenset({
@@ -221,15 +221,14 @@ def _check_compacted(document: dict[str, Any], loader: Any, *, what: str,
                      indexes: dict[str, _TermIndex]) -> None:
     from pyld import jsonld          # the caller already canonicalized with pyld
 
-    options = {"documentLoader": loader}
     try:
-        expanded = jsonld.expand(document, options)
+        expanded = jsonld.expand(document, pyld_options(loader))
         if not (isinstance(expanded, list) and len(expanded) == 1
                 and isinstance(expanded[0], dict)):
             raise ProofMalformed(f"the {what} must describe exactly one top-level node")
         node = expanded[0]
         _check_expanded(node, node.get("@id"), what=what, top=True)
-        compacted = jsonld.compact(expanded, document["@context"], options)
+        compacted = jsonld.compact(expanded, document["@context"], pyld_options(loader))
         same = _canonical(compacted) == _canonical(document)
         where = "" if same else _first_difference(
             _normalize(document), _normalize(compacted), "")[:200]
@@ -239,7 +238,8 @@ def _check_compacted(document: dict[str, Any], loader: Any, *, what: str,
             # not properties: stub it out first (rare, so a second compaction only then).
             stubbed = _stub_json_literals(expanded)
             if stubbed is not expanded:
-                compacted = jsonld.compact(stubbed, document["@context"], options)
+                compacted = jsonld.compact(
+                    stubbed, document["@context"], pyld_options(loader))
             context_key = _canonical(document["@context"])
             if context_key not in indexes:
                 indexes[context_key] = _term_index(document["@context"], loader)
@@ -382,8 +382,27 @@ def _collect_described_elsewhere(value: Any, entries: dict[str, set[str]],
                 item, entries, moved, in_status=top and key == _CREDENTIAL_STATUS)
 
 
+# The longest type name `_brief` prints; a longer one (a metaclass can return any string from
+# `__name__`) is cut.
+_NAME_MAX = 64
+
+
 def _brief(value: Any) -> str:
-    return repr(value)[:100] if isinstance(value, str) else type(value).__name__
+    """*value* for an error message: a string is cut to 100 characters (before ``repr()``,
+    so a huge one is never copied whole), anything else is named by its type. Total for a
+    caller's object too: a ``str`` subclass is read through ``str.__str__``, never its own
+    ``__repr__``, ``__len__`` or ``__getitem__``, and what still fails is ``an object``. A
+    type name longer than 64 characters is cut too (a metaclass can return any string from
+    ``__name__``)."""
+    try:
+        if isinstance(value, str):
+            return repr(str.__str__(value)[:100])[:100]
+        name = type(value).__name__
+        if type(name) is not str:
+            return "an object"
+        return name if len(name) <= _NAME_MAX else name[:_NAME_MAX] + "..."
+    except Exception:
+        return "an object"
 
 
 def _normalize(value: Any, *, element: bool = False) -> Any:
@@ -762,7 +781,7 @@ def missing_types(document: dict[str, Any], expected: Sequence[str],
     if _is_presentation(unsecured):
         unsecured.pop(_EMBEDDED_CREDENTIALS, None)
     try:
-        expanded = jsonld.expand(unsecured, {"documentLoader": loader})
+        expanded = jsonld.expand(unsecured, pyld_options(loader))
     except Exception as exc:         # pyld's JsonLdError, ... — validated already
         raise ProofMalformed(f"cannot expand the document's types: {exc}") from exc
     node = expanded[0] if isinstance(expanded, list) and len(expanded) == 1 else None
