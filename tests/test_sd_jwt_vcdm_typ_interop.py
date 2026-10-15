@@ -1393,8 +1393,11 @@ def test_the_suite_refuses_a_vcdm_presentation_with_no_typ_directly():
 
 def test_control_the_presentation_payload_verifies_once_its_type_says_credential(run, form):
     # Only the `type` differs from the refused presentation: the aud, the nonce, the holder
-    # and the enveloped credential in it are not what the refusal above is about.
-    result = run(form(_mint(_vcdm_presentation(type=["VerifiableCredential"]))), None)
+    # and the enveloped credential in it are not what the refusal above is about. The
+    # payload's `aud` is an issuer-JWT `aud` once it is read as a credential (RFC 7519
+    # §4.1.3, ADR-0008 D4), so the verifier it names is the one that verifies it.
+    result = run(form(_mint(_vcdm_presentation(type=["VerifiableCredential"]))),
+                 VerificationPolicy(audience=CLIENT_ID))
     assert result.raw.typ is None
     assert result.raw.vcdm is True
     assert result.issuer == DID

@@ -14,10 +14,14 @@ the suite module: ``SdJwtError`` (openvc.proof.sd_jwt), ``EcdsaSdError`` /
 (openvc.proof.data_integrity). The post-signature policy failures
 (``CredentialExpired``, ``ProofPurposeMismatch`` …) live in
 ``openvc.proof._verify_common`` and also subclass ``ProofError``.
+
+``KeyResolutionError`` is the one leaf with a second base: it is also the pipeline's
+``KeyResolutionFailed`` (:mod:`openvc.errors`), so a key-resolution failure is a
+``KeyResolutionFailed`` on every lane, JOSE and Data Integrity alike.
 """
 from __future__ import annotations
 
-from ..errors import OpenvcError
+from ..errors import KeyResolutionFailed, OpenvcError
 
 
 class ProofError(OpenvcError):
@@ -66,8 +70,16 @@ class ProofPurposeMismatch(ProofError):
     """The proof's proofPurpose is not the expected one (e.g. assertionMethod)."""
 
 
-class KeyResolutionError(ProofError):
-    """The proof's verificationMethod key could not be resolved."""
+class KeyResolutionError(ProofError, KeyResolutionFailed):
+    """The proof's verificationMethod key could not be resolved.
+
+    Raised by every Data Integrity lane, sync and async. It is both a :class:`ProofError`
+    and the pipeline's :class:`~openvc.errors.KeyResolutionFailed` (hence also a
+    :class:`~openvc.errors.VerificationError`), so ``except ProofError``, ``except
+    KeyResolutionFailed`` and ``except VerificationError`` each catch it. The JOSE lanes
+    raise the plain ``KeyResolutionFailed``, which is not a ``ProofError``, so
+    ``except KeyResolutionError`` and ``except ProofError`` still do not catch a JOSE
+    failure."""
 
 
 class PresentationBindingError(ProofError):
