@@ -10,7 +10,8 @@ Presentations 1.0 (Final, 2025-07-09). Given the ``vp_token`` a wallet returned,
      (OpenID4VP 1.0 §8.1). Unknown keys, non-array values, and a single-valued query
      returning more than one Presentation are rejected;
   2. routes each Presentation to the matching proof suite by the query's ``format``
-     — ``dc+sd-jwt`` (SD-JWT VC + KB-JWT) and ``jwt_vc_json`` (a W3C VP-JWT); and
+     — ``dc+sd-jwt`` (SD-JWT VC + KB-JWT) and ``jwt_vc_json`` (a W3C VP-JWT, or — when
+     the query opts out of holder binding — a bare VC-JWT); and
   3. verifies each Presentation's proof **and its holder binding**: the transaction
      ``nonce`` and the audience (OpenID4VP 1.0 §14.2). The audience is either the
      **full, prefixed** Client Identifier (e.g. ``x509_san_dns:client.example.org``,
@@ -18,7 +19,9 @@ Presentations 1.0 (Final, 2025-07-09). Given the ``vp_token`` a wallet returned,
      Digital Credentials API** — the calling web ``origin:<origin>`` (Appendix A; pass
      *expected_origins*). Exactly one is given. Unless the Credential Query sets
      ``require_cryptographic_holder_binding`` to ``false``, every credential a W3C
-     presentation carries must also be bound to its authenticated holder (§B.1).
+     presentation carries must also be bound to its authenticated holder (§B.1). A query
+     that sets it to ``false`` may be answered with a bare Verifiable Credential instead,
+     which carries no audience, nonce or holder (§B.1; see :func:`verify_vp_token`).
 
 This is deliberately **not** an OpenID4VP framework: it builds no Authorization
 Request, hosts no ``request_uri``, and keeps no session/state — the verifier owns the
@@ -34,7 +37,9 @@ proof's ``authentication`` purpose with ``challenge`` = the request ``nonce`` an
 ``domain`` = the (full, prefixed) ``client_id``; the presentation's embedded
 credentials are cascade-verified through :func:`openvc.verify_credential`. The RDF
 cryptosuites (``eddsa-rdfc-2022`` / ``ecdsa-rdfc-2019``) need the ``[data-integrity]``
-extra (``pyld``); the JCS ones (``eddsa-jcs-2022`` / ``ecdsa-jcs-2019``) do not.
+extra (``pyld``); the JCS ones (``eddsa-jcs-2022`` / ``ecdsa-jcs-2019``) do not. With
+holder binding waived, an ``ldp_vc`` answer may instead be a bare Data Integrity
+credential.
 ``mso_mdoc`` (ISO 18013-5 mdoc) is verified over the **W3C Digital Credentials API**
 flow via :mod:`openvc.mdoc`: pass *trust_anchors* (the IACA roots) and *expected_origins*,
 and the holder binding is the ``DeviceAuth`` over the origin-bound ``SessionTranscript``
@@ -89,11 +94,15 @@ __all__ = [
 
 # DCQL Credential Format Identifiers (OpenID4VP 1.0 §10 "format_specific_parameters").
 FORMAT_SD_JWT_VC = "dc+sd-jwt"      # SD-JWT VC + KB-JWT               (verified)
-FORMAT_JWT_VC = "jwt_vc_json"       # W3C VC as a JWT -> a VP-JWT      (verified)
-FORMAT_LDP_VC = "ldp_vc"            # W3C VC with Data Integrity -> LDP-VP (verified)
+FORMAT_JWT_VC = "jwt_vc_json"       # W3C VC as a JWT -> a VP-JWT, or a bare VC-JWT (verified)
+FORMAT_LDP_VC = "ldp_vc"            # W3C VC with Data Integrity -> LDP-VP, or a bare VC (verified)
 FORMAT_MSO_MDOC = "mso_mdoc"        # ISO 18013-5 mdoc  (verified, experimental; DC API)
 
 _SUPPORTED_FORMATS = frozenset({FORMAT_SD_JWT_VC, FORMAT_JWT_VC, FORMAT_LDP_VC})
+
+# What a jwt_vc_json / ldp_vc answer is, decided by _w3c_shape before anything is verified.
+_SHAPE_VP = "vp"        # a Verifiable Presentation, or whatever the VP lanes judge themselves
+_SHAPE_VC = "vc"        # a bare Verifiable Credential (OpenID4VP 1.0 §B.1, #204)
 
 # Data Integrity cryptosuites accepted for an ldp_vc presentation's holder
 # `authentication` proof — the whole-document suites (ecdsa-sd-2023 is
@@ -141,6 +150,11 @@ class VerifiedPresentation:
     :class:`~openvc.VerificationResult` for ``dc+sd-jwt`` (the SD-JWT VC itself), and
     the embedded credentials for a ``jwt_vc_json`` VP-JWT. *raw* is the underlying
     format-specific object (``VerifiedSdJwt`` or the VP-JWT ``VerifiedPresentation``).
+
+    A **bare credential** (a ``jwt_vc_json`` / ``ldp_vc`` query that waived holder
+    binding, answered with a Verifiable Credential and no presentation) reports
+    ``holder=None``, as ``mso_mdoc`` does: nothing authenticated a holder. *credentials*
+    is the one verified credential and *raw* its suite's own result (``VerifiedCredential``).
     """
     query_id: str
     format: str
@@ -285,7 +299,8 @@ def verify_vp_token(
     issuer: check each result's ``issuer`` yourself.
 
     Every Presentation is cryptographically holder-bound (the KB-JWT for
-    ``dc+sd-jwt``, the holder signature for ``jwt_vc_json`` and ``ldp_vc``). For the W3C
+    ``dc+sd-jwt``, the holder signature for ``jwt_vc_json`` and ``ldp_vc``), unless a W3C
+    query waives it and the answer is a bare credential (below). For the W3C
     VP formats (``jwt_vc_json`` / ``ldp_vc``) the reported ``holder`` is the
     **authenticated signer** — the controller of the verificationMethod whose key signed,
     never a self-asserted field. For ``dc+sd-jwt`` it is the issuer-signed ``sub``: the
@@ -314,6 +329,31 @@ def verify_vp_token(
     To accept a credential the presenter is not bound to — §14.1.1's "the Holder may not
     be the subject of the Credential" — set the flag to ``false`` in that query.
     A non-boolean flag is :class:`VpTokenMalformed`.
+
+    **A bare credential** (§B.1: a Wallet answers a query that waives holder binding with a
+    Verifiable Credential, not a presentation). A ``jwt_vc_json`` / ``ldp_vc`` query that sets the
+    flag to ``false`` accepts a bare Verifiable Credential *or* a Verifiable Presentation (a
+    presentation is what these lanes accepted before). With the flag ``true`` or absent a bare
+    credential is :class:`VpTokenMalformed`, on either lane, before anything is verified. The
+    bare form is a VC-JWT under ``jwt_vc_json`` and a Data Integrity credential under
+    ``ldp_vc`` (any suite :func:`openvc.verify_credential` knows, ``ecdsa-sd-2023`` included),
+    verified in full as it is anywhere else; it never reaches the VP-JWT suite, and a bare
+    SD-JWT is never accepted under a W3C query. Which shape a value has is decided before
+    anything is verified, fail-closed: a JWT is a credential when its payload has a ``vc``
+    object and no ``vp``; a JSON object when its ``type`` has ``VerifiableCredential`` and not
+    ``VerifiablePresentation``. A value that is positively both, or whose JOSE ``typ``
+    (``vc+jwt`` / ``vp+jwt``) contradicts the claim it carries, or an
+    ``EnvelopedVerifiableCredential`` (not accepted bare), is :class:`VpTokenMalformed`;
+    anything else that is not positively a credential is left to the presentation lane and its
+    own typed error. A bare credential has **no audience, nonce, challenge or domain**: a
+    VC-JWT that carries an ``aud`` is rejected (``ClaimsInvalid``, RFC 7519 §4.1.3: none can
+    name this verifier), and its result is ``holder=None``. Nothing binds it to this exchange,
+    so it can be replayed (§14.1.1) and the response carries no ``nonce`` (§5.3): the
+    verifier MUST bind request and response with a fresh, high-entropy ``state``, unless the
+    Digital Credentials API is used. openvc keeps no state, so **checking ``state`` is the
+    caller's job**, as nonce freshness is. *require_holder_binding* cannot be met by a bare
+    credential (``ClaimsInvalid``). Status, ``meta.type_values`` and the credential's own
+    validity are checked as for any embedded credential.
     The same goes for a Credential Query's ``multiple`` (OpenID4VP 1.0 §6.1, default
     ``false``): each ``vp_token`` value is an array holding exactly one Presentation
     unless the query sets ``"multiple": true`` (§8.1), and a ``multiple`` that is not a
@@ -687,11 +727,33 @@ def _verify_one(
     if type_values is not None:
         _require_pyld(query_id)
     vct_values = _vct_values(query_id, query) if fmt == FORMAT_SD_JWT_VC else None
-    # The audience is the client_id (redirect flow) or the DC-API calling origin.
-    aud = _effective_audience(fmt, presentation, client_id, accepted_auds)
     # Cryptographic Holder Binding is required unless the query opted out (OpenID4VP 1.0
     # §6.1, default true); _index_dcql has already checked that the flag is a boolean.
     require_binding = query.get("require_cryptographic_holder_binding", True)
+    # A W3C query is answered with a Verifiable Presentation, or — when it opted out of
+    # holder binding — with a bare Verifiable Credential (§B.1, #204). Decide which BEFORE
+    # the audience is read: a bare credential carries no aud / domain, so over the DC API
+    # it would otherwise die in _effective_audience, and under flag true it would reach
+    # the VP-JWT suite as if it were a VP.
+    if fmt in (FORMAT_JWT_VC, FORMAT_LDP_VC) and _w3c_shape(
+            query_id, fmt, presentation) == _SHAPE_VC:
+        if require_binding:
+            raise VpTokenMalformed(
+                f"Credential Query {query_id!r} requires cryptographic holder binding "
+                f"(require_cryptographic_holder_binding is true or absent), so its "
+                f"{fmt} answer must be a Verifiable Presentation; a bare Verifiable "
+                f"Credential is accepted only when the query sets it to false")
+        return _verify_bare_w3c_vc(
+            query_id, fmt, presentation, type_values=type_values,
+            resolver=resolver, now=now, leeway_s=leeway_s, extra_contexts=extra_contexts,
+            require_holder_binding=require_holder_binding,
+            jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+            x5c_trust_anchors=x5c_trust_anchors,
+            resolve_status_list=resolve_status_list,
+            resolve_status_list_token=resolve_status_list_token,
+            require_status=require_status, kb_max_age_s=kb_max_age_s)
+    # The audience is the client_id (redirect flow) or the DC-API calling origin.
+    aud = _effective_audience(fmt, presentation, client_id, accepted_auds)
     if fmt == FORMAT_SD_JWT_VC:
         return _verify_sd_jwt_vc(
             query_id, vct_values, presentation, require_binding=require_binding,
@@ -1025,6 +1087,182 @@ def _verify_ldp_vp(
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_LDP_VC, holder=holder,
         credentials=credentials, raw=verified_vp)
+
+
+def _w3c_shape(query_id: str, fmt: str, presentation: Any) -> str:
+    """Whether a ``jwt_vc_json`` / ``ldp_vc`` answer is a bare Verifiable Credential
+    (``"vc"``) or goes to the Presentation lane (``"vp"``). OpenID4VP 1.0 §B.1: a Wallet
+    answers a query that requires holder binding with a Verifiable Presentation and one
+    that does not with a Verifiable Credential (#204).
+
+    This reads attacker-controlled bytes before any signature is checked, so it only
+    ever *routes*: the route it picks verifies everything about its own shape, and the
+    VP route is the strict one (aud + nonce / domain + challenge). A value is a bare
+    credential only on positive evidence. Anything else, one that does not parse
+    included, is left to the VP lane and its own typed error. A value that is positively
+    both, or whose declared type contradicts its content, is refused here
+    (:class:`VpTokenMalformed`): this layer does not guess which one it is.
+
+    * ``jwt_vc_json`` (a compact JWS, no ``~``): the **payload claim** decides. A ``vc``
+      object and no ``vp`` is a credential, as OpenID4VP's own §B.1.3.1 example shows,
+      and a ``vp`` and no ``vc`` is a presentation: the two claims are what
+      ``VcJwtProofSuite`` and ``VpJwtProofSuite`` read. Both is ambiguous. The JOSE
+      ``typ`` is not the signal: VC-JOSE-COSE says it SHOULD be ``vc+jwt`` / ``vp+jwt``
+      and openvc signs both as ``JWT``, so an absent or generic one proves nothing. It is a
+      cross-check only: a ``typ`` naming the other kind than the claim is a contradiction.
+    * ``ldp_vc`` (a JSON object): the ``type`` decides. ``VerifiableCredential`` without
+      ``VerifiablePresentation`` is a credential; with it, ambiguous.
+      A ``VerifiablePresentation``-typed object is always a presentation, whatever else
+      it lists. An ``EnvelopedVerifiableCredential`` that is not typed as one is refused:
+      OpenID4VP §B.1 does not mention it for these formats, so it is not accepted as a
+      bare credential."""
+    if fmt == FORMAT_JWT_VC:
+        return _jwt_shape(query_id, presentation)
+    return _ldp_shape(query_id, presentation)
+
+
+def _jwt_shape(query_id: str, presentation: Any) -> str:
+    peeked = _peek_jws(presentation)
+    if peeked is None:
+        return _SHAPE_VP
+    header, payload = peeked
+    has_vp, has_vc = "vp" in payload, "vc" in payload
+    if has_vp and has_vc:
+        raise VpTokenMalformed(
+            f"the {FORMAT_JWT_VC} Presentation for {query_id!r} carries both a `vp` and a "
+            f"`vc` claim, so it is not decidably a presentation or a credential")
+    if not has_vp and not isinstance(payload.get("vc"), dict):
+        return _SHAPE_VP            # neither claim, or a `vc` that is no object: no evidence
+    shape = _SHAPE_VP if has_vp else _SHAPE_VC
+    typed = _jwt_typ_kind(header)
+    if typed is not None and typed != shape:
+        raise VpTokenMalformed(
+            f"the {FORMAT_JWT_VC} Presentation for {query_id!r} is typed "
+            f"{safe_repr(header.get('typ'))} but carries a "
+            f"{'`vp`' if has_vp else '`vc`'} claim")
+    return shape
+
+
+def _ldp_shape(query_id: str, presentation: Any) -> str:
+    if not isinstance(presentation, Mapping):
+        return _SHAPE_VP            # a string or a number: the ldp_vc lane's own error
+    types = presentation.get("type")
+    type_list = ([types] if isinstance(types, str)
+                 else types if isinstance(types, list) else [])
+    is_vp = "VerifiablePresentation" in type_list
+    is_vc = "VerifiableCredential" in type_list
+    if is_vp and is_vc:
+        raise VpTokenMalformed(
+            f"an {FORMAT_LDP_VC} Presentation for {query_id!r} is typed both "
+            f"VerifiablePresentation and VerifiableCredential, so it is not decidably "
+            f"a presentation or a credential")
+    if is_vp:
+        # A presentation, whatever else its type lists (an extra EnvelopedVerifiableCredential
+        # included): the VP lane decides, as it did before the bare route existed.
+        return _SHAPE_VP
+    if "EnvelopedVerifiableCredential" in type_list:
+        raise VpTokenMalformed(
+            f"an {FORMAT_LDP_VC} Presentation for {query_id!r} is an "
+            f"EnvelopedVerifiableCredential, which is not accepted: answer with a "
+            f"VerifiablePresentation or a Data Integrity VerifiableCredential")
+    return _SHAPE_VC if is_vc else _SHAPE_VP
+
+
+def _peek_jws(value: Any) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The UNVERIFIED header and payload of a compact JWS, or ``None`` unless *value* is a
+    string of three dot-separated segments, with no ``~`` (an SD-JWT is never routed
+    here), whose first two decode to JSON objects. Used only to route, like
+    :func:`_peek_audience`: a hostile value that fails to parse falls through to the
+    lane that rejects it with its own typed error, never to an acceptance."""
+    if not isinstance(value, str) or "~" in value:
+        return None
+    parts = value.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        header, payload = (
+            _json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+            for part in parts[:2])
+    except (ValueError, TypeError, RecursionError):
+        return None
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        return None
+    return header, payload
+
+
+def _jwt_typ_kind(header: Mapping[str, Any]) -> str | None:
+    # The kind a JOSE ``typ`` declares: VC-JOSE-COSE's ``vc+jwt`` / ``vp+jwt`` (the media
+    # type, with or without the ``application/`` prefix RFC 7515 §4.1.9 allows). Anything
+    # else, ``JWT`` included, declares nothing.
+    typ = header.get("typ")
+    if not isinstance(typ, str):
+        return None
+    media = typ.lower()
+    if media.startswith("application/"):
+        media = media[len("application/"):]
+    return {"vc+jwt": _SHAPE_VC, "vp+jwt": _SHAPE_VP}.get(media)
+
+
+def _verify_bare_w3c_vc(
+    query_id: str, fmt: str, presentation: Any, *,
+    type_values: list[list[str]] | None, resolver: Any, now: datetime | None,
+    leeway_s: int, extra_contexts: Mapping[str, dict] | None, require_holder_binding: bool,
+    jwt_vc_issuer_fetch: Any = None,
+    x5c_trust_anchors: Any = None,
+    resolve_status_list: Any = None,
+    resolve_status_list_token: Any = None,
+    require_status: bool = False,
+    kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S,
+) -> VerifiedPresentation:
+    from .verify import VerificationPolicy, verify_credential
+
+    # The caller's own switch: every credential's subject must be the authenticated
+    # holder. A bare credential has no holder, so it cannot meet it — fail closed.
+    if require_holder_binding:
+        raise ClaimsInvalid(
+            f"Credential Query {query_id!r}: a bare credential has no authenticated "
+            f"holder, so it cannot meet require_holder_binding")
+    # No audience and no nonce: nothing in a bare credential is bound to this exchange, and
+    # the response carries no nonce to bind it to (OpenID4VP 1.0 §5.3). Keeping audience
+    # None also keeps RFC 7519 §4.1.3 closed: a VC-JWT that is restricted to an audience
+    # (carries `aud`) is rejected, since no audience can name this verifier.
+    policy = VerificationPolicy(
+        require_status=require_status, now=now, leeway_s=leeway_s, kb_max_age_s=kb_max_age_s)
+    result = verify_credential(
+        presentation if fmt == FORMAT_JWT_VC else dict(presentation),
+        policy=policy, resolver=resolver, extra_contexts=extra_contexts,
+        jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
+        x5c_trust_anchors=x5c_trust_anchors,
+        resolve_status_list=resolve_status_list,
+        resolve_status_list_token=resolve_status_list_token)
+    _check_bare_format(query_id, fmt, result)
+    _check_type_values(query_id, type_values, (result,), extra_contexts)
+    return VerifiedPresentation(
+        query_id=query_id, format=fmt, holder=None, credentials=(result,), raw=result.raw)
+
+
+def _check_bare_format(query_id: str, fmt: str, result: Any) -> None:
+    # Pin the query's format to what verified, as _verify_sd_jwt_vc does. verify_credential
+    # re-detects the format from the value; a bare value under jwt_vc_json must have
+    # verified as a VC-JWT (never an SD-JWT or an enveloped credential), and under ldp_vc
+    # as a Data Integrity credential. Defence in depth: _w3c_shape already keeps the other
+    # shapes out.
+    from .verify import (
+        FORMAT_DI_ECDSA_JCS,
+        FORMAT_DI_ECDSA_RDFC,
+        FORMAT_DI_ECDSA_SD,
+        FORMAT_DI_EDDSA,
+        FORMAT_DI_EDDSA_JCS,
+        FORMAT_VC_JWT,
+    )
+
+    expected = ((FORMAT_VC_JWT,) if fmt == FORMAT_JWT_VC else (
+        FORMAT_DI_EDDSA, FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_RDFC, FORMAT_DI_ECDSA_JCS,
+        FORMAT_DI_ECDSA_SD))
+    if getattr(result, "format", None) not in expected:
+        raise VpTokenMalformed(
+            f"the bare credential for {query_id!r} did not verify as a {fmt} credential "
+            f"(got {safe_repr(getattr(result, 'format', None))})")
 
 
 def _di_suite_for(cryptosuite: str, leeway_s: int) -> Any:

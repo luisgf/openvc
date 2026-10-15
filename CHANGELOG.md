@@ -122,6 +122,93 @@ All notable changes to **openvc** are documented here. The format follows
   failing responses that passed before. A response that verified under 1.34.0 and is now
   refused is the intended effect: it left a required set unsatisfied.
 
+### Added
+
+- **`verify_vp_token` accepts a bare W3C Verifiable Credential when the query waives
+  holder binding** ([#204](https://github.com/luisgf/openvc/issues/204)). This closes a
+  conformance gap, not a vulnerability: openvc rejected input the spec says a wallet must
+  send, and it accepts nothing it should refuse. OpenID4VP 1.0 §B.1 says a wallet answers
+  a query that requires holder binding with a Verifiable Presentation, and otherwise with a
+  Verifiable Credential without holder binding. The `jwt_vc_json` and `ldp_vc` lanes
+  always required a presentation, so a verifier that set
+  `require_cryptographic_holder_binding: false` (the documented way, since 1.29.0, to
+  accept a bearer, delegated or claims-bound credential) got an error from a conformant
+  wallet. Measured on 1.34.0:
+
+  | The query's flag | The wallet returns | 1.34.0 |
+  |---|---|---|
+  | `false` | a bare VC-JWT under `jwt_vc_json` | `ClaimsInvalid: aud None != expected verifier …`: the VC-JWT reached `VpJwtProofSuite` as if it were a VP-JWT |
+  | `false` | a bare Data Integrity VC under `ldp_vc` | `VpTokenMalformed: … must be a VerifiablePresentation` |
+
+  Both now verify, over the redirect flow and over the Digital Credentials API. The result
+  is `VerifiedPresentation(format=<the query's>, holder=None, credentials=(result,))`.
+  With the flag `true` or absent a bare credential is still rejected on both lanes.
+
+  Decided by the maintainer on 2026-10-15:
+  1. **Which shapes, with the flag `false`:** a bare credential **or** a presentation. A
+     presentation is what these lanes accepted before, so this is purely additive: a
+     minor, not a behaviour change. A presentation still has to be bound to the request
+     (`aud` + `nonce`, or `domain` + `challenge`); only its embedded credentials are
+     exempt from holder binding, as since 1.29.0.
+  2. **The routing is pinned.** A bare value under `jwt_vc_json` is verified as a VC-JWT
+     and never as an SD-JWT or a VP-JWT, so it never reaches `VpJwtProofSuite`. Under
+     `ldp_vc` it is a Data Integrity credential with no `VerifiablePresentation` type, of
+     any suite `verify_credential` knows: `ecdsa-sd-2023` derived credentials included,
+     which the presentation lane excludes as a holder proof. Each result is checked
+     against the query's format afterwards (`_check_bare_format`), as the `dc+sd-jwt` lane
+     does.
+  3. **An `EnvelopedVerifiableCredential` is not accepted as a bare credential.** OpenID4VP
+     §B.1 does not mention it for these formats (the 1.0 text does not contain the name),
+     so the issue does not require it and this change leaves it out. It stays
+     `VpTokenMalformed` under `ldp_vc` (the message now names it), and under `jwt_vc_json`
+     an object is not a compact JWT string. An object typed `VerifiablePresentation` is a
+     presentation whatever else its `type` lists, an `EnvelopedVerifiableCredential`
+     among it: it goes to the presentation lane under every flag, as it did before.
+     Decided in review of #307: the first draft tested the Enveloped type first and
+     refused such a presentation, which verified on 1.34.0 (an `ldp_vc` presentation with
+     a valid holder proof whose `type` is `[VerifiablePresentation,
+     EnvelopedVerifiableCredential]`). The refusal is narrowed to an object that is not
+     typed as a presentation, rather than documented as a fourth newly refused shape.
+  4. **"Bare" is detected fail-closed, from the payload claim, with the JOSE `typ` as a
+     cross-check.** A JWT is a credential when its payload has a `vc` object and no `vp`.
+     Those are the claims `VcJwtProofSuite` and `VpJwtProofSuite` read, and OpenID4VP's own
+     §B.1.3.1 example is a `vc` claim. The `typ` is not the signal: VC-JOSE-COSE makes it a
+     SHOULD (`vc+jwt` / `vp+jwt`) and openvc itself signs both kinds as `JWT`. A JSON object
+     is a credential when its `type` has `VerifiableCredential` and not
+     `VerifiablePresentation`. A value is bare only on positive evidence. Anything that is
+     not positively a credential, a token that does not parse included, goes to the
+     presentation lane and its own typed error, unchanged. Anything positively ambiguous is
+     refused with `VpTokenMalformed` (see Changed). The decision is made before the
+     audience is read, because a bare credential carries no `aud` / `domain`.
+  5. **The result.** `holder=None` (nothing authenticated a holder; the `mso_mdoc` lane
+     reports `None` for the same reason), `credentials=(result,)`, and `raw=result.raw`,
+     the suite's own result, as the `dc+sd-jwt` lane sets it. `credentials[0].subject` is
+     the *issuer's* statement and nothing proves the presenter is that subject.
+  6. **`state` (OpenID4VP §5.3) stays the caller's job.** Without a key-binding proof the
+     response carries no `nonce`, so the verifier MUST bind request and response with a
+     fresh, high-entropy `state`, unless the Digital Credentials API is used. openvc keeps
+     no session and never sees `state`, so it documents this beside the nonce-freshness
+     note instead of asserting it.
+
+  A bare credential is verified in full by `verify_credential`: signature, issuer binding,
+  validity window, status (when you pass a resolver), and `meta.type_values`. It has no
+  audience, nonce, challenge or domain to check, so: a VC-JWT that carries an `aud` is
+  rejected (`ClaimsInvalid`, RFC 7519 §4.1.3, since no `aud` can name this verifier;
+  VCDM's JWT encoding defines `aud` for presentations only), and `require_holder_binding=True`
+  cannot be met by a bare credential and is rejected (`ClaimsInvalid`), because there is no
+  authenticated holder to bind its subject to. Neither is a regression: no bare credential
+  was accepted before. Written up in the wiki under *Presentations → Bare credentials*.
+
+  One documented limit now has a wider reach. An SD-JWT issuer JWT typed as one, or with
+  SD-JWT markers, is still refused on the bare route by the VC-JWT lane's fence. A
+  zero-disclosure one with no `typ`, a `vc` object and a `cnf` cannot be told from a VC-JWT
+  (the residual of [#291](https://github.com/luisgf/openvc/issues/291), pinned in
+  `test_vc_jwt_sd_fence.py`). With its `~` tail dropped it used to fail under `jwt_vc_json`
+  on the missing `aud`; with the flag `false` it now verifies as a bare VC-JWT
+  (`format='vc-jwt'`, `key_bound=None`, `holder=None`). That equals what the `dc+sd-jwt`
+  lane accepts under a waived binding, and it takes an issuer who signed the hybrid, but a
+  caller must not read `key_bound=None` as "binding was not needed". The new tests pin it.
+
 ### Changed
 
 - **A `datetime` subclass whose own methods lie is read as the plain `datetime` its fields
@@ -404,6 +491,40 @@ All notable changes to **openvc** are documented here. The format follows
      public exception class is an API addition anyway. #224, #254 and #268 were patches
      because they refused only a malformed `dcql_query`. The issue proposed 1.34.0 as the
      number; 1.34.0 has shipped since.
+- **A bare credential under a query that requires holder binding is
+  `VpTokenMalformed`, naming the flag, on both lanes and in both flows.** It was rejected
+  before and is still rejected; only the error changes, and nothing is verified first. In
+  the redirect flow a bare VC-JWT raised `ClaimsInvalid` (`aud None != expected verifier …`)
+  from the VP-JWT suite, which was misleading, and a bare Data Integrity credential raised
+  `VpTokenMalformed` (`must be a VerifiablePresentation`), the same class as now. Over the
+  Digital Credentials API both raised `ClaimsInvalid` (`DC API presentation audience None
+  …`). To accept one, set `require_cryptographic_holder_binding` to `false` in that query.
+- **A `jwt_vc_json` token that looks bare but is hostile is `VpTokenMalformed` under a
+  query that requires holder binding.** A token whose payload has a `vc` object and no
+  `vp`, and whose header names a disallowed `alg` (`none`, `RS256`) or an unknown `crit`,
+  raised `UnsupportedAlgorithm` or `MalformedToken` from the VP-JWT suite in 1.34.0, because
+  that suite read the header first. With the flag `true` or absent it is now refused as a
+  bare credential before the header is read, so the class is `VpTokenMalformed`. With the
+  flag `false` the bare route verifies it as a VC-JWT and raises the same class as before.
+  It was rejected before and still is. `VpTokenMalformed` is an `OpenID4VPError`, not a
+  `ProofError`: a caller that caught `UnsupportedAlgorithm` or `MalformedToken`
+  specifically for such a token should catch `OpenID4VPError` (or `OpenvcError`) as well.
+  The new tests pin each class under each flag.
+- **Three shapes that verified as a presentation are now `VpTokenMalformed`, whatever the
+  flag**, because the value is positively both a presentation and a credential, or says it
+  is one thing and carries the other. Each was a malformed answer that happened to verify,
+  because the presentation lane ignored the extra member. Nothing this layer reports
+  changes for a well-formed presentation:
+  - a `jwt_vc_json` VP-JWT whose payload also carries a top-level `vc` claim. Remove the
+    stray claim;
+  - a `jwt_vc_json` token whose `typ` says the other kind than its claim: a `vp` claim
+    typed `vc+jwt` (with or without `application/`, any case), or a `vc` claim typed
+    `vp+jwt`. Type a VP-JWT `vp+jwt` or `JWT`, a VC-JWT `vc+jwt` or `JWT`;
+  - an `ldp_vc` presentation whose `type` also lists `VerifiableCredential`. Drop the
+    extra type.
+- **A `jwt_vc_json` answer that is not a compact JWT with a `vp` or a `vc` object is
+  unchanged** (`MalformedToken`, or `ClaimsInvalid` for a token with neither claim): the
+  detection leaves it to the presentation lane, and the new tests pin those classes.
 
 ### Fixed
 
@@ -854,6 +975,33 @@ All notable changes to **openvc** are documented here. The format follows
   `missing-required-query-id` case of `LATER_CHECKS` pins the exact class of the
   missing-query error, which is now `VpTokenIncomplete` (decision 3 above); the other three
   cases keep `VpTokenMalformed`. No other existing test changed.
+- `test_openid4vp_bare_w3c_vc.py` (new): the positive cases on both lanes and over the DC
+  API (VC-JWT; `ecdsa-jcs-2019`, `eddsa-jcs-2022`, `ecdsa-rdfc-2019`, a derived
+  `ecdsa-sd-2023`); a presentation still accepted and still bound with the flag `false`;
+  the flag `true` / absent rejecting a bare credential without reaching the VP-JWT suite
+  or the pipeline; a bare SD-JWT, a tail-dropped SD-JWT issuer JWT, a VP-JWT, a
+  `VerifiablePresentation`-typed object and an enveloped credential not mis-routed; each
+  ambiguity (both claims, `typ` contradicting the claim in both directions, both types);
+  everything unparseable left to the presentation lane with its exact class; a tampered or
+  wrongly signed bare VC-JWT, a tampered Data Integrity VC, an issuer-binding mismatch, an
+  expired token, an `aud`-restricted token, a presentation-purpose proof on a credential;
+  `require_holder_binding`; `meta.type_values`; `require_status`; and the format pin
+  (`_check_bare_format`). The negatives fail on 1.34.0 and the controls pass there.
+  - **Every argument the caller supplies is pinned to reach the pipeline** (section G,
+    after a mutation run found eight that no test noticed being dropped). The resolver, the
+    W3C status-list resolver (revoked and not revoked, with `require_status` left `False`,
+    on both lanes: a dropped resolver would otherwise skip revocation silently), the IETF
+    token status resolver, `jwt_vc_issuer_fetch`, `x5c_trust_anchors`, `extra_contexts` (for
+    the RDF proof and for `meta.type_values` separately), `leeway_s` (a wider and a zero
+    window against the default) and `now` (a pinned Data Integrity window and an x5c chain
+    check). Dropping or hard-coding any of them in `_verify_bare_w3c_vc` now fails a test.
+    The one argument left unpinned is `kb_max_age_s`: a string with a `~` is never routed
+    here, and `detect_format` calls only such a string an SD-JWT, so no Key Binding JWT can
+    reach the bare route and the argument is inert.
+  - A presentation typed `[VerifiablePresentation, EnvelopedVerifiableCredential]`
+    verifies under every flag; one also typed `VerifiableCredential` is still ambiguous.
+  - A hostile token that looks bare (`alg` `none` or `RS256`, an unknown `crit`) keeps the
+    suite's own class with the flag `false` and is `VpTokenMalformed` otherwise.
 
 ## [1.34.0] — 2026-10-15
 
