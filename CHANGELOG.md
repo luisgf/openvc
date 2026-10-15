@@ -4,6 +4,135 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] — unreleased
+
+Two issuer-side fixes in the Data Integrity suites. Both are caller-side: nothing is
+signed or derived from the input they refuse, no accept-set of a verifier changes, and
+the one change that does not fail closed (a naive `created`) is stated under Changed.
+
+### Fixed
+
+- **`ecdsa-sd-2023` `add_base_proof` and `derive_proof` raise `ProofMalformed` when the
+  credential cannot be canonicalized**
+  ([#281](https://github.com/luisgf/openvc/issues/281)). Hardening; no wrong-accept, and
+  nothing was signed or derived on the failing path. An `@context` that `pyld` cannot
+  process (an unknown URL, a typo'd one, a value that is neither an array nor a string,
+  an inline object with a bad term definition), or a body it refuses (a `type` holding
+  an integer, a numeric `credentialSubject.id`), let a bare `pyld.jsonld.JsonLdError`
+  escape from both methods since `ecdsa-sd-2023` landed (v0.3.0). It is not an
+  `OpenvcError`, so an `except OpenvcError` around issuance or derivation missed it.
+  `verify` already turned the same failures into `ProofMalformed`, and so did the two
+  RDF siblings' issuers. `derive_proof` reads a credential a third-party issuer chose,
+  so a hostile or misconfigured issuer could make a wallet's call raise a type its
+  handler does not cover.
+
+  - **Decision (class and message):** `ProofMalformed`, the class `verify` and
+    `_utf8_nquads` already use for a canonicalization failure, with the prefix
+    `could not canonicalize the credential` (`verify` keeps `the derived credential`) and
+    the `pyld` error chained as `__cause__`. The message tail is `{exc}`, as in `verify`.
+    The escaping class changes from `pyld.jsonld.JsonLdError` to `ProofMalformed`; it
+    was never documented. No accept-set changes.
+  - **What is guarded.** `add_base_proof`: `_proof_config_hash` through the mandatory
+    hash. `derive_proof`: `_transform` through `_reveal_view`. A `ProofError` raised
+    inside (a bad JSON pointer, a `validate_document` refusal) keeps its own class and
+    message. The signing calls are outside the guard, so a signing-backend error (an
+    HSM or Vault failure) surfaces as itself, for `signing_key` and for the ephemeral
+    key alike.
+  - **Decision (left as it was):** the lane still raises `ProofMalformed`, not
+    `DocumentLoaderError`, for an unbundled context (the RDF siblings raise the latter);
+    `derive_proof` still does not run `validate_document`; and `derive_proof` still
+    reads `proof["proofValue"]` before the guard (a base proof with no `proofValue` is a
+    bare `KeyError`, one with `proofValue: 5` an `AttributeError`). Each is a separate
+    decision.
+
+- **The Data Integrity issuers read `created` the one way openvc reads a time, and type
+  what they cannot read**
+  ([#287](https://github.com/luisgf/openvc/issues/287)). `DataIntegrityProofSuite`,
+  `EcdsaRdfcProofSuite`, `EddsaJcsProofSuite`, `EcdsaJcsProofSuite` (`add_proof`) and
+  `EcdsaSdProofSuite.add_base_proof` rendered `created=` with a private `_iso` (two
+  copies) that called `astimezone`, which reads a naive `datetime` as the host's local
+  time. `created` now goes through `utc_instant(..., error=ProofMalformed,
+  name="created")` and `isoformat`, via one shared helper, `utc_iso`, beside
+  `utc_instant` in `openvc.proof._verify_common`; both `_iso` copies are gone.
+  `utc_instant` and `utc_epoch` are untouched, so no verify path changes. Before:
+
+  | `created=` | Result |
+  |---|---|
+  | a string, an `int` / `float` epoch, `NaN`, `inf`, `True`, a `date`, a `timedelta`, `[]`, `b"x"` | bare `AttributeError` |
+  | an aware value whose UTC form leaves year 1..9999 | bare `OverflowError` |
+  | naive `datetime.min` / `datetime.max` | bare `ValueError`, even under `TZ=UTC` |
+  | a `tzinfo` that raises | that exception |
+  | a `datetime` subclass | its own `astimezone` / `strftime` chose the signed string |
+
+  All of these are `ProofMalformed` now (`created must be a datetime or None, not
+  <type>`, or `created cannot be read as an instant: ...`), raised after the `alg`,
+  `@context` and existing-proof checks and before any canonicalization or signing. The
+  suite reads the plain `datetime` that returns, never the caller's object. A naive
+  `datetime.min` / `datetime.max` is signed (`0001-01-01T00:00:00Z`,
+  `9999-12-31T23:59:59Z`). For every aware value that rendered before and for `None`
+  (the current UTC time) the output is byte for byte what it was; microseconds are
+  truncated, not rounded, as before.
+
+  - **Decision (error class):** `ProofMalformed` for all five, the class these methods
+    already raise for a bad credential and the only class the five share. The issue
+    offered each suite's own `DataIntegrityError` / `EcdsaSdError` as the alternative;
+    "the suite's own typed error" is read here as `ProofMalformed`.
+  - **Decision (naive datetimes):** a naive `created` is UTC, the rule everywhere else in
+    openvc ([#187](https://github.com/luisgf/openvc/issues/187),
+    [#218](https://github.com/luisgf/openvc/issues/218),
+    [#255](https://github.com/luisgf/openvc/issues/255)), rather than refused. It is a
+    behaviour change on a non-UTC host (see Changed).
+  - **Not changed:** no verifier reads `created` back (a proof dated in the year 2999
+    verifies), `created` stays `datetime | None` (no string or epoch), the JOSE issuers
+    take no datetime, and the status builders keep their own `_iso`, which raises
+    `StatusListError` ([#255](https://github.com/luisgf/openvc/issues/255)).
+
+### Changed
+
+- **A naive `created` on a non-UTC host now yields its UTC reading: a different
+  `created` string, and a different `proofValue` on the deterministic suites, for the
+  same call** ([#287](https://github.com/luisgf/openvc/issues/287)). This is the one
+  change in this release that does not fail closed. `datetime(2026, 1, 1, 12, 0)` was
+  signed as `03:00:00Z` under `Asia/Tokyo` and `17:00:00Z` under `America/New_York`
+  (under `America/New_York`, 2026-07-01 12:00 gave `16:00:00Z`: the host's DST rules
+  applied); it is `12:00:00Z` on every host. A caller that passes `datetime.utcnow()`
+  (deprecated since Python 3.12) on a non-UTC host is corrected. A caller that passes
+  `datetime.now()` there had its local wall time converted correctly and is now shifted
+  by the host's offset: pass an aware value instead, such as
+  `datetime.now(timezone.utc)` or `datetime(..., tzinfo=ZoneInfo("Asia/Tokyo"))`. On a
+  UTC host, for any aware value and for `created=None`, nothing changes. A `tzinfo`
+  whose `utcoffset()` is `None` is naive by Python's definition and is read as UTC the
+  same way.
+- **A `datetime` subclass whose `astimezone(UTC)` does not answer a UTC instant is
+  refused as `ProofMalformed`**, where `created` was signed from whatever its methods
+  returned (a subclass answering `astimezone` with a `+03:00` year-2000 value signed
+  `2000-01-01T00:00:00Z`). It is `utc_instant`'s existing rule, which this release does
+  not change; whether it should is [#286](https://github.com/luisgf/openvc/issues/286).
+- **`except (AttributeError, OverflowError, ValueError)` around `add_proof` /
+  `add_base_proof` for a bad `created` no longer catches it**: it is `ProofMalformed`
+  (an `OpenvcError` and a `ProofError`).
+
+### Tests
+
+- `tests/test_ecdsa_sd_issuer_context_typed.py` (#281): the ten `@context` values of the
+  issue on `add_base_proof` and on `derive_proof` (a genuine base proof with its
+  `@context` swapped), plus the bodies `pyld` refuses (a `type` holding an integer, a
+  numeric `credentialSubject.id` / `@id`, a `@reverse` that expands but does not compact,
+  and a nested node spelled `urn:bnid:c14n0`, which ended in a bare `KeyError` in the
+  last guarded step), each asserted as exactly `ProofMalformed` with the prefix;
+  controls for the round trip, the `validate_document`
+  refusals that keep their message, a signing-backend and an ephemeral-key error that
+  surface as themselves, a bad pointer that stays `EcdsaSdError`, a context served
+  through `extra_contexts`, the verify side (`verify`, `verify_credential`,
+  `verify_many`, `verify_many_async`) and the RDF siblings' unchanged classes.
+- `tests/test_proof_created_time.py` (#287): the five entry points against eleven values
+  that are not a `datetime`, three with no UTC reading, the order of the checks, the
+  host zone pinned by `TZ` + `tzset` (five zones; winter, DST summer, `datetime.min` /
+  `max`, a `tzinfo` with no offset), the same `proofValue` on any host for the
+  deterministic suites, round trips for years 1, 2999 and 9999 (and
+  base / derive / verify for `ecdsa-sd-2023`), and a Hypothesis differential against the
+  old `astimezone(...).strftime(...)` for every aware `datetime`.
+
 ## [1.34.0] — 2026-10-15
 
 **Upgrading from 1.33.2.** Five things can change what a caller sees (each is detailed in

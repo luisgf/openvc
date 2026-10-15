@@ -38,7 +38,7 @@ import hmac
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 from .. import _json
@@ -58,6 +58,7 @@ from ._verify_common import (
     check_validity_window,
     resolve_verification_key,
     safe_repr,
+    utc_iso,
 )
 from .contexts import document_loader
 from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
@@ -322,10 +323,6 @@ def _pyld() -> Any:
     return jsonld
 
 
-def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _skolemize(node: Any, counter: list[int]) -> Any:
     """Give every blank node a stable ``urn:bnid:`` IRI so selection preserves
     identity across the full document and any selected subset."""
@@ -542,7 +539,18 @@ class EcdsaSdProofSuite:
         (or ``issuanceDate`` / ``expirationDate``) and you want a verifier to
         enforce them, include those pointers here — otherwise a holder may withhold
         the window from the derived proof and expiry goes unchecked. The W3C
-        reference vectors mark the validity window mandatory for this reason."""
+        reference vectors mark the validity window mandatory for this reason.
+
+        *created* is a ``datetime`` or ``None`` (the current UTC time): a naive value is
+        UTC, never the host's local time, an aware one is converted, and the signed
+        string is whole seconds (truncated). Anything else, or a value with no UTC
+        equivalent, is :class:`ProofMalformed` before anything is signed. No openvc
+        verifier reads ``created`` back.
+
+        Raises :class:`ProofMalformed` if the credential cannot be canonicalized: an
+        ``@context`` that is neither bundled nor passed via *extra_contexts*, or one
+        JSON-LD refuses (the escaping class used to be ``pyld``'s ``JsonLdError``).
+        A signing-backend error is not wrapped: it surfaces as itself."""
         if signing_key.alg != "ES256":
             raise UnsupportedCryptosuite(
                 f"ecdsa-sd-2023 requires an ES256 (P-256) key, got {signing_key.alg!r}")
@@ -555,22 +563,32 @@ class EcdsaSdProofSuite:
         loader = document_loader(extra_contexts)
         proof = {
             "type": PROOF_TYPE, "cryptosuite": CRYPTOSUITE,
-            "created": _iso(created if created is not None else datetime.now(timezone.utc)),
+            "created": utc_iso(created, error=ProofMalformed, name="created"),
             "verificationMethod": verification_method, "proofPurpose": proof_purpose,
         }
-        proof_hash = _proof_config_hash(proof, credential["@context"], loader)
-        # never sign JSON the signature would not cover (see _context_validation)
-        validate_document(credential, _proof_config(proof, credential["@context"]), loader)
+        try:
+            proof_hash = _proof_config_hash(proof, credential["@context"], loader)
+            # never sign JSON the signature would not cover (see _context_validation)
+            validate_document(credential, _proof_config(proof, credential["@context"]), loader)
 
-        hmac_key = secrets.token_bytes(32)
-        transform = _transform(credential, hmac_key, loader)
-        mandatory_set = _selection_lines(
-            select_json_ld(mandatory, transform.skolemized_compact) or {},
-            transform.skolem_to_hmac, loader) if mandatory else set()
+            hmac_key = secrets.token_bytes(32)
+            transform = _transform(credential, hmac_key, loader)
+            mandatory_set = _selection_lines(
+                select_json_ld(mandatory, transform.skolemized_compact) or {},
+                transform.skolem_to_hmac, loader) if mandatory else set()
 
-        mandatory_lines = [ln for ln in transform.relabeled if ln in mandatory_set]
-        non_mandatory = [ln for ln in transform.relabeled if ln not in mandatory_set]
-        mandatory_hash = _sha256_lines(mandatory_lines)
+            mandatory_lines = [ln for ln in transform.relabeled if ln in mandatory_set]
+            non_mandatory = [ln for ln in transform.relabeled if ln not in mandatory_set]
+            mandatory_hash = _sha256_lines(mandatory_lines)
+        except ProofError:
+            raise
+        except Exception as exc:
+            # The same arm verify has. pyld raises its own JsonLdError (an @context it
+            # cannot process) next to the usual value/type errors, and none is an
+            # OpenvcError. Only canonicalization is guarded: the signing calls below are
+            # outside, so an HSM / Vault backend error surfaces as itself.
+            raise ProofMalformed(
+                f"could not canonicalize the credential: {exc}") from exc
 
         ephemeral = P256SigningKey.generate(kid="urn:ephemeral")
         public_key = p256_public_multikey(ephemeral.public_jwk())
@@ -592,7 +610,12 @@ class EcdsaSdProofSuite:
         selective_pointers: Iterable[str],
         extra_contexts: Mapping[str, dict] | None = None,
     ) -> dict[str, Any]:
-        """Holder side: reveal only the mandatory + *selective_pointers* statements."""
+        """Holder side: reveal only the mandatory + *selective_pointers* statements.
+
+        Raises :class:`ProofMalformed` if the credential cannot be canonicalized: an
+        ``@context`` that is neither bundled nor passed via *extra_contexts*, or one
+        JSON-LD refuses (the escaping class used to be ``pyld``'s ``JsonLdError``).
+        A pointer that does not resolve is :class:`EcdsaSdError`."""
         proof = secured.get("proof")
         if not isinstance(proof, dict) or proof.get("cryptosuite") != CRYPTOSUITE:
             raise UnsupportedCryptosuite("not an ecdsa-sd-2023 base proof")
@@ -603,21 +626,30 @@ class EcdsaSdProofSuite:
 
         loader = document_loader(extra_contexts)
         unsecured = {k: v for k, v in secured.items() if k != "proof"}
-        transform = _transform(unsecured, hmac_key, loader)
+        try:
+            transform = _transform(unsecured, hmac_key, loader)
 
-        mandatory_set = _selection_lines(
-            select_json_ld(mandatory, transform.skolemized_compact) or {},
-            transform.skolem_to_hmac, loader) if mandatory else set()
-        combined_selection = select_json_ld(combined, transform.skolemized_compact) or {}
+            mandatory_set = _selection_lines(
+                select_json_ld(mandatory, transform.skolemized_compact) or {},
+                transform.skolem_to_hmac, loader) if mandatory else set()
+            combined_selection = select_json_ld(combined, transform.skolemized_compact) or {}
 
-        # Base non-mandatory line -> its signature (base sig order = non-mandatory order).
-        non_mandatory = [ln for ln in transform.relabeled if ln not in mandatory_set]
-        sig_by_line = dict(zip(non_mandatory, base["signatures"]))
+            # Base non-mandatory line -> its signature (base sig order = non-mandatory order).
+            non_mandatory = [ln for ln in transform.relabeled if ln not in mandatory_set]
+            sig_by_line = dict(zip(non_mandatory, base["signatures"]))
 
-        # Reveal document + the verifier's label map, computed exactly as verify will.
-        reveal = _deskolemize_document(combined_selection)
-        reveal_relabeled, reveal_map, reveal_mandatory_idx = self._reveal_view(
-            reveal, transform.skolem_to_hmac, combined_selection, mandatory_set, loader)
+            # Reveal document + the verifier's label map, computed exactly as verify will.
+            reveal = _deskolemize_document(combined_selection)
+            reveal_relabeled, reveal_map, reveal_mandatory_idx = self._reveal_view(
+                reveal, transform.skolem_to_hmac, combined_selection, mandatory_set, loader)
+        except ProofError:
+            raise
+        except Exception as exc:
+            # The credential is the one the holder received, so its issuer chose the
+            # @context and the body: whatever pyld refuses is a typed ProofMalformed, as in
+            # verify, not a bare JsonLdError. A bad pointer (EcdsaSdError) passes through.
+            raise ProofMalformed(
+                f"could not canonicalize the credential: {exc}") from exc
 
         filtered_sigs: list[bytes] = []
         for i, ln in enumerate(reveal_relabeled):
@@ -720,7 +752,8 @@ class EcdsaSdProofSuite:
         except Exception as exc:
             # pyld raises its own JsonLdError (e.g. an unknown @context) alongside the
             # usual value/type errors — none is an OpenvcError. Surface a typed
-            # ProofMalformed so a hostile derived credential never escapes the family.
+            # ProofMalformed so a hostile derived credential never escapes the family
+            # (add_base_proof and derive_proof have the same arm).
             raise ProofMalformed(
                 f"could not canonicalize the derived credential: {exc}") from exc
         mandatory_hash = _sha256_lines(mandatory_lines)
