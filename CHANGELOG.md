@@ -6,8 +6,111 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.35.0] — unreleased
 
+### Changed
+
+- **A `datetime` subclass whose own methods lie is read as the plain `datetime` its fields
+  describe, where 1.32.4 refused some of them. This is a maintainer decision (taken on
+  2026-10-15, option A of #286: "read from the fields"), and it supersedes the #255 /
+  1.32.4 line "a naive subclass whose `utcoffset()` answers something that is not a
+  `timedelta` ... is now a `StatusListError`" and the three tests that pinned "a subclass
+  that lies is refused".** The alternative, to keep refusing a subclass that contradicts
+  itself, needs one comparison per overridable method and so keeps growing; reading the
+  fields has no list of methods to keep current, and it matches "a naive datetime is UTC".
+  - What changes: a subclass whose `astimezone()` returned something else (1.32.4: a
+    `StatusListError` from both status builders, a `ProofError` from `utc_instant`)
+    reads as the instant its fields and `tzinfo` hold; a naive subclass whose
+    `utcoffset()` answered something that is not a `timedelta` (a `StatusListError`
+    from both builders) reads as UTC. No genuine `datetime` (plain or a subclass) that
+    was read before is refused now; the one exception is not a `datetime` at all, in the
+    next bullet.
+  - An object that is not a `datetime` but only answers `isinstance(x, datetime)` (a class
+    that sets `__class__ = datetime`, a `MagicMock(spec=datetime)`) is now a typed error
+    from `utc_epoch` too (`ProofError`, or the caller's `error=`): the snapshot is taken
+    through the base class, which does not apply to it. `utc_epoch` used to read it
+    through its own `utcoffset()` / `replace()` / `timestamp()` and return whatever they
+    led to (a `MagicMock(spec=datetime)` gave `1`); `utc_instant` already refused it,
+    with another message. Pass a real `datetime`. This is the only case found where
+    something that succeeded before raises now.
+  - A caller who passed such a subclass as `now=` and relied on the host-local reading
+    (or compensated for it) sees the pin move by the host's UTC offset, to the value its
+    fields say. A caller who wants the old refusal of a self-contradicting object must
+    check it before passing it in.
+  - The `ProofError` message `now cannot be read as an instant: astimezone(UTC) gave
+    offset ...` no longer exists.
+  - Nine existing cases were updated deliberately, each to assert the exact new reading
+    rather than a refusal: `tests/test_status_builders_time.py::
+    test_credential_refuses_a_datetime_with_no_utc_reading` and
+    `::test_token_refuses_a_datetime_with_no_utc_reading` (the `astimezone-lies` and
+    `naive-utcoffset-lies` rows, four each; now
+    `test_credential_reads_a_lying_subclass_from_its_fields` and
+    `test_token_reads_a_lying_subclass_from_its_fields`, which pin
+    `validFrom` / `iat` to `2025-12-31T23:00:00Z` / `1767222000` and `2026-01-01T00:00:00Z`
+    / `1767225600`) and `tests/test_typed_clock_pins.py::
+    test_utc_instant_rejects_a_subclass_whose_utc_conversion_lies` (now
+    `..._reads_a_subclass_whose_utc_conversion_lies_from_its_fields`: `05:00Z`,
+    `1609477200`, and the window edge judged to the second).
+
 ### Fixed
 
+- **The status-list issuer binding accepts a list its own issuer signed with no `issuer`
+  in the body** ([#226](https://github.com/luisgf/openvc/issues/226), found by the
+  adversarial review of #221; it predates it). `VerificationPolicy(
+  require_status_issuer_binding=True)` (ADR-0006) reads the list's issuer from its body.
+  A legitimate list secured as a VC-JWT in the VCDM 1.1 JWT encoding may carry its
+  issuer only in the JWT `iss`, which leaves `vc.issuer` absent or an object with no
+  `id` such as `{"name": "Example University"}`. The pipeline had authenticated that
+  issuer, but the default resolvers returned the body as it was, so the binding refused
+  with `StatusListIssuerUntrusted` ("has no issuer to bind against"). It failed closed,
+  so this was interop, not a vulnerability; it also contradicted #221, which accepts the
+  same two shapes on a credential. `default_status_list_resolver` and its async twin now
+  fill in the issuer the pipeline verified the list for (`result.issuer`) where the body
+  names no one: `issuer` is set to it when absent, and `id` is added to an id-less
+  object, which keeps its other members. The change is made on a copy;
+  `result.credential` (shared with `result.claims` on an SD-JWT) is never written to.
+  What the binding decides:
+
+  - a list signed by the credential's issuer is accepted, so the bit is read
+    (`CredentialRevoked`, or `status.revoked is True` under `require_not_revoked=False`);
+  - a list an attacker signed gets the **attacker's** id and is refused with
+    `StatusListIssuerUntrusted` naming the attacker, as before, unless the attacker is in
+    `status_issuer_allowlist`; a list signed by an allow-listed delegate is accepted;
+  - a list whose body names an issuer other than its signer is refused (#221); the class
+    depends on the lane. A VC-JWT or `vc+sd-jwt` list has its `iss` reconciled with its
+    `issuer` by the pipeline before the resolver sees it, so it raises `ClaimsInvalid`
+    from the inner verification. A `dc+sd-jwt` list has no such reconciliation, so
+    `_authenticated_list` raises `StatusListError`. Both are `OpenvcError`s, but a caller
+    that catches one class only misses the other lane.
+    A custom `resolve_status_list` that returns an issuer-less body still fails closed
+    with `StatusListIssuerUntrusted`, the IETF Token Status List path (bound on the
+    token's `iss`) is unaffected, and a Data Integrity list cannot be issuer-less
+    (`IssuerBindingError` earlier).
+
+  Without the binding nothing changes: the bit is read as before. A caller of a default
+  resolver who reads the returned dict itself now sees an `issuer` where the body had
+  none. A custom `resolve_status_list` that wants the same interop must fill in the
+  `result.issuer` of the `verify_credential` call that checked the list; see
+  [Status lists](https://github.com/luisgf/openvc/wiki/Status-Lists) and the 1.35.0
+  amendment to ADR-0006.
+
+  *Decisions.* The fill-in lives in the default resolvers' shared `_authenticated_list`, not
+  in the pipeline: `_enforce_status_issuer` and the `resolve(url) -> dict` contract of a
+  custom resolver are not relaxed, and no richer return type is introduced. It fills in
+  only from `result.issuer` and only when that is a non-empty string; a present
+  identifier is never rewritten. Copies are shallow: nothing downstream writes to a
+  resolved list.
+
+  *Known gap, left on purpose.* An issuer object that names the signer only by `@id`
+  (`{"@id": <signer>}`) is not filled in, and under the binding it is still refused with
+  `StatusListIssuerUntrusted` ("no issuer to bind against"), as it was before this change.
+  It is not the issuer-less shape #226 fixes: it names someone, so `_authenticated_list`
+  has nothing to fill in. Copying a signer-matching `@id` into `id` there would admit
+  nothing the signature did not already prove, but how the binding reads an issuer object
+  (`_enforce_status_issuer` reads `id` only, for every resolver) is a separate decision,
+  and reading `@id` in `_enforce_status_issuer` itself would widen what a custom
+  resolver's body can bind on. Neither is taken here. Spell the issuer `<id>` or
+  `{"id": <id>}`, or leave it out and let the signer be filled in.
+  `test_an_at_id_only_issuer_is_still_refused_under_the_binding` pins this on every lane,
+  so a later change to it has to be deliberate.
 - **A `datetime` subclass can no longer change how openvc reads a clock pin or a
   builder time** ([#286](https://github.com/luisgf/openvc/issues/286)). Hardening;
   caller-only, no wrong-accept from remote input. openvc's rule is "a naive `datetime`
@@ -53,52 +156,17 @@ All notable changes to **openvc** are documented here. The format follows
   `created=` on the Data Integrity issuers goes through its own `_iso`, not these
   helpers; it is left to [#287](https://github.com/luisgf/openvc/issues/287).
 
-### Changed
-
-- **A `datetime` subclass whose own methods lie is read as the plain `datetime` its fields
-  describe, where 1.32.4 refused some of them. This is a maintainer decision (taken on
-  2026-10-15, option A of #286: "read from the fields"), and it supersedes the #255 /
-  1.32.4 line "a naive subclass whose `utcoffset()` answers something that is not a
-  `timedelta` ... is now a `StatusListError`" and the three tests that pinned "a subclass
-  that lies is refused".** The alternative, to keep refusing a subclass that contradicts
-  itself, needs one comparison per overridable method and so keeps growing; reading the
-  fields has no list of methods to keep current, and it matches "a naive datetime is UTC".
-  - What changes: a subclass whose `astimezone()` returned something else (1.32.4: a
-    `StatusListError` from both status builders, a `ProofError` from `utc_instant`)
-    reads as the instant its fields and `tzinfo` hold; a naive subclass whose
-    `utcoffset()` answered something that is not a `timedelta` (a `StatusListError`
-    from both builders) reads as UTC. No genuine `datetime` (plain or a subclass) that
-    was read before is refused now; the one exception is not a `datetime` at all, in the
-    next bullet.
-  - An object that is not a `datetime` but only answers `isinstance(x, datetime)` (a class
-    that sets `__class__ = datetime`, a `MagicMock(spec=datetime)`) is now a typed error
-    from `utc_epoch` too (`ProofError`, or the caller's `error=`): the snapshot is taken
-    through the base class, which does not apply to it. `utc_epoch` used to read it
-    through its own `utcoffset()` / `replace()` / `timestamp()` and return whatever they
-    led to (a `MagicMock(spec=datetime)` gave `1`); `utc_instant` already refused it,
-    with another message. Pass a real `datetime`. This is the only case found where
-    something that succeeded before raises now.
-  - A caller who passed such a subclass as `now=` and relied on the host-local reading
-    (or compensated for it) sees the pin move by the host's UTC offset, to the value its
-    fields say. A caller who wants the old refusal of a self-contradicting object must
-    check it before passing it in.
-  - The `ProofError` message `now cannot be read as an instant: astimezone(UTC) gave
-    offset ...` no longer exists.
-  - Nine existing cases were updated deliberately, each to assert the exact new reading
-    rather than a refusal: `tests/test_status_builders_time.py::
-    test_credential_refuses_a_datetime_with_no_utc_reading` and
-    `::test_token_refuses_a_datetime_with_no_utc_reading` (the `astimezone-lies` and
-    `naive-utcoffset-lies` rows, four each; now
-    `test_credential_reads_a_lying_subclass_from_its_fields` and
-    `test_token_reads_a_lying_subclass_from_its_fields`, which pin
-    `validFrom` / `iat` to `2025-12-31T23:00:00Z` / `1767222000` and `2026-01-01T00:00:00Z`
-    / `1767225600`) and `tests/test_typed_clock_pins.py::
-    test_utc_instant_rejects_a_subclass_whose_utc_conversion_lies` (now
-    `..._reads_a_subclass_whose_utc_conversion_lies_from_its_fields`: `05:00Z`,
-    `1609477200`, and the window edge judged to the second).
-
 ### Tests
 
+- `tests/test_status_issuer_binding_issuerless.py` runs every case through the sync and
+  async default resolvers and pipelines, and `verify_many` / `verify_many_async` (two
+  credentials, two status URLs, both orders): the shapes that must still be refused, the
+  shapes now accepted, delegation, the shape and non-mutation of the returned body,
+  hostile `issuer` values, a custom resolver, the IETF token path, the Data Integrity
+  lane, and no binding. The refusal of a foreign body issuer is pinned per lane
+  (`ClaimsInvalid` on VC-JWT and `vc+sd-jwt`, `StatusListError` on `dc+sd-jwt`), and a
+  victim-signed list whose issuer is `{"@id": <victim>}` is pinned as still refused
+  under the binding on every lane.
 - `tests/test_clock_reading_subclass.py` (694 cases): `utc_instant` and `utc_epoch` of 13
   lying subclasses and 6 controls, each at 4 pinned host zones (`UTC`, POSIX UTC+9,
   UTC+1 and UTC-5 with DST, which need no tzdata, with a check that the pin took effect);
