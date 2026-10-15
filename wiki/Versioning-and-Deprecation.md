@@ -30,6 +30,16 @@ Concretely:
   **add-only** (a field may be added with a default; never removed, renamed or
   reordered without a MAJOR bump). `tests/test_return_contract.py` pins them.
 
+- **the exception classes** a failure raises, and the classes they extend, because callers
+  write `except` clauses and exact-class comparisons against them. A failure that gains a base
+  class, or is re-raised as a more specific subclass of the class it used to be, is **MINOR**
+  (every clause that caught it still does; the CHANGELOG says what code that compares the exact
+  class must compare instead). Typing a failure that used to escape the library's own error
+  family (a bare `TypeError`, say) is a **PATCH**. Replacing the class with an unrelated one, or
+  dropping a base, is **MAJOR**. The key-resolution family of 1.35.0
+  ([#283](https://github.com/luisgf/openvc/issues/283): `KeyResolutionError` is also a
+  `KeyResolutionFailed`) is the worked example of the MINOR case.
+
 **Not** covered (may change in any release, no deprecation cycle): any
 leading-underscore module or name (`openvc.proof._verify_common`,
 `openvc.status._decompress`, every `_name`), and behaviour explicitly documented as

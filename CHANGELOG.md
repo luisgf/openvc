@@ -4,6 +4,125 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] — unreleased
+
+### Changed
+
+- **A failed key resolution is one error family on every lane, sync and async**
+  ([#283](https://github.com/luisgf/openvc/issues/283)). Nothing is accepted that was
+  refused, and nothing that was refused is accepted: every case below failed closed before
+  and fails closed now, and `verify_many` / `verify_many_async` isolate the item as before.
+  What changes is the class, so a service can map "the issuer could not be resolved" with one
+  handler.
+
+  The same failed resolution was reported as one of two unrelated classes, by lane:
+  `KeyResolutionFailed(VerificationError)` from the JOSE lanes, and
+  `KeyResolutionError(ProofError)` from every Data Integrity suite. They shared no base
+  below `OpenvcError`, so `except KeyResolutionFailed` caught a VC-JWT failure and missed a
+  Data Integrity one, and `except ProofError` the reverse. The async Data Integrity lane
+  raised both: `aio._preresolved_di_resolver` turned a fetch failure or a wrong-shaped
+  document into `KeyResolutionFailed` before the suite ran, while a method not in the
+  document, or a DID method with no resolver, stayed `KeyResolutionError`. And a proof
+  whose `verificationMethod` is a malformed `did:key`, checked where the registry has no
+  `did:key` resolver (or with `resolver=None` on a suite), raised a bare
+  `DidResolutionError`, neither a `ProofError` nor a `VerificationError`.
+
+  - **`KeyResolutionError` is also a `KeyResolutionFailed`.**
+    `class KeyResolutionError(ProofError, KeyResolutionFailed)`, MRO `KeyResolutionError`,
+    `ProofError`, `KeyResolutionFailed`, `VerificationError`, `OpenvcError`. `except
+    KeyResolutionFailed` and `except VerificationError` now catch a key-resolution failure
+    on every lane; `except KeyResolutionError` and `except ProofError` still catch the Data
+    Integrity ones and still do **not** catch a JOSE one (`KeyResolutionFailed` is not a
+    `ProofError`).
+  - **The async Data Integrity lane raises `KeyResolutionError`**, as the sync one does.
+    `verify_credential_async` and `verify_many_async` gave `KeyResolutionFailed` for a fetch
+    that raised `DidResolutionError` and for a wrong-shaped document (`verificationMethod:
+    null`, #219); they give `KeyResolutionError` now, with the same `__cause__`.
+  - **The offline `did:key` fallback is typed.** `DidResolutionError` from
+    `DidKeyResolver().resolve(did)` in `resolve_verification_key` is now a
+    `KeyResolutionError` with the `DidResolutionError` as its cause, as the registry path
+    above it already was. Only that call is inside the `try`, and only `DidResolutionError`
+    is caught: the purpose check after it stays `ProofPurposeMismatch`, a method that is not
+    in a resolved `did:key` document stays `KeyResolutionError` with no cause, and any other
+    error from the resolver propagates as itself.
+  - **The JOSE lanes are untouched**: VC-JWT and SD-JWT VC raise exactly
+    `KeyResolutionFailed`, as before, through `verify_credential`, `verify_many`,
+    `verify_credential_async` and `verify_many_async`. So does the VP-JWT holder key, whose
+    `ClaimsInvalid` (cause `KeyResolutionFailed`) is a different decision and not part of
+    this change.
+  - **Where the classes live.** `VerificationError` and `KeyResolutionFailed` are now defined
+    in `openvc.errors` (`openvc.proof` cannot import `openvc.verify`, which imports the
+    proofs) and re-exported from `openvc.verify`, which keeps both names in `__all__`;
+    `openvc.VerificationError` stays at the package root. They are added to
+    `openvc.errors.__all__`. No name is removed or renamed. Each keeps `__module__ ==
+    "openvc.verify"`, so a traceback line, a `repr` and a pickle name the class exactly as
+    before. The API reference now lists both under `openvc.errors` as well as
+    `openvc.verify`.
+
+  **Behaviour changes to check.** The first four only add matches; the last narrows one
+  clause for one case.
+
+  - Code that compares the exact class of a Data Integrity key-resolution failure
+    (`type(exc) is KeyResolutionFailed`, `isinstance(exc, ProofError)` being false) must compare
+    the new one: `KeyResolutionError`. On the async API that is a fetch failure or a
+    wrong-shaped document; the sync API already raised it.
+  - `not isinstance(exc, KeyResolutionFailed)` is no longer a way to tell a Data Integrity
+    failure; use `isinstance(exc, KeyResolutionError)` (or `ProofError`).
+  - An ordered handler can re-route. With `except VerificationError` before `except ProofError`,
+    a synchronous Data Integrity key failure moves to the first branch. With `except ProofError`
+    before `except KeyResolutionFailed`, an async Data Integrity failure moves to the first
+    branch. Order the clauses most specific first.
+  - The `verify_many_async` hostile item reports `KeyResolutionError` in `BatchResult.error`
+    where it reported `KeyResolutionFailed`, and the INFO log line reads `error=KeyResolutionError`.
+  - A malformed `did:key` proof, checked with a registry that has no `did:key` resolver (or
+    `resolver=None` on a suite), is a `KeyResolutionError` where it was a bare
+    `DidResolutionError`: `except ProofError` and `except VerificationError` now catch it, and
+    `except DidError` / `except DidResolutionError` no longer does (the original is
+    `exc.__cause__`). This is the one case where a clause stops matching. The default
+    pipeline, whose registry has a `did:key` resolver, already raised `KeyResolutionError`
+    there.
+
+  **Maintainer decisions taken, and the reading of SemVer.**
+
+  - **MINOR, not PATCH or MAJOR.** No name, signature, field or default changes, and no `except`
+    clause on the pipeline's classes that catches a failure today stops catching it, so it is
+    not MAJOR. The one narrowing, a malformed `did:key` that used to escape as a bare
+    `DidResolutionError` (outside the `try` that types every other resolution failure), is the
+    typing of a gap and PATCH-level in itself. The class a lane
+    raises, and its bases, are observable (a handler can be ordered, and an exact-class
+    comparison can be written), so it is not PATCH. `wiki/Versioning-and-Deprecation.md` now
+    says what each level means for exception classes. The 1.33.0 (`HttpForbiddenHost` to
+    `EbsiVerificationError`) and 1.32.4 (`ClaimsInvalid` / `UnsupportedPresentationFormat` to
+    `VpTokenMalformed`) re-classifications can stop a clause matching and shipped looser; they
+    are not rewritten.
+  - **The Data Integrity class extends the pipeline class**, not the reverse (which would make
+    JOSE failures `ProofError`s and leave Data Integrity outside `VerificationError`) and not
+    one flat class (which would stop `except ProofError` or `except VerificationError`
+    catching one lane; that is the 2.0 window, #74).
+  - **`__module__` is pinned** to `openvc.verify` on the two moved classes, rather than letting
+    it become `openvc.errors`, so log scrapers and tracebacks that match
+    `openvc.verify.KeyResolutionFailed` keep working.
+  - The released entries that state the old split (1.33.0 #279, 1.32.4 #256, 1.32.3 #219) are
+    not rewritten; this entry supersedes the rule they give for the class.
+
+  Docs: `wiki/Resolving-Issuer-Keys.md` (a table of the lanes and the handler guidance),
+  `wiki/Security-Model.md`, `wiki/Async-Verification.md`, `wiki/Versioning-and-Deprecation.md`,
+  `docs/CONVENTIONS.md` (Errors), `docs/audit/assurance.md` and the docstrings of
+  `openvc.verify`, `openvc.errors`, `KeyResolutionError` and `aio._preresolved_di_resolver`.
+
+### Tests
+
+- `tests/test_key_resolution_error_family.py` (new, 214 cases): the lane-by-scenario map
+  (VC-JWT, SD-JWT VC, `eddsa-jcs-2022`, `eddsa-rdfc-2022` through the four entry points, plus
+  the suite called directly and the three ECDSA suites) with a control for every row that
+  verifies the same credential against the good document; the handlers; the hierarchy,
+  `__module__`, traceback and pickle pins; the malformed `did:key` cases and the limits of the
+  new `try`; batch isolation; and the `ldp_vc` holder proof and embedded credentials.
+- The 28 existing cases that pinned the old split (`test_did_document_shape_typed.py`,
+  `test_did_reference_exact_match.py`, `test_did_webvh_state_envelope.py`,
+  `test_lone_surrogate_typed.py`) now assert the new exact class and the new `isinstance`
+  relations; none was loosened.
+
 ## [1.34.0] — 2026-10-15
 
 **Upgrading from 1.33.2.** Five things can change what a caller sees (each is detailed in

@@ -100,9 +100,50 @@ nor an object with a string `id`, are dropped, so they select no key and grant n
 A method dropped this way is not counted when a token with no `kid` falls back to the
 document's sole key, as a method with an undecodable Multikey never was.
 In `verify_many` the credential fails with a typed error and the rest of the batch still
-verifies: `KeyResolutionFailed` on the JOSE lanes and on `verify_many_async`,
-`KeyResolutionError` (a `ProofError`) on the synchronous Data Integrity lane. In both
-cases the cause is the `DidResolutionError`.
+verifies. The error is a `KeyResolutionFailed` on every lane (see
+[One error family for a failed key resolution](#one-error-family-for-a-failed-key-resolution)),
+and the cause is the `DidResolutionError`.
+
+### One error family for a failed key resolution
+
+A key that cannot be resolved raises a `KeyResolutionFailed` (a `VerificationError`) on every
+lane, whatever the reason: the fetch failed, the DID method has no resolver in the registry,
+the document is of the wrong shape, or the document does not hold the key the credential
+names. What differs is how specific the class is:
+
+| Lane | Raised | Also a `ProofError` |
+|---|---|---|
+| VC-JWT, SD-JWT VC | `KeyResolutionFailed` | no |
+| Data Integrity (`eddsa-rdfc-2022`, `eddsa-jcs-2022`, `ecdsa-rdfc-2019`, `ecdsa-jcs-2019`, `ecdsa-sd-2023`), and the holder proof of an `ldp_vc` presentation | `KeyResolutionError`, a subclass of `KeyResolutionFailed` | yes |
+
+The async API (`verify_credential_async`, `verify_many_async`) raises the same classes as
+the sync one, and so does a Data Integrity suite called directly (`.verify(…, resolver=…)`).
+`BatchResult.error` holds the raised instance, and `error.__cause__` the `DidResolutionError`
+or `UnsupportedDidMethod` when there is one. A proof whose `verificationMethod` is a
+malformed `did:key` is a `KeyResolutionError` too, whether or not the registry has a
+`did:key` resolver, with the `DidResolutionError` as its cause.
+
+So one handler serves every lane, and a narrower one picks the family out:
+
+<!-- docs: no-run -->
+```python
+from openvc import verify_credential
+from openvc.proof.errors import KeyResolutionError
+from openvc.verify import KeyResolutionFailed
+
+try:
+    verify_credential(credential, resolver=registry)
+except KeyResolutionError:       # a Data Integrity credential (also a ProofError)
+    ...
+except KeyResolutionFailed:      # any other lane: VC-JWT, SD-JWT VC
+    ...
+```
+
+`except KeyResolutionFailed` and `except VerificationError` catch a failure on every lane;
+`except KeyResolutionError` and `except ProofError` catch the Data Integrity ones and still
+do not catch a JOSE one. Order the clauses most specific first: an `except ProofError`
+before an `except KeyResolutionFailed` takes a Data Integrity failure, which a handler
+written before 1.35 saw as a plain `KeyResolutionFailed` on the async API.
 
 ### How a proof's key and purpose are matched
 
