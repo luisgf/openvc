@@ -60,7 +60,7 @@ from ._verify_common import (
     safe_repr,
     utc_iso,
 )
-from .contexts import document_loader
+from .contexts import document_loader, pyld_options
 from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
 from .vc_jwt import SigningKey
 
@@ -401,7 +401,7 @@ def _relabel(lines: Iterable[str], mapping: dict[str, str]) -> list[str]:
 
 def _to_nquads(document: Any, loader: Any) -> str:
     return _pyld().to_rdf(
-        document, {"format": "application/n-quads", "documentLoader": loader})
+        document, pyld_options(loader, format="application/n-quads"))
 
 
 @dataclass
@@ -413,10 +413,10 @@ class _Transform:
 
 def _transform(document: dict[str, Any], hmac_key: bytes, loader: Any) -> _Transform:
     jsonld = _pyld()
-    expanded = jsonld.expand(document, {"documentLoader": loader})
+    expanded = jsonld.expand(document, pyld_options(loader))
     skolemized = _skolemize(expanded, [0])
     compacted = jsonld.compact(
-        skolemized, document.get("@context"), {"documentLoader": loader})
+        skolemized, document.get("@context"), pyld_options(loader))
     lines, id_map = _canonicalize(_deskolemize_nquads(_to_nquads(skolemized, loader)))
     c14n_to_hmac = {c14n: "_:" + hmac_label(hmac_key, c14n[len("_:"):])
                     for c14n in set(id_map.values())}
@@ -514,8 +514,7 @@ def _proof_config(proof: dict[str, Any], context: Any) -> dict[str, Any]:
 def _proof_config_hash(proof: dict[str, Any], context: Any, loader: Any) -> bytes:
     config = _proof_config(proof, context)
     nquads = _pyld().normalize(
-        config, {"algorithm": "URDNA2015", "format": "application/n-quads",
-                 "documentLoader": loader})
+        config, pyld_options(loader, algorithm="URDNA2015", format="application/n-quads"))
     return hashlib.sha256(_utf8_nquads(nquads, "the proof configuration N-Quads")).digest()
 
 
