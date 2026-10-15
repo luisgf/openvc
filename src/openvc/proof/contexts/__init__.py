@@ -128,8 +128,8 @@ class _BundledResolutions(MutableMapping):
     next one, #225), all live and die with the resolver.
 
     Sharing the bundled ones is sound because their resolution is a function of one
-    read-only document that references no other URL (``tests/test_pyld_context_isolation.py``
-    fails if a bundled document ever does), and it is worth having: the resolution keeps the
+    read-only document that references no other URL (``tests/test_pyld_options.py`` fails if
+    a bundled document ever does), and it is worth having: the resolution keeps the
     processed form of the context, which is most of the cost of expanding against it."""
 
     __slots__ = ("_urls",)
@@ -174,12 +174,13 @@ def pyld_options(loader: Callable[[str, Any], dict], **options: Any) -> dict[str
     :class:`_BundledResolutions` lets it keep, so a call sees the contexts its *loader*
     serves and no others.
 
-    Every pyld call in openvc takes its options from here (``tests/
-    test_pyld_context_isolation.py`` fails on one that does not), so a new call site cannot
-    leave the resolver out. Build the options anew for each call: a resolver remembers what
-    it resolved, and one call's must not be another's. The loader may be any callable; one
-    that is not :func:`document_loader`'s shares nothing. pyld is imported here, not at
-    module level, because the core loads without it."""
+    Every pyld call in openvc takes its options from here (``tests/test_pyld_options.py``
+    fails on one that does not; ``tests/test_pyld_context_isolation.py`` runs the cross-caller
+    cases through the real pipeline), so a new call site cannot leave the resolver out. Build
+    the options anew for each call: a resolver remembers what it resolved, and one call's
+    must not be another's. The loader may be any callable; one that is not
+    :func:`document_loader`'s shares nothing. pyld is imported here, not at module level,
+    because the core loads without it."""
     from pyld.context_resolver import ContextResolver
 
     shared: MutableMapping[str, Any] = (

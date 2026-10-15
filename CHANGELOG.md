@@ -35,6 +35,18 @@ All notable changes to **openvc** are documented here. The format follows
     contexts, which define it as another IRI. Both callers' contexts are the verifier's own
     configuration, so no hostile document creates the situation; it is a verifier checking
     against terms it had not configured.
+  - **A later call that failed only because of an earlier one.** pyld keys an inline
+    context by its JSON, and the context a served URL holds by the same key, so when the two
+    spell the same terms they were one entry, and what an `@import` stored on it was handed
+    back as an active context. In one process, a call that imported a served context and
+    a call whose inline context spelled the same terms could not both succeed, in either
+    order, and neither could a call that referenced the URL itself followed by one that
+    imported it. The second call failed with `DataIntegrityError` (`canonicalization
+    failed`, from a `KeyError: 'mappings'` or a `NormalizeError` inside pyld, depending on
+    the order), while each canonicalized alone in a fresh process. Nothing was accepted
+    wrongly. The resolver per call removes the shared entry, so the outcome no longer
+    depends on call order (checked on 1.34.0 and on this change, over every ordered pair
+    of nine context shapes).
   - **The change.** `openvc.proof.contexts.pyld_options(loader, **options)` builds the
     options of one pyld call: the caller's options, the `documentLoader`, and a
     `ContextResolver` created for that call. Every call goes through it: the canonization
@@ -102,8 +114,10 @@ All notable changes to **openvc** are documented here. The format follows
   B's for the same URLs, then none), for an inline `@import` in the credential, a served
   context that holds one (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `ecdsa-sd-2023`), the
   `expected_types` pin, and the cross-caller property case; each call must see only its
-  own loader, and each assertion names the exact exception class. It names no new API and
-  fails on 1.34.0. `tests/test_pyld_options.py` pins the structural half (the source scan
+  own loader, and each assertion names the exact exception class; one more runs the forms
+  that collided in pyld's entry (inline `@import`, the same terms inline, the URL itself)
+  in several orders and requires one dataset. They name no new API and fail on 1.34.0.
+  `tests/test_pyld_options.py` pins the structural half (the source scan
   and its own tests, the run-time recorder, the bundled-only store and its window, and the
   rule that bundled documents reference no other URL). Both run on the pyld 2.0.4 floor.
 

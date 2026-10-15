@@ -127,6 +127,30 @@ def test_inline_import_canonical_form_follows_the_loader_of_the_call():
     assert nquads_a_again == nquads_a
 
 
+def test_an_earlier_inline_import_does_not_make_a_later_call_fail():
+    """pyld keys an inline context by its JSON, and so does the entry of the context a URL
+    serves (its inner object). When the two hold the same terms they were one resolved
+    context, and what ``@import`` stored on it was handed back as an active context, so the
+    second of two such calls died in canonicalization (``DataIntegrityError``, from
+    ``KeyError: 'mappings'`` or a ``NormalizeError`` inside pyld). Whatever ran before, each
+    form must canonicalize, to the same dataset."""
+    _, imported = _urls("order")
+    iri = "https://dmv.example/order-DL"
+    served = {imported: _tenant(iri)}
+    forms = {
+        "import": _credential({"@import": imported}),
+        "inline": _credential({"DriversLicense": iri}),
+        "url": _credential(imported),
+        "import_then_url": _credential({"@import": imported}, imported),
+    }
+    expected = None
+    for name in ["import", "inline", "url", "import_then_url", "inline", "import", "url"]:
+        nquads = di._canonize(forms[name], document_loader(served))
+        assert f"<{iri}>".encode() in nquads, name
+        expected = expected or nquads
+        assert nquads == expected, name
+
+
 def test_inline_import_credential_fails_for_the_right_reason_in_each_call():
     """A credential signed with the inline context, validation bypassed (what an attacker
     would hold). Tenant A: the signature is valid and the 1.30.2 rule refuses the inline
