@@ -204,7 +204,11 @@ except StatusListError as exc:
 The builders read a copy of what you pass and emit that copy: the `issuer` object and the
 `contexts` list are new containers, and every string is an exact `str`, so a `dict`, `list`
 or `str` subclass cannot be checked as one value and written as another (one whose copy
-raises is a `StatusListError`).
+raises is a `StatusListError`). The error text itself is just as safe: it names an `int`,
+`float` or `str` subclass by the number or characters it holds (cut, or named by its size,
+when long, as for a plain value), never through the subclass's own `repr()`, and any other
+object by its type (`an object` if even that cannot be read), so a hostile value is still a
+`StatusListError` and never the exception its own method raises.
 
 Not checked, by design: that an identifier is a URI (`"not a uri"` builds; only key
 resolution, and the RDF suites at `add_proof`, refuse one), its length, the members of

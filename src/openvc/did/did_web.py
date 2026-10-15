@@ -88,8 +88,10 @@ def _validated_document(raw: dict[str, Any], did: str) -> DidDocument:
     """Parse *raw* and apply the did:web id integrity check (shared sync/async)."""
     doc = parse_did_document(raw)
     if doc.id != did:                               # bind the document to the requested DID —
-        raise DidResolutionError(                   # a missing/empty id fails too (did:webvh is
-            f"document id {doc.id!r} != requested {did!r}")   # strict here; don't be laxer)
+        # a missing/empty id fails too (did:webvh is strict here; don't be laxer). The fetched
+        # id is wire data and the DID may be a caller's str subclass: both go through safe_repr.
+        raise DidResolutionError(
+            f"document id {safe_repr(doc.id)} != requested {safe_repr(did)}")
     return doc
 
 

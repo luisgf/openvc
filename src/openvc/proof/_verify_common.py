@@ -61,25 +61,48 @@ def reject_unknown_crit(header: dict[str, Any]) -> None:
 # attacker-sized string never becomes an attacker-sized log line.
 _SHOWN_MAX = 200
 
+# The longest type name `safe_repr` prints in place of a value; a longer one (a metaclass can
+# return any string from `__name__`) is cut.
+_NAME_MAX = 64
+
 
 def safe_repr(value: Any) -> str:
-    """*value* for an error message, when it is attacker-shaped JSON.
+    """*value* for an error message, when it is attacker-shaped JSON — or any object a
+    caller hands in.
 
     Only a bounded scalar is shown as ``repr``: a ``str`` (cut past ``_SHOWN_MAX``
     characters), ``None``, a ``bool``, a ``float`` and a 64-bit ``int``. Anything else is
     named by its type. ``json.loads`` on Python 3.14 accepts an array nested deeply
     enough that ``repr()`` of it raises a bare ``RecursionError``, which would escape
     ``OpenvcError`` from the very ``raise`` meant to report the bad value. ``repr()`` of
-    an int past the int-to-str digit limit raises ``ValueError`` the same way."""
-    if isinstance(value, str):
-        if len(value) <= _SHOWN_MAX:
+    an int past the int-to-str digit limit raises ``ValueError`` the same way.
+
+    A ``str``, ``int`` or ``float`` subclass is read through the built-in's own methods
+    (``str.__str__``, ``int.bit_length``, ``int.__repr__``, ``float.__repr__``), never its
+    own, so whatever it overrides (``__repr__``, ``__len__``, ``__getitem__``,
+    ``bit_length``) can neither raise out of the message nor lengthen it: it is shown as
+    the characters or the number it holds. Anything that still fails (a type whose
+    metaclass ``__name__`` raises, a test double that claims to be an ``int``) is
+    ``an object``. A type name longer than 64 characters is cut too (a metaclass can return
+    any string from ``__name__``), so no object lengthens the message."""
+    try:
+        if isinstance(value, str):
+            text = str.__str__(value)      # a subclass's __len__ / __getitem__ / __repr__ may raise
+            if len(text) <= _SHOWN_MAX:
+                return repr(text)
+            return f"{text[:_SHOWN_MAX]!r}... ({len(text)} chars)"
+        if value is None or value is True or value is False:
             return repr(value)
-        return f"{value[:_SHOWN_MAX]!r}... ({len(value)} chars)"
-    if value is None or isinstance(value, (bool, float)):
-        return repr(value)
-    if isinstance(value, int) and value.bit_length() <= 64:
-        return repr(value)
-    return type(value).__name__
+        if isinstance(value, float):
+            return float.__repr__(value)
+        if isinstance(value, int) and int.bit_length(value) <= 64:
+            return int.__repr__(value)
+        name = type(value).__name__
+        if type(name) is not str:
+            return "an object"
+        return name if len(name) <= _NAME_MAX else name[:_NAME_MAX] + "..."
+    except Exception:
+        return "an object"
 
 
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
@@ -489,7 +512,7 @@ def non_negative_seconds(value: Any, *, name: str, error: type[Exception] = Proo
     comparison ``False``, i.e. switch the window off, and ``None`` or a string would
     surface mid-verification as a bare ``TypeError``."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise error(f"{name} must be a non-negative int (seconds), got {value!r}")
+        raise error(f"{name} must be a non-negative int (seconds), got {safe_repr(value)}")
     return value
 
 
