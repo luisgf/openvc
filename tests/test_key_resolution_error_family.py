@@ -62,6 +62,7 @@ from openvc import (
 )
 from openvc.did.base import (
     AsyncDidResolverRegistry,
+    DidError,
     DidResolutionError,
     DidResolverRegistry,
     UnsupportedDidMethod,
@@ -542,6 +543,20 @@ def test_a_malformed_did_key_without_a_did_key_resolver_is_a_key_resolution_erro
     got = _outcome(entry, credential, _no_did_key_registries())
     assert type(got) is KeyResolutionError, repr(got)
     assert type(got.__cause__) is DidResolutionError
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_a_malformed_did_key_is_no_longer_a_did_error_but_its_cause_still_is(entry):
+    # the one place an ``except`` clause stops matching (CHANGELOG 1.35.0, a recorded
+    # maintainer exception to the versioning rule): the bare DidResolutionError was a
+    # DidError; the KeyResolutionError that replaces it is not, and keeps the original.
+    key = Ed25519SigningKey.generate(kid=BAD_KEY_VM)
+    credential = _bad_key_credential(EddsaJcsProofSuite(), key)
+    got = _outcome(entry, credential, _no_did_key_registries())
+    assert type(got) is KeyResolutionError, repr(got)
+    assert not isinstance(got, DidError)
+    assert type(got.__cause__) is DidResolutionError
+    assert isinstance(got.__cause__, DidError)
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS)

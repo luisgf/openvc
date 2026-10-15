@@ -40,6 +40,17 @@ Concretely:
   ([#283](https://github.com/luisgf/openvc/issues/283): `KeyResolutionError` is also a
   `KeyResolutionFailed`) is the worked example of the MINOR case.
 
+  There is one recorded exception, a maintainer decision for 1.35.0 that does not loosen the
+  rule. A malformed `did:key` proof checked with a registry that has no `did:key` resolver
+  used to raise a bare `DidResolutionError` (a `DidError`) and now raises
+  `KeyResolutionError`, which is not a `DidError`, so `except DidError` stops catching it.
+  That drops a base, which the rule calls MAJOR; it was judged MINOR for this case alone
+  because the failure stays inside `OpenvcError` (and becomes a `VerificationError` and a
+  `ProofError`), it is the class the default pipeline already raised for the same input, it
+  needs a custom registry, and the `DidResolutionError` is kept as `__cause__`. Any other
+  change that stops an `except` clause matching is MAJOR unless the CHANGELOG records an
+  equally narrow decision.
+
 **Not** covered (may change in any release, no deprecation cycle): any
 leading-underscore module or name (`openvc.proof._verify_common`,
 `openvc.status._decompress`, every `_name`), and behaviour explicitly documented as

@@ -121,7 +121,9 @@ the sync one, and so does a Data Integrity suite called directly (`.verify(…, 
 `BatchResult.error` holds the raised instance, and `error.__cause__` the `DidResolutionError`
 or `UnsupportedDidMethod` when there is one. A proof whose `verificationMethod` is a
 malformed `did:key` is a `KeyResolutionError` too, whether or not the registry has a
-`did:key` resolver, with the `DidResolutionError` as its cause.
+`did:key` resolver, with the `DidResolutionError` as its cause. (Before 1.35.0 a registry
+with no `did:key` resolver let the bare `DidResolutionError` through, so `except DidError`
+caught it; it no longer does, so catch `KeyResolutionFailed` or read `__cause__`.)
 
 So one handler serves every lane, and a narrower one picks the family out:
 

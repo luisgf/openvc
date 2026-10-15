@@ -59,8 +59,12 @@ All notable changes to **openvc** are documented here. The format follows
     before. The API reference now lists both under `openvc.errors` as well as
     `openvc.verify`.
 
-  **Behaviour changes to check.** The first four only add matches; the last narrows one
-  clause for one case.
+  **Behaviour changes to check.** The `except` clauses only gain matches, with one
+  exception (the last bullet): every clause that caught one of these failures still catches
+  it. What the first four bullets change are the checks that read the class itself, which a
+  caller has to make: an exact-class comparison, a `not isinstance(...)` test, the order of
+  handlers, and a `BatchResult.error` or a log line compared by class. The last bullet is the
+  one case where an `except` clause stops matching.
 
   - Code that compares the exact class of a Data Integrity key-resolution failure
     (`type(exc) is KeyResolutionFailed`, `isinstance(exc, ProofError)` being false) must compare
@@ -78,23 +82,39 @@ All notable changes to **openvc** are documented here. The format follows
     `resolver=None` on a suite), is a `KeyResolutionError` where it was a bare
     `DidResolutionError`: `except ProofError` and `except VerificationError` now catch it, and
     `except DidError` / `except DidResolutionError` no longer does (the original is
-    `exc.__cause__`). This is the one case where a clause stops matching. The default
-    pipeline, whose registry has a `did:key` resolver, already raised `KeyResolutionError`
-    there.
+    `exc.__cause__`). This is the one case where a clause stops matching (a maintainer
+    decision, below). The default pipeline, whose registry has a `did:key` resolver, already
+    raised `KeyResolutionError` there.
 
   **Maintainer decisions taken, and the reading of SemVer.**
 
-  - **MINOR, not PATCH or MAJOR.** No name, signature, field or default changes, and no `except`
-    clause on the pipeline's classes that catches a failure today stops catching it, so it is
-    not MAJOR. The one narrowing, a malformed `did:key` that used to escape as a bare
-    `DidResolutionError` (outside the `try` that types every other resolution failure), is the
-    typing of a gap and PATCH-level in itself. The class a lane
-    raises, and its bases, are observable (a handler can be ordered, and an exact-class
-    comparison can be written), so it is not PATCH. `wiki/Versioning-and-Deprecation.md` now
-    says what each level means for exception classes. The 1.33.0 (`HttpForbiddenHost` to
-    `EbsiVerificationError`) and 1.32.4 (`ClaimsInvalid` / `UnsupportedPresentationFormat` to
-    `VpTokenMalformed`) re-classifications can stop a clause matching and shipped looser; they
-    are not rewritten.
+  - **MINOR, not PATCH or MAJOR.** No name, signature, field or default changes, and every
+    `except` clause on the pipeline's classes (`VerificationError`, `KeyResolutionFailed`,
+    `ProofError`) that catches a failure today still catches it, so it is not MAJOR. The
+    class a lane raises, and its bases, are observable (a handler can be ordered, and an
+    exact-class comparison can be written), so it is not PATCH.
+    `wiki/Versioning-and-Deprecation.md` now says what each level means for exception
+    classes. The 1.33.0 (`HttpForbiddenHost` to `EbsiVerificationError`) and 1.32.4
+    (`ClaimsInvalid` / `UnsupportedPresentationFormat` to `VpTokenMalformed`)
+    re-classifications can stop a clause matching and shipped looser; they are not rewritten.
+  - **The malformed `did:key` case is MINOR by exception, not by the rule.** It is the one
+    place a clause stops matching: a bare `DidResolutionError` is a `DidError`, and
+    `KeyResolutionError` is not, so `except DidError` and `except DidResolutionError` no
+    longer catch it. Under the rule above that drops a base, which is the MAJOR case, and it
+    is not the PATCH case either (typing a failure that escaped the library's own error
+    family), because a bare `DidResolutionError` was already an `OpenvcError`. #283 proposed
+    MINOR and its argument ("no `except` clause stops catching") overlooked this case; the
+    maintainer decision here is to keep MINOR for this case only, because the failure stays
+    an `OpenvcError` (and now a `VerificationError` and a `ProofError`), so a batch and a
+    service-wide handler still isolate it; because it is the class the same input already
+    raised when the registry has a `did:key` resolver, as the default registry does;
+    because it needs a custom registry with no `did:key` resolver; and because the original
+    `DidResolutionError` is the `__cause__`. It is recorded as an exception in
+    `wiki/Versioning-and-Deprecation.md`, which keeps the rule itself strict. Considered and
+    rejected: giving `KeyResolutionError` a `DidError` base (every Data Integrity key failure,
+    including a method that is not in the document, would become a `DidError`), and a second
+    class that is both a `KeyResolutionError` and a `DidResolutionError` (the exact class on
+    every Data Integrity lane would no longer be one class, which is what this change gives).
   - **The Data Integrity class extends the pipeline class**, not the reverse (which would make
     JOSE failures `ProofError`s and leave Data Integrity outside `VerificationError`) and not
     one flat class (which would stop `except ProofError` or `except VerificationError`
@@ -112,12 +132,14 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Tests
 
-- `tests/test_key_resolution_error_family.py` (new, 214 cases): the lane-by-scenario map
+- `tests/test_key_resolution_error_family.py` (new, 218 cases): the lane-by-scenario map
   (VC-JWT, SD-JWT VC, `eddsa-jcs-2022`, `eddsa-rdfc-2022` through the four entry points, plus
   the suite called directly and the three ECDSA suites) with a control for every row that
   verifies the same credential against the good document; the handlers; the hierarchy,
-  `__module__`, traceback and pickle pins; the malformed `did:key` cases and the limits of the
-  new `try`; batch isolation; and the `ldp_vc` holder proof and embedded credentials.
+  `__module__`, traceback and pickle pins; the malformed `did:key` cases (including that the
+  `KeyResolutionError` that replaces the bare `DidResolutionError` is not a `DidError`, the
+  recorded exception) and the limits of the new `try`; batch isolation; and the `ldp_vc`
+  holder proof and embedded credentials.
 - The 28 existing cases that pinned the old split (`test_did_document_shape_typed.py`,
   `test_did_reference_exact_match.py`, `test_did_webvh_state_envelope.py`,
   `test_lone_surrogate_typed.py`) now assert the new exact class and the new `isinstance`
