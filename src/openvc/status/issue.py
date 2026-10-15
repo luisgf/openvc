@@ -413,40 +413,36 @@ def build_status_list_credential(
     read back), and the object may not nest past 98 levels (``MAX_DEPTH - 2``, the object
     itself being level 1: the bounded loader that reads the list back stops at 100 levels
     of the whole payload, and the issuer sits two containers inside it).
-    *subject_id* is the ``credentialSubject.id``: ``None`` gives ``<id>#list``, and an
-    explicit value is a non-empty string. *contexts* is the ``@context``: ``None`` gives
-    ``["https://www.w3.org/ns/credentials/v2"]``, and an explicit value is a non-empty
-    ``list`` or ``tuple`` that starts with a VC base context, followed by context URLs or
-    inline context objects (whose members are not inspected, except for the same marker
-    names and a nesting past 97 levels, ``MAX_DEPTH - 3``: one that is not JSON fails when
-    the credential is signed). The limits are the VC-JWT lane's; ``eddsa-jcs-2022`` takes
-    one more level in each field, which the builder, not knowing the lane, does not use.
-    Pass the VC 2.0
-    context first unless you have a reason: it is the one that defines
-    ``BitstringStatusListCredential``, ``encodedList`` and ``statusPurpose``, and the only
-    one bundled. The VC 1.1 context is accepted as a base
-    context (the shape the RDF suites accept) and builds; VC-JWT and ``eddsa-jcs-2022`` read
-    no context, while ``eddsa-rdfc-2022`` refuses it with ``DocumentLoaderError`` (it is not
-    bundled, and it does not define those terms). A context URL that is not bundled needs
-    ``extra_contexts`` on the ``eddsa-rdfc-2022`` suite.
+    *subject_id* is the ``credentialSubject.id``: ``None`` gives ``<id>#list``, and an explicit
+    value is a non-empty string. *contexts* is the ``@context``: ``None`` gives
+    ``["https://www.w3.org/ns/credentials/v2"]``, and an explicit value is a non-empty ``list``
+    or ``tuple`` that starts with a VC base context, followed by context URLs or inline context
+    objects (whose members are not inspected, except for the same marker names and a nesting
+    past 97 levels, ``MAX_DEPTH - 3``: one that is not JSON fails when the credential is
+    signed). The limits are the VC-JWT lane's; ``eddsa-jcs-2022`` takes one more level in each
+    field, which the builder, not knowing the lane, does not use. Pass the VC 2.0 context first
+    unless you have a reason: it is the one that defines ``BitstringStatusListCredential``,
+    ``encodedList`` and ``statusPurpose``, and the only one bundled. The VC 1.1 context is
+    accepted as a base context (the shape the RDF suites accept) and builds; VC-JWT and
+    ``eddsa-jcs-2022`` read no context, while ``eddsa-rdfc-2022`` refuses it with
+    ``DocumentLoaderError`` (it is not bundled, and it does not define those terms). A context
+    URL that is not bundled needs ``extra_contexts`` on the ``eddsa-rdfc-2022`` suite.
 
     Raises :class:`~openvc.status.bitstring.StatusListError` for an *id* or
     *status_purpose* that is not a non-empty string, for an *issuer* that is not a
     non-empty string or an object whose ``id`` is one and which has no ``@id``, for an
-    *issuer* object or an inline context object that carries an SD-JWT marker member
-    (``_sd``, ``_sd_alg``, ``...``) at any depth, that is nested past the loader's cap
-    (more than 98 levels for the issuer, 97 for a context object) or that cannot be read as
-    JSON (a cycle, a key that is no scalar), for a
-    *subject_id* that is neither ``None`` nor a non-empty string (``""``, ``0``, ``[]``
-    and ``{}`` are errors, not the default), for *contexts* that is neither ``None`` nor a
-    non-empty ``list`` / ``tuple`` of that shape (a ``str``, a ``dict``, an iterator, an
-    empty list, a first entry that is not a VC base context, an entry that is not a
-    non-empty string or an object), for a *bitstring* that is not
-    a buffer or is longer than the 16 MiB the verifier inflates, for a *valid_from* /
-    *valid_until* that is not a ``datetime`` (a string, an epoch number, a ``date``), has
-    a ``tzinfo`` that raises or has no UTC equivalent (year 1 at ``+01:00``), and for a
-    *ttl* that is a ``bool``, a ``float`` (``NaN`` included), a string, zero, negative
-    or an integer no float holds.
+    *issuer* object or an inline context object that carries an SD-JWT marker member (``_sd``,
+    ``_sd_alg``, ``...``) at any depth, that is nested past the loader's cap (more than 98
+    levels for the issuer, 97 for a context object) or that cannot be read as JSON (a cycle, a
+    key that is no scalar), for a *subject_id* that is neither ``None`` nor a non-empty string
+    (``""``, ``0``, ``[]`` and ``{}`` are errors, not the default), for *contexts* that is
+    neither ``None`` nor a non-empty ``list`` / ``tuple`` of that shape (a ``str``, a ``dict``,
+    an iterator, an empty list, a first entry that is not a VC base context, an entry that is
+    not a non-empty string or an object), for a *bitstring* that is not a buffer or is longer
+    than the 16 MiB the verifier inflates, for a *valid_from* / *valid_until* that is not a
+    ``datetime`` (a string, an epoch number, a ``date``), has a ``tzinfo`` that raises or has
+    no UTC equivalent (year 1 at ``+01:00``), and for a *ttl* that is a ``bool``, a ``float``
+    (``NaN`` included), a string, zero, negative or an integer no float holds.
     """
     id = _text(id, field="status list credential id")
     status_purpose = _text(status_purpose, field="statusPurpose")
