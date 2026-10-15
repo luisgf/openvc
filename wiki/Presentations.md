@@ -173,6 +173,92 @@ a `dc+sd-jwt` query, whatever `meta.vct_values` says, or whether it sets any. Be
 calls every SD-JWT `sd-jwt-vc` and the lane did not look at the typ (#272). A
 `dc+sd-jwt` token needs a `vct` in any case ([SD-JWT VC](SD-JWT-VC)).
 
+### Credential sets (`credential_sets`)
+
+`credential_sets` lets a query say which of its Credential Queries must come back
+(OpenID4VP 1.0 §6.2, §6.4.2). openvc enforces it, and checks its shape first.
+
+- **Shape** (since 1.35.0). When present, `credential_sets` is a non-empty array of
+  objects; each has a non-empty `options` array of non-empty arrays of Credential Query
+  ids, every id naming a query in `credentials`, and an optional `required` that is a JSON
+  boolean (default `true`). Anything else is `VpTokenMalformed` naming the path, for every
+  set, answered or not, before any Presentation is read:
+  `dcql_query.credential_sets must be a non-empty array`,
+  `dcql_query.credential_sets[1].options must be a non-empty array`, `…options[0] names
+  Credential Query 'zzz', which is not in dcql_query.credentials`,
+  `….required must be a boolean`. `null` and `[]` are malformed too; leave the key out to
+  require every query. The arrays must be lists, as `credentials` must: a tuple is
+  malformed. `purpose` and unknown members are not read. Before 1.35.0 any truthy value
+  (`true`, `"false"`, `[[]]`, a tuple, …) silently switched the completeness check off.
+- **Completeness** (since 1.35.0). With no `credential_sets`, every Credential Query is
+  required. With it, **every set whose `required` is `true` or omitted must be satisfied**:
+  at least one of its `options` must have **every** id answered in the `vp_token`. A set
+  that is not satisfied raises `VpTokenIncomplete` (a `VpTokenMalformed`, so an
+  `except VpTokenMalformed` keeps working) naming it, `credential_sets[1]`, and the option
+  that came closest. A set with `"required": false`, and a Credential Query that **no set
+  references**, may be left out. Before 1.35.0 the sets were not enforced: a response that
+  left a required set out verified, and a caller had to notice. The check reads the keys of
+  the `vp_token` before any Presentation is verified, so an unsatisfied set is reported
+  ahead of a bad Presentation; an empty `vp_token` is rejected whatever the sets say.
+- **Extra answers are accepted.** A wallet that answers several options of one set, or a
+  query outside every option, is not refused: each Presentation it sends is still verified
+  in full. Use `for_query` to learn which option it answered and which optional queries it
+  chose to answer; it returns `()` for a query that was left out.
+
+```python
+from cryptography.hazmat.primitives.asymmetric import ec
+
+from openvc import verify_vp_token
+from openvc.keys import P256SigningKey
+from openvc.multibase import encode_multibase
+from openvc.openid4vp import VpTokenIncomplete
+from openvc.proof.sd_jwt import SdJwtVcProofSuite
+
+NONCE = "n-0S6_WzA2Mj"
+CLIENT_ID = "x509_san_dns:verifier.example"
+VCT = "https://credentials.example.com/identity_credential"
+
+
+def did_key_p256():
+    priv = ec.generate_private_key(ec.SECP256R1())
+    raw = P256SigningKey(priv, kid="_").public_key_raw(compressed=True)
+    mb = encode_multibase(bytes([0x80, 0x24]) + raw)
+    return P256SigningKey(priv, kid=f"did:key:{mb}#{mb}"), f"did:key:{mb}"
+
+
+issuer, issuer_did = did_key_p256()
+holder, _ = did_key_p256()
+issued = SdJwtVcProofSuite().issue(
+    {"iss": issuer_did, "sub": "did:example:alice"}, signing_key=issuer, vct=VCT,
+    holder_jwk=holder.public_jwk())
+presentation = SdJwtVcProofSuite().create_presentation(
+    issued, holder_key=holder, audience=CLIENT_ID, nonce=NONCE)
+
+dcql_query = {
+    "credentials": [
+        {"id": "pid", "format": "dc+sd-jwt"},
+        {"id": "age", "format": "dc+sd-jwt"}],
+    "credential_sets": [
+        {"options": [["pid"]]},                          # required: `required` defaults to true
+        {"options": [["age"]], "required": False}],      # optional
+}
+
+# The required set is answered, the optional one is left out: accepted.
+result = verify_vp_token({"pid": [presentation]}, dcql_query=dcql_query,
+                         nonce=NONCE, client_id=CLIENT_ID)
+assert len(result.for_query("pid")) == 1
+assert result.for_query("age") == ()                     # the wallet chose not to answer
+
+# The required set is left out: rejected, naming the set.
+try:
+    verify_vp_token({"age": [presentation]}, dcql_query=dcql_query,
+                    nonce=NONCE, client_id=CLIENT_ID)
+except VpTokenIncomplete as exc:
+    print(exc)       # vp_token does not satisfy credential_sets[0]: no option is answered ...
+else:
+    raise AssertionError("a required set was left out")
+```
+
 ### Type constraints in the query
 
 A Credential Query selects the credential type through its `meta`: `vct_values`
@@ -197,9 +283,11 @@ for `dc+sd-jwt`, `doctype_value` for `mso_mdoc`, and
   The `vp_token` container itself (valid JSON, a non-empty object, within the
   nesting bound) and the `nonce` and `client_id` / `expected_origins` arguments
   are checked before any query is read. After that, the constraint check comes
-  before the per-query shape checks of the response (a missing required query
-  id, an unknown `vp_token` key, a presentation list that is not an array or is
-  empty), which are `VpTokenMalformed` too. For `mso_mdoc` the constraint
+  before the per-query shape checks of the response (a required query or set
+  left out, an unknown `vp_token` key, a presentation list that is not an array
+  or is empty), which are `VpTokenMalformed` too. The shape of `credential_sets`
+  ([above](#credential-sets-credential_sets)) is checked right after the queries,
+  so it comes before those response checks as well. For `mso_mdoc` the constraint
   comes first: before a missing `expected_origins` or `trust_anchors` and
   before a presentation that is not a string, as for `dc+sd-jwt`. A query whose
   `format` openvc does not know is not read, and each format reads only its own
@@ -278,8 +366,9 @@ from the proof's `verificationMethod` (and must be authorised for
 cascade-verified through `verify_credential`. All four whole-document
 cryptosuites are accepted — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (need the
 `[data-integrity]` extra) and `eddsa-jcs-2022` / `ecdsa-jcs-2019` (pyld-free).
-A bare string or a bare credential (no VP wrapper) under an `ldp_vc` query is
-rejected: the holder binding lives only on a presentation proof. A W3C
+A bare string under an `ldp_vc` query is rejected, and so is a bare credential (no VP
+wrapper) unless the query waives holder binding: the binding lives only on a
+presentation proof (see [Bare credentials](#bare-credentials-holder-binding-waived)). A W3C
 presentation under an `ldp_vc` or `jwt_vc_json` query must also embed at least
 one credential, or it is rejected with `VpTokenMalformed`. When the query
 carries `meta.type_values`, every embedded credential must also have the
@@ -499,16 +588,131 @@ dcql_query = {"credentials": [
 ```
 
 The flag must be a JSON boolean; anything else is `VpTokenMalformed`, so a `null` or a
-`0` cannot switch the binding off by accident. Note that §B.1 tells a conformant wallet
-to answer such a query with a bare credential and no presentation. The W3C formats
-still require a presentation, so today an opted-out query accepts a VP whose
-credentials are not bound to its signer, but not a bare credential.
+`0` cannot switch the binding off by accident. §B.1 tells a conformant wallet to answer
+such a query with a bare credential and no presentation, and an opted-out query accepts
+that, or a VP whose credentials are not bound to its signer, as the next section
+describes.
 
 `require_holder_binding=True` is the stricter, caller-side switch, and it ignores the
 query. Every embedded credential's subject must be the authenticated holder, *including*
 an SD-JWT VC's `sub`. `VpJwtProofSuite.verify` knows nothing of DCQL. There, use
 `require_holder_binding` for the subject rule and
 `policy=VerificationPolicy(require_key_binding=True)` for nested SD-JWTs.
+
+## Bare credentials: holder binding waived
+
+OpenID4VP §B.1 says what a wallet returns for a W3C credential. When the Credential
+Query requires holder binding it is a Verifiable Presentation of the credential;
+otherwise it is a Verifiable Credential without holder binding. So a `jwt_vc_json` or
+`ldp_vc` query that sets `require_cryptographic_holder_binding` to `false` (a cinema
+ticket, a credential bound by a biometric or by claims: §5.3) is answered by a **bare
+credential**, with no presentation around it. `verify_vp_token` accepts that on both
+W3C lanes (1.35.0):
+
+| The query's `require_cryptographic_holder_binding` | `jwt_vc_json` | `ldp_vc` |
+|---|---|---|
+| `true` or absent (the default) | a VP-JWT | a Data Integrity VP |
+| `false` | a VP-JWT **or** a bare VC-JWT | a Data Integrity VP **or** a bare Data Integrity VC |
+
+With the flag `false` a presentation is accepted exactly as before, so the change only
+adds an accepted input. With the flag `true` or absent a bare credential is rejected on
+both lanes, with a `VpTokenMalformed` that names the flag, and nothing is verified. That
+includes a `jwt_vc_json` token that only looks bare (a `vc` object, no `vp`) and carries a
+disallowed `alg` or an unknown `crit`: it was `UnsupportedAlgorithm` or `MalformedToken` in
+1.34.0 and is `VpTokenMalformed` now (an `OpenID4VPError`, not a `ProofError`). With the
+flag `false` the bare route verifies it as a VC-JWT and raises the suite's own class, as
+before:
+
+```python
+from cryptography.hazmat.primitives.asymmetric import ec
+
+from openvc import verify_vp_token
+from openvc.keys import P256SigningKey
+from openvc.multibase import encode_multibase
+from openvc.openid4vp import VpTokenMalformed
+from openvc.proof.vc_jwt import VcJwtProofSuite
+
+priv = ec.generate_private_key(ec.SECP256R1())
+raw = P256SigningKey(priv, kid="_").public_key_raw(compressed=True)
+mb = encode_multibase(bytes([0x80, 0x24]) + raw)
+issuer_did = f"did:key:{mb}"
+issuer = P256SigningKey(priv, kid=f"{issuer_did}#{mb}")
+
+# A ticket nobody is bound to: no subject id, so it is a bearer credential.
+ticket = VcJwtProofSuite().sign(
+    {"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential"],
+     "issuer": issuer_did, "credentialSubject": {"seat": "12A"}},
+    signing_key=issuer)
+
+def query(flag):
+    return {"credentials": [{"id": "ticket", "format": "jwt_vc_json",
+                             "require_cryptographic_holder_binding": flag}]}
+
+response = {"ticket": [ticket]}          # the wallet returns the VC itself, as §B.1 says
+result = verify_vp_token(response, dcql_query=query(False), nonce="n-0S6_WzA2Mj",
+                         client_id="x509_san_dns:verifier.example")
+(p,) = result.for_query("ticket")
+print(p.holder, p.credentials[0].issuer == issuer_did)    # None True
+
+try:
+    verify_vp_token(response, dcql_query=query(True), nonce="n-0S6_WzA2Mj",
+                    client_id="x509_san_dns:verifier.example")
+except VpTokenMalformed as exc:
+    print("refused:", "requires cryptographic holder binding" in str(exc))
+```
+
+What a bare credential is, and how openvc decides, before anything is verified and
+without guessing:
+
+- **Under `jwt_vc_json`** it is a compact VC-JWT whose payload has a `vc` object and no
+  `vp`, as the §B.1.3.1 example shows. The payload claim decides, because those are the
+  claims the VC-JWT and VP-JWT suites read. The JOSE `typ` is a cross-check only
+  (VC-JOSE-COSE says it SHOULD be `vc+jwt` / `vp+jwt`, and openvc itself signs both as
+  `JWT`, so an absent or generic `typ` proves nothing). A token that carries **both** a
+  `vp` and a `vc` claim, or a `typ` of `vp+jwt` on a `vc` claim (or `vc+jwt` on a `vp`
+  claim), is ambiguous and is `VpTokenMalformed`. Anything that is not positively a
+  credential, including a token that does not parse, goes to the presentation lane and its
+  usual typed error. A bare value is verified as a VC-JWT, never as a VP-JWT or an SD-JWT: a
+  string with a `~` is never routed here, and a tail-dropped SD-JWT issuer JWT that is
+  typed as one, or carries SD-JWT markers, is refused by the
+  [VC-JWT lane's fence](VC-JWT#what-the-verifier-enforces) as before. That fence has a
+  documented **limit**: a zero-disclosure issuer JWT with no `typ`, a `vc` object and a
+  `cnf` cannot be told from a VC-JWT. With the flag `false` it now verifies here as a bare
+  VC-JWT (`format='vc-jwt'`, `key_bound=None`, `holder=None`), where it used to fail on the
+  missing `aud`. The query waived the binding it lacks, as the `dc+sd-jwt` lane already
+  allows, and the issuer had to sign the hybrid. Do not read a `key_bound` of `None` as
+  "no key binding was needed".
+- **Under `ldp_vc`** it is a JSON object whose `type` has `VerifiableCredential` and not
+  `VerifiablePresentation`, secured with any Data Integrity suite `verify_credential`
+  knows, `ecdsa-sd-2023` derived proofs included. A `type` with both is ambiguous
+  (`VpTokenMalformed`), and its proof must be an `assertionMethod` proof, not a
+  presentation's `authentication` one. A VC-JWT string is not an `ldp_vc` answer.
+- **An `EnvelopedVerifiableCredential` is not accepted bare.** §B.1 does not mention it
+  for these formats, so it stays `VpTokenMalformed` under both lanes. An `ldp_vc` object
+  that is typed `VerifiablePresentation` is a presentation whatever else its `type` lists,
+  an `EnvelopedVerifiableCredential` included, and goes to the presentation lane as before.
+
+It is then verified in full, as it is anywhere else, by `verify_credential`: signature,
+issuer binding, validity window, status when you pass a resolver, and `meta.type_values`
+when the query has it. What it has **not** got is anything bound to this exchange:
+
+- no `aud`, `nonce`, `challenge` or `domain`. A VC-JWT that carries an `aud` is rejected
+  (`ClaimsInvalid`, RFC 7519 §4.1.3): a bare credential names no verifier, so none can
+  identify itself in it. VCDM's JWT encoding defines `aud` for presentations only.
+- no holder. The `VerifiedPresentation` reports `holder=None`, as the `mso_mdoc` lane
+  does, with `credentials` the one verified credential and `raw` its suite's result.
+  `credentials[0].subject` is what the *issuer* says, and nothing proves the presenter is
+  that subject. `require_holder_binding=True` therefore cannot be met by a bare credential
+  and is rejected (`ClaimsInvalid`).
+- no replay protection (§14.1.1): the holder may have got the credential from a third
+  party, and may not be its subject. That is the risk the opt-out accepts.
+
+**Checking `state` is your job.** Without a key-binding proof the response carries no
+`nonce` (§5.3). To tie request and response together the verifier MUST then put a
+fresh, high-entropy `state` in the Authorization Request and check that the same value
+comes back in the response, unless the Digital Credentials API is used. openvc keeps no
+session and never sees `state`, so it cannot do this for you, any more than it can
+guarantee that a `nonce` is fresh.
 
 ## SD-JWT VCs nested in a W3C presentation
 
@@ -539,6 +743,17 @@ makes a KB-JWT a binding at all. `VpJwtProofSuite.verify` applies the same rule
 with its own `audience` / `nonce`, which take precedence over any `audience` / `nonce`
 in a `policy` you pass to it. The rule is scoped to the KB-JWT: a nested VC-JWT is a
 credential, and its own `aud` is never pinned to you.
+
+A nested SD-JWT VC's **issuer JWT** is a separate matter. If its issuer put an `aud` in it, that
+`aud` must include the **presentation's** audience (the one the KB-JWT is bound to: the VP-JWT's
+`aud`, an `ldp_vc` proof's `domain`, or the `origin:<origin>` over the Digital Credentials
+API), else the whole response is rejected (`ClaimsInvalid`, RFC 7519 §4.1.3, see
+[SD-JWT VC](SD-JWT-VC) and
+[ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)
+D4). That is the opposite of a nested VC-JWT, which is checked against `policy.audience`
+(above): `verify_vp_token` accepts a nested SD-JWT VC addressed to your `client_id`, and one
+presentation can mix SD-JWT VCs with and without `aud`. An issuer JWT without `aud` is
+unaffected, which is nearly every SD-JWT VC.
 
 **What the specs say.** No spec defines what a nested KB-JWT's `aud` and `nonce`
 should be. RFC 9901 §4.3 leaves both to the protocol, and OpenID4VP 1.0 does not
@@ -608,4 +823,7 @@ not for that item alone ([SD-JWT VC](SD-JWT-VC#w3c-credentials-secured-as-sd-jwt
 `aud`/`domain` pins the presentation to *your* verifier; `nonce`/`challenge`
 pins it to *one run* of your protocol. Always generate the nonce server-side,
 one per authorization request, and reject reuse — openvc checks the binding,
-but only you can guarantee freshness.
+but only you can guarantee freshness. A response with no key-binding proof, such as a
+[bare credential](#bare-credentials-holder-binding-waived), carries no `nonce`; there the
+request and response are tied by the `state` parameter (§5.3), which is yours to
+generate and check.

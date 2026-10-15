@@ -8,6 +8,119 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
+- **An SD-JWT VC whose issuer restricted it to another relying party no longer verifies
+  for you** ([#227](https://github.com/luisgf/openvc/issues/227)). Low severity, a
+  wrong-accept: an audience restriction that the issuer signed was ignored. The SD-JWT VC
+  lane never read the issuer JWT's `aud`, so a credential with
+  `aud: "https://other-rp.example"` verified for every verifier, with no audience given,
+  under `VerificationPolicy(audience=ME)`, and for a holder who presented it to `ME` with a
+  KB-JWT correctly bound to `ME`, `key_bound=True` included. The KB-JWT's `aud` binds the
+  holder's presentation to a verifier (RFC 9901 §7.3 step 5.6); it says nothing about a
+  restriction the issuer put on the credential. The VC-JWT lanes got this rule in 1.30.5
+  (ADR-0008 D3), so the two credential formats disagreed on the same claim.
+
+  **The fix** is RFC 7519 §4.1.3 on the issuer JWT, when it has an `aud`
+  ([ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md) D4):
+
+  - `aud` present: a string or an array of strings, else `ClaimsInvalid`, and the
+    audience the lane receives must be one of them, else `ClaimsInvalid`. With no audience
+    a credential that names one is refused (the message cites RFC 7519 §4.1.3), since the
+    verifier cannot be one of them.
+  - `aud` absent: **unchanged.** The credential verifies with or without an audience, and
+    the audience is not inspected. This is the one asymmetry with VC-JWT, where a token
+    without `aud` fails when an audience is expected. On this lane the caller's `audience`
+    is primarily the KB-JWT's, and requiring an issuer-JWT `aud` would reject essentially
+    every SD-JWT VC: neither third-party vector pinned in `tests/fixtures/interop`
+    (RFC 9901 A.3 and the EUDI reference PID) nor the OpenID4VP capture has one.
+  - **Which audience.** The one `SdJwtVcProofSuite.verify` already receives:
+    `policy.audience` at the top level, the *presentation's* audience when the SD-JWT VC is
+    nested in a `jwt_vc_json` or `ldp_vc` presentation (the one its KB-JWT is bound to), and
+    the `client_id`, or `origin:<origin>` over the Digital Credentials API, on the OpenID4VP
+    `dc+sd-jwt` lane. A credential addressed to the verifier that receives the presentation
+    therefore verifies on every lane. The sync and async pipelines, `verify_many`,
+    `verify_many_async`, the VP-JWT cascade and `verify_vp_token` all reach it through the
+    suite; none needed a change.
+  - **Where.** On the processed payload, after the KB-JWT when `require_key_binding` is set
+    (so an `aud` failure from such a call means the presentation was bound, as for the
+    issuer JWT's dates), and not as a temporal check: `require_not_expired=False` does not
+    waive it, and its message ("issuer JWT aud does not include …", or "issuer JWT is
+    restricted to an audience (aud) and no audience was given …") does not describe an
+    expiry, which callers read as "bound, but the issuer JWT expired" (it quotes only the
+    audience the verifier configured, so an audience that itself contains the word
+    "expired" is the one way the word can appear). Reading the processed payload
+    judges an `aud` the issuer made selectively disclosable once it is disclosed, and does
+    not call malformed an `aud` array whose entries are `{"...": digest}` objects, which RFC
+    9901 §9.7 lets an issuer do (the entries the holder discloses are what is matched; an
+    array with every entry withheld is `aud: []` and names no one).
+  - **A withheld `aud` disclosure is invisible**, the same limit as a withheld `exp`
+    (residual R7). Issuers must never make the whole `aud` claim disclosable. `issue()` does
+    not refuse it (the SD-JWT VC draft's non-disclosable list does not include `aud`);
+    that is an issuer-side follow-up, out of scope here.
+  - The `~`-appended W3C JWS with no `iss` and no `typ` that 1.34.0 (#290) lets reach this
+    lane is held to the same rule, so an issuer's `aud` restriction on it is now enforced.
+    The "known limit" that 1.34.0 recorded for it is closed.
+
+  **Maintainer decisions** (taken on 2026-10-15, recorded in ADR-0008 D4): option 1 of the
+  issue (enforce when present), over keeping the current behaviour and over an opt-in policy
+  knob. A KB-JWT made for another verifier still reports `key_bound=True` when the caller
+  passes neither `audience` nor `nonce`. That deviates from RFC 7519 §4.1.3 on purpose, was
+  decided in #191 and is documented in *What `key_bound` attests*; changing it is a breaking
+  change to a return field and belongs to 2.0 (#74). It is recorded in the ADR and not
+  changed here.
+
+  **Spec check.** `draft-ietf-oauth-sd-jwt-vc-19` does not mention the issuer JWT's `aud`
+  in prose, and its examples carry none (checked against the text for this change; §2.2.2.3's list of
+  claims that must not be disclosable omits it). RFC 9901 §9.7 names `aud` among the
+  security-critical claims and allows individual entries of an `aud` array to be
+  selectively disclosable. Nothing there overrides RFC 7519 §4.1.3.
+- **`verify_vp_token` enforces the required `credential_sets`**
+  ([#285](https://github.com/luisgf/openvc/issues/285)). The holder could leave out a
+  credential the verifier had marked as required. Holder-reachable completeness gap; no
+  unverified credential was accepted, because every Presentation that is returned still goes
+  through the full pipeline (signature, holder binding, nonce and audience, type
+  constraint, status) and an empty `vp_token` was always refused.
+
+  With a `credential_sets` in the query, `_check_completeness` returned at once: any
+  non-empty `vp_token` whose Presentations all verified was accepted, whatever `options`
+  and `required` said. `result.presentations` was non-empty and `result.for_query("age")`
+  was `()`, so a caller that relies on an exception to signal an incomplete response went
+  ahead without the credential, and one that unpacks `(p,) = result.for_query(...)` got a
+  bare `ValueError` in its own code. The `verify_vp_token` docstring called this "a
+  follow-up" from the day the function landed (v1.1.0, #18); `wiki/Presentations.md`
+  never said so.
+
+  OpenID4VP 1.0 §6.4.2 says that with no `credential_sets` the Verifier requests every
+  Credential Query, and otherwise presentations satisfying every Credential Set Query
+  whose `required` is true or omitted (§6.2: default `true`), and optionally any of the
+  others; a set is satisfied by presentations matching one of its `options`. §8.6 makes
+  "the set of Presentations returned satisfies all requirements defined in the Verifier's
+  request" (§6.4) the last validation step, and says the VP Token MUST be rejected when a
+  check on the response fails. The text was read on openid.net (OpenID4VP 1.0 Final) while
+  writing this entry.
+
+  `_check_completeness` now reads the validated `credential_sets` (#284) and, for every
+  set whose `required` is `true` or omitted, requires that at least one of its `options`
+  has **every** Credential Query id answered as a key of the `vp_token`. When none does it
+  raises `VpTokenIncomplete`: `vp_token does not satisfy credential_sets[N]: no option is
+  answered in full; the closest is options[J], which lacks Credential Query id(s) [...]`.
+  The set index is named; the caller's structure is never `repr()`-ed. The check reads the
+  keys, before any Presentation is read, which is exact: openvc rejects the whole response
+  when any Presentation fails and never discards one and keeps the rest. So an unsatisfied
+  set is reported before an unknown `vp_token` key, a presentation list that is not an
+  array or is empty, and a Presentation failure; a shape error in the `dcql_query`
+  (including `credential_sets`) is still reported first, and an empty `vp_token` is still
+  "contains no presentations". `verify_encrypted_vp_response` gets the same check through
+  `verify_vp_token`.
+
+  Unchanged: a set with `"required": false` may be left out; the no-`credential_sets` path
+  (every query required); extra answers; `VpTokenVerification` and `for_query`, which still
+  returns `()` for a query that was left out and is how the caller learns which option was
+  answered.
+
+  **Behaviour change.** A verifier whose `credential_sets` does not say what it actually
+  needs, for example a mandatory set that should have been `required: false`, starts
+  failing responses that passed before. A response that verified under 1.34.0 and is now
+  refused is the intended effect: it left a required set unsatisfied.
 - **Every pyld call gets a JSON-LD context resolver of its own, so one caller's contexts
   no longer reach the next caller's**
   ([#225](https://github.com/luisgf/openvc/issues/225)). Hardening, severity low; the
@@ -93,8 +206,409 @@ All notable changes to **openvc** are documented here. The format follows
     | `eddsa-rdfc-2022` presentation (holder proof + embedded credential) | 4.62 / 4.42 | 14.10 / 14.00 | 4.70 / 4.52 |
     | `ecdsa-sd-2023` derived credential | 2.19 / 2.12 | 7.03 / 7.08 | 2.29 / 2.31 |
 
+### Added
+
+- **`verify_vp_token` accepts a bare W3C Verifiable Credential when the query waives
+  holder binding** ([#204](https://github.com/luisgf/openvc/issues/204)). This closes a
+  conformance gap, not a vulnerability: openvc rejected input the spec says a wallet must
+  send, and it accepts nothing it should refuse. OpenID4VP 1.0 §B.1 says a wallet answers
+  a query that requires holder binding with a Verifiable Presentation, and otherwise with a
+  Verifiable Credential without holder binding. The `jwt_vc_json` and `ldp_vc` lanes
+  always required a presentation, so a verifier that set
+  `require_cryptographic_holder_binding: false` (the documented way, since 1.29.0, to
+  accept a bearer, delegated or claims-bound credential) got an error from a conformant
+  wallet. Measured on 1.34.0:
+
+  | The query's flag | The wallet returns | 1.34.0 |
+  |---|---|---|
+  | `false` | a bare VC-JWT under `jwt_vc_json` | `ClaimsInvalid: aud None != expected verifier …`: the VC-JWT reached `VpJwtProofSuite` as if it were a VP-JWT |
+  | `false` | a bare Data Integrity VC under `ldp_vc` | `VpTokenMalformed: … must be a VerifiablePresentation` |
+
+  Both now verify, over the redirect flow and over the Digital Credentials API. The result
+  is `VerifiedPresentation(format=<the query's>, holder=None, credentials=(result,))`.
+  With the flag `true` or absent a bare credential is still rejected on both lanes.
+
+  Decided by the maintainer on 2026-10-15:
+  1. **Which shapes, with the flag `false`:** a bare credential **or** a presentation. A
+     presentation is what these lanes accepted before, so this is purely additive: a
+     minor, not a behaviour change. A presentation still has to be bound to the request
+     (`aud` + `nonce`, or `domain` + `challenge`); only its embedded credentials are
+     exempt from holder binding, as since 1.29.0.
+  2. **The routing is pinned.** A bare value under `jwt_vc_json` is verified as a VC-JWT
+     and never as an SD-JWT or a VP-JWT, so it never reaches `VpJwtProofSuite`. Under
+     `ldp_vc` it is a Data Integrity credential with no `VerifiablePresentation` type, of
+     any suite `verify_credential` knows: `ecdsa-sd-2023` derived credentials included,
+     which the presentation lane excludes as a holder proof. Each result is checked
+     against the query's format afterwards (`_check_bare_format`), as the `dc+sd-jwt` lane
+     does.
+  3. **An `EnvelopedVerifiableCredential` is not accepted as a bare credential.** OpenID4VP
+     §B.1 does not mention it for these formats (the 1.0 text does not contain the name),
+     so the issue does not require it and this change leaves it out. It stays
+     `VpTokenMalformed` under `ldp_vc` (the message now names it), and under `jwt_vc_json`
+     an object is not a compact JWT string. An object typed `VerifiablePresentation` is a
+     presentation whatever else its `type` lists, an `EnvelopedVerifiableCredential`
+     among it: it goes to the presentation lane under every flag, as it did before.
+     Decided in review of #307: the first draft tested the Enveloped type first and
+     refused such a presentation, which verified on 1.34.0 (an `ldp_vc` presentation with
+     a valid holder proof whose `type` is `[VerifiablePresentation,
+     EnvelopedVerifiableCredential]`). The refusal is narrowed to an object that is not
+     typed as a presentation, rather than documented as a fourth newly refused shape.
+  4. **"Bare" is detected fail-closed, from the payload claim, with the JOSE `typ` as a
+     cross-check.** A JWT is a credential when its payload has a `vc` object and no `vp`.
+     Those are the claims `VcJwtProofSuite` and `VpJwtProofSuite` read, and OpenID4VP's own
+     §B.1.3.1 example is a `vc` claim. The `typ` is not the signal: VC-JOSE-COSE makes it a
+     SHOULD (`vc+jwt` / `vp+jwt`) and openvc itself signs both kinds as `JWT`. A JSON object
+     is a credential when its `type` has `VerifiableCredential` and not
+     `VerifiablePresentation`. A value is bare only on positive evidence. Anything that is
+     not positively a credential, a token that does not parse included, goes to the
+     presentation lane and its own typed error, unchanged. Anything positively ambiguous is
+     refused with `VpTokenMalformed` (see Changed). The decision is made before the
+     audience is read, because a bare credential carries no `aud` / `domain`.
+  5. **The result.** `holder=None` (nothing authenticated a holder; the `mso_mdoc` lane
+     reports `None` for the same reason), `credentials=(result,)`, and `raw=result.raw`,
+     the suite's own result, as the `dc+sd-jwt` lane sets it. `credentials[0].subject` is
+     the *issuer's* statement and nothing proves the presenter is that subject.
+  6. **`state` (OpenID4VP §5.3) stays the caller's job.** Without a key-binding proof the
+     response carries no `nonce`, so the verifier MUST bind request and response with a
+     fresh, high-entropy `state`, unless the Digital Credentials API is used. openvc keeps
+     no session and never sees `state`, so it documents this beside the nonce-freshness
+     note instead of asserting it.
+
+  A bare credential is verified in full by `verify_credential`: signature, issuer binding,
+  validity window, status (when you pass a resolver), and `meta.type_values`. It has no
+  audience, nonce, challenge or domain to check, so: a VC-JWT that carries an `aud` is
+  rejected (`ClaimsInvalid`, RFC 7519 §4.1.3, since no `aud` can name this verifier;
+  VCDM's JWT encoding defines `aud` for presentations only), and `require_holder_binding=True`
+  cannot be met by a bare credential and is rejected (`ClaimsInvalid`), because there is no
+  authenticated holder to bind its subject to. Neither is a regression: no bare credential
+  was accepted before. Written up in the wiki under *Presentations → Bare credentials*.
+
+  One documented limit now has a wider reach. An SD-JWT issuer JWT typed as one, or with
+  SD-JWT markers, is still refused on the bare route by the VC-JWT lane's fence. A
+  zero-disclosure one with no `typ`, a `vc` object and a `cnf` cannot be told from a VC-JWT
+  (the residual of [#291](https://github.com/luisgf/openvc/issues/291), pinned in
+  `test_vc_jwt_sd_fence.py`). With its `~` tail dropped it used to fail under `jwt_vc_json`
+  on the missing `aud`; with the flag `false` it now verifies as a bare VC-JWT
+  (`format='vc-jwt'`, `key_bound=None`, `holder=None`). That equals what the `dc+sd-jwt`
+  lane accepts under a waived binding, and it takes an issuer who signed the hybrid, but a
+  caller must not read `key_bound=None` as "binding was not needed". The new tests pin it.
+
 ### Changed
 
+- **A `datetime` subclass whose own methods lie is read as the plain `datetime` its fields
+  describe, where 1.32.4 refused some of them. This is a maintainer decision (taken on
+  2026-10-15, option A of #286: "read from the fields"), and it supersedes the #255 /
+  1.32.4 line "a naive subclass whose `utcoffset()` answers something that is not a
+  `timedelta` ... is now a `StatusListError`" and the three tests that pinned "a subclass
+  that lies is refused".** The alternative, to keep refusing a subclass that contradicts
+  itself, needs one comparison per overridable method and so keeps growing; reading the
+  fields has no list of methods to keep current, and it matches "a naive datetime is UTC".
+  - What changes: a subclass whose `astimezone()` returned something else (1.32.4: a
+    `StatusListError` from both status builders, a `ProofError` from `utc_instant`)
+    reads as the instant its fields and `tzinfo` hold; a naive subclass whose
+    `utcoffset()` answered something that is not a `timedelta` (a `StatusListError`
+    from both builders) reads as UTC. No genuine `datetime` (plain or a subclass) that
+    was read before is refused now; the one exception is not a `datetime` at all, in the
+    next bullet.
+  - An object that is not a `datetime` but only answers `isinstance(x, datetime)` (a class
+    that sets `__class__ = datetime`, a `MagicMock(spec=datetime)`) is now a typed error
+    from `utc_epoch` too (`ProofError`, or the caller's `error=`): the snapshot is taken
+    through the base class, which does not apply to it. `utc_epoch` used to read it
+    through its own `utcoffset()` / `replace()` / `timestamp()` and return whatever they
+    led to (a `MagicMock(spec=datetime)` gave `1`); `utc_instant` already refused it,
+    with another message. Pass a real `datetime`. This is the only case found where
+    something that succeeded before raises now.
+  - A caller who passed such a subclass as `now=` and relied on the host-local reading
+    (or compensated for it) sees the pin move by the host's UTC offset, to the value its
+    fields say. A caller who wants the old refusal of a self-contradicting object must
+    check it before passing it in.
+  - The `ProofError` message `now cannot be read as an instant: astimezone(UTC) gave
+    offset ...` no longer exists.
+  - Nine existing cases were updated deliberately, each to assert the exact new reading
+    rather than a refusal: `tests/test_status_builders_time.py::
+    test_credential_refuses_a_datetime_with_no_utc_reading` and
+    `::test_token_refuses_a_datetime_with_no_utc_reading` (the `astimezone-lies` and
+    `naive-utcoffset-lies` rows, four each; now
+    `test_credential_reads_a_lying_subclass_from_its_fields` and
+    `test_token_reads_a_lying_subclass_from_its_fields`, which pin
+    `validFrom` / `iat` to `2025-12-31T23:00:00Z` / `1767222000` and `2026-01-01T00:00:00Z`
+    / `1767225600`) and `tests/test_typed_clock_pins.py::
+    test_utc_instant_rejects_a_subclass_whose_utc_conversion_lies` (now
+    `..._reads_a_subclass_whose_utc_conversion_lies_from_its_fields`: `05:00Z`,
+    `1609477200`, and the window edge judged to the second).
+- **A failed key resolution is one error family on every lane, sync and async**
+  ([#283](https://github.com/luisgf/openvc/issues/283)). Nothing is accepted that was
+  refused, and nothing that was refused is accepted: every case below failed closed before
+  and fails closed now, and `verify_many` / `verify_many_async` isolate the item as before.
+  What changes is the class, so a service can map "the issuer could not be resolved" with one
+  handler.
+
+  The same failed resolution was reported as one of two unrelated classes, by lane:
+  `KeyResolutionFailed(VerificationError)` from the JOSE lanes, and
+  `KeyResolutionError(ProofError)` from every Data Integrity suite. They shared no base
+  below `OpenvcError`, so `except KeyResolutionFailed` caught a VC-JWT failure and missed a
+  Data Integrity one, and `except ProofError` the reverse. The async Data Integrity lane
+  raised both: `aio._preresolved_di_resolver` turned a fetch failure or a wrong-shaped
+  document into `KeyResolutionFailed` before the suite ran, while a method not in the
+  document, or a DID method with no resolver, stayed `KeyResolutionError`. And a proof
+  whose `verificationMethod` is a malformed `did:key`, checked where the registry has no
+  `did:key` resolver (or with `resolver=None` on a suite), raised a bare
+  `DidResolutionError`, neither a `ProofError` nor a `VerificationError`.
+
+  - **`KeyResolutionError` is also a `KeyResolutionFailed`.**
+    `class KeyResolutionError(ProofError, KeyResolutionFailed)`, MRO `KeyResolutionError`,
+    `ProofError`, `KeyResolutionFailed`, `VerificationError`, `OpenvcError`. `except
+    KeyResolutionFailed` and `except VerificationError` now catch a key-resolution failure
+    on every lane; `except KeyResolutionError` and `except ProofError` still catch the Data
+    Integrity ones and still do **not** catch a JOSE one (`KeyResolutionFailed` is not a
+    `ProofError`).
+  - **The async Data Integrity lane raises `KeyResolutionError`**, as the sync one does.
+    `verify_credential_async` and `verify_many_async` gave `KeyResolutionFailed` for a fetch
+    that raised `DidResolutionError` and for a wrong-shaped document (`verificationMethod:
+    null`, #219); they give `KeyResolutionError` now, with the same `__cause__`.
+  - **The offline `did:key` fallback is typed.** `DidResolutionError` from
+    `DidKeyResolver().resolve(did)` in `resolve_verification_key` is now a
+    `KeyResolutionError` with the `DidResolutionError` as its cause, as the registry path
+    above it already was. Only that call is inside the `try`, and only `DidResolutionError`
+    is caught: the purpose check after it stays `ProofPurposeMismatch`, a method that is not
+    in a resolved `did:key` document stays `KeyResolutionError` with no cause, and any other
+    error from the resolver propagates as itself.
+  - **The JOSE lanes are untouched**: VC-JWT and SD-JWT VC raise exactly
+    `KeyResolutionFailed`, as before, through `verify_credential`, `verify_many`,
+    `verify_credential_async` and `verify_many_async`. So does the VP-JWT holder key, whose
+    `ClaimsInvalid` (cause `KeyResolutionFailed`) is a different decision and not part of
+    this change.
+  - **Where the classes live.** `VerificationError` and `KeyResolutionFailed` are now defined
+    in `openvc.errors` (`openvc.proof` cannot import `openvc.verify`, which imports the
+    proofs) and re-exported from `openvc.verify`, which keeps both names in `__all__`;
+    `openvc.VerificationError` stays at the package root. They are added to
+    `openvc.errors.__all__`. No name is removed or renamed. Each keeps `__module__ ==
+    "openvc.verify"`, so a traceback line, a `repr` and a pickle name the class exactly as
+    before. The API reference now lists both under `openvc.errors` as well as
+    `openvc.verify`.
+
+  **Behaviour changes to check.** The `except` clauses only gain matches, with one
+  exception (the last bullet): every clause that caught one of these failures still catches
+  it. What the first four bullets change are the checks that read the class itself, which a
+  caller has to make: an exact-class comparison, a `not isinstance(...)` test, the order of
+  handlers, and a `BatchResult.error` or a log line compared by class. The last bullet is the
+  one case where an `except` clause stops matching.
+
+  - Code that compares the exact class of a Data Integrity key-resolution failure
+    (`type(exc) is KeyResolutionFailed`, `isinstance(exc, ProofError)` being false) must compare
+    the new one: `KeyResolutionError`. On the async API that is a fetch failure or a
+    wrong-shaped document; the sync API already raised it.
+  - `not isinstance(exc, KeyResolutionFailed)` is no longer a way to tell a Data Integrity
+    failure; use `isinstance(exc, KeyResolutionError)` (or `ProofError`).
+  - An ordered handler can re-route. With `except VerificationError` before `except ProofError`,
+    a synchronous Data Integrity key failure moves to the first branch. With `except ProofError`
+    before `except KeyResolutionFailed`, an async Data Integrity failure moves to the first
+    branch. Order the clauses most specific first.
+  - The `verify_many_async` hostile item reports `KeyResolutionError` in `BatchResult.error`
+    where it reported `KeyResolutionFailed`, and the INFO log line reads `error=KeyResolutionError`.
+  - A malformed `did:key` proof, checked with a registry that has no `did:key` resolver (or
+    `resolver=None` on a suite), is a `KeyResolutionError` where it was a bare
+    `DidResolutionError`: `except ProofError` and `except VerificationError` now catch it, and
+    `except DidError` / `except DidResolutionError` no longer does (the original is
+    `exc.__cause__`). This is the one case where a clause stops matching (a maintainer
+    decision, below). The default pipeline, whose registry has a `did:key` resolver, already
+    raised `KeyResolutionError` there.
+
+  **Maintainer decisions taken, and the reading of SemVer.**
+
+  - **MINOR, not PATCH or MAJOR.** No name, signature, field or default changes, and every
+    `except` clause on the pipeline's classes (`VerificationError`, `KeyResolutionFailed`,
+    `ProofError`) that catches a failure today still catches it, so it is not MAJOR. The
+    class a lane raises, and its bases, are observable (a handler can be ordered, and an
+    exact-class comparison can be written), so it is not PATCH.
+    `wiki/Versioning-and-Deprecation.md` now says what each level means for exception
+    classes. The 1.33.0 (`HttpForbiddenHost` to `EbsiVerificationError`) and 1.32.4
+    (`ClaimsInvalid` / `UnsupportedPresentationFormat` to `VpTokenMalformed`)
+    re-classifications can stop a clause matching and shipped looser; they are not rewritten.
+  - **The malformed `did:key` case is MINOR by exception, not by the rule.** It is the one
+    place a clause stops matching: a bare `DidResolutionError` is a `DidError`, and
+    `KeyResolutionError` is not, so `except DidError` and `except DidResolutionError` no
+    longer catch it. Under the rule above that drops a base, which is the MAJOR case, and it
+    is not the PATCH case either (typing a failure that escaped the library's own error
+    family), because a bare `DidResolutionError` was already an `OpenvcError`. #283 proposed
+    MINOR and its argument ("no `except` clause stops catching") overlooked this case; the
+    maintainer decision here is to keep MINOR for this case only, because the failure stays
+    an `OpenvcError` (and now a `VerificationError` and a `ProofError`), so a batch and a
+    service-wide handler still isolate it; because it is the class the same input already
+    raised when the registry has a `did:key` resolver, as the default registry does;
+    because it needs a custom registry with no `did:key` resolver; and because the original
+    `DidResolutionError` is the `__cause__`. It is recorded as an exception in
+    `wiki/Versioning-and-Deprecation.md`, which keeps the rule itself strict. Considered and
+    rejected: giving `KeyResolutionError` a `DidError` base (every Data Integrity key failure,
+    including a method that is not in the document, would become a `DidError`), and a second
+    class that is both a `KeyResolutionError` and a `DidResolutionError` (the exact class on
+    every Data Integrity lane would no longer be one class, which is what this change gives).
+  - **The Data Integrity class extends the pipeline class**, not the reverse (which would make
+    JOSE failures `ProofError`s and leave Data Integrity outside `VerificationError`) and not
+    one flat class (which would stop `except ProofError` or `except VerificationError`
+    catching one lane; that is the 2.0 window, #74).
+  - **`__module__` is pinned** to `openvc.verify` on the two moved classes, rather than letting
+    it become `openvc.errors`, so log scrapers and tracebacks that match
+    `openvc.verify.KeyResolutionFailed` keep working.
+  - The released entries that state the old split (1.33.0 #279, 1.32.4 #256, 1.32.3 #219) are
+    not rewritten; this entry supersedes the rule they give for the class.
+
+  Docs: `wiki/Resolving-Issuer-Keys.md` (a table of the lanes and the handler guidance),
+  `wiki/Security-Model.md`, `wiki/Async-Verification.md`, `wiki/Versioning-and-Deprecation.md`,
+  `docs/CONVENTIONS.md` (Errors), `docs/audit/assurance.md` and the docstrings of
+  `openvc.verify`, `openvc.errors`, `KeyResolutionError` and `aio._preresolved_di_resolver`.
+- **Behaviour change: an SD-JWT VC whose issuer JWT carries an `aud` that does not name
+  your audience is now rejected (`ClaimsInvalid`), and so is one that carries any `aud`
+  when you pass no audience.** Before, both verified. What to pass: a credential whose
+  issuer names you in `aud` verifies once you tell the verifier who you are.
+  - Top level: `VerificationPolicy(audience="<the identifier your issuers name>")` (and
+    `nonce` when a KB-JWT is present: the two bind it together, unchanged), or
+    `audience=` on `SdJwtVcProofSuite.verify`.
+  - Nested in a `jwt_vc_json` / `ldp_vc` presentation: nothing to set on the policy. The
+    credential's `aud` must name the presentation's audience (the VP-JWT's `aud`, the
+    proof's `domain`, or the matched `origin:<origin>`). That is the opposite of a nested
+    VC-JWT, which is checked against `policy.audience` (ADR-0008 D3).
+  - OpenID4VP `dc+sd-jwt`: the credential's `aud` must name the `client_id`, or the
+    `origin:<origin>` form over the Digital Credentials API (a bare origin is not it).
+  - An SD-JWT VC whose issuer JWT has no `aud`, which is nearly every one, is unaffected,
+    with or without an audience, and an empty or non-string `audience` is still not
+    inspected when there is no `aud` to match it against. When there is one, an
+    audience that is not a non-empty string is refused with that message.
+  - If you relied on an issuer-JWT `aud` being ignored, read `result.claims.get("aud")` and
+    decide yourself, or have the issuer drop it. Nothing opts the check off.
+  - `check_jwt_audience` (`openvc.proof._verify_common`, internal) gained a keyword
+    `require_present` (default `True`, the VC-JWT behaviour); this lane passes `False`.
+  - In `tests/test_sd_jwt_vcdm_typ_interop.py`, the control for #293 minted a VCDM
+    *presentation* payload (with `aud: CLIENT_ID`) as a credential. It is such a case, so it
+    now passes `VerificationPolicy(audience=CLIENT_ID)`. Read as a credential, a
+    presentation addressed to one verifier no longer verifies for the others.
+- **A naive `created` on a non-UTC host now yields its UTC reading: a different
+  `created` string, and a different `proofValue` on the deterministic suites, for the
+  same call** ([#287](https://github.com/luisgf/openvc/issues/287)). This is the one
+  change in this release that does not fail closed. `datetime(2026, 1, 1, 12, 0)` was
+  signed as `03:00:00Z` under `Asia/Tokyo` and `17:00:00Z` under `America/New_York`
+  (under `America/New_York`, 2026-07-01 12:00 gave `16:00:00Z`: the host's DST rules
+  applied); it is `12:00:00Z` on every host. A caller that passes `datetime.utcnow()`
+  (deprecated since Python 3.12) on a non-UTC host is corrected. A caller that passes
+  `datetime.now()` there had its local wall time converted correctly and is now shifted
+  by the host's offset: pass an aware value instead, such as
+  `datetime.now(timezone.utc)` or `datetime(..., tzinfo=ZoneInfo("Asia/Tokyo"))`. On a
+  UTC host, for any aware value and for `created=None`, nothing changes. A `tzinfo`
+  whose `utcoffset()` is `None` is naive by Python's definition and is read as UTC the
+  same way.
+- **A `datetime` subclass whose `astimezone(UTC)` does not answer a UTC instant is
+  refused as `ProofMalformed`**, where `created` was signed from whatever its methods
+  returned (a subclass answering `astimezone` with a `+03:00` year-2000 value signed
+  `2000-01-01T00:00:00Z`). It is `utc_instant`'s existing rule, which this release does
+  not change; whether it should is [#286](https://github.com/luisgf/openvc/issues/286).
+- **The `could not canonicalize` message of `ecdsa-sd-2023` quotes at most 2000
+  characters of the `pyld` text**, `verify`'s `could not canonicalize the derived
+  credential` included ([#281](https://github.com/luisgf/openvc/issues/281)). Class,
+  prefix and accept-set are unchanged; a longer text ends in `... (N chars)`. It
+  changes `verify`'s message only for the longest `pyld` 2.0.4 refusals (traceback
+  tail) and for a hostile oversized `@context`. Code that reads the tail of that message
+  should read `__cause__`, which keeps the whole error.
+- **`except (AttributeError, OverflowError, ValueError)` around `add_proof` /
+  `add_base_proof` for a bad `created` no longer catches it**: it is `ProofMalformed`
+  (an `OpenvcError` and a `ProofError`).
+- **A present `credential_sets` is validated, not read by truthiness**
+  ([#284](https://github.com/luisgf/openvc/issues/284)). `verify_vp_token` read
+  `credential_sets` in one place, as an on/off switch for the completeness check, and read
+  none of its members: `required: "false"` and `required: true` were the same thing, and an
+  option naming no query was accepted. The `dcql_query` is the verifier's own input, so
+  this is a fail-safe and a conformance fix, not an attacker-reachable bypass (same family
+  as #224, #254 and #268).
+
+  `_index_dcql` now checks, after the query walk (so a query's own shape error is still
+  reported first) and before any Presentation is read, for every set, answered or not, and
+  only when the key is present (an absent one still means "every query is required"):
+  `credential_sets` is a non-empty array; each entry is an object; `options` is a
+  non-empty array of non-empty arrays of strings, each the `id` of a Credential Query in
+  `credentials`; `required`, when present, is a JSON boolean (`0`, `1` and `1.0` are not).
+  Anything else raises `VpTokenMalformed` naming the path, for example
+  `dcql_query.credential_sets[1].options[0] names Credential Query 'zzz', which is not in
+  dcql_query.credentials`. `purpose`, unknown members and duplicate ids inside one option
+  are not read.
+
+  **What changes for a caller.** A `dcql_query` whose `credential_sets` is not a
+  well-formed non-empty array used to verify and now raises `VpTokenMalformed` on every
+  response, including one that answers every query. Two groups: a truthy junk value
+  (`true`, `1`, `"x"`, `"false"`, `{"a": 1}`, `[null]`, `[[]]`, an option naming no query,
+  a non-boolean `required`) used to switch the per-query completeness check off; a falsy
+  one (`null`, `false`, `0`, `""`, `[]`, `{}`) used to read as absent, with every query
+  required. To get "every query is required", leave the key out; to say "any one of", pass
+  `[{"options": [["a"], ["b"]]}]`; to make a query optional, give it a set with
+  `"required": false`. The arrays must be lists, as `credentials` already has to be: a
+  `dcql_query` built in Python with a tuple for `credential_sets`, for an `options` or for
+  an option (it used to read as truthy, and so switched the check off) raises
+  `VpTokenMalformed` too; pass lists. A well-formed `credential_sets` is unchanged by #284
+  alone; #285 (above) is what makes it bite.
+
+- **Maintainer decisions (#284, #285).** Each takes the option the issue proposed.
+  1. **`null` and `[]` are rejected (#284).** Both used to read as absent. A present
+     `credential_sets` is a non-empty array in the spec (§6.2) and a present `null` was
+     never "absent" in #224 or #268; the cost is that a template that always emits
+     `"credential_sets": []` now fails on every response. The alternative (treating them as
+     absent and keeping the accidental fail-safe on those two) was not taken.
+  2. **A query that no set references is optional (#285).** §6.4.2 defines the request as
+     "all of `credentials`" only when `credential_sets` is absent; otherwise it is whatever
+     satisfies the required sets, plus optionally the others, so a query no set names is not
+     requested and its absence is not an error. The stricter reading (keep it required) would
+     refuse responses a conforming wallet sends. A `dcql_query` with such a query is not
+     rejected as malformed either: the spec does not forbid it.
+  3. **The error class is a new `VpTokenIncomplete(VpTokenMalformed)` (#285).** Raised for
+     both completeness failures: a missing query when there is no `credential_sets`, and an
+     unsatisfied required set. An unsatisfied set is a requirements failure, not a shape
+     failure, but the missing-query message already raised `VpTokenMalformed` and callers
+     catch it; a subclass keeps every `except VpTokenMalformed` working. The exact class of
+     the missing-query error changes from `VpTokenMalformed` to `VpTokenIncomplete`: a
+     caller that tests `type(exc) is VpTokenMalformed` stops matching it (the message is
+     unchanged). `VpTokenIncomplete` is exported from `openvc.openid4vp` and listed in
+     `__all__`.
+  4. **Extra answers are accepted (#285).** A wallet that answers several options of one
+     set, or a query outside every option, is not refused and each Presentation is verified
+     in full, as before. Minimisation is the wallet's duty (§6.4.2); rejecting extra answers
+     is a separate policy question.
+  5. **SemVer: minor (1.35.0).** A response that verified is now refused, which the
+     precedents for "the verifier now enforces a request requirement it used to skip"
+     (#196, v1.29.0; #221, v1.31.0) shipped as minors under `### Security`, and the new
+     public exception class is an API addition anyway. #224, #254 and #268 were patches
+     because they refused only a malformed `dcql_query`. The issue proposed 1.34.0 as the
+     number; 1.34.0 has shipped since.
+- **A bare credential under a query that requires holder binding is
+  `VpTokenMalformed`, naming the flag, on both lanes and in both flows.** It was rejected
+  before and is still rejected; only the error changes, and nothing is verified first. In
+  the redirect flow a bare VC-JWT raised `ClaimsInvalid` (`aud None != expected verifier …`)
+  from the VP-JWT suite, which was misleading, and a bare Data Integrity credential raised
+  `VpTokenMalformed` (`must be a VerifiablePresentation`), the same class as now. Over the
+  Digital Credentials API both raised `ClaimsInvalid` (`DC API presentation audience None
+  …`). To accept one, set `require_cryptographic_holder_binding` to `false` in that query.
+- **A `jwt_vc_json` token that looks bare but is hostile is `VpTokenMalformed` under a
+  query that requires holder binding.** A token whose payload has a `vc` object and no
+  `vp`, and whose header names a disallowed `alg` (`none`, `RS256`) or an unknown `crit`,
+  raised `UnsupportedAlgorithm` or `MalformedToken` from the VP-JWT suite in 1.34.0, because
+  that suite read the header first. With the flag `true` or absent it is now refused as a
+  bare credential before the header is read, so the class is `VpTokenMalformed`. With the
+  flag `false` the bare route verifies it as a VC-JWT and raises the same class as before.
+  It was rejected before and still is. `VpTokenMalformed` is an `OpenID4VPError`, not a
+  `ProofError`: a caller that caught `UnsupportedAlgorithm` or `MalformedToken`
+  specifically for such a token should catch `OpenID4VPError` (or `OpenvcError`) as well.
+  The new tests pin each class under each flag.
+- **Three shapes that verified as a presentation are now `VpTokenMalformed`, whatever the
+  flag**, because the value is positively both a presentation and a credential, or says it
+  is one thing and carries the other. Each was a malformed answer that happened to verify,
+  because the presentation lane ignored the extra member. Nothing this layer reports
+  changes for a well-formed presentation:
+  - a `jwt_vc_json` VP-JWT whose payload also carries a top-level `vc` claim. Remove the
+    stray claim;
+  - a `jwt_vc_json` token whose `typ` says the other kind than its claim: a `vp` claim
+    typed `vc+jwt` (with or without `application/`, any case), or a `vc` claim typed
+    `vp+jwt`. Type a VP-JWT `vp+jwt` or `JWT`, a VC-JWT `vc+jwt` or `JWT`;
+  - an `ldp_vc` presentation whose `type` also lists `VerifiableCredential`. Drop the
+    extra type.
+- **A `jwt_vc_json` answer that is not a compact JWT with a `vp` or a `vc` object is
+  unchanged** (`MalformedToken`, or `ClaimsInvalid` for a token with neither claim): the
+  detection leaves it to the presentation lane, and the new tests pin those classes.
 - **A call that another caller's cache used to answer now raises**
   ([#225](https://github.com/luisgf/openvc/issues/225), above). It concerns a process in
   which two callers pass different `extra_contexts` for the same URLs, one of them through
@@ -107,8 +621,482 @@ All notable changes to **openvc** are documented here. The format follows
     `DocumentLoaderError`, as its loader says. Pass the imported context in
     `extra_contexts`.
 
+### Fixed
+
+- **The status-list issuer binding accepts a list its own issuer signed with no `issuer`
+  in the body** ([#226](https://github.com/luisgf/openvc/issues/226), found by the
+  adversarial review of #221; it predates it). `VerificationPolicy(
+  require_status_issuer_binding=True)` (ADR-0006) reads the list's issuer from its body.
+  A legitimate list secured as a VC-JWT in the VCDM 1.1 JWT encoding may carry its
+  issuer only in the JWT `iss`, which leaves `vc.issuer` absent or an object with no
+  `id` such as `{"name": "Example University"}`. The pipeline had authenticated that
+  issuer, but the default resolvers returned the body as it was, so the binding refused
+  with `StatusListIssuerUntrusted` ("has no issuer to bind against"). It failed closed,
+  so this was interop, not a vulnerability; it also contradicted #221, which accepts the
+  same two shapes on a credential. `default_status_list_resolver` and its async twin now
+  fill in the issuer the pipeline verified the list for (`result.issuer`) where the body
+  names no one: `issuer` is set to it when absent, and `id` is added to an id-less
+  object, which keeps its other members. The change is made on a copy;
+  `result.credential` (shared with `result.claims` on an SD-JWT) is never written to.
+  What the binding decides:
+
+  - a list signed by the credential's issuer is accepted, so the bit is read
+    (`CredentialRevoked`, or `status.revoked is True` under `require_not_revoked=False`);
+  - a list an attacker signed gets the **attacker's** id and is refused with
+    `StatusListIssuerUntrusted` naming the attacker, as before, unless the attacker is in
+    `status_issuer_allowlist`; a list signed by an allow-listed delegate is accepted;
+  - a list whose body names an issuer other than its signer is refused (#221); the class
+    depends on the lane. A VC-JWT or `vc+sd-jwt` list has its `iss` reconciled with its
+    `issuer` by the pipeline before the resolver sees it, so it raises `ClaimsInvalid`
+    from the inner verification. A `dc+sd-jwt` list has no such reconciliation, so
+    `_authenticated_list` raises `StatusListError`. Both are `OpenvcError`s, but a caller
+    that catches one class only misses the other lane.
+    A custom `resolve_status_list` that returns an issuer-less body still fails closed
+    with `StatusListIssuerUntrusted`, the IETF Token Status List path (bound on the
+    token's `iss`) is unaffected, and a Data Integrity list cannot be issuer-less
+    (`IssuerBindingError` earlier).
+
+  Without the binding nothing changes: the bit is read as before. A caller of a default
+  resolver who reads the returned dict itself now sees an `issuer` where the body had
+  none. A custom `resolve_status_list` that wants the same interop must fill in the
+  `result.issuer` of the `verify_credential` call that checked the list; see
+  [Status lists](https://github.com/luisgf/openvc/wiki/Status-Lists) and the 1.35.0
+  amendment to ADR-0006.
+
+  *Decisions.* The fill-in lives in the default resolvers' shared `_authenticated_list`, not
+  in the pipeline: `_enforce_status_issuer` and the `resolve(url) -> dict` contract of a
+  custom resolver are not relaxed, and no richer return type is introduced. It fills in
+  only from `result.issuer` and only when that is a non-empty string; a present
+  identifier is never rewritten. Copies are shallow: nothing downstream writes to a
+  resolved list.
+
+  *Known gap, left on purpose.* An issuer object that names the signer only by `@id`
+  (`{"@id": <signer>}`) is not filled in, and under the binding it is still refused with
+  `StatusListIssuerUntrusted` ("no issuer to bind against"), as it was before this change.
+  It is not the issuer-less shape #226 fixes: it names someone, so `_authenticated_list`
+  has nothing to fill in. Copying a signer-matching `@id` into `id` there would admit
+  nothing the signature did not already prove, but how the binding reads an issuer object
+  (`_enforce_status_issuer` reads `id` only, for every resolver) is a separate decision,
+  and reading `@id` in `_enforce_status_issuer` itself would widen what a custom
+  resolver's body can bind on. Neither is taken here. Spell the issuer `<id>` or
+  `{"id": <id>}`, or leave it out and let the signer be filled in.
+  `test_an_at_id_only_issuer_is_still_refused_under_the_binding` pins this on every lane,
+  so a later change to it has to be deliberate.
+- **A `datetime` subclass can no longer change how openvc reads a clock pin or a
+  builder time** ([#286](https://github.com/luisgf/openvc/issues/286)). Hardening;
+  caller-only, no wrong-accept from remote input. openvc's rule is "a naive `datetime`
+  is UTC, whatever zone the host is in" (#187, #255), but `utc_instant` and `utc_epoch`,
+  the two readers behind the `now=` of every lane and the status builders' times, decided
+  "naive" by asking the caller's own object (`now.utcoffset() is None`). A subclass that
+  answered `timedelta(0)` with no `tzinfo` was not naive, so `now.astimezone(UTC)` read
+  its fields as the **host's local time**, and the post-check that was meant to catch it
+  called `utcoffset()` on the same subclass and passed. `datetime(2026, 1, 1, 12)` of such
+  a class was `11:00Z` on a UTC+1 host and `03:00Z` on a UTC+9 one. Hosts east of UTC read
+  the pin earlier, so an expired credential, status list, certificate or mdoc MSO was
+  accepted 15 minutes after its window closed and a fresh KB-JWT was refused as
+  future-dated; west of UTC the reverse. The same object as `valid_from` / `issued_at`
+  signed a different `validFrom` / `iat` per host. The other overrides the helpers
+  consulted were wrong too: a naive subclass whose `utcoffset()` answered `+5 h`
+  (`utc_epoch`: shifted, silent), an aware `+09:00` one whose `utcoffset()` answered
+  `None` (`utc_epoch`: the `+09:00` dropped, 9 h wrong, silent; `utc_instant`: a
+  `ProofError` by accident) and a naive one whose `timestamp()` answered `86400.0`
+  (`utc_epoch`: `86400`).
+
+  Both helpers now read the value from its fields and `tzinfo` **through the base
+  class** (`datetime.date` and `datetime.timetz`, called on the class), once, and run the
+  same logic on the plain `datetime` that returns. No method of the caller's object is
+  called, so no override of `utcoffset`, `astimezone`, `replace`, `timestamp` or a field
+  property can change the reading, in either direction; `fold` is kept. The error class,
+  the `name=` keyword, the typed handling of a `tzinfo` that raises or that has no UTC
+  form, and `utc_epoch`'s range (a pin at year 1 or 9999 is still a number, not routed
+  through `utc_instant`) are unchanged. The post-check on `astimezone(UTC)` is gone: on a
+  plain value it cannot fail. One fix covers every entry point that reads a pin or a
+  builder time: `VerificationPolicy.now` (`verify_credential`, `verify_many` and their
+  async twins), every Data Integrity suite's `verify(now=)`, the SD-JWT KB-JWT window,
+  `verify_vp_token` / `verify_encrypted_vp_response`, `mdoc.verify_device_response` /
+  `verify_issuer_signed`, `x5c.validate_cert_chain` / `resolve_x5c_key` /
+  `resolve_mdoc_signer_key`, `rp_cert.verify_rp_access_certificate`,
+  `rp_registration.verify_rp_registration_certificate`, `trustlist.walk_lotl` /
+  `walk_lote` / `consume_lote`, `openid4vci.verify_credential_request_proofs`,
+  `status.verify_status_list_token`, and `status.build_status_list_token` /
+  `build_status_list_credential`. A plain `datetime` (naive or aware), a subclass that
+  overrides nothing (the pendulum / pandas shape), an aware subclass whose `utcoffset()`
+  answers `timedelta(0)`, a `tzinfo` that answers `None` (naive, so UTC) and a `None` pin
+  read exactly as before.
+
+  `created=` on the Data Integrity issuers goes through its own `_iso`, not these
+  helpers; it is left to [#287](https://github.com/luisgf/openvc/issues/287).
+- **The helpers that turn a value into error-message text are total for a caller's object**
+  ([#282](https://github.com/luisgf/openvc/issues/282)). Hardening, caller-only, no
+  wrong-accept: nothing a JSON, CBOR or XML parser returns can carry a custom dunder, so no
+  credential, token or response reaches this, and every path that failed was a refusal (the
+  one false refusal is the `did:web` case below). One message in this change does echo wire
+  data, the `id` of a fetched `did.json` in the `did:web` mismatch refusal, and it is cut now
+  (also below). `brief()` (`openvc.status`, 32 call sites), `safe_repr()`
+  (`openvc.proof`, 91 call sites in 20 modules, `openvc_ebsi` included) and `_brief()` (the
+  Data Integrity context check, 6 call sites) exist so that reporting a bad value cannot itself
+  fail. They bounded the length and named a container by its type, which settled deep nesting
+  (#213) and huge ints, but not a value whose own class answers `repr()`, `len()` or
+  `bit_length()` badly: the exception that method raised, the `ValueError` of the int-to-str
+  limit (an `int` subclass of 5000 digits whose `bit_length()` says 1) or a megabyte of `repr`
+  text came out of the `raise` that was meant to report the problem. #269 closed the `str` side
+  of `brief`; this is the rest. Two public effects:
+  - **The status builders and codec.** Every parameter whose error path formats the caller's
+    object (`ttl`, `valid_from`, `valid_until`, `issued_at`, `issuer`, `id`, `subject_id`,
+    `contexts` and its entries, `bitstring`, `status_list`, `status_purpose`, an entry or reference
+    `index` / `uri`, `bits`, `size`, the `get_status*` / `set_status*` arguments, and what a
+    resolver hands back to `check_credential_status` / `check_token_status`) raised the
+    hostile method's exception: `build_status_list_credential(ttl=BadInt(0))` with a
+    raising `__repr__` was that `RuntimeError`, and `id=Mock(spec=int)` a bare `TypeError`
+    (`'>' not supported between 'Mock' and 'int'`). They are `StatusListError`, as the same
+    value as a plain `int` always was. A job that publishes lists on a schedule and wraps the
+    build in `except OpenvcError` sees a typed error again; a caller that caught a builtin
+    exception there catches `OpenvcError` instead.
+  - **A success path.** `did_web._check_host` formatted the DID with `safe_repr()` before any
+    check, so `DidWebResolver.resolve` and `AsyncDidWebResolver.resolve` failed on a *valid* DID
+    given as a `str` subclass whose `__repr__` raises. They resolve it; an invalid one is a
+    `DidResolutionError`. The refusal for a document whose `id` is not the requested DID (or
+    has none) formatted both values with a raw `!r`, so a hostile DID gave the dunder's
+    exception there and the document's `id`, which is wire data, came back whole: a 5,000,000
+    character `id` made a 5,000,049 character `DidResolutionError`. Both go through
+    `safe_repr()` now (`_validated_document`, shared by the sync and async resolvers); a plain
+    DID and an `id` of 200 characters or fewer read as before.
+
+  `non_negative_seconds` (`SdJwtVcProofSuite(leeway_s=...)`, `SdJwtVcProofSuite.verify(
+  kb_max_age_s=...)`, `verify_vp_token(leeway_s=..., kb_max_age_s=...)`) formatted its value
+  with a raw `{value!r}`: `-(10**5000)` was a bare `ValueError` and `BadInt(-1)` the dunder's
+  exception, instead of `ProofError` / `SdJwtError` / `OpenID4VPError`. This is a one-line
+  change to the message; the leeway semantics (#228, #232) are untouched.
+
+  Each helper now reads a value only through the built-in's unbound methods, never its own
+  (`str.__str__`, `int.bit_length`, `int.__repr__`, `float.__repr__`; the `int` size is read
+  before any decimal conversion), and catches `Exception` as the last resort, so a value that
+  still cannot be read (a test double that claims to be an `int`, a type whose metaclass
+  `__name__` raises or is not a string) is `an object`. `_brief` also cuts before `repr()`
+  now: it is reached from RDF credential JSON (`@id`, `@type` or a property name), and the
+  helper's transient peak on a 16 MB string of NULs was 64 MB (four times the string); it is
+  below 1 MiB.
+
+  **Behaviour change, message text only.** Plain values render byte for byte as before
+  (pinned by controls that pass on the unfixed tree). What changes:
+  - A subclass is shown as the number or characters it holds (cut, or named by its size,
+    when long, as a plain value is), not by its own `repr()`, the stance `plain_int` /
+    `plain_str` already take: `brief(E.A)` for an `IntEnum` was
+    `<E.A: 1>` and is `1`; `safe_repr(S.A)` and `_brief(S.A)` for a `StrEnum` were
+    `<S.A: 'a'>` and are `'a'`.
+  - `non_negative_seconds` cuts a string longer than 200 characters (`got 'xxxx...'...
+    (500 chars)`, where it used to print all 500) and names a container or an int past 64
+    bits by its type, as `safe_repr` does everywhere else: `leeway_s must be a non-negative
+    int (seconds), got list`, where it used to print the list; `got int` for `-(2**64)`.
+  - `_brief` cuts a string to 100 characters *before* `repr()`, so on a string longer than
+    100 characters the quote style (`'` or `"`) is chosen from its first 100 characters, not
+    from the whole string. Diagnostic text only.
+  - A type name longer than 64 characters is cut and ends in `...` (`brief`: `a NNNN...`).
+  - The `did:web` id-mismatch message prints the DID and the document `id` through
+    `safe_repr()`: the same text for a plain value of up to 200 characters, a longer one cut
+    with its length (`'xxxx...'... (5000000 chars)`).
+
+  **Maintainer decisions taken in this change:**
+  - The fallback word is `an object`, in all three helpers, although `brief` says
+    `a <type>` and `safe_repr` says `<type>` elsewhere: when the type's name cannot be read
+    there is no type to name.
+  - A type whose `__name__` is not a `str` falls back to `an object` too, so the three
+    helpers return a `str` whatever a metaclass says (the issue named only a `__name__` that
+    raises).
+  - A type name is cut to 64 characters and ends in `...` in all three helpers (one number,
+    not each helper's own value limit: it is a name, not a value, and a class name is far
+    shorter), because a metaclass can return any string from `__name__`; a 5,000,000 character
+    one gave a 5,000,002 character message. A class name of 64 characters or fewer prints as
+    before.
+  - The `did:web` id-mismatch message is in scope although the other raw `!r` sites are not:
+    the claim that `resolve()` handles a hostile `str` subclass for a valid DID holds only if
+    that refusal is total too, and the document `id` it echoes is wire data.
+  - The three helpers stay three. Their limits differ (32, 200 and 100 characters) and `status`
+    cannot import from `proof`.
+  - Left as it is, out of this issue's scope (the `did:web` id-mismatch message, above, is
+    the one exception): the raw `!r` fields and the inline
+    `type(x).__name__` sites besides these helpers (a mechanical sweep with no accept-set
+    change, its own issue); data-path consumers of a `str` subclass, such as `_did_web_url`
+    slicing the DID through the subclass's own `__getitem__` (a question of which bytes are
+    used, not of a message); and a `Mock(spec=int)` passed as a *numeric* argument (`index`,
+    `ttl`, `size`), which `plain_int` still turns into a bare `TypeError` before any message
+    is built.
+- **`ecdsa-sd-2023` `add_base_proof` and `derive_proof` raise `ProofMalformed` when the
+  credential cannot be canonicalized**
+  ([#281](https://github.com/luisgf/openvc/issues/281)). Hardening; no wrong-accept, and
+  nothing was signed or derived on the failing path. An `@context` that `pyld` cannot
+  process (an unknown URL, a typo'd one, a value that is neither an array nor a string,
+  an inline object with a bad term definition) let a bare `pyld.jsonld.JsonLdError`
+  escape from both methods since `ecdsa-sd-2023` landed (v0.3.0); so did a body `pyld`
+  refuses (a `type` holding an integer, a numeric `credentialSubject.id`), but from
+  `derive_proof` only: `add_base_proof` already typed those through `validate_document`
+  (`cannot validate the document's JSON-LD form`, and `the document uses @reverse` for a
+  `@reverse`), and keeps that message. The bare error is not an `OpenvcError`, so an
+  `except OpenvcError` around issuance or derivation missed it. `verify` already turned
+  the same failures into `ProofMalformed`, and so did the two RDF siblings' issuers.
+  `derive_proof` reads a credential a third-party issuer chose, so a hostile or
+  misconfigured issuer could make a wallet's call raise a type its handler does not
+  cover.
+
+  - **Decision (class and message):** `ProofMalformed`, the class `verify` and
+    `_utf8_nquads` already use for a canonicalization failure, with the prefix
+    `could not canonicalize the credential` (`verify` keeps `the derived credential`) and
+    the `pyld` error chained as `__cause__`. The message tail is the `pyld` error text, as
+    in `verify`. The escaping class changes from `pyld.jsonld.JsonLdError` to
+    `ProofMalformed`; it was never documented. No accept-set changes.
+  - **Decision (message length):** the `pyld` text in the message is cut at 2000
+    characters, with the full length shown (`... (1000000 chars)`), in all three arms,
+    `verify`'s included. `pyld` quotes the context it refused, so a 1 000 000-character
+    `@context` string made a message of about 1 000 000 characters in all three arms, and
+    a 1 000 000-character URL in `derive_proof` (`derive_proof` and `verify` read a
+    credential a third party chose). An ordinary `pyld` 3.x refusal is 130 to 470
+    characters and is kept whole. `pyld` 2.0.4, the floor, appends the traceback of its
+    inner error (133 to 2577 characters, measured on eight of the issue's `@context`
+    values in the three arms), so its longest are cut after the message, the `Type` and
+    the head of the `Cause`: `verify`'s message changes for those, and only those. The
+    cause keeps the full text, and the class, the prefix and the accept-set do not
+    change. `safe_repr` was not used: it cuts at 200 and would add quotes around the text.
+  - **Decision (RDF siblings' messages, left as they were):** the two RDF siblings'
+    issuers carry the same unbounded text, in their `DataIntegrityError`
+    (`canonicalization failed: ...`) and `DocumentLoaderError` messages (1 000 076 and
+    1 000 110 characters for the same two inputs). Cutting them means changing
+    `data_integrity._canonize` and the document loader, and choosing one bound for the
+    whole family; `_canonize` is kept byte-identical here so that
+    [#225](https://github.com/luisgf/openvc/issues/225) merges without a conflict there.
+    It is a follow-up.
+  - **What is guarded.** `add_base_proof`: `_proof_config_hash` through the mandatory
+    hash. `derive_proof`: `_transform` through `_reveal_view`. A `ProofError` raised
+    inside (a bad JSON pointer, a `validate_document` refusal) keeps its own class and
+    message. The signing calls are outside the guard, so a signing-backend error (an
+    HSM or Vault failure) surfaces as itself, for `signing_key` and for the ephemeral
+    key alike.
+  - **Decision (left as it was):** the lane still raises `ProofMalformed`, not
+    `DocumentLoaderError`, for an unbundled context (the RDF siblings raise the latter);
+    `derive_proof` still does not run `validate_document`; and `derive_proof` still
+    reads `proof["proofValue"]` before the guard (a base proof with no `proofValue` is a
+    bare `KeyError`, one with `proofValue: 5` an `AttributeError`). Each is a separate
+    decision.
+
+- **The Data Integrity issuers read `created` the one way openvc reads a time, and type
+  what they cannot read**
+  ([#287](https://github.com/luisgf/openvc/issues/287)). `DataIntegrityProofSuite`,
+  `EcdsaRdfcProofSuite`, `EddsaJcsProofSuite`, `EcdsaJcsProofSuite` (`add_proof`) and
+  `EcdsaSdProofSuite.add_base_proof` rendered `created=` with a private `_iso` (two
+  copies) that called `astimezone`, which reads a naive `datetime` as the host's local
+  time. `created` now goes through `utc_instant(..., error=ProofMalformed,
+  name="created")` and `isoformat`, via one shared helper, `utc_iso`, beside
+  `utc_instant` in `openvc.proof._verify_common`; both `_iso` copies are gone.
+  `utc_instant` and `utc_epoch` are untouched, so no verify path changes. Before:
+
+  | `created=` | Result |
+  |---|---|
+  | a string, an `int` / `float` epoch, `NaN`, `inf`, `True`, a `date`, a `timedelta`, `[]`, `b"x"` | bare `AttributeError` |
+  | an aware value whose UTC form leaves year 1..9999 | bare `OverflowError` |
+  | naive `datetime.min` / `datetime.max` | bare `ValueError`, even under `TZ=UTC` |
+  | a `tzinfo` that raises | that exception |
+  | a `datetime` subclass | its own `astimezone` / `strftime` chose the signed string |
+
+  All of these are `ProofMalformed` now (`created must be a datetime or None, not
+  <type>`, or `created cannot be read as an instant: ...`), raised after the `alg`,
+  `@context` and existing-proof checks and before any canonicalization or signing. The
+  suite reads the plain `datetime` that returns, never the caller's object. A naive
+  `datetime.min` / `datetime.max` is signed (`0001-01-01T00:00:00Z`,
+  `9999-12-31T23:59:59Z`). For every aware value that rendered before and for `None`
+  (the current UTC time) the output is byte for byte what it was; microseconds are
+  truncated, not rounded, as before.
+
+  - **Decision (error class):** `ProofMalformed` for all five, the class these methods
+    already raise for a bad credential and the only class the five share. The issue
+    offered each suite's own `DataIntegrityError` / `EcdsaSdError` as the alternative;
+    "the suite's own typed error" is read here as `ProofMalformed`.
+  - **Decision (naive datetimes):** a naive `created` is UTC, the rule everywhere else in
+    openvc ([#187](https://github.com/luisgf/openvc/issues/187),
+    [#218](https://github.com/luisgf/openvc/issues/218),
+    [#255](https://github.com/luisgf/openvc/issues/255)), rather than refused. It is a
+    behaviour change on a non-UTC host (see Changed).
+  - **Not changed:** no verifier reads `created` back (a proof dated in the year 2999
+    verifies), `created` stays `datetime | None` (no string or epoch), the JOSE issuers
+    take no datetime, and the status builders keep their own `_iso`, which raises
+    `StatusListError` ([#255](https://github.com/luisgf/openvc/issues/255)).
+
 ### Tests
 
+- `tests/test_status_issuer_binding_issuerless.py` runs every case through the sync and
+  async default resolvers and pipelines, and `verify_many` / `verify_many_async` (two
+  credentials, two status URLs, both orders): the shapes that must still be refused, the
+  shapes now accepted, delegation, the shape and non-mutation of the returned body,
+  hostile `issuer` values, a custom resolver, the IETF token path, the Data Integrity
+  lane, and no binding. The refusal of a foreign body issuer is pinned per lane
+  (`ClaimsInvalid` on VC-JWT and `vc+sd-jwt`, `StatusListError` on `dc+sd-jwt`), and a
+  victim-signed list whose issuer is `{"@id": <victim>}` is pinned as still refused
+  under the binding on every lane.
+- `tests/test_clock_reading_subclass.py` (694 cases): `utc_instant` and `utc_epoch` of 13
+  lying subclasses and 6 controls, each at 4 pinned host zones (`UTC`, POSIX UTC+9,
+  UTC+1 and UTC-5 with DST, which need no tzdata, with a check that the pin took effect);
+  the status builders, `verify_status_list_token`, `verify_credential` on
+  `eddsa-jcs-2022`, the SD-JWT KB-JWT window through `verify_vp_token` and
+  `x5c.validate_cert_chain` at an instant inside the window, 15 minutes after it closes
+  and 15 minutes before it opens, for 10 kinds of pin; a tripwire subclass that records
+  every attribute read off it; `fold`; the typed error for an object that only claims
+  `isinstance(x, datetime)` (a `__class__ = datetime` class, a `MagicMock(spec=datetime)`);
+  and the unchanged year-1 / year-9999 range, error class and `name=` of the helpers.
+  Every expectation is an exact value or an exact class.
+  Against the code before this change (`65c1e03`) the negatives fail and the controls
+  pass; with a mutant of the fix that puts `now.utcoffset()` back in either helper, asks
+  `now.replace()` / `now.timestamp()`, drops `fold` or `tzinfo`, routes `utc_epoch`
+  through `utc_instant`, reads the fields through instance methods, or takes the snapshot
+  outside the `try`, each is killed.
+- **`tests/test_message_helpers_total.py`** (#282). 164 tests, self-contained (`tests/` is not
+  a package), with the hostile objects built inside the tests because pytest builds a
+  parameter id by calling `str()`, which on an `int` subclass calls its `__repr__`. The helper
+  matrix runs 15 objects (an `int` and a `float` subclass with a raising `__repr__`; a `str`
+  subclass with a raising `__repr__`, `__len__` and `__getitem__`; an `int` subclass with a
+  raising `bit_length`; one of 10**5000 whose `bit_length` returns 1; an `int` and a `float`
+  subclass whose `__repr__` returns a non-`str`; an `int` and a `str` subclass whose `__repr__`
+  returns 1 MB; a type whose metaclass `__name__` raises, and one whose `__name__` is not a
+  string; a type name of 5 million characters, from a metaclass and from `type(name, ...)`)
+  through each of the three helpers, asserting the exact text; a separate test pins the 64
+  character edge (63, 64 and 65 characters). 46 status entry points
+  (the builders, the codecs and the checks, one hostile object per parameter that reaches
+  `brief`) assert the exact class `StatusListError` and the message. `did:web` resolves a
+  valid DID given as a hostile `str` subclass (sync and async), refuses an invalid one with
+  exactly `DidResolutionError`, and refuses a document whose `id` is another DID, missing or
+  not a string with exactly `DidResolutionError` and the exact message, for a DID that is a
+  hostile `str` subclass (sync and async), and cuts a 5-million-character `id`. `non_negative_seconds`, `SdJwtVcProofSuite(leeway_s=...)`,
+  `SdJwtVcProofSuite.verify(kb_max_age_s=...)` and `verify_vp_token(leeway_s=..., kb_max_age_s=...)`
+  raise exactly `ProofError`, `SdJwtError` and `OpenID4VPError` with the exact message. Controls
+  that pass before and after pin the plain-value text of all three helpers and of
+  `non_negative_seconds`. Against `65c1e03` 143 fail and 21 pass (the 6 controls, the structural
+  check and 14 cells that were already total: the `str` cells of `brief`, the numeric cells of
+  `_brief`, a lying `str.__getitem__` on `safe_repr`); 24 targeted mutants of the fix (each
+  call of a method of the value restored, each `try` / `except` and `str`-name guard removed,
+  each limit moved by one) are each killed, and so are 14 more for the type-name cut and the
+  `did:web` message (each of the three cuts removed, moved by one either way and its `...`
+  dropped; each of the two `safe_repr()` calls in `_validated_document` put back as `!r`,
+  which fails 14 tests when both are).
+- `tests/test_key_resolution_error_family.py` (new, 218 cases): the lane-by-scenario map
+  (VC-JWT, SD-JWT VC, `eddsa-jcs-2022`, `eddsa-rdfc-2022` through the four entry points, plus
+  the suite called directly and the three ECDSA suites) with a control for every row that
+  verifies the same credential against the good document; the handlers; the hierarchy,
+  `__module__`, traceback and pickle pins; the malformed `did:key` cases (including that the
+  `KeyResolutionError` that replaces the bare `DidResolutionError` is not a `DidError`, the
+  recorded exception) and the limits of the new `try`; batch isolation; and the `ldp_vc`
+  holder proof and embedded credentials.
+- The 28 existing cases that pinned the old split (`test_did_document_shape_typed.py`,
+  `test_did_reference_exact_match.py`, `test_did_webvh_state_envelope.py`,
+  `test_lone_surrogate_typed.py`) now assert the new exact class and the new `isinstance`
+  relations; none was loosened.
+- **`tests/test_sd_jwt_issuer_aud.py`** (#227, 327 tests, negatives first, each pinning
+  the exact class and that the message does not describe an expiry). Every rejection runs under
+  the default policy and `require_not_expired=False`, sync and async: `aud` naming someone
+  else as a string, an array, `""` and `[]`, with no audience, with a different audience,
+  and with a KB-JWT correctly bound to you on both the required-binding and the hosted
+  path; the six malformed shapes (`null`, a number, `{}`, `true`, `[ME, 5]`, `[[ME]]`) with
+  and without an audience; `verify_many` / `verify_many_async` isolating the one item;
+  the near-miss audiences (trailing slash, case, prefix); an `aud` made disclosable
+  (disclosed and mismatched, disclosed and matching, withheld pinned as the limit) and one
+  made of digests per entry (one entry disclosed, only someone else's, none, never called
+  malformed); the expiry waiver not waiving it; the KB-JWT failing first under
+  `require_key_binding`; nested in a VP-JWT, bare and enveloped, and in a Data Integrity
+  presentation, with a mixed set and the policy audience having no say; the OpenID4VP
+  `dc+sd-jwt` lane and the DC API origin form; the helper's `require_present` modes;
+  and the unchanged cases (no `aud` with and without an audience, the two third-party
+  vectors and the OpenID4VP capture still verifying with an audience, a forged `aud`
+  failing on the signature). A final section pins the W3C VCDM payloads the first
+  version of the file never minted: a hand-minted credential with `typ` absent,
+  `vc+sd-jwt`, `vc+ld+json+sd-jwt` (each with and without `iss`, #290) and `dc+sd-jwt`,
+  `aud` naming someone else rejected with no audience, with a different one and behind a
+  correct KB-JWT, `aud` naming the verifier (alone or in an array) verifying with
+  `vcdm` true, and no `aud` unchanged.
+- **Mutation check.** Run on 65c1e03 (`git archive`), the new file has 224 failures and 103
+  passes, the 103 being the accept-side controls. Thirteen targeted mutants of the change
+  (checking the signed body instead of the processed payload, requiring `aud`, no check,
+  no audience accepted, a message that says "expired", an unvalidated expected audience,
+  the present-only mode returning on a present `aud`, an unvalidated shape, the waiver
+  skipping the check, a substring or case-insensitive match, a mismatch ignored, and the
+  body checked before the KB-JWT) are each killed. Five more (skipping the check for a VCDM
+  payload, for a token with no `typ`, for one with no `iss`, or for `vc+sd-jwt` or
+  `vc+ld+json+sd-jwt`) survived the first version of the file and the 1974 tests around
+  it, which is why the VCDM section exists; each is killed by it.
+- `tests/test_ecdsa_sd_issuer_context_typed.py` (#281): the ten `@context` values of the
+  issue on `add_base_proof` and on `derive_proof` (a genuine base proof with its
+  `@context` swapped), plus, on `derive_proof`, the bodies `pyld` refuses (a `type`
+  holding an integer, a numeric `credentialSubject.id` / `@id`, a `@reverse` that expands
+  but does not compact, and a nested node spelled `urn:bnid:c14n0`, which ended in a bare
+  `KeyError` in the last guarded step), each asserted as exactly `ProofMalformed` with the
+  prefix; the message cut in all three arms (a synthetic error text around the 2000
+  boundary, up to 1 000 000 characters, and a real 1 MB `@context` and URL, with the
+  oversized text shown to reach the cause); controls for the round trip, the
+  `validate_document` refusals that keep their message (the `add_base_proof` body
+  refusals included), a signing-backend and an ephemeral-key error that surface as
+  themselves, a bad pointer that stays `EcdsaSdError`, a context served through
+  `extra_contexts`, the verify side (`verify`, `verify_credential`, `verify_many`,
+  `verify_many_async`) and the RDF siblings' unchanged classes.
+- `tests/test_proof_created_time.py` (#287): the five entry points against eleven values
+  that are not a `datetime`, three with no UTC reading, the order of the checks, the
+  host zone pinned by `TZ` + `tzset` (five zones; winter, DST summer, `datetime.min` /
+  `max`, a `tzinfo` with no offset), the same `proofValue` on any host for the
+  deterministic suites, round trips for years 1, 2999 and 9999 (and
+  base / derive / verify for `ecdsa-sd-2023`), and a Hypothesis differential against the
+  old `astimezone(...).strftime(...)` for aware datetimes in years 1001 to 9998 (the
+  edges and years before 1000 have their own cases).
+- **`tests/test_dcql_credential_sets_shape.py`** (#284). Negatives first, each pinning the
+  exact class and a `match` on the field (and the set or option index), so none can pass
+  on the "missing required Credential Query id(s)" message or on another failure: the
+  twelve non-conforming top-level values, each with the wallet answering a subset and every
+  query; the non-object entries; the missing, `null`, string, empty, object and number
+  `options`; the empty and flat options; an option holding a number, `null`, a bool, an
+  array (the unhashable case) or an object beside the answered `a` and the unanswered `b`;
+  an unknown, empty or near-miss id; a good set or option followed by a bad one, and the last
+  of several; the nine non-boolean `required` values. Ordering: a malformed `multiple`,
+  `meta`, `require_cryptographic_holder_binding` or a later query with no `id` is reported
+  before a malformed `credential_sets`, which is reported before an unknown `vp_token` key,
+  a non-array and an empty presentation list and a junk Presentation; an empty `vp_token`
+  is still reported first. Controls that pass before and after: the absent key, a
+  well-formed set answered in part and in full, `required` `true` and `false`, `purpose` as
+  a string, number, object and `null`, unknown members, a duplicate id in an option.
+- **`tests/test_dcql_credential_sets_enforced.py`** (#285). The issue's rows B to F, a
+  required set followed by an optional one and the reverse, three required sets with the
+  first, middle and last left out, a two-id option answered by either id alone, and the
+  same through `verify_encrypted_vp_response`, each pinning `type(exc) is VpTokenIncomplete`
+  and the set index. Ordering: an unsatisfied set is reported before an unknown key,
+  `{"pid": "notalist"}`, `{"pid": []}` and a junk Presentation (built on `pid`, so the bad
+  entry cannot satisfy the required set `[["age"]]`), and after a malformed
+  `credential_sets` and a malformed query member. Controls: the issue's rows G, H, I and J,
+  every set optional, a set satisfied by its second option, extra answers returned by
+  `for_query`, the omitted `required` meaning `true`, a complete response with no
+  `credential_sets`, and an unsatisfied response still caught by `except VpTokenMalformed`.
+- **`tests/test_dcql_meta_upfront.py`, `tests/test_dcql_multiple_boolean.py`** (#285). The
+  `missing-required-query-id` case of `LATER_CHECKS` pins the exact class of the
+  missing-query error, which is now `VpTokenIncomplete` (decision 3 above); the other three
+  cases keep `VpTokenMalformed`. No other existing test changed.
+- `test_openid4vp_bare_w3c_vc.py` (new): the positive cases on both lanes and over the DC
+  API (VC-JWT; `ecdsa-jcs-2019`, `eddsa-jcs-2022`, `ecdsa-rdfc-2019`, a derived
+  `ecdsa-sd-2023`); a presentation still accepted and still bound with the flag `false`;
+  the flag `true` / absent rejecting a bare credential without reaching the VP-JWT suite
+  or the pipeline; a bare SD-JWT, a tail-dropped SD-JWT issuer JWT, a VP-JWT, a
+  `VerifiablePresentation`-typed object and an enveloped credential not mis-routed; each
+  ambiguity (both claims, `typ` contradicting the claim in both directions, both types);
+  everything unparseable left to the presentation lane with its exact class; a tampered or
+  wrongly signed bare VC-JWT, a tampered Data Integrity VC, an issuer-binding mismatch, an
+  expired token, an `aud`-restricted token, a presentation-purpose proof on a credential;
+  `require_holder_binding`; `meta.type_values`; `require_status`; and the format pin
+  (`_check_bare_format`). The negatives fail on 1.34.0 and the controls pass there.
+  - **Every argument the caller supplies is pinned to reach the pipeline** (section G,
+    after a mutation run found eight that no test noticed being dropped). The resolver, the
+    W3C status-list resolver (revoked and not revoked, with `require_status` left `False`,
+    on both lanes: a dropped resolver would otherwise skip revocation silently), the IETF
+    token status resolver, `jwt_vc_issuer_fetch`, `x5c_trust_anchors`, `extra_contexts` (for
+    the RDF proof and for `meta.type_values` separately), `leeway_s` (a wider and a zero
+    window against the default) and `now` (a pinned Data Integrity window and an x5c chain
+    check). Dropping or hard-coding any of them in `_verify_bare_w3c_vc` now fails a test.
+    The one argument left unpinned is `kb_max_age_s`: a string with a `~` is never routed
+    here, and `detect_format` calls only such a string an SD-JWT, so no Key Binding JWT can
+    reach the bare route and the argument is inert.
+  - A presentation typed `[VerifiablePresentation, EnvelopedVerifiableCredential]`
+    verifies under every flag; one also typed `VerifiableCredential` is still ambiguous.
+  - A hostile token that looks bare (`alg` `none` or `RS256`, an unknown `crit`) keeps the
+    suite's own class with the flag `false` and is `VpTokenMalformed` otherwise.
 - `tests/test_pyld_context_isolation.py` runs the issue's repro through the real pipeline,
   in one process and in the order that exposes the cache (tenant A's contexts, then tenant
   B's for the same URLs, then none), for an inline `@import` in the credential, a served

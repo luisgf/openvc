@@ -102,7 +102,8 @@ class _SubDatetime(datetime):
 
 
 class _NaiveAstimezone(datetime):
-    """A subclass whose astimezone() hands back a naive datetime."""
+    """A subclass whose astimezone() hands back a naive datetime. Since #286 nothing calls
+    it: the pin is read from the fields and ``tzinfo`` through the base class."""
 
     def astimezone(self, tz=None):
         return datetime(self.year, self.month, self.day, self.hour)
@@ -161,14 +162,24 @@ def test_utc_instant_returns_a_plain_utc_datetime_for_a_subclass():
     assert type(instant) is datetime and instant.tzinfo is UTC and instant == NOW_2021
 
 
-def test_utc_instant_rejects_a_subclass_whose_utc_conversion_lies():
-    # left naive, it would surface later as a bare "can't compare offset-naive and
-    # offset-aware datetimes" TypeError inside the window comparison
-    with pytest.raises(ProofError, match="cannot be read"):
-        utc_instant(_NaiveAstimezone(2021, 1, 1, tzinfo=MINUS_5))
-    with pytest.raises(ProofError):
-        check_validity_window(_WINDOW, {}, now=_NaiveAstimezone(2021, 1, 1, tzinfo=MINUS_5),
-                              leeway_s=60)
+def test_utc_instant_reads_a_subclass_whose_utc_conversion_lies_from_its_fields():
+    # #255 refused this (left naive, astimezone()'s answer would surface later as a bare
+    # "can't compare offset-naive and offset-aware datetimes" TypeError in the window
+    # comparison). #286 (maintainer decision, 2026-10-15): astimezone() is never called,
+    # so the lie cannot reach the comparison and there is nothing to refuse. 2021-01-01
+    # 00:00 at -05:00 is 05:00Z.
+    pin = _NaiveAstimezone(2021, 1, 1, tzinfo=MINUS_5)
+    instant = utc_instant(pin)
+    assert type(instant) is datetime and instant.tzinfo is UTC
+    assert instant == datetime(2021, 1, 1, 5, tzinfo=UTC)
+    assert utc_epoch(pin) == 1609477200                       # 2021-01-01T05:00:00Z
+    # ...and the window is judged at that instant, to the second, on both edges
+    inside = {"validUntil": "2021-01-01T05:00:00Z"}
+    assert check_validity_window(inside, {}, now=pin, leeway_s=0) is False
+    with pytest.raises(CredentialExpired):
+        check_validity_window({"validUntil": "2021-01-01T04:59:59Z"}, {}, now=pin, leeway_s=0)
+    with pytest.raises(CredentialNotYetValid):
+        check_validity_window({"validFrom": "2021-01-01T05:00:01Z"}, {}, now=pin, leeway_s=0)
 
 
 # --------------------------------------------------------------------------- #

@@ -100,7 +100,8 @@ already hold the key. Normally you let the pipeline resolve it from the
   string or an array of strings, and the audience you pass must be a non-empty
   string (a list of audiences is refused, not matched). A VC-JWT without `aud` verifies when you pass no
   audience, and fails when you pass one. VCDM's JWT encoding defines `aud` only for
-  presentations, so most VC-JWTs carry none.
+  presentations, so most VC-JWTs carry none. An SD-JWT VC's issuer JWT is held to the same
+  rule when it has an `aud`, but not when it has none ([SD-JWT VC](SD-JWT-VC)).
 
 ## Signing keys
 
