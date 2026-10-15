@@ -46,7 +46,7 @@ failure names the KB-JWT. Do not treat `EXPIRED` as proof of holder binding. The
 still fails before any KB check. The issuer JWT's `aud` check (*Issuer JWT audience*, below)
 runs after the KB-JWT in the same way, so a `ClaimsInvalid` that names the `issuer JWT aud`
 from a `require_key_binding=True` call also means the presentation was **bound**; it is not
-an expiry, and its message never says "expired".
+an expiry, and its message does not describe one (it quotes only the audience you configured).
 
 **KB-JWT freshness.** RFC 9901 makes the KB-JWT `iat` REQUIRED (§4.3) and has the
 verifier check it is "within an acceptable window" (§7.3 step 5.5). openvc requires
@@ -109,7 +109,10 @@ verifier, and for a holder who presented it, correctly bound, to a different one
 - **A missing `aud` is fine**, with or without an audience. That is the difference from
   VC-JWT, where a token without `aud` fails when you pass an audience: an SD-JWT VC's
   audience is mostly the KB-JWT's, and issuers do not put an `aud` in the credential
-  (neither the RFC 9901 nor the EUDI reference vector pinned in the tests has one).
+  (neither the RFC 9901 nor the EUDI reference vector pinned in the tests has one). With no
+  `aud` the audience you pass is not inspected by this check, so a malformed one (`""`, a
+  non-string) is not rejected by it for such a credential (unchanged from 1.34.0), and is a
+  `ClaimsInvalid` for one that carries `aud`.
 - **The KB-JWT's `aud` is a separate check.** It binds the holder's *presentation* to a
   verifier; it says nothing about a restriction the *issuer* signed, which is what this
   checks. A KB-JWT bound to you does not make a credential addressed to someone else verify.

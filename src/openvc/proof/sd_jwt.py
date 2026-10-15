@@ -688,7 +688,7 @@ class SdJwtVcProofSuite:
         audience is refused, since you cannot be one of them. An issuer JWT with no ``aud``
         verifies as before, with or without an *audience*. The check reads the processed
         payload, runs after the KB-JWT when binding is required, is not an expiry (so
-        *check_temporal* does not waive it, and its message never says "expired"), and
+        *check_temporal* does not waive it, and its message does not describe an expiry), and
         cannot see an ``aud`` disclosure the holder withholds. The KB-JWT's ``aud`` is a
         separate check: it binds the holder's presentation, not the issuer's restriction.
 
@@ -836,7 +836,7 @@ class SdJwtVcProofSuite:
         # overwrite a claim), an `aud` the issuer made disclosable is judged once
         # disclosed, and an array whose entries are digests (RFC 9901 §9.7 lets an issuer
         # do that) is judged on the entries the holder disclosed, not as a malformed array.
-        # No waiver applies, and the message never says "expired" (wiki/SD-JWT-VC.md).
+        # No waiver applies, and the message does not describe an expiry (wiki/SD-JWT-VC.md).
         check_jwt_audience(unpacked, audience, subject="issuer JWT", require_present=False)
 
         # A W3C credential secured as SD-JWT *is* this claim set (VC-JOSE-COSE §3.2.1), and

@@ -152,7 +152,7 @@ must name the `origin:<origin>` form.
 **Where.** On the *processed* payload, after the KB-JWT when `require_key_binding` is set
 (so an issuer-JWT `aud` failure from such a call means the presentation was bound, as for
 the issuer JWT's dates), and not as a temporal check: no expiry waiver reaches it and its
-message never says "expired". The processed payload, rather than the issuer JWT body, is
+message does not describe an expiry (it quotes only the audience the verifier configured). The processed payload, rather than the issuer JWT body, is
 the one read because a plaintext `aud` is copied into it unchanged (a disclosure can never
 overwrite a claim), because an `aud` the issuer made selectively disclosable first appears
 there, and because RFC 9901 §9.7 lets an issuer make *individual entries* of the `aud`

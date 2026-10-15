@@ -44,8 +44,10 @@ All notable changes to **openvc** are documented here. The format follows
     (so an `aud` failure from such a call means the presentation was bound, as for the
     issuer JWT's dates), and not as a temporal check: `require_not_expired=False` does not
     waive it, and its message ("issuer JWT aud does not include …", or "issuer JWT is
-    restricted to an audience (aud) and no audience was given …") never says "expired", which
-    callers read as "bound, but the issuer JWT expired". Reading the processed payload
+    restricted to an audience (aud) and no audience was given …") does not describe an
+    expiry, which callers read as "bound, but the issuer JWT expired" (it quotes only the
+    audience the verifier configured, so an audience that itself contains the word
+    "expired" is the one way the word can appear). Reading the processed payload
     judges an `aud` the issuer made selectively disclosable once it is disclosed, and does
     not call malformed an `aud` array whose entries are `{"...": digest}` objects, which RFC
     9901 §9.7 lets an issuer do (the entries the holder discloses are what is matched; an
@@ -102,8 +104,8 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Tests
 
-- **`tests/test_sd_jwt_issuer_aud.py`** (#227, 180 tests, negatives first, each pinning
-  the exact class and that the message does not say "expired"). Every rejection runs under
+- **`tests/test_sd_jwt_issuer_aud.py`** (#227, 327 tests, negatives first, each pinning
+  the exact class and that the message does not describe an expiry). Every rejection runs under
   the default policy and `require_not_expired=False`, sync and async: `aud` naming someone
   else as a string, an array, `""` and `[]`, with no audience, with a different audience,
   and with a KB-JWT correctly bound to you on both the required-binding and the hosted
@@ -118,14 +120,22 @@ All notable changes to **openvc** are documented here. The format follows
   `dc+sd-jwt` lane and the DC API origin form; the helper's `require_present` modes;
   and the unchanged cases (no `aud` with and without an audience, the two third-party
   vectors and the OpenID4VP capture still verifying with an audience, a forged `aud`
-  failing on the signature).
-- **Mutation check.** Run on 65c1e03 (`git archive`), the new file has 133 failures and 47
-  passes, the 47 being the accept-side controls. Thirteen targeted mutants of the change
+  failing on the signature). A final section pins the W3C VCDM payloads the first
+  version of the file never minted: a hand-minted credential with `typ` absent,
+  `vc+sd-jwt`, `vc+ld+json+sd-jwt` (each with and without `iss`, #290) and `dc+sd-jwt`,
+  `aud` naming someone else rejected with no audience, with a different one and behind a
+  correct KB-JWT, `aud` naming the verifier (alone or in an array) verifying with
+  `vcdm` true, and no `aud` unchanged.
+- **Mutation check.** Run on 65c1e03 (`git archive`), the new file has 224 failures and 103
+  passes, the 103 being the accept-side controls. Thirteen targeted mutants of the change
   (checking the signed body instead of the processed payload, requiring `aud`, no check,
   no audience accepted, a message that says "expired", an unvalidated expected audience,
   the present-only mode returning on a present `aud`, an unvalidated shape, the waiver
   skipping the check, a substring or case-insensitive match, a mismatch ignored, and the
-  body checked before the KB-JWT) are each killed.
+  body checked before the KB-JWT) are each killed. Five more (skipping the check for a VCDM
+  payload, for a token with no `typ`, for one with no `iss`, or for `vc+sd-jwt` or
+  `vc+ld+json+sd-jwt`) survived the first version of the file and the 1974 tests around
+  it, which is why the VCDM section exists; each is killed by it.
 
 ## [1.34.0] — 2026-10-15
 

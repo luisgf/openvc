@@ -12,7 +12,7 @@ The rule, present-only (the one asymmetry with VC-JWT, whose ``aud`` must be the
 audience is expected): ``aud`` absent -> unchanged; ``aud`` present -> a string or an array
 of strings, and the caller's audience must be one of them, so with no audience a restricted
 credential is refused. It is read on the processed payload, after the KB-JWT when binding is
-required, and it is not an expiry: no waiver reaches it and no message says "expired".
+required, and it is not an expiry: no waiver reaches it and no message describes an expiry.
 
 Every case runs under the default policy and ``require_not_expired=False`` where it can.
 Helpers are self-contained (tests/ is not a package: nothing is imported from another test
@@ -135,7 +135,8 @@ def run(request):
 
 def _refused(call, *, match: str) -> ClaimsInvalid:
     """*call* raises exactly ``ClaimsInvalid`` (not a subclass, not an earlier failure),
-    matching *match*, and the message is not an expiry verdict (wiki/SD-JWT-VC.md)."""
+    matching *match*, and the message is not an expiry verdict (wiki/SD-JWT-VC.md; the audiences
+    used here never contain the word, which is the only way it could appear)."""
     with pytest.raises(ClaimsInvalid, match=match) as excinfo:
         call()
     assert excinfo.type is ClaimsInvalid
@@ -659,3 +660,109 @@ def test_a_forged_issuer_aud_still_fails_on_the_signature_first():
     with pytest.raises(SignatureInvalid) as excinfo:
         SUITE.verify(forged_token, public_key_jwk=KEY.public_jwk(), audience=ME)
     assert excinfo.type is SignatureInvalid
+
+
+# --------------------------------------------------------------------------- #
+# J. a W3C VCDM payload: every `typ` it may carry, with and without `iss` (#290)
+# --------------------------------------------------------------------------- #
+# The check is not gated on the payload's shape or on `typ`: a W3C credential secured as an
+# SD-JWT, typed `vc+sd-jwt` / `vc+ld+json+sd-jwt`, typed `dc+sd-jwt`, or carrying no `typ`
+# at all, is held to the issuer's `aud` like an IETF one. A VCDM payload with no `iss` is
+# keyed on its `issuer` (#290), and a typ-less one is the shape a bare W3C JWS with a `~`
+# appended takes on its way here. `SUITE.issue` writes neither (it always writes `dc+sd-jwt`
+# and needs a `vct`), so the token is minted by hand; helpers are copied, not imported.
+
+NO_TYP = None                             # `_mint_vcdm(typ=NO_TYP)`: no `typ` member at all
+VCDM_SHAPES = pytest.mark.parametrize("typ, with_iss", [
+    pytest.param(NO_TYP, True, id="no-typ-iss"),
+    pytest.param(NO_TYP, False, id="no-typ-no-iss"),
+    pytest.param("vc+sd-jwt", True, id="vc+sd-jwt-iss"),
+    pytest.param("vc+sd-jwt", False, id="vc+sd-jwt-no-iss"),
+    pytest.param("vc+ld+json+sd-jwt", True, id="draft-typ-iss"),
+    pytest.param("vc+ld+json+sd-jwt", False, id="draft-typ-no-iss"),
+    # `dc+sd-jwt` needs an `iss` (the VCDM `issuer` stands in only for a W3C typ or none)
+    pytest.param("dc+sd-jwt", True, id="dc+sd-jwt-iss"),
+])
+
+
+def _vcdm_issued(aud=ABSENT, *, typ, with_iss: bool) -> str:
+    """A W3C VCDM credential from ``DID`` as an SD-JWT (no disclosures), bound to ``HOLDER``,
+    with the issuer JWT ``aud`` *aud*; *typ* ``NO_TYP`` writes no ``typ`` member."""
+    body = {
+        "@context": [V2], "type": ["VerifiableCredential"], "issuer": DID,
+        "validFrom": "2020-01-01T00:00:00Z",
+        "credentialSubject": {"given_name": "Ada"},
+        "cnf": {"jwk": HOLDER.public_jwk()},
+    }
+    if with_iss:
+        body["iss"] = DID
+    if typ == "dc+sd-jwt":
+        body["vct"] = VCT
+    if aud is not ABSENT:
+        body["aud"] = aud
+    header = {"alg": "ES256", "kid": f"{DID}#0"}
+    if typ is not NO_TYP:
+        header["typ"] = typ
+    signing_input = f"{_b64(json.dumps(header).encode())}.{_b64(json.dumps(body).encode())}"
+    return f"{signing_input}.{_b64(KEY.sign(signing_input.encode('ascii')))}~"
+
+
+@POLICY_KW
+@VCDM_SHAPES
+def test_a_vcdm_credential_restricted_to_others_is_rejected_without_an_audience(
+        run, typ, with_iss, waiver):
+    token = _vcdm_issued(OTHER, typ=typ, with_iss=with_iss)
+    _refused(lambda: run(token, _policy(waiver)), match=NO_AUDIENCE)
+    # ... and a restriction that names the verifier is no better off with nobody to be
+    named = _vcdm_issued(ME, typ=typ, with_iss=with_iss)
+    _refused(lambda: run(named, _policy(waiver)), match=NO_AUDIENCE)
+
+
+@POLICY_KW
+@VCDM_SHAPES
+def test_a_vcdm_credential_restricted_to_others_is_rejected_for_the_policy_audience(
+        run, typ, with_iss, waiver):
+    token = _vcdm_issued(OTHER, typ=typ, with_iss=with_iss)
+    _refused(lambda: run(token, _policy(waiver, audience=ME)), match=NOT_NAMED)
+    token = _vcdm_issued([OTHER, "https://third.example"], typ=typ, with_iss=with_iss)
+    _refused(lambda: run(token, _policy(waiver, audience=ME)), match=NOT_NAMED)
+
+
+@POLICY_KW
+@VCDM_SHAPES
+def test_a_vcdm_credential_restricted_to_others_is_rejected_with_a_correct_kb_jwt(
+        run, typ, with_iss, waiver):
+    token = _present(_vcdm_issued(OTHER, typ=typ, with_iss=with_iss))
+    _refused(lambda: run(token, _kb_policy(waiver)), match=NOT_NAMED)
+    hosted = _policy(waiver, audience=ME, nonce=NONCE)
+    _refused(lambda: run(token, hosted), match=NOT_NAMED)
+
+
+@VCDM_SHAPES
+def test_a_vcdm_credential_restricted_to_others_is_rejected_by_the_suite(typ, with_iss):
+    token = _vcdm_issued(OTHER, typ=typ, with_iss=with_iss)
+    _refused(lambda: SUITE.verify(token, public_key_jwk=KEY.public_jwk()), match=NO_AUDIENCE)
+    _refused(lambda: SUITE.verify(token, public_key_jwk=KEY.public_jwk(), audience=ME),
+             match=NOT_NAMED)
+
+
+@POLICY_KW
+@VCDM_SHAPES
+def test_a_vcdm_credential_naming_the_audience_verifies(run, typ, with_iss, waiver):
+    # Control: the same credential, `aud` naming the verifier, is a W3C credential that
+    # verifies, so the rejections above are the audience and not some other refusal.
+    for aud in (ME, [OTHER, ME]):
+        token = _vcdm_issued(aud, typ=typ, with_iss=with_iss)
+        result = run(token, _policy(waiver, audience=ME))
+        assert result.raw.vcdm is True
+        bound = run(_present(token), _kb_policy(waiver))
+        assert bound.raw.vcdm is True and bound.key_bound is True
+
+
+@POLICY_KW
+@VCDM_SHAPES
+def test_a_vcdm_credential_without_an_aud_is_unchanged(run, typ, with_iss, waiver):
+    token = _vcdm_issued(typ=typ, with_iss=with_iss)
+    assert run(token, _policy(waiver)).raw.vcdm is True
+    assert run(token, _policy(waiver, audience=ME)).raw.vcdm is True
+    assert run(_present(token), _kb_policy(waiver)).key_bound is True
