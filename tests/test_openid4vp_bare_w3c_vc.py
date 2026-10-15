@@ -388,7 +388,11 @@ def test_a_bare_sd_jwt_is_not_routed_under_jwt_vc_json(issuer, holder, flag, mon
     _pipeline_unreachable(monkeypatch)
     for token in (_sd_jwt_with_kb(issuer, holder),
                   _jws(issuer, _vc_jwt_claims(issuer), typ="dc+sd-jwt") + "~"):
-        with pytest.raises(MalformedToken, match="not a valid compact JWS") as info:
+        # The VP lane refuses it with the same class on every Python, but the reason differs:
+        # a trailing `~` breaks the base64 padding of the signature segment up to 3.14 ("not
+        # a valid compact JWS"), while 3.15's decoder tolerates it and the typ fence answers.
+        with pytest.raises(
+                MalformedToken, match="not a valid compact JWS|is not a VC-JWT") as info:
             _verify("jwt_vc_json", token, flag)
         assert type(info.value) is MalformedToken
 
