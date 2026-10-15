@@ -382,16 +382,25 @@ def _collect_described_elsewhere(value: Any, entries: dict[str, set[str]],
                 item, entries, moved, in_status=top and key == _CREDENTIAL_STATUS)
 
 
+# The longest type name `_brief` prints; a longer one (a metaclass can return any string from
+# `__name__`) is cut.
+_NAME_MAX = 64
+
+
 def _brief(value: Any) -> str:
     """*value* for an error message: a string is cut to 100 characters (before ``repr()``,
     so a huge one is never copied whole), anything else is named by its type. Total for a
     caller's object too: a ``str`` subclass is read through ``str.__str__``, never its own
-    ``__repr__``, ``__len__`` or ``__getitem__``, and what still fails is ``an object``."""
+    ``__repr__``, ``__len__`` or ``__getitem__``, and what still fails is ``an object``. A
+    type name longer than 64 characters is cut too (a metaclass can return any string from
+    ``__name__``)."""
     try:
         if isinstance(value, str):
             return repr(str.__str__(value)[:100])[:100]
         name = type(value).__name__
-        return name if type(name) is str else "an object"
+        if type(name) is not str:
+            return "an object"
+        return name if len(name) <= _NAME_MAX else name[:_NAME_MAX] + "..."
     except Exception:
         return "an object"
 

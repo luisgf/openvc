@@ -21,13 +21,14 @@ parser returns can carry a custom dunder, so no verifier input reaches it.
 
 Layout: the helper matrix (every hostile object through every helper, with the exact text),
 the status entry points that reach ``brief`` with a caller's object, ``did:web`` (a success
-path, since ``_check_host`` formatted the DID before any check) and ``non_negative_seconds``
-(a raw ``{value!r}``). Controls come last, as separate functions: they pass on the unfixed
-tree too, which is their point. Every refusal is asserted against the EXACT class, so a test
-cannot pass on an earlier or a different failure. Hostile objects are built inside the
-tests, never held by a parameter: pytest builds a parameter id by calling ``str()``, which
-on an ``int`` subclass calls its ``__repr__``. Helpers are self-contained (tests/ is not a
-package: no cross-import).
+path, since ``_check_host`` formatted the DID before any check, and the id-mismatch refusal,
+which formats the fetched document's ``id`` too: that one is wire data, so it is also bounded)
+and ``non_negative_seconds`` (a raw ``{value!r}``). Controls come last, as separate
+functions: they pass on the unfixed tree too, which is their point. Every refusal is
+asserted against the EXACT class, so a test cannot pass on an earlier or a different
+failure. Hostile objects are built inside the tests, never held by a parameter: pytest builds
+a parameter id by calling ``str()``, which on an ``int`` subclass calls its ``__repr__``.
+Helpers are self-contained (tests/ is not a package: no cross-import).
 """
 from __future__ import annotations
 
@@ -145,6 +146,16 @@ class RaisingNameType(metaclass=_RaisingName):
     pass
 
 
+class _LongName(type):
+    @property
+    def __name__(cls) -> str:      # type: ignore[override]
+        return "N" * 5_000_000
+
+
+class LongNameType(metaclass=_LongName):
+    pass
+
+
 class _NonStrName(type):
     @property
     def __name__(cls) -> Any:      # type: ignore[override]
@@ -156,11 +167,14 @@ class NonStrNameType(metaclass=_NonStrName):
 
 
 # --------------------------------------------------------------------------- #
-# the helper matrix: 13 objects x 3 helpers, each with the exact text
+# the helper matrix: 15 objects x 3 helpers, each with the exact text
 # --------------------------------------------------------------------------- #
 
 # (id, make, brief, safe_repr, _brief). The 12th row is the issue's metaclass case; the 13th
-# is its sibling, a metaclass whose __name__ is not a string.
+# is its sibling, a metaclass whose __name__ is not a string; the 14th and 15th are a type name
+# of 5 million characters (a metaclass's __name__, and a class created with that name), which
+# is cut to 64 characters.
+_CUT = "N" * 64 + "..."
 MATRIX = [
     ("int-repr-raises", lambda: BadInt(5), "5", "5", "BadInt"),
     ("float-repr-raises", lambda: BadFloat(1.5), "1.5", "1.5", "BadFloat"),
@@ -176,6 +190,8 @@ MATRIX = [
     ("str-repr-1MB", lambda: HugeReprStr("abc"), "'abc'", "'abc'", "'abc'"),
     ("metaclass-name-raises", lambda: RaisingNameType(), OBJ, OBJ, OBJ),
     ("metaclass-name-non-str", lambda: NonStrNameType(), OBJ, OBJ, OBJ),
+    ("metaclass-name-5MB", lambda: LongNameType(), "a " + _CUT, _CUT, _CUT),
+    ("type-name-5MB", lambda: type("N" * 5_000_000, (), {})(), "a " + _CUT, _CUT, _CUT),
 ]
 MATRIX_IDS = [row[0] for row in MATRIX]
 HELPERS = {"brief": (brief, 2), "safe_repr": (safe_repr, 3), "_brief": (_brief, 4)}
@@ -208,6 +224,19 @@ def test_a_test_double_that_claims_to_be_a_scalar_is_an_object() -> None:
         assert brief(Mock(spec=spec)) == OBJ
         assert safe_repr(Mock(spec=spec)) == OBJ
     assert _brief(Mock(spec=str)) == OBJ
+
+
+def test_a_type_name_is_shown_up_to_64_characters_and_cut_past_it() -> None:
+    for length in (1, 63, 64):
+        name = "T" * length
+        obj = type(name, (), {})()
+        assert brief(obj) == "a " + name
+        assert safe_repr(obj) == name
+        assert _brief(obj) == name
+    over = type("T" * 65, (), {})()
+    assert brief(over) == "a " + "T" * 64 + "..."
+    assert safe_repr(over) == "T" * 64 + "..."
+    assert _brief(over) == "T" * 64 + "..."
 
 
 def test_a_str_subclass_is_cut_and_counted_from_the_characters_it_holds() -> None:
@@ -464,6 +493,64 @@ def test_did_web_refuses_a_bad_did_given_as_a_str_subclass_with_a_typed_error(
     assert type(caught.value) is DidResolutionError, repr(caught.value)
     assert "'did:web:exa mple.com'" in str(caught.value)
     assert "is not a domain name" in str(caught.value)
+
+
+# The id-mismatch refusal formats two values: the DID the caller asked for (a caller's object)
+# and the fetched document's id (wire data, so unbounded until now). Both go through safe_repr.
+MISMATCH_DOCS = [
+    ("other-id", {"id": "did:web:other.example"}, "'did:web:other.example'"),
+    ("no-id", {}, "''"),
+    ("non-string-id", {"id": 5}, "''"),
+]
+
+
+def _mismatch(make_did: Callable[[], str], doc: dict[str, Any]) -> Exception:
+    with pytest.raises(Exception) as caught:
+        DidWebResolver(lambda url: doc).resolve(make_did())
+    return caught.value
+
+
+@pytest.mark.parametrize("make", [BadStr, LenStr, HugeReprStr],
+                         ids=["repr-raises", "len-raises", "repr-1MB"])
+@pytest.mark.parametrize("row", MISMATCH_DOCS, ids=[r[0] for r in MISMATCH_DOCS])
+def test_did_web_mismatch_with_a_str_subclass_did_is_a_typed_error(
+        make: type, row: tuple) -> None:
+    exc = _mismatch(lambda: make(HOST_DID), row[1])
+    assert type(exc) is DidResolutionError, repr(exc)
+    assert str(exc) == f"document id {row[2]} != requested '{HOST_DID}'"
+
+
+@pytest.mark.parametrize("make", [BadStr, LenStr, HugeReprStr],
+                         ids=["repr-raises", "len-raises", "repr-1MB"])
+@pytest.mark.parametrize("row", MISMATCH_DOCS, ids=[r[0] for r in MISMATCH_DOCS])
+def test_did_web_async_mismatch_with_a_str_subclass_did_is_a_typed_error(
+        make: type, row: tuple) -> None:
+    async def fetch(url: str) -> dict[str, Any]:
+        return row[1]
+
+    with pytest.raises(Exception) as caught:
+        asyncio.run(AsyncDidWebResolver(fetch).resolve(make(HOST_DID)))
+    assert type(caught.value) is DidResolutionError, repr(caught.value)
+    assert str(caught.value) == f"document id {row[2]} != requested '{HOST_DID}'"
+
+
+def test_did_web_mismatch_cuts_a_huge_document_id() -> None:
+    # The id is whatever the server's did.json says: 5 million characters used to come back
+    # as a 5-million-character message.
+    exc = _mismatch(lambda: HOST_DID, {"id": "x" * 5_000_000})
+    assert type(exc) is DidResolutionError, repr(exc)
+    assert str(exc) == (f"document id {'x' * 200!r}... (5000000 chars) != requested '{HOST_DID}'")
+
+
+def test_did_web_async_mismatch_cuts_a_huge_document_id() -> None:
+    async def fetch(url: str) -> dict[str, Any]:
+        return {"id": "x" * 5_000_000}
+
+    with pytest.raises(Exception) as caught:
+        asyncio.run(AsyncDidWebResolver(fetch).resolve(HOST_DID))
+    assert type(caught.value) is DidResolutionError, repr(caught.value)
+    assert len(str(caught.value)) < 400
+    assert "(5000000 chars)" in str(caught.value)
 
 
 # --------------------------------------------------------------------------- #

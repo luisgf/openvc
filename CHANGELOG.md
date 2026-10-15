@@ -12,7 +12,9 @@ All notable changes to **openvc** are documented here. The format follows
   ([#282](https://github.com/luisgf/openvc/issues/282)). Hardening, caller-only, no
   wrong-accept: nothing a JSON, CBOR or XML parser returns can carry a custom dunder, so no
   credential, token or response reaches this, and every path that failed was a refusal (the
-  one false refusal is the `did:web` case below). `brief()` (`openvc.status`, 32 call sites), `safe_repr()`
+  one false refusal is the `did:web` case below). One message in this change does echo wire
+  data, the `id` of a fetched `did.json` in the `did:web` mismatch refusal, and it is cut now
+  (also below). `brief()` (`openvc.status`, 32 call sites), `safe_repr()`
   (`openvc.proof`, 91 call sites in 20 modules, `openvc_ebsi` included) and `_brief()` (the
   Data Integrity context check, 6 call sites) exist so that reporting a bad value cannot itself
   fail. They bounded the length and named a container by its type, which settled deep nesting
@@ -35,7 +37,12 @@ All notable changes to **openvc** are documented here. The format follows
   - **A success path.** `did_web._check_host` formatted the DID with `safe_repr()` before any
     check, so `DidWebResolver.resolve` and `AsyncDidWebResolver.resolve` failed on a *valid* DID
     given as a `str` subclass whose `__repr__` raises. They resolve it; an invalid one is a
-    `DidResolutionError`.
+    `DidResolutionError`. The refusal for a document whose `id` is not the requested DID (or
+    has none) formatted both values with a raw `!r`, so a hostile DID gave the dunder's
+    exception there and the document's `id`, which is wire data, came back whole: a 5,000,000
+    character `id` made a 5,000,049 character `DidResolutionError`. Both go through
+    `safe_repr()` now (`_validated_document`, shared by the sync and async resolvers); a plain
+    DID and an `id` of 200 characters or fewer read as before.
 
   `non_negative_seconds` (`SdJwtVcProofSuite(leeway_s=...)`, `SdJwtVcProofSuite.verify(
   kb_max_age_s=...)`, `verify_vp_token(leeway_s=..., kb_max_age_s=...)`) formatted its value
@@ -54,16 +61,22 @@ All notable changes to **openvc** are documented here. The format follows
 
   **Behaviour change, message text only.** Plain values render byte for byte as before
   (pinned by controls that pass on the unfixed tree). What changes:
-  - A subclass is shown as the number or characters it holds, not by its own `repr()`, the
-    stance `plain_int` / `plain_str` already take: `brief(E.A)` for an `IntEnum` was
+  - A subclass is shown as the number or characters it holds (cut, or named by its size,
+    when long, as a plain value is), not by its own `repr()`, the stance `plain_int` /
+    `plain_str` already take: `brief(E.A)` for an `IntEnum` was
     `<E.A: 1>` and is `1`; `safe_repr(S.A)` and `_brief(S.A)` for a `StrEnum` were
     `<S.A: 'a'>` and are `'a'`.
-  - `non_negative_seconds` names a container or an int past 64 bits by its type, as
-    `safe_repr` does everywhere else: `leeway_s must be a non-negative int (seconds), got
-    list`, where it used to print the list; `got int` for `-(2**64)`.
+  - `non_negative_seconds` cuts a string longer than 200 characters (`got 'xxxx...'...
+    (500 chars)`, where it used to print all 500) and names a container or an int past 64
+    bits by its type, as `safe_repr` does everywhere else: `leeway_s must be a non-negative
+    int (seconds), got list`, where it used to print the list; `got int` for `-(2**64)`.
   - `_brief` cuts a string to 100 characters *before* `repr()`, so on a string longer than
     100 characters the quote style (`'` or `"`) is chosen from its first 100 characters, not
     from the whole string. Diagnostic text only.
+  - A type name longer than 64 characters is cut and ends in `...` (`brief`: `a NNNN...`).
+  - The `did:web` id-mismatch message prints the DID and the document `id` through
+    `safe_repr()`: the same text for a plain value of up to 200 characters, a longer one cut
+    with its length (`'xxxx...'... (5000000 chars)`).
 
   **Maintainer decisions taken in this change:**
   - The fallback word is `an object`, in all three helpers, although `brief` says
@@ -72,9 +85,18 @@ All notable changes to **openvc** are documented here. The format follows
   - A type whose `__name__` is not a `str` falls back to `an object` too, so the three
     helpers return a `str` whatever a metaclass says (the issue named only a `__name__` that
     raises).
+  - A type name is cut to 64 characters and ends in `...` in all three helpers (one number,
+    not each helper's own value limit: it is a name, not a value, and a class name is far
+    shorter), because a metaclass can return any string from `__name__`; a 5,000,000 character
+    one gave a 5,000,002 character message. A class name of 64 characters or fewer prints as
+    before.
+  - The `did:web` id-mismatch message is in scope although the other raw `!r` sites are not:
+    the claim that `resolve()` handles a hostile `str` subclass for a valid DID holds only if
+    that refusal is total too, and the document `id` it echoes is wire data.
   - The three helpers stay three. Their limits differ (32, 200 and 100 characters) and `status`
     cannot import from `proof`.
-  - Left as it is, out of this issue's scope: the raw `!r` fields and the inline
+  - Left as it is, out of this issue's scope (the `did:web` id-mismatch message, above, is
+    the one exception): the raw `!r` fields and the inline
     `type(x).__name__` sites besides these helpers (a mechanical sweep with no accept-set
     change, its own issue); data-path consumers of a `str` subclass, such as `_did_web_url`
     slicing the DID through the subclass's own `__getitem__` (a question of which bytes are
@@ -84,27 +106,34 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Tests
 
-- **`tests/test_message_helpers_total.py`** (#282). 137 tests, self-contained (`tests/` is not
+- **`tests/test_message_helpers_total.py`** (#282). 164 tests, self-contained (`tests/` is not
   a package), with the hostile objects built inside the tests because pytest builds a
   parameter id by calling `str()`, which on an `int` subclass calls its `__repr__`. The helper
-  matrix runs 13 objects (an `int` and a `float` subclass with a raising `__repr__`; a `str`
+  matrix runs 15 objects (an `int` and a `float` subclass with a raising `__repr__`; a `str`
   subclass with a raising `__repr__`, `__len__` and `__getitem__`; an `int` subclass with a
   raising `bit_length`; one of 10**5000 whose `bit_length` returns 1; an `int` and a `float`
   subclass whose `__repr__` returns a non-`str`; an `int` and a `str` subclass whose `__repr__`
   returns 1 MB; a type whose metaclass `__name__` raises, and one whose `__name__` is not a
-  string) through each of the three helpers, asserting the exact text. 46 status entry points
+  string; a type name of 5 million characters, from a metaclass and from `type(name, ...)`)
+  through each of the three helpers, asserting the exact text; a separate test pins the 64
+  character edge (63, 64 and 65 characters). 46 status entry points
   (the builders, the codecs and the checks, one hostile object per parameter that reaches
   `brief`) assert the exact class `StatusListError` and the message. `did:web` resolves a
-  valid DID given as a hostile `str` subclass (sync and async) and refuses an invalid one with
-  exactly `DidResolutionError`. `non_negative_seconds`, `SdJwtVcProofSuite(leeway_s=...)`,
+  valid DID given as a hostile `str` subclass (sync and async), refuses an invalid one with
+  exactly `DidResolutionError`, and refuses a document whose `id` is another DID, missing or
+  not a string with exactly `DidResolutionError` and the exact message, for a DID that is a
+  hostile `str` subclass (sync and async), and cuts a 5-million-character `id`. `non_negative_seconds`, `SdJwtVcProofSuite(leeway_s=...)`,
   `SdJwtVcProofSuite.verify(kb_max_age_s=...)` and `verify_vp_token(leeway_s=..., kb_max_age_s=...)`
   raise exactly `ProofError`, `SdJwtError` and `OpenID4VPError` with the exact message. Controls
   that pass before and after pin the plain-value text of all three helpers and of
-  `non_negative_seconds`. Against `65c1e03` 116 fail and 21 pass (the 6 controls, the structural
+  `non_negative_seconds`. Against `65c1e03` 143 fail and 21 pass (the 6 controls, the structural
   check and 14 cells that were already total: the `str` cells of `brief`, the numeric cells of
   `_brief`, a lying `str.__getitem__` on `safe_repr`); 24 targeted mutants of the fix (each
   call of a method of the value restored, each `try` / `except` and `str`-name guard removed,
-  each limit moved by one) are each killed.
+  each limit moved by one) are each killed, and so are 14 more for the type-name cut and the
+  `did:web` message (each of the three cuts removed, moved by one either way and its `...`
+  dropped; each of the two `safe_repr()` calls in `_validated_document` put back as `!r`,
+  which fails 14 tests when both are).
 
 ## [1.34.0] — 2026-10-15
 

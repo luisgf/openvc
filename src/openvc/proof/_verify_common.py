@@ -61,6 +61,10 @@ def reject_unknown_crit(header: dict[str, Any]) -> None:
 # attacker-sized string never becomes an attacker-sized log line.
 _SHOWN_MAX = 200
 
+# The longest type name `safe_repr` prints in place of a value; a longer one (a metaclass can
+# return any string from `__name__`) is cut.
+_NAME_MAX = 64
+
 
 def safe_repr(value: Any) -> str:
     """*value* for an error message, when it is attacker-shaped JSON — or any object a
@@ -79,7 +83,8 @@ def safe_repr(value: Any) -> str:
     ``bit_length``) can neither raise out of the message nor lengthen it: it is shown as
     the characters or the number it holds. Anything that still fails (a type whose
     metaclass ``__name__`` raises, a test double that claims to be an ``int``) is
-    ``an object``."""
+    ``an object``. A type name longer than 64 characters is cut too (a metaclass can return
+    any string from ``__name__``), so no object lengthens the message."""
     try:
         if isinstance(value, str):
             text = str.__str__(value)      # a subclass's __len__ / __getitem__ / __repr__ may raise
@@ -93,7 +98,9 @@ def safe_repr(value: Any) -> str:
         if isinstance(value, int) and int.bit_length(value) <= 64:
             return int.__repr__(value)
         name = type(value).__name__
-        return name if type(name) is str else "an object"
+        if type(name) is not str:
+            return "an object"
+        return name if len(name) <= _NAME_MAX else name[:_NAME_MAX] + "..."
     except Exception:
         return "an object"
 

@@ -41,6 +41,10 @@ MAX_STATUS_INDEX = MAX_DECOMPRESSED_BYTES * 8
 
 _MAX_DIGITS = len(str(MAX_STATUS_INDEX))
 
+# The longest type name `brief` prints; a longer one (a metaclass can return any string from
+# `__name__`) is cut, so no object makes the message longer than its own bounded text.
+_NAME_MAX = 64
+
 
 def brief(value: Any) -> str:
     """A short, safe rendering of a hostile status value for an error message. Never calls
@@ -54,7 +58,8 @@ def brief(value: Any) -> str:
     lies or returns megabytes is shown as the characters or the number it holds. Anything
     that still fails (a type whose metaclass ``__name__`` raises, a test double that
     claims to be an ``int``) is ``an object``: reporting a bad value must not itself
-    raise."""
+    raise. A type name longer than 64 characters is cut too (a metaclass can return any
+    string from ``__name__``), so no object lengthens the message."""
     try:
         if isinstance(value, str):
             value = plain_str(value)       # a subclass's __getitem__ / __len__ may raise or lie
@@ -67,7 +72,9 @@ def brief(value: Any) -> str:
         if isinstance(value, float):
             return float.__repr__(value)
         name = type(value).__name__
-        return f"a {name}" if type(name) is str else "an object"
+        if type(name) is not str:
+            return "an object"
+        return f"a {name}" if len(name) <= _NAME_MAX else f"a {name[:_NAME_MAX]}..."
     except Exception:
         return "an object"
 
