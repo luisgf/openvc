@@ -1050,10 +1050,16 @@ Every bullet below is something that used to succeed, or fail differently, and n
     it cannot be checked; it could not be signed either (`ValueError`, `RecursionError` or
     `TypeError` at sign). A *member* that is not JSON (`bytes`, a `set`) is unchanged: it
     builds and fails at sign.
+  - **Behaviour change, by decision (#309): the rule is the same on every lane.** An
+    `issuer` or context object with a marker member that built and verified on
+    `eddsa-jcs-2022` or `ecdsa-jcs-2019` is refused at build time too. The builder cannot
+    know which lane will secure the list, and VC-JWT, the default, refuses it.
   - **Not changed:** the fence itself and the zero-disclosure SD-JWT residual it
     documents, the verify side, and the IETF Token Status List builder (it takes no
-    caller-supplied object). Data Integrity lists with such members were never a
-    documented shape.
+    caller-supplied object). The check is a build-time snapshot of the object the builder
+    copies: a nested member stays the caller's own object, and one changed afterwards
+    can still produce a list the lane refuses. Data Integrity lists with such members
+    were never a documented shape.
   - The property test `test_property_whatever_the_builder_accepts_the_pipeline_accepts`
     failed now and then on a clean `main`: its strategy drew a marker name from
     `text(max_size=6)` rarely, and its model called that issuer valid. That was this
@@ -1278,8 +1284,8 @@ Every bullet below is something that used to succeed, or fail differently, and n
   signed around the builder; and a Hypothesis property with the counterexample of #309
   pinned as an `@example`. In `tests/test_status_builders_inputs.py` the model and the
   strategies now exclude the marker names, and the refusal properties pin the
-  counterexamples. Against `origin/main` the old property fails on Hypothesis seeds 37 and 56
-  (`MalformedToken`) and passes on 1 to 5; on this branch the updated one passes on seeds 1
+  counterexamples. Against `origin/main` the old property fails on Hypothesis seeds 36 and 56
+  (`MalformedToken`; Hypothesis 6.156.1, example database cleared) and passes on 1 to 5; on this branch the updated one passes on seeds 1
   to 150. Mutation check on `origin/main`: 121 of the 477 cases in the two files fail and the
   controls pass; seven mutants of the fix (no issuer check, no context check, the
   predicate never true, top level only, the predicate on the Python object, no typed error
