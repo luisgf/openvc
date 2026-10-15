@@ -17,7 +17,9 @@ The rules pinned here, set by the maintainer on 2026-10-15:
   never reaches the VP-JWT suite as if it were a presentation;
 * the routing is pinned: a bare value under ``jwt_vc_json`` verifies as a VC-JWT and never
   as an SD-JWT or a VP-JWT; under ``ldp_vc`` it is a Data Integrity credential with no
-  ``VerifiablePresentation`` type; an ``EnvelopedVerifiableCredential`` is not accepted;
+  ``VerifiablePresentation`` type; an ``EnvelopedVerifiableCredential`` is not accepted as a
+  bare credential (an object typed ``VerifiablePresentation`` is a presentation whatever
+  else it lists);
 * "bare" is decided fail-closed: for a JWT by its payload claim (``vc`` object, no ``vp``),
   with the JOSE ``typ`` as a cross-check; for a JSON object by its ``type``. Anything
   positively ambiguous is refused, anything that is not positively a credential is left to
@@ -31,7 +33,10 @@ resolution failure, and the assertions name the exact exception class.
 """
 from __future__ import annotations
 
+import base64
+import json
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -47,17 +52,30 @@ from openvc.openid4vp import (
     verify_vp_token,
 )
 from openvc.proof._jws import sign_compact
+from openvc.proof.contexts import DocumentLoaderError
 from openvc.proof.di_jcs import EcdsaJcsProofSuite, EddsaJcsProofSuite
 from openvc.proof.errors import (
     ClaimsInvalid,
+    CredentialExpired,
+    CredentialNotYetValid,
     MalformedToken,
     PresentationBindingError,
     ProofPurposeMismatch,
     SignatureInvalid,
+    UnsupportedAlgorithm,
 )
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
 from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.proof.vp_jwt import VpJwtProofSuite
+from openvc.status import (
+    STATUS_INVALID,
+    CredentialRevoked,
+    encode_bitstring,
+    encode_status_list,
+    new_status_list,
+    set_status,
+    set_status_bit,
+)
 from openvc.verify import (
     FORMAT_DI_ECDSA_JCS,
     FORMAT_DI_ECDSA_RDFC,
@@ -68,6 +86,7 @@ from openvc.verify import (
     FORMAT_SD_JWT_VC,
     FORMAT_VC_JWT,
     IssuerBindingError,
+    KeyResolutionFailed,
     VerificationResult,
 )
 
@@ -488,7 +507,8 @@ def test_each_lane_keeps_to_its_own_encoding(issuer, lane):
 
 @pytest.mark.parametrize("flag", [False, *REQUIRED])
 def test_an_enveloped_credential_is_not_accepted_under_ldp_vc(issuer, flag, monkeypatch):
-    # Not mentioned for these formats in OpenID4VP §B.1: left out of this change.
+    # Not mentioned for these formats in OpenID4VP §B.1: left out of this change. (An object
+    # typed VerifiablePresentation is not this case: see the test below.)
     _bare_lane_unreachable(monkeypatch)
     inner = _vc_jwt(issuer)
     for types in (["EnvelopedVerifiableCredential"],
@@ -496,6 +516,63 @@ def test_an_enveloped_credential_is_not_accepted_under_ldp_vc(issuer, flag, monk
         env = {"@context": [V2], "type": types, "id": f"data:application/vc+jwt,{inner}"}
         with pytest.raises(VpTokenMalformed, match="EnvelopedVerifiableCredential") as info:
             _verify("ldp_vc", env, flag)
+        assert type(info.value) is VpTokenMalformed
+
+
+@pytest.mark.parametrize("flag", [False, *REQUIRED])
+def test_a_presentation_typed_enveloped_too_stays_on_the_vp_lane(
+        issuer, holder, flag, monkeypatch):
+    # An object typed VerifiablePresentation is a presentation whatever else its type lists.
+    # It verified through the VP lane before the bare route existed and still does, under
+    # every flag; the refusal above is for an object that is not typed as one. Reviewer
+    # finding on #307: _ldp_shape used to test the Enveloped type first.
+    _bare_lane_unreachable(monkeypatch)
+    vp = _ldp_vp(holder, [_vc_jwt(issuer, holder[1])],
+                 types=("VerifiablePresentation", "EnvelopedVerifiableCredential"))
+    p = _verify("ldp_vc", vp, flag)
+    assert p.holder == holder[1] and p.credentials[0].issuer == issuer[1]
+
+
+@pytest.mark.parametrize("flag", [False, *REQUIRED])
+def test_a_presentation_typed_enveloped_and_credential_is_still_ambiguous(issuer, holder, flag):
+    vp = _ldp_vp(holder, [_vc_jwt(issuer, holder[1])], types=(
+        "VerifiablePresentation", "VerifiableCredential", "EnvelopedVerifiableCredential"))
+    with pytest.raises(VpTokenMalformed, match="typed both") as info:
+        _verify("ldp_vc", vp, flag)
+    assert type(info.value) is VpTokenMalformed
+
+
+def _raw_jws(header, payload, signature=""):
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+    return f"{seg(header)}.{seg(payload)}.{signature}"
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("alg-none", UnsupportedAlgorithm),
+    ("alg-rs256", UnsupportedAlgorithm),
+    ("crit-unknown", MalformedToken),
+])
+def test_a_hostile_bare_looking_token_keeps_the_suites_class_only_with_the_flag_false(
+        issuer, name, expected):
+    # A token with a `vc` object, no `vp`, and a disallowed `alg` or an unknown `crit`. With
+    # binding waived the bare route verifies it as a VC-JWT, so the suite refuses it with its
+    # own class, as the VP-JWT suite did before. With the flag true or absent the shape
+    # refusal runs first and nothing is parsed further: VpTokenMalformed, where 1.34.0
+    # raised the suite's class (CHANGELOG, Changed). Reviewer finding on #307.
+    claims = _vc_jwt_claims(issuer)
+    header = {"typ": "JWT", "kid": issuer[0].kid}
+    token = {
+        "alg-none": lambda: _raw_jws({**header, "alg": "none"}, claims),
+        "alg-rs256": lambda: _raw_jws({**header, "alg": "RS256"}, claims, "AAAA"),
+        "crit-unknown": lambda: _jws(issuer, claims, crit=["x-unknown"], **{"x-unknown": 1}),
+    }[name]()
+    with pytest.raises(expected) as info:
+        _verify("jwt_vc_json", token)
+    assert type(info.value) is expected
+    for flag in (ABSENT, True):
+        with pytest.raises(VpTokenMalformed, match=REFUSES) as info:
+            _verify("jwt_vc_json", token, flag)
         assert type(info.value) is VpTokenMalformed
 
 
@@ -632,6 +709,7 @@ def test_a_non_credential_object_is_left_to_the_ldp_lane(value, monkeypatch):
     ("ldp_vc", {"type": "VerifiableCredential"}, "vc"),            # a bare string type
     ("ldp_vc", {"type": ["VerifiableCredential", "Other"]}, "vc"),
     ("ldp_vc", {"type": ["VerifiablePresentation"]}, "vp"),
+    ("ldp_vc", {"type": ["VerifiablePresentation", "EnvelopedVerifiableCredential"]}, "vp"),
     ("ldp_vc", {"type": "VerifiablePresentation"}, "vp"),
     ("ldp_vc", {"type": ["Other"]}, "vp"),
 ])
@@ -782,3 +860,269 @@ def test_the_format_pin_accepts_only_its_own_formats(fmt, accepted):
             with pytest.raises(VpTokenMalformed, match="did not verify as a") as info:
                 _check_bare_format("q", fmt, _result(candidate))
             assert type(info.value) is VpTokenMalformed
+
+
+# =========================================================================== #
+# G. Every caller-supplied argument reaches the pipeline
+# =========================================================================== #
+# _verify_bare_w3c_vc hands nine arguments to verify_credential. Each test below makes one
+# of them decide the outcome, so dropping it from that call (or passing None) fails a test.
+# The dangerous drop is the status resolver: with require_status False it would skip the
+# revocation check without a word, a wrong-accept. Reviewer finding on #307: eight of these
+# survived a mutation run, because the only status test passed no resolver at all.
+
+STATUS_URL = "https://status.example/1"
+LIST_URI = "https://status.example/tokens/1"
+HTTPS_ISS = "https://issuer.example"
+WELL_KNOWN = f"{HTTPS_ISS}/.well-known/jwt-vc-issuer"
+UNBUNDLED = "https://example.org/unbundled/v1"
+THING = "https://example.org/x#Thing"
+SERVED = {UNBUNDLED: {"@context": {"Thing": THING}}}
+
+
+def _iso(year):
+    return datetime(year, 1, 1, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _signed(lane, issuer, **members):
+    """A bare credential on *lane* whose body also carries *members*."""
+    body = {**_body(issuer), **members}
+    if lane == "jwt_vc_json":
+        return VcJwtProofSuite().sign(body, signing_key=issuer[0])
+    return EcdsaJcsProofSuite().add_proof(
+        body, signing_key=issuer[0], verification_method=issuer[0].kid,
+        proof_purpose="assertionMethod")
+
+
+def _status_entry(index):
+    return {"id": f"{STATUS_URL}#{index}", "type": "BitstringStatusListEntry",
+            "statusPurpose": "revocation", "statusListIndex": str(index),
+            "statusListCredential": STATUS_URL}
+
+
+def _bitstring_list(*revoked):
+    bits = bytearray(32)
+    for i in revoked:
+        set_status_bit(bits, i, 1)
+    return {"type": ["VerifiableCredential", "BitstringStatusListCredential"],
+            "credentialSubject": {"statusPurpose": "revocation",
+                                  "encodedList": encode_bitstring(bytes(bits))}}
+
+
+def _token_list(*revoked):
+    data = new_status_list(64, bits=2)
+    for i in revoked:
+        set_status(data, i, STATUS_INVALID, bits=2)
+    return {"status_list": {"bits": 2, "lst": encode_status_list(bytes(data))}}
+
+
+class _RecordingResolver:
+    """The default offline did:key / did:jwk registry, recording the DIDs it is asked for:
+    what tells the caller's resolver apart from the one verify_credential falls back to."""
+
+    def __init__(self):
+        self.asked = []
+        self._inner = verify_module.default_resolver()
+
+    def resolve(self, did):
+        self.asked.append(did)
+        return self._inner.resolve(did)
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_the_resolver_reaches_a_bare_credential(issuer, lane):
+    recording = _RecordingResolver()
+    p = _verify(lane, _bare(lane, issuer), resolver=recording)
+    assert p.credentials[0].issuer == issuer[1]
+    assert set(recording.asked) == {issuer[1]}
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_the_status_list_resolver_reaches_a_bare_credential(issuer, lane):
+    # require_status stays False: a resolver that is dropped would skip this check silently.
+    token = _signed(lane, issuer, credentialStatus=_status_entry(17))
+    asked = []
+
+    def resolver_for(*revoked):
+        def resolve(uri):
+            asked.append(uri)
+            return _bitstring_list(*revoked)
+        return resolve
+
+    with pytest.raises(CredentialRevoked) as info:
+        _verify(lane, token, resolve_status_list=resolver_for(17))
+    assert type(info.value) is CredentialRevoked
+    p = _verify(lane, token, resolve_status_list=resolver_for(3))
+    assert p.credentials[0].status.revoked is False
+    assert asked == [STATUS_URL, STATUS_URL]
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_the_token_status_resolver_reaches_a_bare_credential(issuer, lane):
+    ref = {"status_list": {"idx": 7, "uri": LIST_URI}}
+    if lane == "jwt_vc_json":
+        token = _jws(issuer, _vc_jwt_claims(issuer, status=ref))
+    else:
+        token = _signed(lane, issuer, status=ref)
+    asked = []
+
+    def resolver_for(*revoked):
+        def resolve(uri):
+            asked.append(uri)
+            return _token_list(*revoked)
+        return resolve
+
+    with pytest.raises(CredentialRevoked) as info:
+        _verify(lane, token, resolve_status_list_token=resolver_for(7))
+    assert type(info.value) is CredentialRevoked
+    p = _verify(lane, token, resolve_status_list_token=resolver_for(8))
+    assert p.credentials[0].status.revoked is False
+    assert asked == [LIST_URI, LIST_URI]
+
+
+def test_jwt_vc_issuer_fetch_reaches_a_bare_credential():
+    # An https issuer resolves only through the hook; a DID issuer never reaches it.
+    key = P256SigningKey.generate(kid="issuer-key-1")
+    jwk = dict(key.public_jwk(), kid=key.kid)
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        return {"issuer": HTTPS_ISS, "jwks": {"keys": [jwk]}}
+
+    token = VcJwtProofSuite().sign(_body((key, HTTPS_ISS)), signing_key=key)
+    with pytest.raises(KeyResolutionFailed, match="pass jwt_vc_issuer_fetch") as info:
+        _verify("jwt_vc_json", token)
+    assert type(info.value) is KeyResolutionFailed
+    p = _verify("jwt_vc_json", token, jwt_vc_issuer_fetch=fetch)
+    assert p.credentials[0].issuer == HTTPS_ISS and calls == [WELL_KNOWN]
+
+
+def _x5c_credential():
+    """(bare VC-JWT, root cert, validity start) for an https issuer whose key is attested
+    by an x5c chain to a self-signed root, the issuer URL being the leaf's URI SAN."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.x509.oid import NameOID
+
+    base = datetime.now(timezone.utc)
+
+    def cert(subject, issuer_cn, issuer_key, subject_pub, *, ca, san=None):
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, subject)]))
+            .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, issuer_cn)]))
+            .public_key(subject_pub).serial_number(x509.random_serial_number())
+            .not_valid_before(base - timedelta(days=1))
+            .not_valid_after(base + timedelta(days=365))
+            .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True))
+        if ca:
+            builder = builder.add_extension(x509.KeyUsage(
+                digital_signature=False, content_commitment=False, key_encipherment=False,
+                data_encipherment=False, key_agreement=False, key_cert_sign=True,
+                crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+        if san is not None:
+            builder = builder.add_extension(x509.SubjectAlternativeName(san), critical=False)
+        return builder.sign(issuer_key, hashes.SHA256())
+
+    root_key = ec.generate_private_key(ec.SECP256R1())
+    root = cert("test root", "test root", root_key, root_key.public_key(), ca=True)
+    signer_priv = ec.generate_private_key(ec.SECP256R1())
+    signer = (P256SigningKey(signer_priv, kid="issuer-ds"), HTTPS_ISS)
+    leaf = cert("issuer DS", "test root", root_key, signer_priv.public_key(), ca=False,
+                san=[x509.UniformResourceIdentifier(HTTPS_ISS)])
+    x5c = [base64.b64encode(leaf.public_bytes(serialization.Encoding.DER)).decode("ascii")]
+    return _jws(signer, _vc_jwt_claims(signer), x5c=x5c), root, base
+
+
+def test_x5c_trust_anchors_reach_a_bare_credential():
+    token, root, _ = _x5c_credential()
+    _, unrelated, _ = _x5c_credential()
+    with pytest.raises(KeyResolutionFailed, match="pass jwt_vc_issuer_fetch") as info:
+        _verify("jwt_vc_json", token)                     # no anchors: the https path
+    assert type(info.value) is KeyResolutionFailed
+    with pytest.raises(KeyResolutionFailed, match="x5c key resolution failed") as info:
+        _verify("jwt_vc_json", token, x5c_trust_anchors=[unrelated])
+    assert type(info.value) is KeyResolutionFailed
+    p = _verify("jwt_vc_json", token, x5c_trust_anchors=[root])
+    assert p.credentials[0].issuer == HTTPS_ISS           # bound via the anchored leaf SAN
+
+
+def test_now_reaches_the_x5c_chain_check_of_a_bare_credential():
+    token, root, base = _x5c_credential()
+    _verify("jwt_vc_json", token, x5c_trust_anchors=[root])
+    with pytest.raises(KeyResolutionFailed, match="x5c key resolution failed") as info:
+        _verify("jwt_vc_json", token, x5c_trust_anchors=[root],
+                now=base + timedelta(days=800))           # past the chain's notAfter
+    assert type(info.value) is KeyResolutionFailed
+
+
+def test_now_reaches_the_validity_check_of_a_bare_data_integrity_credential(issuer):
+    # `now` pins the Data Integrity temporal checks: a window that opens in 2029 is closed
+    # on the wall clock and open at a pinned 2030.
+    token = _signed("ldp_vc", issuer, validFrom=_iso(2029), validUntil=_iso(2031))
+    with pytest.raises(CredentialNotYetValid) as info:
+        _verify("ldp_vc", token)
+    assert type(info.value) is CredentialNotYetValid
+    p = _verify("ldp_vc", token, now=datetime(2030, 6, 1, tzinfo=timezone.utc))
+    assert p.credentials[0].issuer == issuer[1]
+
+
+def _lapsed(lane, issuer, seconds_ago):
+    """A bare credential whose validity ended *seconds_ago* seconds ago."""
+    ended = int(time.time()) - seconds_ago
+    if lane == "jwt_vc_json":
+        now = int(time.time())
+        return _jws(issuer, _vc_jwt_claims(issuer, exp=ended, iat=now - 1000, nbf=now - 1000))
+    until = datetime.fromtimestamp(ended, timezone.utc).isoformat().replace("+00:00", "Z")
+    return _signed(lane, issuer, validFrom=_iso(2025), validUntil=until)
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_leeway_reaches_a_bare_credential(issuer, lane):
+    # The default is 60 s. A wider window accepts what the default refuses, a zero one
+    # refuses what the default accepts: both directions, so neither a dropped nor a
+    # hard-coded leeway passes.
+    expired = ClaimsInvalid if lane == "jwt_vc_json" else CredentialExpired
+    lapsed_120 = _lapsed(lane, issuer, 120)
+    with pytest.raises(expired, match="expired") as info:
+        _verify(lane, lapsed_120)                          # control: beyond the default
+    assert type(info.value) is expired
+    assert _verify(lane, lapsed_120, leeway_s=300).holder is None
+    lapsed_30 = _lapsed(lane, issuer, 30)
+    assert _verify(lane, lapsed_30).holder is None         # control: inside the default
+    with pytest.raises(expired, match="expired") as info:
+        _verify(lane, lapsed_30, leeway_s=0)
+    assert type(info.value) is expired
+
+
+@needs_pyld
+def test_extra_contexts_reach_the_proof_of_a_bare_credential(issuer):
+    # An RDF proof canonicalizes through the contexts the verifier serves; one that is not
+    # bundled resolves only through extra_contexts.
+    from openvc.proof.di_ecdsa_rdfc import EcdsaRdfcProofSuite
+    vc = EcdsaRdfcProofSuite().add_proof(
+        {"@context": [V2, UNBUNDLED], "type": ["VerifiableCredential", "Thing"],
+         "issuer": issuer[1], "credentialSubject": {"id": "did:example:alice"}},
+        signing_key=issuer[0], verification_method=issuer[0].kid,
+        proof_purpose="assertionMethod", extra_contexts=SERVED)
+    with pytest.raises(DocumentLoaderError) as info:
+        _verify("ldp_vc", vc)
+    assert type(info.value) is DocumentLoaderError
+    p = _verify("ldp_vc", vc, extra_contexts=SERVED)
+    assert p.credentials[0].format == FORMAT_DI_ECDSA_RDFC
+
+
+@needs_pyld
+def test_extra_contexts_reach_the_type_values_check_of_a_bare_credential(issuer):
+    # The proof of a VC-JWT is over the JSON, so only meta.type_values reads the context.
+    token = VcJwtProofSuite().sign(
+        {"@context": [V2, UNBUNDLED], "type": ["VerifiableCredential", "Thing"],
+         "issuer": issuer[1], "credentialSubject": {"role": "member"}},
+        signing_key=issuer[0])
+    query = {"meta": {"type_values": [[VC_IRI, THING]]}}
+    with pytest.raises(DocumentLoaderError) as info:
+        _verify("jwt_vc_json", token, query_extra=query)
+    assert type(info.value) is DocumentLoaderError
+    p = _verify("jwt_vc_json", token, query_extra=query, extra_contexts=SERVED)
+    assert p.credentials[0].issuer == issuer[1]

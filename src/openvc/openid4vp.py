@@ -1020,8 +1020,10 @@ def _w3c_shape(query_id: str, fmt: str, presentation: Any) -> str:
       cross-check only: a ``typ`` naming the other kind than the claim is a contradiction.
     * ``ldp_vc`` (a JSON object): the ``type`` decides. ``VerifiableCredential`` without
       ``VerifiablePresentation`` is a credential; with it, ambiguous.
-      ``EnvelopedVerifiableCredential`` is refused: OpenID4VP §B.1 does not mention it
-      for these formats, so it is not accepted as a bare credential."""
+      A ``VerifiablePresentation``-typed object is always a presentation, whatever else
+      it lists. An ``EnvelopedVerifiableCredential`` that is not typed as one is refused:
+      OpenID4VP §B.1 does not mention it for these formats, so it is not accepted as a
+      bare credential."""
     if fmt == FORMAT_JWT_VC:
         return _jwt_shape(query_id, presentation)
     return _ldp_shape(query_id, presentation)
@@ -1057,16 +1059,20 @@ def _ldp_shape(query_id: str, presentation: Any) -> str:
                  else types if isinstance(types, list) else [])
     is_vp = "VerifiablePresentation" in type_list
     is_vc = "VerifiableCredential" in type_list
-    if "EnvelopedVerifiableCredential" in type_list:
-        raise VpTokenMalformed(
-            f"an {FORMAT_LDP_VC} Presentation for {query_id!r} is an "
-            f"EnvelopedVerifiableCredential, which is not accepted: answer with a "
-            f"VerifiablePresentation or a Data Integrity VerifiableCredential")
     if is_vp and is_vc:
         raise VpTokenMalformed(
             f"an {FORMAT_LDP_VC} Presentation for {query_id!r} is typed both "
             f"VerifiablePresentation and VerifiableCredential, so it is not decidably "
             f"a presentation or a credential")
+    if is_vp:
+        # A presentation, whatever else its type lists (an extra EnvelopedVerifiableCredential
+        # included): the VP lane decides, as it did before the bare route existed.
+        return _SHAPE_VP
+    if "EnvelopedVerifiableCredential" in type_list:
+        raise VpTokenMalformed(
+            f"an {FORMAT_LDP_VC} Presentation for {query_id!r} is an "
+            f"EnvelopedVerifiableCredential, which is not accepted: answer with a "
+            f"VerifiablePresentation or a Data Integrity VerifiableCredential")
     return _SHAPE_VC if is_vc else _SHAPE_VP
 
 

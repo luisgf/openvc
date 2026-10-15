@@ -528,7 +528,12 @@ W3C lanes (1.35.0):
 
 With the flag `false` a presentation is accepted exactly as before, so the change only
 adds an accepted input. With the flag `true` or absent a bare credential is rejected on
-both lanes, with a `VpTokenMalformed` that names the flag, and nothing is verified:
+both lanes, with a `VpTokenMalformed` that names the flag, and nothing is verified. That
+includes a `jwt_vc_json` token that only looks bare (a `vc` object, no `vp`) and carries a
+disallowed `alg` or an unknown `crit`: it was `UnsupportedAlgorithm` or `MalformedToken` in
+1.34.0 and is `VpTokenMalformed` now (an `OpenID4VPError`, not a `ProofError`). With the
+flag `false` the bare route verifies it as a VC-JWT and raises the suite's own class, as
+before:
 
 ```python
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -595,7 +600,9 @@ without guessing:
   (`VpTokenMalformed`), and its proof must be an `assertionMethod` proof, not a
   presentation's `authentication` one. A VC-JWT string is not an `ldp_vc` answer.
 - **An `EnvelopedVerifiableCredential` is not accepted bare.** §B.1 does not mention it
-  for these formats, so it stays `VpTokenMalformed` under both lanes.
+  for these formats, so it stays `VpTokenMalformed` under both lanes. An `ldp_vc` object
+  that is typed `VerifiablePresentation` is a presentation whatever else its `type` lists,
+  an `EnvelopedVerifiableCredential` included, and goes to the presentation lane as before.
 
 It is then verified in full, as it is anywhere else, by `verify_credential`: signature,
 issuer binding, validity window, status when you pass a resolver, and `meta.type_values`
