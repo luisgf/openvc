@@ -30,6 +30,7 @@ import json
 import time
 from decimal import Decimal
 from fractions import Fraction
+from unittest import mock
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
@@ -116,6 +117,13 @@ class _LyingInt(int):
     def __index__(self): return 5
 
 
+class _ClaimsToBeInt:
+    """Not an ``int``, but ``isinstance(x, int)`` says it is: ``__class__`` is honoured by
+    ``isinstance`` and ignored by ``type``."""
+
+    __class__ = property(lambda self: int)
+
+
 # Every value a lane used to take for something: all are refused now.
 BAD = [
     pytest.param(float("nan"), id="nan"),
@@ -142,6 +150,10 @@ BAD = [
     pytest.param(_FloatSub("nan"), id="float-subclass-nan"),
     pytest.param(_IndexOnly(), id="index-only"),
     pytest.param(_LyingInt(10 ** 12), id="lying-int-out-of-range"),
+    # isinstance() believes these are ints, then int.__index__ raises a bare TypeError
+    pytest.param(_ClaimsToBeInt(), id="class-claims-int"),
+    pytest.param(mock.Mock(spec=int), id="mock-spec-int"),
+    pytest.param(mock.MagicMock(spec=int), id="magicmock-spec-int"),
 ]
 # The ones that used to switch an expiry check off or escape as a bare exception.
 FAIL_OPEN = [
@@ -537,11 +549,28 @@ def test_a_policy_takes_the_range(good):
     assert VerificationPolicy(leeway_s=good).leeway_s == good
 
 
-@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1, True, "300", None, 1.5])
+@pytest.mark.parametrize("bad", [
+    float("nan"), float("inf"), -1, True, "300", None, 1.5,
+    _ClaimsToBeInt(), mock.Mock(spec=int), mock.MagicMock(spec=int),
+    _LyingInt(-1),
+])
 def test_a_policy_cannot_be_built_with_a_bad_kb_max_age(bad):
     with pytest.raises(InvalidPolicy, match="kb_max_age_s") as info:
         VerificationPolicy(kb_max_age_s=bad)
     assert type(info.value) is InvalidPolicy
+
+
+@pytest.mark.parametrize("bad", [
+    pytest.param("x" * 100_000, id="long-str"),
+    pytest.param(-(10 ** 400), id="huge-negative-int"),
+    pytest.param([1] * 100_000, id="long-list"),
+    pytest.param("\u0000" * 5_000, id="nul-str"),
+])
+def test_the_kb_max_age_message_is_bounded(bad):
+    # the policy's kb_max_age_s message goes through safe_repr as the leeway one does
+    with pytest.raises(InvalidPolicy, match="kb_max_age_s") as info:
+        VerificationPolicy(kb_max_age_s=bad)
+    assert len(str(info.value)) < 1_000
 
 
 def test_a_policy_still_takes_a_wide_kb_max_age_and_a_zero_one():
@@ -574,6 +603,8 @@ PIPELINE_BAD = [
     pytest.param(True, id="True"),
     pytest.param(60.5, id="float"),
     pytest.param(10 ** 12, id="10**12"),
+    pytest.param(_ClaimsToBeInt(), id="class-claims-int"),
+    pytest.param(mock.Mock(spec=int), id="mock-spec-int"),
 ]
 
 

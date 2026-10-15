@@ -141,14 +141,16 @@ by the credential's `issuer` DID, so an attacker cannot sign someone else's
 
 The window is evaluated at `VerificationPolicy.now` (or the suite's `now=`):
 `None` is the current time and a naive `datetime` is UTC. A `now` that is not a
-`datetime`, such as an epoch `int` or an ISO string, raises `ProofError`, and so
-does a `leeway_s` outside the range [Getting started](Getting-Started#clock-skew-leeway_s) states once: a whole
-number of seconds from 0 to a day. A negative or `NaN` leeway used to count as 0 here and an
-infinite or huge one switched the window off; they are refused now, by the suite's constructor.
-These are configuration errors, so `verify_many` reports one on each item rather
-than aborting the batch, with `require_not_expired=False` too. The `x5c`, mdoc,
-relying-party certificate and Trusted List checks read `now` the same way, each
-raising its own error class.
+`datetime`, such as an epoch `int` or an ISO string, raises `ProofError`. So does a
+`leeway_s` outside the range that [Getting started](Getting-Started#clock-skew-leeway_s)
+states once: a whole number of seconds from 0 to a day. A negative or `NaN` leeway used to
+count as 0 here and an infinite or huge one switched the window off; they are refused now.
+Both are configuration errors, and they surface in different places. A bad `leeway_s` fails
+where it is set: `VerificationPolicy(leeway_s=...)` raises `InvalidPolicy` when the policy is
+built, and a suite's constructor raises `ProofError`, so it never reaches a batch. A bad `now`
+is read per credential, so `verify_many` reports it on each item rather than aborting the
+batch, with `require_not_expired=False` too. The `x5c`, mdoc, relying-party certificate and
+Trusted List checks read `now` the same way, each raising its own error class.
 
 ## The JSON must be what was signed
 

@@ -134,13 +134,29 @@ Every bullet below is something that used to succeed, or fail differently, and n
   `verify_many_async` no longer abort the batch on it. With the policy checked at
   construction, a bad leeway cannot reach a batch at all; one that bypasses the dataclass
   (`object.__setattr__`) still fails each item typed, with the batch intact.
+- An object that only *claims* to be an `int` escaped `leeway_s` (and `kb_max_age_s`) as a
+  bare `TypeError`. `isinstance()` honours a `__class__` property, so a stand-in with
+  `__class__ = property(lambda self: int)`, `Mock(spec=int)` and `MagicMock(spec=int)` passed
+  the type test and then failed inside `int.__index__` (or in a `< 0` comparison for
+  `kb_max_age_s`), from `leeway_seconds`, `VerificationPolicy` and every suite constructor.
+  Nothing was ever accepted, but the error was not typed and would have aborted `verify_many`
+  had it got past the policy. The type is now read with `type()`, and the message names such
+  an object by its real type without asking it anything. Only the verifier's own code can
+  pass one, so this is a typed-error fix, not a security one.
+- `kb_max_age_s` is read the same way `leeway_s` is: as the plain integer it holds. A
+  negative `int` subclass whose `__lt__` lies used to pass `VerificationPolicy` and
+  `verify_vp_token`; it is refused now. The `InvalidPolicy` message for a bad `kb_max_age_s`
+  went through `repr` and grew with the value (a 100 000-character string gave a 100 KB
+  message); it is bounded through `safe_repr` like the leeway one. This is the `kb_max_age_s`
+  half of the bounded-message rule only; #282 still owns the rest of that class.
 
 ### Tests
 
 - **`tests/test_leeway_validation.py`** (new). The value matrix (`NaN`, `±inf`, `-1`, `-60`,
   `True` / `False`, `"60"`, `None`, `[]`, `b"60"`, `1j`, `60.0`, `60.5`, `1.5`, `10**12`,
   `10**400`, `MAX_LEEWAY_S + 1`, `Decimal`, `Fraction`, a float subclass, an `__index__`-only
-  object, a lying `int` subclass) against every suite constructor, every function entry point
+  object, a lying `int` subclass, an object whose `__class__` claims `int`, `Mock(spec=int)`
+  and `MagicMock(spec=int)`) against every suite constructor, every function entry point
   (each fed garbage everywhere else, so the match on `leeway_s` proves the check runs first),
   `VerificationPolicy`, `dataclasses.replace`, the three backstop helpers, and the pipeline
   through `verify_credential`, `verify_credential_async`, `verify_many` and `verify_many_async`

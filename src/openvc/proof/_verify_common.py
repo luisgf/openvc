@@ -457,6 +457,31 @@ def utc_window(
     return instant, timedelta(seconds=leeway_seconds(leeway_s, error=error))
 
 
+def _plain_int(value: Any) -> int | None:
+    """The plain ``int`` *value* holds, or ``None`` if it is not one (a ``bool`` is not).
+
+    The type is read with ``type()``, never ``isinstance()``: ``isinstance()`` honours a
+    ``__class__`` property, so an object that claims to be an ``int`` (a hand-rolled
+    stand-in, ``Mock(spec=int)``) passed it and then raised a bare ``TypeError`` from
+    ``int.__index__``. A real ``int`` subclass is read as the integer it holds, so an
+    overridden comparison or ``__index__`` cannot change the verdict."""
+    kind = type(value)
+    if issubclass(kind, bool) or not issubclass(kind, int):
+        return None
+    return int.__index__(value)
+
+
+def _shown(value: Any) -> str:
+    """:func:`safe_repr` for *value*, except an object that is not one of the JSON scalar
+    types is named by its real type without asking it anything: ``safe_repr`` branches
+    on ``isinstance()``, which an object claiming a ``__class__`` can steer into calling
+    a method it does not have, and an error message must never raise."""
+    kind = type(value)
+    if value is None or issubclass(kind, (str, bool, float, int)):
+        return safe_repr(value)
+    return kind.__name__
+
+
 def leeway_seconds(
     value: Any, *, name: str = "leeway_s", error: type[Exception] = ProofError,
 ) -> int:
@@ -472,13 +497,10 @@ def leeway_seconds(
     as the plain integer it holds, so an overridden comparison cannot change the verdict.
     *name* is how the message calls the value.
     """
-    if isinstance(value, bool) or not isinstance(value, int):
-        seconds = None
-    else:
-        seconds = int.__index__(value)          # the integer itself, not a subclass's idea
+    seconds = _plain_int(value)
     if seconds is None or not 0 <= seconds <= MAX_LEEWAY_S:
         raise error(f"{name} must be a whole number of seconds from 0 to "
-                    f"{MAX_LEEWAY_S}, got {safe_repr(value)}")
+                    f"{MAX_LEEWAY_S}, got {_shown(value)}")
     return seconds
 
 
@@ -488,9 +510,10 @@ def non_negative_seconds(value: Any, *, name: str, error: type[Exception] = Proo
     comparison ``False``, and ``None`` or a string would surface mid-verification as a
     bare ``TypeError``. A clock-skew leeway is :func:`leeway_seconds`, which also
     bounds it."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise error(f"{name} must be a non-negative int (seconds), got {value!r}")
-    return value
+    seconds = _plain_int(value)
+    if seconds is None or seconds < 0:
+        raise error(f"{name} must be a non-negative int (seconds), got {_shown(value)}")
+    return seconds
 
 
 def check_iat_freshness(
