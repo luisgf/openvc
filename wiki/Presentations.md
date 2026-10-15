@@ -540,6 +540,17 @@ with its own `audience` / `nonce`, which take precedence over any `audience` / `
 in a `policy` you pass to it. The rule is scoped to the KB-JWT: a nested VC-JWT is a
 credential, and its own `aud` is never pinned to you.
 
+A nested SD-JWT VC's **issuer JWT** is a separate matter. If its issuer put an `aud` in it, that
+`aud` must include the **presentation's** audience (the one the KB-JWT is bound to: the VP-JWT's
+`aud`, an `ldp_vc` proof's `domain`, or the `origin:<origin>` over the Digital Credentials
+API), else the whole response is rejected (`ClaimsInvalid`, RFC 7519 §4.1.3, see
+[SD-JWT VC](SD-JWT-VC) and
+[ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)
+D4). That is the opposite of a nested VC-JWT, which is checked against `policy.audience`
+(above): `verify_vp_token` accepts a nested SD-JWT VC addressed to your `client_id`, and one
+presentation can mix SD-JWT VCs with and without `aud`. An issuer JWT without `aud` is
+unaffected, which is nearly every SD-JWT VC.
+
 **What the specs say.** No spec defines what a nested KB-JWT's `aud` and `nonce`
 should be. RFC 9901 §4.3 leaves both to the protocol, and OpenID4VP 1.0 does not
 support a presentation nested inside another at all (§13.2). In OpenID4VP's terms an

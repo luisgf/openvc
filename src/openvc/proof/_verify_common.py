@@ -332,6 +332,7 @@ def check_expected_audience(audience: Any) -> None:
 
 def check_jwt_audience(
     claims: dict[str, Any], audience: str | None, *, subject: str = "token",
+    require_present: bool = True,
 ) -> None:
     """Enforce a JWT's ``aud`` claim per RFC 7519 §4.1.3, fail-closed.
 
@@ -349,9 +350,19 @@ def check_jwt_audience(
     *audience* itself must be ``None`` or a non-empty string
     (:func:`check_expected_audience`).
 
-    Used by both VC-JWT lanes (ADR-0008). PyJWT, on the classic lane, applies the same
-    rule by default; openvc used to pass ``verify_aud=False`` when no audience was given.
+    *require_present* is the VC-JWT rule: a caller that expects an audience rejects a
+    token that names none. ``False`` is the SD-JWT VC issuer JWT's (ADR-0008 D4): there
+    the caller's audience is primarily the KB-JWT's, and an issuer JWT carries no ``aud``
+    in practice, so an absent ``aud`` is accepted whatever the audience (and *audience* is
+    not even inspected: nothing is matched against it). Present, it is held to the rule
+    above in full.
+
+    Used by both VC-JWT lanes and the SD-JWT VC issuer JWT (ADR-0008). PyJWT, on the
+    classic lane, applies the same rule by default; openvc used to pass
+    ``verify_aud=False`` when no audience was given.
     """
+    if "aud" not in claims and not require_present:
+        return
     check_expected_audience(audience)
     if "aud" not in claims:
         if audience is not None:

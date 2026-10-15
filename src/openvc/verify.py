@@ -143,7 +143,9 @@ class VerificationPolicy:
     5.5). ``audience`` and ``nonce`` bind an SD-JWT KB-JWT together (step 5.6): a
     KB-JWT checked against only one of them, or an empty one, is rejected
     (``ClaimsInvalid``), while ``audience`` alone still pins a VC-JWT's ``aud``. That
-    does not make the KB-JWT required — ``require_key_binding`` does.
+    does not make the KB-JWT required — ``require_key_binding`` does. ``audience`` is also
+    the audience an SD-JWT VC issuer JWT's own ``aud`` must name, when it has one (RFC 7519
+    §4.1.3; nested in a presentation, that presentation's audience).
     ``expected_types`` pins a W3C credential's ``type`` (a bare string is one type); an
     IETF SD-JWT VC is typed by ``vct``, so a policy that sets it rejects one — pin those
     with ``expected_vct``. On the RDF Data Integrity suites a name matches by IRI,

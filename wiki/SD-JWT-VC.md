@@ -43,7 +43,10 @@ therefore means the presentation was **bound**; a key-binding failure (wrong
 `aud`/`nonce`, a stale or future-dated KB-JWT, a KB-JWT outside its own `exp`/`nbf`,
 missing KB-JWT, or `SignatureInvalid` on the KB) means it was unbound. Every KB-JWT
 failure names the KB-JWT. Do not treat `EXPIRED` as proof of holder binding. The hosted path (`require_key_binding=False`) is unchanged: expiry
-still fails before any KB check.
+still fails before any KB check. The issuer JWT's `aud` check (*Issuer JWT audience*, below)
+runs after the KB-JWT in the same way, so a `ClaimsInvalid` that names the `issuer JWT aud`
+from a `require_key_binding=True` call also means the presentation was **bound**; it is not
+an expiry, and its message never says "expired".
 
 **KB-JWT freshness.** RFC 9901 makes the KB-JWT `iat` REQUIRED (§4.3) and has the
 verifier check it is "within an acceptable window" (§7.3 step 5.5). openvc requires
@@ -77,9 +80,53 @@ rule covers the processed payload, so an `iat` the issuer made selectively
 disclosable is checked once it is disclosed. `require_not_expired=False` waives only
 an expired `exp`, never a malformed date, a future `nbf` or a future `iat`. Before
 1.30.5 this lane read `"exp": null` / `"nbf": null` as absent and never looked at
-`iat`. The issuer JWT's `aud` is **not** checked: an issuer JWT addressed to another
-relying party still verifies. Whether RFC 7519 §4.1.3 should apply to it is left open
-in [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md).
+`iat`.
+
+**Issuer JWT audience.** An issuer can restrict a credential to one relying party by naming
+it in the issuer JWT's `aud`. RFC 7519 §4.1.3 says a JWT whose `aud` does not name the
+principal processing it MUST be rejected, and since 1.35.0 openvc applies that to the issuer
+JWT **when it has an `aud`**
+([ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)
+D4). Before it, a credential restricted to `https://other-rp.example` verified for every
+verifier, and for a holder who presented it, correctly bound, to a different one.
+
+| issuer JWT `aud` | the audience you pass | result |
+|---|---|---|
+| absent | none, or any | verifies, as before |
+| a string, or an array of strings, that includes it | that audience | verifies |
+| present, and does not include it | another audience | `ClaimsInvalid` (`issuer JWT aud does not include …`) |
+| present | none | `ClaimsInvalid` (a credential restricted to an audience cannot be verified against none, RFC 7519 §4.1.3) |
+| present but not a string or an array of strings (`null`, a number, an object, a mixed array) | none, or any | `ClaimsInvalid` |
+
+- **Pass `VerificationPolicy(audience=…)`** (or `audience=` on the suite) with the identifier
+  your issuers name, and `nonce` when a KB-JWT is present, since the two bind the KB-JWT
+  together (*What `key_bound` attests*, below). It is the one value for both
+  checks. Nested in a `jwt_vc_json` / `ldp_vc` presentation it is the **presentation's**
+  audience (the same one its KB-JWT must be bound to), not `policy.audience`: the opposite of
+  a nested VC-JWT ([Presentations](Presentations)). On the OpenID4VP `dc+sd-jwt` lane it is
+  the `client_id`, or `origin:<origin>` over the Digital Credentials API, so an issuer
+  restricting a credential to a DC API verifier must name the `origin:<origin>` form.
+- **A missing `aud` is fine**, with or without an audience. That is the difference from
+  VC-JWT, where a token without `aud` fails when you pass an audience: an SD-JWT VC's
+  audience is mostly the KB-JWT's, and issuers do not put an `aud` in the credential
+  (neither the RFC 9901 nor the EUDI reference vector pinned in the tests has one).
+- **The KB-JWT's `aud` is a separate check.** It binds the holder's *presentation* to a
+  verifier; it says nothing about a restriction the *issuer* signed, which is what this
+  checks. A KB-JWT bound to you does not make a credential addressed to someone else verify.
+- It is not an expiry. `require_not_expired=False` does not waive it, and it applies to a
+  W3C credential secured as an SD-JWT too, including the `~`-appended JWS with no `iss` and
+  no `typ` ([below](#the-issuer-when-a-w3c-credential-has-no-iss)).
+- It reads the payload **as disclosed**: an `aud` the issuer made selectively disclosable is
+  judged once the holder presents it, and so are the entries of an `aud` array whose entries
+  the issuer made disclosable (RFC 9901 §9.7): a verifier whose entry is not presented is
+  refused, and an array with every entry withheld names no one. A disclosure the holder
+  **withholds** altogether is invisible, like a withheld `exp`: issuers must never make the
+  whole `aud` claim disclosable ([below](#credentials-from-other-issuers)).
+
+What it does **not** change: a KB-JWT made for another verifier still reports
+`key_bound=True` when you pass neither `audience` nor `nonce`. That is deliberate (possession
+only, see *What `key_bound` attests*, below), and a stricter reading belongs
+to 2.0.
 
 `aka_vcts` (draft-18) is an optional array of *additional* types the issuer asserts
 the credential also is. When present it must be a non-empty list of non-empty
@@ -583,15 +630,6 @@ What this does not do:
 
 Known limits of the fallback:
 
-- **The issuer JWT's own `aud` is not checked on this lane.** That is an open item of
-  [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)
-  (RFC 7519 §4.1.3 on SD-JWT VC): a token with `aud=https://other-rp.example` verifies for
-  any verifier, and for a caller that passes `policy.audience` too. What the fallback adds
-  is a way in: a W3C credential secured as a plain JWS (VC-JOSE-COSE) that has no `iss`
-  and no `typ` is refused as a bare JWS on the VC-JWT lane (no issuer to resolve), but
-  verifies here once `~` is appended, so an audience restriction its issuer put in `aud`
-  is not enforced. (With an `iss` that was already so for a JWS with no `typ`.) If you
-  rely on it, read `result.claims.get("aud")` and compare it yourself.
 - **The `kid` rule of §4.2 is not enforced.** The Recommendation says that for an `iss`-less
   token the `kid` is an absolute URL to a verification method. Example 5's `kid` is a bare
   thumbprint, and it is used as before, to pick the key out of the issuer's own document
@@ -656,7 +694,9 @@ an `issuer`, verifies when the holder withholds the `iss` disclosure, and is ide
 `issuer`, which the signer wrote into the signed body. A presented `iss` disclosure is still
 refused (`SdJwtError`). If you accept SD-JWT VCs
 from issuers you do not control and rely on expiry or status, check that the verified
-`claims` actually carry them.
+`claims` actually carry them. The same goes for an audience restriction: a credential whose
+issuer made `aud` disclosable verifies for anyone when the holder omits that disclosure,
+so if you rely on one, check that `claims` carries `aud`.
 
 The same limit applies to a third-party W3C credential whose `@context` was
 disclosable and is withheld (including a VCDM entry that is itself an
@@ -681,5 +721,10 @@ Two claims are deliberately **not** refused:
   the schema is. If you need it validated, keep it out of `disclosable` yourself.
   `ecdsa-sd-2023`'s mandatory pointers follow the same logic (see the
   [Security model](Security-Model)).
-- `aud`. RFC 9901 §9.7 names it, but the SD-JWT VC draft does not, and this suite
-  never reads the issuer JWT's `aud`, so refusing it would enforce nothing.
+- `aud`. RFC 9901 §9.7 names it, but the SD-JWT VC draft's list does not, and the same
+  section lets an issuer make individual entries of an `aud` array disclosable, so refusing
+  the claim would forbid a conformant shape. The suite does read the issuer JWT's `aud`
+  now (*Issuer JWT audience*, in the first section): a disclosed one is enforced, and so are the entries
+  a holder discloses. But a holder can withhold a disclosable whole-claim `aud`, and the
+  restriction is gone without a trace. Keep it out of `disclosable` yourself, as for
+  `credentialSchema`.

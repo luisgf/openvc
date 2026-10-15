@@ -1,9 +1,10 @@
-# ADR-0008 — One NumericDate rule for the JOSE lanes, and RFC 7519 §4.1.3 on VC-JWT
+# ADR-0008 — One NumericDate rule for the JOSE lanes, and RFC 7519 §4.1.3 on VC-JWT and SD-JWT VC
 
 **Status:** Accepted. **Verdict: one shared temporal rule (`null` rejected, `exp`
 exclusive, future `nbf`/`iat` rejected) on the credential, presentation, key-binding,
-status-list and key-proof lanes; `aud` enforced on both VC-JWT lanes.**
-**Date:** 2026-10-13
+status-list and key-proof lanes; `aud` enforced on both VC-JWT lanes, and on the SD-JWT VC
+issuer JWT whenever it carries one (D4).**
+**Date:** 2026-10-13 (D4: 2026-10-15)
 **Context owner:** `openvc.proof._verify_common` (`check_jwt_temporal`,
 `check_jwt_audience`, `check_expected_audience`), used by `proof.vc_jwt`,
 `proof.sd_jwt`, `proof.vp_jwt`, `status.issue` and `openid4vci`
@@ -114,6 +115,79 @@ Options considered:
    to one relying party would have that restriction ignored by everyone else.
 3. **Opt-in policy knob.** Adds API surface to turn on a MUST. Rejected.
 
+### D4 — SD-JWT VC enforces RFC 7519 §4.1.3 on the issuer JWT's `aud`, when it has one
+
+*Decided by the maintainer on 2026-10-15 ([#227](https://github.com/luisgf/openvc/issues/227),
+option 1).* D3's reasoning applies to the SD-JWT VC issuer JWT word for word: it is a JWT,
+`aud` is a registered claim, and an issuer that signed an audience restriction into a
+credential meant it. Until v1.34.0 the SD-JWT lane never read it, so a credential its
+issuer restricted to `https://other-rp` verified for every verifier, and for a holder who
+presented it, properly bound, to a different one. The KB-JWT's `aud` binds the holder's
+*presentation* to a verifier (RFC 9901 §7.3 step 5.6); it says nothing about the issuer's
+restriction.
+
+`SdJwtVcProofSuite.verify` now runs `check_jwt_audience(..., require_present=False)` on the
+issuer JWT's claims after the issuer signature and the disclosures are verified:
+
+- `aud` absent: **unchanged.** The credential verifies with or without an audience, and the
+  caller's audience is not inspected. This is the one difference from D3. On this lane the
+  caller's `audience` is primarily the KB-JWT's, and an issuer JWT without `aud` is the norm
+  (neither third-party SD-JWT VC vector pinned in `tests/fixtures/interop`, nor the OpenID4VP
+  capture, carries one), so requiring `aud` whenever an audience is given would reject
+  essentially every SD-JWT VC.
+- `aud` present: a string or an array of strings, else `ClaimsInvalid`. The caller's
+  `audience` must be one of its values, else `ClaimsInvalid`. With no audience, a credential
+  that names one is refused (RFC 7519 §4.1.3): the verifier cannot be one of them. The
+  expected audience must itself be a non-empty string, as in D3.
+
+**Which audience.** The one `verify` already receives: `policy.audience` at the top level,
+the *presentation's* audience when the SD-JWT VC is nested in a `jwt_vc_json` or `ldp_vc`
+presentation (the same value its KB-JWT is bound to, `_kb_binding`), and `client_id`, or
+`origin:<origin>` over the Digital Credentials API, on the OpenID4VP `dc+sd-jwt` lane. This
+is the opposite of a nested VC-JWT, which D3 checks against `policy.audience` (see
+Consequences). A credential addressed to the verifier that receives the presentation
+therefore verifies on every lane; an issuer that restricts a credential to a DC API verifier
+must name the `origin:<origin>` form.
+
+**Where.** On the *processed* payload, after the KB-JWT when `require_key_binding` is set
+(so an issuer-JWT `aud` failure from such a call means the presentation was bound, as for
+the issuer JWT's dates), and not as a temporal check: no expiry waiver reaches it and its
+message never says "expired". The processed payload, rather than the issuer JWT body, is
+the one read because a plaintext `aud` is copied into it unchanged (a disclosure can never
+overwrite a claim), because an `aud` the issuer made selectively disclosable first appears
+there, and because RFC 9901 §9.7 lets an issuer make *individual entries* of the `aud`
+array disclosable. In the signed body such an array holds `{"...": digest}` objects, which a
+check of the body would call malformed. The holder's disclosures decide which entries
+remain: a verifier whose entry is not disclosed is refused, and an array with every entry
+withheld is `aud: []`, which names no one. That is fail-closed in every case.
+
+**A withheld `aud` disclosure is invisible**, the same limit as a withheld `exp` (R7 in the
+threat model). Issuers must never make `aud` itself disclosable. `issue()` does not refuse
+it (the draft's non-disclosable list does not include `aud`, and refusing it would be a
+separate issuer-side change), so the wiki documents it as an issuer rule.
+
+**Not changed: a KB-JWT checked with no audience.** A KB-JWT made for another verifier still
+reports `key_bound=True` when the caller passes neither `audience` nor `nonce`. Read
+strictly, RFC 7519 §4.1.3 says that JWT must be rejected, so this deviates from the RFC on
+purpose. It was decided in [#191](https://github.com/luisgf/openvc/issues/191) and is
+documented as "possession only: the key signed for some verifier, not a binding to you"
+(`wiki/SD-JWT-VC.md`, *What `key_bound` attests*). Changing what `key_bound` means is a
+breaking change to a return field, so it belongs to 2.0
+([#74](https://github.com/luisgf/openvc/issues/74)).
+
+Options considered:
+
+1. **Enforce when present (chosen).** It is what the RFC says, what D3 does for VC-JWT, and
+   it shrinks what verifies only for credentials whose issuers signed an `aud`. The SD-JWT
+   VC draft (-19) gives the issuer JWT's `aud` no meaning of its own: it never mentions it,
+   and its §2.2.2.3 list of claims that must not be disclosable does not include it.
+2. **Keep the behaviour and document the deviation.** Treat the credential as a bearer
+   document and leave audience binding to the KB-JWT. Rejected for the reason D3 rejected it
+   for VC-JWT: an issuer that restricts a credential to one relying party would have that
+   restriction ignored by everyone else.
+3. **Opt-in policy knob** (such as `VerificationPolicy(enforce_issuer_aud=True)`). Adds API
+   surface to turn on an RFC MUST. Rejected, as in D3.
+
 ## Consequences
 
 - One rule across the lanes above. `check_jwt_temporal` single-sources it, and the
@@ -130,20 +204,24 @@ Options considered:
   follow-up could check a nested credential's `aud` against the presentation's
   audience whenever the credential carries one. That is not done here: it is a false
   negative, never a false accept.
+- **Nested SD-JWT VCs are the opposite case** (D4): the credential is held to the
+  *presentation's* audience, the one its KB-JWT is bound to, and `policy.audience` plays no
+  part. So `verify_vp_token` accepts a nested SD-JWT VC whose `aud` names the `client_id`
+  (the VC-JWT lane rejects the same shape), and a presentation that mixes SD-JWT VCs with and
+  without `aud` verifies in one call. The two formats still disagree on a nested credential's
+  audience source; aligning them would move VC-JWT onto the presentation's audience, which
+  #190 decided against.
+- **SD-JWT VCs and a signed `aud` the holder can hide.** D4 reads the processed payload, so
+  an `aud` the issuer made disclosable, or whose array entries it made disclosable, is judged
+  on what the holder presents. A fully withheld `aud` disclosure is invisible (the R7 limit).
+  The W3C VC-JOSE-COSE JWS with no `iss` and no `typ` that #290 lets reach this lane once a
+  `~` is appended is held to the same rule, so an issuer's `aud` restriction on it is now
+  enforced.
 - PyJWT truncates a fractional date to an `int` on the classic lane, so its verdict can
   still differ from `check_jwt_temporal`'s within one second of a boundary.
 
 ## Open — not decided here
 
-- **§4.1.3 on SD-JWT VC.** The issuer JWT's `aud` is not checked: one with
-  `aud=https://other-rp` verifies for any verifier. The KB-JWT's `aud` binds the
-  holder's presentation, not an issuer's restriction, so D3's reasoning applies to it
-  word for word. A KB-JWT whose `aud` names another verifier also still binds
-  (`key_bound=True`) when the caller passes no audience. Both predate this ADR. They
-  change SD-JWT VC verification for the EUDI ecosystem and need their own decision.
-  Since [#290](https://github.com/luisgf/openvc/issues/290) a W3C VC-JOSE-COSE JWS with no
-  `iss` and no `typ`, which the VC-JWT lane refuses, reaches this lane once a `~` is
-  appended, so an issuer's `aud` restriction on such a token is not enforced either.
 - **Other JOSE objects keep their own date handling.** The OpenID4VCI key-attestation
   JWT reads `null` as absent and its signature is not verified (ADR-0007). The WRPRC
   (`openvc.rp_registration`, ETSI TS 119 475) has its own profile rules.
