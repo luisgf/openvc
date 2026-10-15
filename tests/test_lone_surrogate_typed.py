@@ -790,15 +790,18 @@ def test_webvh_update_key_surrogate_through_the_pipeline(key, s):
     with pytest.raises(KeyResolutionFailed) as aexc:
         asyncio.run(verify_credential_async(jose, resolver=aregistry))
     assert type(aexc.value) is KeyResolutionFailed
-    # Data Integrity lane (verificationMethod): the sync suite maps it to KeyResolutionError
+    # Data Integrity lane (verificationMethod): KeyResolutionError, sync and async alike
+    # (#283); it is a KeyResolutionFailed too
     di = _unsigned_di(WEBVH_DID)
     with pytest.raises(KeyResolutionError) as dexc:
         verify_credential(di, resolver=registry)
     assert type(dexc.value) is KeyResolutionError
+    assert isinstance(dexc.value, KeyResolutionFailed)
     assert type(dexc.value.__cause__) is DidWebvhError
-    with pytest.raises(KeyResolutionFailed) as adexc:        # the async lane has one class
+    with pytest.raises(KeyResolutionError) as adexc:
         asyncio.run(verify_credential_async(di, resolver=aregistry))
-    assert type(adexc.value) is KeyResolutionFailed
+    assert type(adexc.value) is KeyResolutionError
+    assert isinstance(adexc.value, KeyResolutionFailed)
     # batch isolation: the hostile item, then a good did:key credential that still verifies
     good = _plain_vc_jwt()
     _assert_isolated(verify_many([jose, good], resolver=registry), KeyResolutionFailed)
@@ -806,7 +809,7 @@ def test_webvh_update_key_surrogate_through_the_pipeline(key, s):
     _assert_isolated(asyncio.run(verify_many_async([jose, good], resolver=aregistry)),
                      KeyResolutionFailed)
     _assert_isolated(asyncio.run(verify_many_async([di, good], resolver=aregistry)),
-                     KeyResolutionFailed)
+                     KeyResolutionError)
 
 
 # --------------------------------------------------------------------------- #

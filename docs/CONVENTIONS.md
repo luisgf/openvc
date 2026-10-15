@@ -118,8 +118,20 @@ drive a trust decision.
   `UnsupportedAlgorithm`, `MalformedToken`); add an `*Error` / `*Failed` suffix only
   when the noun is neutral and would not otherwise read as a failure
   (`KeyResolutionError`, `DidResolutionError`, `UnsafeUrlError`).
+- **A failed key resolution is a `KeyResolutionFailed` on every lane.** `VerificationError`
+  and `KeyResolutionFailed` are defined in `openvc.errors` (so `openvc.proof` can subclass
+  them without importing `openvc.verify`) and re-exported from `openvc.verify`. The JOSE
+  lanes raise `KeyResolutionFailed`; the Data Integrity lanes, sync and async, raise
+  `KeyResolutionError`, which is **both** a `ProofError` and a `KeyResolutionFailed`
+  (`class KeyResolutionError(ProofError, KeyResolutionFailed)`). So `except ProofError` and
+  `except VerificationError` each catch a Data Integrity key-resolution failure, while a JOSE
+  one is a `VerificationError` but not a `ProofError`. A leaf that belongs to two families
+  extends both, never a flat copy of one.
 - A caller can always catch a whole family by its root (`except ProofError`,
   `except DidError`, `except OpenvcError`).
+- **A class's bases are API.** Adding a base or raising a more specific subclass is a MINOR
+  change, replacing the class with an unrelated one is MAJOR
+  ([Versioning & deprecation](https://github.com/luisgf/openvc/wiki/Versioning-and-Deprecation)).
 
 ## Constants for wire values
 

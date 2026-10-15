@@ -29,8 +29,8 @@ tolerance, and a state without a wrapper resolves as before; both are pinned as 
 
 Every assertion is on the exact class: ``DidWebvhError`` from the resolver (never the
 ``DidResolutionError`` parent, which the parser raised for a wrapper that was not an object),
-``KeyResolutionFailed`` on the JOSE lanes and on the async API, ``KeyResolutionError`` (a
-``ProofError``) on the synchronous Data Integrity lane.
+``KeyResolutionFailed`` on the JOSE lanes, ``KeyResolutionError`` (a ``ProofError`` and a
+``KeyResolutionFailed``) on the Data Integrity lanes, sync and async alike (#283).
 """
 from __future__ import annotations
 
@@ -462,17 +462,19 @@ def test_a_credential_from_a_wrapped_did_fails_typed_on_every_lane(state_for, fr
     assert type(aexc.value) is KeyResolutionFailed
     assert type(aexc.value.__cause__) is DidWebvhError
 
-    # Data Integrity lane, sync: KeyResolutionError (a ProofError), as #251 pins
+    # Data Integrity lane, sync: KeyResolutionError, which is a ProofError and (#283) a
+    # KeyResolutionFailed
     with pytest.raises(KeyResolutionError) as dexc:
         verify_credential(di, resolver=_registry(logs))
     assert type(dexc.value) is KeyResolutionError
-    assert not isinstance(dexc.value, KeyResolutionFailed)
+    assert isinstance(dexc.value, KeyResolutionFailed)
     assert type(dexc.value.__cause__) is DidWebvhError
 
-    # Data Integrity lane, async: KeyResolutionFailed
-    with pytest.raises(KeyResolutionFailed) as adexc:
+    # Data Integrity lane, async: the same class as the sync lane (#283)
+    with pytest.raises(KeyResolutionError) as adexc:
         asyncio.run(verify_credential_async(di, resolver=_async_registry(logs)))
-    assert type(adexc.value) is KeyResolutionFailed
+    assert type(adexc.value) is KeyResolutionError
+    assert isinstance(adexc.value, KeyResolutionFailed)
     assert type(adexc.value.__cause__) is DidWebvhError
 
 
@@ -494,7 +496,7 @@ def test_verify_many_isolates_a_wrapped_did_and_the_neighbours_still_verify(
     aresults = asyncio.run(verify_many_async(batch, resolver=_async_registry(logs)))
     assert [r.ok for r in aresults] == [True, False, True, False, True]
     assert [type(r.error) for r in aresults] == [
-        none, KeyResolutionFailed, none, KeyResolutionFailed, none]
+        none, KeyResolutionFailed, none, KeyResolutionError, none]
     assert {r.result.issuer for r in aresults if r.ok} == {good_did}
     assert type(aresults[1].error.__cause__) is DidWebvhError
     assert type(aresults[3].error.__cause__) is DidWebvhError

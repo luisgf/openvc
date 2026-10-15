@@ -44,6 +44,7 @@ from .did.base import (
 from .errors import OpenvcError
 from .observability import logger, span
 from .proof._verify_common import safe_repr
+from .proof.errors import KeyResolutionError
 from .schema import SchemaUnavailable, validate_credential_schema_async
 from .status import (
     CredentialRevoked,
@@ -414,7 +415,9 @@ async def _preresolved_di_resolver(doc: dict[str, Any], resolver: Any) -> Any:
     Mirrors the resolver handling in ``resolve_verification_key``: when the resolver
     does not support the DID (or raises :class:`UnsupportedDidMethod`) we return
     ``None`` so the suite falls back to offline ``did:key``; a
-    :class:`DidResolutionError` becomes a :class:`KeyResolutionFailed`."""
+    :class:`DidResolutionError` becomes a :class:`~openvc.proof.errors.KeyResolutionError`
+    (also a :class:`KeyResolutionFailed`) — the class the synchronous Data Integrity lane
+    raises for the same failure."""
     raw_proof = doc.get("proof")
     proof = raw_proof if isinstance(raw_proof, dict) else {}
     vm = proof.get("verificationMethod")
@@ -429,7 +432,7 @@ async def _preresolved_di_resolver(doc: dict[str, Any], resolver: Any) -> Any:
     except UnsupportedDidMethod:
         return None
     except DidResolutionError as exc:
-        raise KeyResolutionFailed(f"could not resolve {did!r}: {exc}") from exc
+        raise KeyResolutionError(f"could not resolve {did!r}: {exc}") from exc
     return _OneShotResolver(did, did_doc)
 
 

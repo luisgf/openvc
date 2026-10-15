@@ -43,7 +43,13 @@ Errors: a proof/temporal/purpose failure raises a
 :class:`~openvc.proof.errors.ProofError` subclass (shared by every suite); a
 pipeline-level failure (unknown format, key resolution, type mismatch, missing
 status resolver) raises a :class:`VerificationError` subclass; a revoked
-credential raises :class:`~openvc.status.CredentialRevoked`.
+credential raises :class:`~openvc.status.CredentialRevoked`. A key-resolution failure is
+a :class:`KeyResolutionFailed` on **every** lane: the JOSE lanes raise it, and the Data
+Integrity lanes (sync and async alike) raise its subclass
+:class:`~openvc.proof.errors.KeyResolutionError`, which is also a ``ProofError``, so
+``except KeyResolutionFailed``, ``except VerificationError`` and ``except ProofError``
+each catch a Data Integrity key-resolution failure. (The asynchronous API raises the same
+classes as the synchronous one.)
 """
 from __future__ import annotations
 
@@ -57,7 +63,7 @@ if TYPE_CHECKING:
 
 from . import _json
 from .cache import batch_resolvers
-from .errors import OpenvcError
+from .errors import KeyResolutionFailed, OpenvcError, VerificationError
 from .observability import logger, span
 from .proof._verify_common import DEFAULT_KB_MAX_AGE_S, DEFAULT_LEEWAY_S, safe_repr
 from .proof.errors import ClaimsInvalid
@@ -103,12 +109,11 @@ _CRYPTOSUITE_FORMAT = {
 # Errors
 # --------------------------------------------------------------------------- #
 
-class VerificationError(OpenvcError):
-    """A pipeline-level failure (not a proof-signature failure)."""
-
-
+# VerificationError and KeyResolutionFailed are defined in openvc.errors, because
+# openvc.proof.errors.KeyResolutionError subclasses the second and openvc.proof cannot
+# import this module. They are re-exported here (and in __all__) and keep
+# __module__ == "openvc.verify".
 class UnknownCredentialFormat(VerificationError): ...
-class KeyResolutionFailed(VerificationError): ...
 class TypeMismatch(VerificationError): ...
 class IssuerBindingError(VerificationError): ...
 
