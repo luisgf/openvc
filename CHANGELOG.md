@@ -1021,6 +1021,45 @@ Every bullet below is something that used to succeed, or fail differently, and n
   message); it is bounded through `safe_repr` like the leeway one. This is the `kb_max_age_s`
   half of the bounded-message rule only; #282 still owns the rest of that class.
 
+- **`build_status_list_credential` refuses an `issuer` or inline `@context` object that
+  the VC-JWT lane would refuse** ([#309](https://github.com/luisgf/openvc/issues/309),
+  found by the integration gate of #307; it predates it). Low severity, no wrong-accept:
+  caller-side configuration. `VcJwtProofSuite.verify` refuses a payload with a member named
+  `_sd`, `_sd_alg` or `...` at any depth (it is an SD-JWT issuer JWT, not a VC-JWT: #189,
+  #291), and the builder accepted any member of an `issuer` object or an inline context
+  object. So `issuer={"...": None, "id": did}` (also `{"_sd": []}` and
+  `{"_sd_alg": "sha-256"}`, and the same inside a nested object) built, signed as a
+  VC-JWT, and was then refused by `default_status_list_resolver` with `MalformedToken`: the
+  class #230 closed for the index and the strings, openvc minting what its own verifier
+  refuses. The marker as a *value* (`{"name": "..."}`) is not one and still builds: the
+  fence reads member names only.
+
+  The builder now raises `StatusListError` at build time, before anything is signed, for an
+  `issuer` object or a `contexts` entry (`contexts[N]` in the message) that carries one of
+  the three names at any depth, on every lane: it cannot know which lane will secure the
+  list, and VC-JWT is the default for status lists. The message names the field and the
+  three reserved names, never the object. The test is the lane's own predicate
+  (`vc_jwt._carries_sd_jwt_marker`, imported, not copied, so the two rules cannot drift),
+  run on the JSON the object encodes to, which is what the lane decodes: a marker held in
+  a `tuple` (an array on the wire, which the predicate does not walk as a Python object)
+  is found too.
+
+  - **Behaviour change, narrow.** An `issuer` or context object that stdlib `json` cannot
+    encode at all (a cycle, nesting past the interpreter's limit, a key that is not a
+    string, number, boolean or `None`) is now a `StatusListError` at build time, because
+    it cannot be checked; it could not be signed either (`ValueError`, `RecursionError` or
+    `TypeError` at sign). A *member* that is not JSON (`bytes`, a `set`) is unchanged: it
+    builds and fails at sign.
+  - **Not changed:** the fence itself and the zero-disclosure SD-JWT residual it
+    documents, the verify side, and the IETF Token Status List builder (it takes no
+    caller-supplied object). Data Integrity lists with such members were never a
+    documented shape.
+  - The property test `test_property_whatever_the_builder_accepts_the_pipeline_accepts`
+    failed now and then on a clean `main`: its strategy drew a marker name from
+    `text(max_size=6)` rarely, and its model called that issuer valid. That was this
+    inconsistency, not a flaky test. The model and the strategies now exclude the marker
+    names, and the refusal properties pin the counterexample.
+
 ### Tests
 
 - `tests/test_status_issuer_binding_issuerless.py` runs every case through the sync and
@@ -1228,6 +1267,23 @@ Every bullet below is something that used to succeed, or fail differently, and n
   `test_rp_registration.py`, `test_sd_jwt_vcdm_validity.py`, `test_jose_temporal_claims.py`,
   `test_typed_clock_pins.py`, `test_sd_jwt_kb_freshness.py` and `test_openid4vci.py` (see the
   decisions above).
+- **`tests/test_status_builder_sd_markers.py`** (#309, 181 tests, self-contained). The
+  three marker names at the top of an `issuer`, nested, in a list, in a tuple, in a `dict`
+  subclass, under a `str`-subclass key, and in an inline context object, each against the
+  exact class `StatusListError` with a key that fails the test if it is asked to sign and a
+  60 KB sentinel that must not reach the message; controls that build, sign and verify on
+  VC-JWT and `eddsa-jcs-2022` (the marker as a value, near-miss names, a tuple, ordinary
+  objects); cycles, nesting past the limit and non-scalar keys; a parity test that the
+  builder refuses an object exactly when the default resolver refuses the same object
+  signed around the builder; and a Hypothesis property with the counterexample of #309
+  pinned as an `@example`. In `tests/test_status_builders_inputs.py` the model and the
+  strategies now exclude the marker names, and the refusal properties pin the
+  counterexamples. Against `origin/main` the old property fails on Hypothesis seeds 37 and 56
+  (`MalformedToken`) and passes on 1 to 5; on this branch the updated one passes on seeds 1
+  to 150. Mutation check on `origin/main`: 121 of the 477 cases in the two files fail and the
+  controls pass; seven mutants of the fix (no issuer check, no context check, the
+  predicate never true, top level only, the predicate on the Python object, no typed error
+  for a value that cannot be encoded, no `default=` hook) are each killed.
 
 ### Docs
 

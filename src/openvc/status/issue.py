@@ -56,8 +56,14 @@ a shape rule, the one the RDF suites apply, not a promise that the list verifies
 lane: only the VC 2.0 context defines the terms of a ``BitstringStatusListCredential`` and
 only it is bundled with openvc (see :func:`build_status_list_credential`). Every string
 the builders take is copied to an exact ``str`` before it is tested, and the copy is what
-is emitted (:func:`~openvc.status._index.plain_str`); the members of an ``issuer`` or
-inline context object besides the ones named here are the caller's and are not inspected.
+is emitted (:func:`~openvc.status._index.plain_str`). The members of an ``issuer`` or
+inline context object besides the ones named here are the caller's, with one exception:
+none of them, at any depth, may be an SD-JWT marker (a member named ``_sd``, ``_sd_alg``
+or ``...``). The VC-JWT lane reads a payload that carries one as an SD-JWT issuer JWT and
+refuses it (#189, #291), and a builder cannot know which lane will secure the list, so
+such an object is refused at build time on every lane (:func:`_refuse_sd_markers`, which
+runs the lane's own test on the JSON the object encodes to). The marker as a *value*
+(``{"name": "..."}``) is fine: only member names are read.
 
 This is the only :mod:`openvc.status` module that touches :mod:`openvc.proof` (to
 sign/verify the token); the codecs and the check side stay pure stdlib.
@@ -65,6 +71,7 @@ sign/verify the token); the codecs and the check side stay pure stdlib.
 from __future__ import annotations
 
 import array
+import json
 import time
 from datetime import datetime
 from typing import Any
@@ -79,7 +86,7 @@ from ..proof._verify_common import (
     utc_instant,
 )
 from ..proof.errors import ClaimsInvalid
-from ..proof.vc_jwt import SigningKey
+from ..proof.vc_jwt import SigningKey, _carries_sd_jwt_marker
 from ._decompress import MAX_DECOMPRESSED_BYTES
 from ._index import brief, plain_int, plain_str, status_index
 from .bitstring import StatusListError, encode_bitstring
@@ -139,6 +146,41 @@ def _snapshot(value: Any, kind: type, *, field: str) -> Any:
             f"{field} could not be read: {type(exc).__name__}") from None
 
 
+def _refuse_sd_markers(value: Any, *, field: str) -> None:
+    """Refuse a caller-supplied *value* (the ``issuer`` object, an inline context object)
+    that carries an SD-JWT marker member (``_sd``, ``_sd_alg`` or ``...``) at any depth.
+
+    ``VcJwtProofSuite.verify`` refuses a payload with one (an SD-JWT issuer JWT is not a
+    VC-JWT, #189 / #291), so a list the builder minted with such a member was signed and
+    then refused by the default resolver. A builder cannot know which lane will secure the
+    list, and VC-JWT is the default for status lists, so the rule applies to every lane.
+    The test is the lane's own, :func:`~openvc.proof.vc_jwt._carries_sd_jwt_marker`, so the
+    two cannot drift, and it is run on what the lane reads: the JSON the value encodes to
+    (a ``tuple`` is an array, a non-string key is its string, a member the encoder cannot
+    write is ``null`` here and fails at sign, as before), not on the Python object, whose
+    ``tuple`` the predicate does not walk and whose cycle it would never leave. A value
+    that cannot be encoded at all (a cycle, a key that is no scalar, nesting past the
+    interpreter's limit) is a typed error. The message names the field and the reserved
+    keys, never the object."""
+    try:
+        wire = json.loads(json.dumps(value, separators=(",", ":"), default=_not_json))
+    except Exception as exc:
+        raise StatusListError(
+            f"{field} could not be read as JSON: {type(exc).__name__}") from None
+    if _carries_sd_jwt_marker(wire):
+        raise StatusListError(
+            f"{field} carries an SD-JWT marker member (`_sd`, `_sd_alg` or `...`) at some "
+            f"depth: RFC 9901 §4.1 reserves them, and the VC-JWT lane refuses a payload "
+            f"that holds one as an SD-JWT issuer JWT, so this list could not be read back. "
+            f"Rename the member")
+
+
+def _not_json(_value: Any) -> None:
+    """``json.dumps(default=...)`` for :func:`_refuse_sd_markers`: a member the encoder cannot
+    write is ``null`` in the probe. It carries no marker; signing it fails later."""
+    return None
+
+
 def _credential_issuer(value: Any) -> str | dict[str, Any]:
     """The ``issuer`` of a status-list credential: a non-empty ``str``, or an object
     whose ``id`` is a non-empty ``str`` and that has no ``@id``.
@@ -148,7 +190,8 @@ def _credential_issuer(value: Any) -> str | dict[str, Any]:
     identifier :func:`~openvc.proof._verify_common.issuer_identifiers` returns (``id`` and
     ``@id``); and ``eddsa-rdfc-2022`` refuses the ``@id`` spelling. ``id`` alone is the one
     form every lane reads the same. An object is shallow-copied, and the other members it
-    carries are the caller's: not inspected."""
+    carries are the caller's, held to one rule only: no SD-JWT marker member (``_sd``,
+    ``_sd_alg``, ``...``) at any depth (:func:`_refuse_sd_markers`)."""
     if isinstance(value, str):
         return _text(value, field="issuer")
     if not isinstance(value, dict):
@@ -166,6 +209,7 @@ def _credential_issuer(value: Any) -> str | dict[str, Any]:
     if "id" not in issuer:
         raise StatusListError("issuer object has no `id`: it names no one")
     issuer["id"] = _text(issuer["id"], field="issuer id")
+    _refuse_sd_markers(issuer, field="issuer")
     return issuer
 
 
@@ -181,7 +225,8 @@ def _contexts(value: Any) -> list[str | dict[str, Any]]:
     says so). A ``str`` is refused, not read one character at a time, and so is a ``dict``
     (its keys), an iterator or a ``set``. The tested copy is the one returned: strings are
     plain ``str`` and the list is a new ``list``; an inline context object is the caller's
-    own, and its members are not inspected."""
+    own, and its members are not inspected except that none, at any depth, may be an SD-JWT
+    marker member (:func:`_refuse_sd_markers`)."""
     if value is None:
         return [_VC2_CONTEXT]
     if not isinstance(value, (list, tuple)):
@@ -208,6 +253,8 @@ def _contexts(value: Any) -> list[str | dict[str, Any]]:
             raise StatusListError(
                 f"contexts[{position}] must be a non-empty string or an object, "
                 f"got {brief(entry)}")
+        else:
+            _refuse_sd_markers(entry, field=f"contexts[{position}]")
     return entries
 
 
@@ -317,15 +364,19 @@ def build_status_list_credential(
     ``int`` (the W3C list gives it in milliseconds).
 
     *issuer* is a non-empty string (a DID, say) or an object with a non-empty string
-    ``id`` and no ``@id``; other members of the object (``name``) are carried as given.
+    ``id`` and no ``@id``; other members of the object (``name``) are carried as given, but
+    none, at any depth, may be named ``_sd``, ``_sd_alg`` or ``...`` (the SD-JWT markers: the
+    VC-JWT lane refuses a payload that holds one, so the list would be signed and then not
+    read back).
     *subject_id* is the ``credentialSubject.id``: ``None`` gives ``<id>#list``, and an
     explicit value is a non-empty string. *contexts* is the ``@context``: ``None`` gives
     ``["https://www.w3.org/ns/credentials/v2"]``, and an explicit value is a non-empty
     ``list`` or ``tuple`` that starts with a VC base context, followed by context URLs or
-    inline context objects (whose members are not inspected: one that is not JSON fails
-    when the credential is signed). Pass the VC 2.0 context first unless you have a reason:
-    it is the one that defines ``BitstringStatusListCredential``, ``encodedList`` and
-    ``statusPurpose``, and the only one bundled. The VC 1.1 context is accepted as a base
+    inline context objects (whose members are not inspected, except for the same marker
+    names: one that is not JSON fails when the credential is signed). Pass the VC 2.0
+    context first unless you have a reason: it is the one that defines
+    ``BitstringStatusListCredential``, ``encodedList`` and ``statusPurpose``, and the only
+    one bundled. The VC 1.1 context is accepted as a base
     context (the shape the RDF suites accept) and builds; VC-JWT and ``eddsa-jcs-2022`` read
     no context, while ``eddsa-rdfc-2022`` refuses it with ``DocumentLoaderError`` (it is not
     bundled, and it does not define those terms). A context URL that is not bundled needs
@@ -333,7 +384,10 @@ def build_status_list_credential(
 
     Raises :class:`~openvc.status.bitstring.StatusListError` for an *id* or
     *status_purpose* that is not a non-empty string, for an *issuer* that is not a
-    non-empty string or an object whose ``id`` is one and which has no ``@id``, for a
+    non-empty string or an object whose ``id`` is one and which has no ``@id``, for an
+    *issuer* object or an inline context object that carries an SD-JWT marker member
+    (``_sd``, ``_sd_alg``, ``...``) at any depth or cannot be read as JSON (a cycle, a
+    key that is no scalar), for a
     *subject_id* that is neither ``None`` nor a non-empty string (``""``, ``0``, ``[]``
     and ``{}`` are errors, not the default), for *contexts* that is neither ``None`` nor a
     non-empty ``list`` / ``tuple`` of that shape (a ``str``, a ``dict``, an iterator, an
