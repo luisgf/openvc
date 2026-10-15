@@ -17,6 +17,9 @@ is only accepted when the holder is authentic *and* every credential in it is.
 The holder key is resolved from the untrusted ``iss``/``kid`` via an injected
 ``resolver`` (as in the pipeline, defaulting to its ``default_resolver``), or pinned
 with ``holder_key_jwk``. The resolver also serves the embedded credentials' issuers.
+Before the holder key is resolved, ``verify`` applies the algorithm allow-list, the
+``crit`` check and the same explicit-typing and SD-JWT-marker tests as the VC-JWT lane to
+the presentation (#291).
 """
 from __future__ import annotations
 

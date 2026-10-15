@@ -272,11 +272,12 @@ The last two rows exist because the W3C Recommendation (13 October 2026) makes t
 SD-JWT `typ` a SHOULD (§3.2.1), and its verification algorithm (§5.2) takes the media
 type as an input rather than reading it from the token. Its own examples show it:
 Examples 4 and 5 carry no `typ`, and Example 21 carries `vc+ld+json+sd-jwt` inside a
-`data:` URI typed `application/vc+sd-jwt`. That is the name the W3C Working Drafts of
-August and September 2023 gave the media type before the rename to `vc+sd-jwt`. Before
-1.34.0 `verify()` refused both at the `typ` check (`unexpected issuer JWT typ`), so a
-credential built like those examples could not verify. (Example 5's payload also carries
-no `iss`, and `verify()` used to require one. It no longer does for a W3C credential:
+`data:` URI typed `application/vc+sd-jwt`. That is the name the 2023 Working Drafts and
+the First Candidate Recommendation (25 April 2024) gave the media type before the rename
+to `vc+sd-jwt`. Before 1.34.0 `verify()` refused both at the `typ` check (`unexpected
+issuer JWT typ`), so a credential built like those examples could not verify. (Example
+5's payload also carries no `iss`, and `verify()` used to require one. It no longer does
+for a W3C credential:
 [below](#the-issuer-when-a-w3c-credential-has-no-iss).)
 
 All three W3C rows are accepted **only** for a payload that conforms to the VCDM, and
@@ -353,8 +354,8 @@ whitespace, an `application/` prefix). Only a missing member counts as "no `typ`
 explicit `null` does not.
 
 A token with no `typ` must also not carry a `vc` or `vp` claim, a presented disclosure
-of one included (`SdJwtError`). VC-JOSE-COSE §3.1.3 forbids both names in a JWT Claims Set, and
-for `vc` there is a second reason. The VC-JWT lane refuses any JWS typed `*+sd-jwt`
+of one included (`SdJwtError`). VC-JOSE-COSE §1.1.2.1 (restated in §3.1.3) forbids both
+names in a JWT Claims Set, and for `vc` there is a second reason. The VC-JWT lane refuses any JWS typed `*+sd-jwt`
 (#189), so it never takes a typed SD-JWT issuer JWT for a VC-JWT, but it has no `typ` to
 refuse in a token without one: one whose payload held a `vc` object would also verify
 there once its `~` tail is dropped, with no key binding. Refusing it here keeps the two
@@ -468,9 +469,11 @@ the whole presentation is rejected. Leave `expected_types` unset there and check
 ### The issuer when a W3C credential has no `iss`
 
 VC-JOSE-COSE makes the JWT `iss` claim optional. §4.1.2 says that `iss`, if present, MUST
-match `issuer` (or `issuer.id`), and §4.2 says that when `iss` is absent the issuer is
-identified by the VCDM `issuer`. The Recommendation's own SD-JWT credential (Examples 4
-and 5) has an `issuer` and no `iss`. Before 1.34.0 every SD-JWT lane needed an `iss` to
+match `issuer` (or `issuer.id`), and §4.2 says that when `iss` is absent and the issuer
+is a URL, the `kid` MUST be an absolute URL to a verification method in the issuer's
+controlled identifier document or DID document. openvc takes the identifier from `issuer`
+and resolves it with the same paths as `iss`. The Recommendation's own SD-JWT credential
+(Examples 4 and 5) has an `issuer` and no `iss`. Before 1.34.0 every SD-JWT lane needed an `iss` to
 choose the issuer key, so such a credential was refused before any key was looked up.
 
 Now the issuer is taken from `issuer` when all of these hold, and in no other case:

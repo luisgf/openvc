@@ -29,7 +29,7 @@ external review.
 
 | Document | What it holds |
 |---|---|
-| [threat-model.md](threat-model.md) | The code-cited threat model: assets, trust boundaries, attacker model, per-suite and per-parser attack-surface tables, the **fail-closed invariants catalog** (I1–I21), and the **residual-risk register** (R1–R10) |
+| [threat-model.md](threat-model.md) | The code-cited threat model: assets, trust boundaries, attacker model, per-suite and per-parser attack-surface tables, the **fail-closed invariants catalog** (I1–I21), and the **residual-risk register** (R1–R11) |
 | [assurance.md](assurance.md) | Property-based **fuzz** coverage, the "harden-next" gap map, negative/tamper coverage by suite, and the **adversarial-review history** |
 | [Security-Model](https://github.com/luisgf/openvc/wiki/Security-Model) (wiki) | The user/integrator-facing summary the threat model annex expands |
 | [SECURITY.md](https://github.com/luisgf/openvc/blob/main/SECURITY.md) | Reporting policy + per-control hardening notes |
@@ -55,7 +55,8 @@ relying-party registration, **no wrong-authorize**):
 4. **The hand-rolled attacker-facing parsers** — CBOR, COSE, mdoc, JCS,
    multibase, SD-JWT, ecdsa-sd, bitstring, decompress, and the two XML paths
    (threat model §6). Depth/size bounds and typed-error hygiene. Start with
-   residual risks **R2–R3** (**R1** was resolved in v1.20.1, **R10** in v1.32.3).
+   residual risks **R2–R3** (**R1** was resolved in v1.20.1, **R10** in v1.33.1, its first
+   sites in v1.32.3).
 5. **The SSRF surface** — `fetch.py` (IP-pin, forbidden ranges, redirect
    refusal), the resolver opt-out boundary, and the EBSI host allow-list
    (§7, R4–R5).
@@ -63,12 +64,14 @@ relying-party registration, **no wrong-authorize**):
    XAdES-BASELINE-B profile, the XSW guard, and the `signxml`/`lxml` dependency
    (I13, R6).
 
-The residual-risk register (R1–R10) is deliberately the reviewer's shortcut to
+The residual-risk register (R1–R11) is deliberately the reviewer's shortcut to
 the soft spots we already know about; **R1** (SD-JWT unbounded recursion →
 batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117)),
-**R9** (the RDF Data Integrity wrong-accept) in v1.30.2 and **R10** (the last known
-untyped exits reachable from attacker-controlled input) in v1.32.3, leaving the typed-error-hygiene
-items **R2–R3** at the top of the harden-next list.
+**R9** (the RDF Data Integrity wrong-accept) in v1.30.2 and **R10** (untyped
+exits at the verification boundary, reachable from attacker-controlled input) in v1.33.1, its
+first sites in v1.32.3, leaving the typed-error-hygiene items **R2–R3** at the top of the
+harden-next list. **R11** records two open, documented caveats at the seam between the SD-JWT
+and VC-JWT lanes.
 
 ## 4. How to reproduce the evidence
 

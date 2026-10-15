@@ -50,7 +50,9 @@ already hold the key. Normally you let the pipeline resolve it from the
   typed `sd-jwt`, `*+sd-jwt` or `kb+jwt` (any case, with or without the `application/`
   prefix) is a `MalformedToken` before the signature is checked. So is one whose payload
   carries an SD-JWT marker at any depth: a member named `_sd` or `_sd_alg`, or an
-  array-element digest object `{"...": …}` (RFC 9901 §4.2.4, §4.1.1). The second test
+  array-element digest object `{"...": …}`. RFC 9901 §4.1 item 7 and §4.2.4.2 (`_sd` and
+  `...` are reserved; `...` is the array-element digest object) and §4.1.1 (`_sd_alg`, top
+  level only) name them, and openvc refuses `_sd_alg` at any depth too. The second test
   does not read the header, so it covers an issuer JWT with no `typ`, or one the
   first test does not know, whose `vc` object keeps its disclosable claims inside it:
   with its `~` tail dropped it would otherwise verify here with no key binding. Before

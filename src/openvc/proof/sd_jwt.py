@@ -6,6 +6,10 @@ Implements the IETF SD-JWT VC family:
   * draft-ietf-oauth-sd-jwt-vc-18 (the VC profile: ``vct``, ``aka_vcts``, ``cnf``,
     ``status`` …; a draft that builds on RFC 9901)
 
+The same suite verifies a W3C VCDM credential secured as SD-JWT (VC-JOSE-COSE §3.2:
+``vc+sd-jwt``, the draft-era ``vc+ld+json+sd-jwt``, or no ``typ``), accepted only as a
+conforming VCDM payload (#275).
+
 The third proof profile alongside VC-JWT (:mod:`openvc.proof.vc_jwt`) and Data
 Integrity — and the format EUDI/ARF converges on. It reuses the same JOSE
 machinery: the ``SigningKey`` backend (HSM-friendly, the private key never enters
@@ -28,9 +32,10 @@ the issuer's ``cnf``, binds a presentation to an audience + nonce and to the exa
 set of disclosures (via ``sd_hash``), and dates it: its ``iat`` is required and must
 fall within ``kb_max_age_s`` of the verifier's ``now`` (RFC 9901 §7.3 step 5.5).
 
-Revocation is out of band: an SD-JWT VC's ``status`` claim can carry an IETF Token
-Status List reference — check it with :func:`openvc.status.check_token_status`
-over the verified claims.
+Revocation: the suite itself does not check status. :func:`openvc.verify.verify_credential`
+does (an SD-JWT VC's ``status`` claim carrying an IETF Token Status List reference, or a
+W3C ``credentialStatus``), fail-closed by default; called directly, check it with
+:func:`openvc.status.check_token_status` over the verified claims.
 """
 from __future__ import annotations
 
@@ -76,9 +81,10 @@ _KB_TYP = "kb+jwt"
 # drafts used it before draft-06 renamed it, but draft-19 dropped the transitional
 # acceptance of it.
 _W3C_TYP = "vc+sd-jwt"
-# The name the W3C Working Drafts of August-September 2023 gave that media type
-# (`application/vc+ld+json+sd-jwt`) before the rename. The Recommendation's Example 21 still
-# carries it, and issuers built on those drafts emit it (#289). Exact match, same rule.
+# The name the Working Drafts of 2023 and the First Candidate Recommendation (25 April 2024)
+# of VC-JOSE-COSE gave that media type (`application/vc+ld+json+sd-jwt`) before the rename.
+# The Recommendation's Example 21 still carries it, and issuers built on those drafts emit it
+# (#289). Exact match, same rule.
 _W3C_DRAFT_TYP = "vc+ld+json+sd-jwt"
 _W3C_TYPS = frozenset({_W3C_TYP, _W3C_DRAFT_TYP})
 # The issuer JWT `typ` values verify() accepts. An absent `typ` is accepted too, for a
@@ -365,9 +371,12 @@ def _vcdm_issuer(body: Mapping[str, Any]) -> str | None:
     the same non-empty string: an object with neither, or whose two members disagree, names
     no one and is refused rather than guessed at, as the reconciliation reads it.
 
-    Used only for an issuer JWT whose body has NO ``iss`` and whose ``typ`` is a W3C state
-    (VC-JOSE-COSE §4.1.2 makes ``iss`` optional there and §4.2 identifies the issuer by
-    ``issuer``). Always read from the issuer-JWT *body*: a disclosure is never consulted, so
+    Used only for an issuer JWT whose body has NO ``iss`` and whose ``typ`` is a W3C state.
+    VC-JOSE-COSE §4.1.2 says that ``iss``, if present, MUST match the ``issuer``; §4.2 says
+    that when ``iss`` is absent and the issuer is a URL, the ``kid`` MUST be an absolute URL
+    to a verification method in the issuer's controlled identifier document or DID document.
+    openvc takes the identifier from ``issuer`` and resolves it with the same paths as
+    ``iss``. Always read from the issuer-JWT *body*: a disclosure is never consulted, so
     a holder cannot supply the identifier that selects the key, and the value is exactly as
     unauthenticated as ``iss`` is until the signature verifies."""
     identifiers = issuer_identifiers(body.get("issuer"))
@@ -772,13 +781,16 @@ class SdJwtVcProofSuite:
                     f"issuer JWT {shown} needs a W3C VCDM @context; an IETF SD-JWT VC "
                     "is typed 'dc+sd-jwt'")
             if typ is None and ("vc" in unpacked or "vp" in unpacked):
-                # VC-JOSE-COSE §3.1.3: the claim names `vc` and `vp` MUST NOT be present.
-                # A token with a `vc` object and no `typ` would be an SD-JWT VC here and,
-                # with its `~` tail dropped, a VC-JWT in the VC-JWT lane, which refuses only
-                # a typed SD-JWT issuer JWT (#189): the holder could shed key binding. A
-                # token accepted here has no `vc` claim, so that lane refuses its stripped
-                # form ("no embedded `vc` object"). It cannot help one this lane never sees
-                # (#291).
+                # VC-JOSE-COSE §1.1.2.1, restated in §3.1.3: the claim names `vc` and `vp`
+                # MUST NOT be present. A token with a `vc` object and no `typ` would be an
+                # SD-JWT VC here and, with its `~` tail dropped, a VC-JWT in the VC-JWT lane.
+                # That lane refuses a typed SD-JWT issuer JWT (#189) and, since #291, one
+                # whose payload carries an SD-JWT marker, but not a zero-disclosure one with
+                # no `typ`: the holder could shed key binding. A token accepted here has no
+                # `vc` claim, so that lane refuses its stripped form ("no embedded `vc`
+                # object"). The ban cannot help a token this lane never sees; the VC-JWT
+                # lane's marker fence (#291) covers that one, and its zero-disclosure
+                # residual is documented.
                 raise SdJwtError(
                     "issuer JWT without a typ must not carry a `vc` or `vp` claim "
                     "(VC-JOSE-COSE §3.1.3)")

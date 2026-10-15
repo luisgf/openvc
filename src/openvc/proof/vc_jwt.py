@@ -24,6 +24,11 @@ Security posture
 * The verification algorithm is taken from the token header ONLY after checking it
   against the allow-list, and is then pinned when calling the verifier.
 * peek_issuer never influences verification; it exists solely to select a key.
+* Explicit typing: a JWS typed as an SD-JWT issuer JWT or a KB-JWT, or whose payload
+  carries an SD-JWT marker (`_sd`, `_sd_alg`, `"..."`) at any depth, is a MalformedToken
+  before the signature is checked (#189, #291). The markers are reserved by RFC 9901 §4.1
+  item 7 (`_sd` and `...`), §4.2.4.2 (the `{"...": digest}` array-element object) and
+  §4.1.1 (`_sd_alg`, top level only).
 """
 
 from __future__ import annotations
@@ -157,8 +162,10 @@ def _reject_sd_jwt_typ(header: dict[str, Any]) -> None:
 
 def _carries_sd_jwt_marker(node: Any) -> bool:
     """Whether a decoded JSON value carries an SD-JWT marker at ANY depth: a member named
-    ``_sd`` or ``_sd_alg`` (RFC 9901 §4.2.4, §4.1.1: reserved), or an array-element digest
-    ``{"...": <digest>}`` (§4.2.4.2). Iterative, because the payload is attacker-controlled.
+    ``_sd`` or ``_sd_alg``, or an array-element digest ``{"...": <digest>}``: RFC 9901 §4.1
+    item 7 (``_sd`` and ``...`` are reserved), §4.2.4.2 (the ``{"...": digest}`` array-element
+    object) and §4.1.1 (``_sd_alg``, top level only; a hit at any depth is refused here).
+    Iterative, because the payload is attacker-controlled.
     An issuer JWT that holds a ``vc`` object keeps its disclosable claims INSIDE it, so a
     top-level test would miss exactly that shape."""
     stack = [node]
@@ -178,8 +185,9 @@ def _reject_sd_jwt_payload(payload: dict[str, Any]) -> None:
     the issuer sets a ``typ``: an SD-JWT issuer JWT with none (or one this filter does not
     know) whose payload holds a ``vc`` object verified as a VC-JWT once its ``~`` tail was
     dropped, with no key binding (#291, the same hole #189 closed for a typed one). A VC-JWT
-    never carries SD-JWT markers, so a payload that does is an SD-JWT issuer JWT whatever its
-    ``typ``. This cannot see a zero-disclosure SD-JWT, which carries none of the markers (an
+    never carries SD-JWT markers (RFC 9901 §4.1 item 7, §4.2.4.2 and §4.1.1, see
+    :func:`_carries_sd_jwt_marker`), so a payload that does is an SD-JWT issuer JWT whatever
+    its ``typ``. This cannot see a zero-disclosure SD-JWT, which carries none of the markers (an
     ``_sd_alg`` alone, or a decoy digest, is refused): that one is indistinguishable from a
     VC-JWT that carries a ``cnf``, which this lane never enforces."""
     if _carries_sd_jwt_marker(payload):

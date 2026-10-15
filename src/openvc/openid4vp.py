@@ -770,8 +770,9 @@ def _verify_sd_jwt_vc(
             f"Presentation for {query_id!r} did not verify as an SD-JWT VC "
             f"(got {result.format!r})")
     # The pipeline names every SD-JWT "sd-jwt-vc", a W3C VCDM credential secured as
-    # `vc+sd-jwt` (VC-JOSE-COSE) included. This format is the IETF SD-JWT VC, whose issuer
-    # JWT is typed `dc+sd-jwt` (draft-19 §2.2.1), the same string as the format (#272).
+    # `vc+sd-jwt`, as the draft-era `vc+ld+json+sd-jwt` or with no `typ` (VC-JOSE-COSE)
+    # included. This format is the IETF SD-JWT VC, whose issuer JWT is typed `dc+sd-jwt`
+    # (draft-19 §2.2.1), the same string as the format (#272).
     issuer_typ = getattr(result.raw, "typ", None)
     if issuer_typ != FORMAT_SD_JWT_VC:
         raise VpTokenMalformed(

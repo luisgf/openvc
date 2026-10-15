@@ -17,13 +17,14 @@ W3C VC-JOSE-COSE (Recommendation of 13 October 2026, https://www.w3.org/TR/vc-jo
 makes the SD-JWT ``typ`` a SHOULD (§3.2.1), and its verification algorithm (§5.2) takes the
 media type as an input instead of reading it from the header. Its examples show it: Examples
 4 and 5 carry the header ``{"kid", "alg"}`` and no ``typ``, and Example 21 carries
-``typ: vc+ld+json+sd-jwt``, the name the 2023 Working Drafts gave the media type before
-``vc+sd-jwt`` (§6.1.3) replaced it. openvc refused both before any crypto ("unexpected
-issuer JWT typ"). The credentials of Examples 4 and 5 carry no ``iss`` either, which this
-lane needed to select the key; since #290 the VCDM ``issuer`` stands in for it (see
-tests/test_sd_jwt_issuer_fallback.py), so Example 5 verifies end to end as published (section
-I). RFC 9901 §9.11 recommends explicit typing for SD-JWT, so the gate is relaxed, not
-removed. What ``SdJwtVcProofSuite.verify`` does now:
+``typ: vc+ld+json+sd-jwt``, the name the 2023 Working Drafts and the First Candidate
+Recommendation (25 April 2024) gave the media type before ``vc+sd-jwt`` (§6.1.3) replaced it.
+openvc refused both before any crypto ("unexpected issuer JWT typ"). The credentials of
+Examples 4 and 5 carry no ``iss`` either, which this lane needed to select the key; since
+#290 the VCDM ``issuer`` stands in for it (see tests/test_sd_jwt_issuer_fallback.py), so
+Example 5 verifies end to end with nothing but its signature replaced (section I). RFC 9901
+§9.11 recommends explicit typing for SD-JWT, so the gate is relaxed, not removed. What
+``SdJwtVcProofSuite.verify`` does now:
 
 * **No ``typ`` member.** Accepted only if the processed payload declares a W3C VCDM base
   ``@context`` (VCDM 2.0 or 1.1, as a string or anywhere in an array: the lax test that
@@ -56,12 +57,15 @@ removed. What ``SdJwtVcProofSuite.verify`` does now:
   ``vct#integrity``, or of a sub-claim of one, is ``SdJwtError``; a disclosed ``iat`` is
   checked on the processed payload; ``expected_vct`` and ``aka_vcts`` are enforced; and the
   ``@context`` reader compares each entry exactly. A ``cty`` is never read as a ``typ``.
-* **The VC-JWT lane is untouched.** A token with no ``typ`` that this lane accepts has no
+* **The VC-JWT lane is not widened.** A token with no ``typ`` that this lane accepts has no
   ``vc`` claim, so its ``~`` tail dropped is a compact JWS that the VC-JWT lane refuses
-  ("no embedded ``vc`` object"); one typed ``vc+ld+json+sd-jwt`` is refused there by its
-  ``+sd-jwt`` suffix (#189). A token with a ``vc`` object and no ``typ``, which this lane
-  refuses, still verifies there with its tail dropped, as on ``main`` (#291). Every typ
-  ``verify()`` accepts is refused by that filter, so a new one cannot slip through it.
+  ("no embedded ``vc`` object"), or, when it has a disclosure, by the SD-JWT marker fence
+  (#291); one typed ``vc+ld+json+sd-jwt`` is refused there by its ``+sd-jwt`` suffix (#189).
+  A token with a ``vc`` object and no ``typ``, which this lane refuses, is refused there too
+  once it carries a disclosure (its ``_sd`` markers, #291); only a zero-disclosure one still
+  verifies there with its tail dropped, the documented limit pinned in
+  tests/test_vc_jwt_sd_fence.py. Every typ ``verify()`` accepts is refused by the typ filter,
+  so a new one cannot slip through it.
 * **OpenID4VP.** The ``dc+sd-jwt`` DCQL lane still answers only an issuer JWT typed
   ``dc+sd-jwt`` (#272), so neither new case answers a ``dc+sd-jwt`` query.
 
@@ -974,7 +978,8 @@ def test_a_dc_sd_jwt_has_no_context_position_rule_and_keeps_the_lax_vcdm_reading
 
 
 # --------------------------------------------------------------------------- #
-# G. the VC-JWT lane is untouched: an issuer JWT whose ~ tail is dropped
+# G. the tail-dropped form: the VC-JWT lane refuses what this lane accepts (a payload with a
+#    disclosure by its markers, #291)
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("disclose, error, message", [

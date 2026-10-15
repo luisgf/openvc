@@ -7,12 +7,15 @@ The rule. RFC 8725 §3.11 asks for explicit typing, and ``_reject_sd_jwt_typ`` e
 while the issuer sets a ``typ`` the filter knows. An SD-JWT issuer JWT with no ``typ`` (VC-JOSE-COSE
 §3.2.1 makes it a SHOULD), or with one such as ``JWT``, and a ``vc`` object in its payload,
 verified on the VC-JWT lane once a holder dropped its ``~`` tail, with no key binding at all.
-RFC 9901 reserves three names inside an SD-JWT payload: ``_sd`` (§4.2.4, the digests of the
-disclosures of an object's members), ``_sd_alg`` (§4.1.1, the hash function) and ``...`` (§4.2.4,
-the digest object that stands for an array element). A VC-JWT never carries one, so a payload
-that does, at ANY depth (an issuer that keeps a ``vc`` object keeps its disclosable claims
-INSIDE it), is an SD-JWT issuer JWT whatever its ``typ``. Both lanes now refuse it, with
-``MalformedToken``, before any key is loaded and before any signature is checked:
+RFC 9901 reserves three names inside an SD-JWT payload: ``_sd`` (§4.1 item 7, the digests of
+the disclosures of an object's members), ``_sd_alg`` (§4.1.1, the hash function, top level only)
+and ``...`` (§4.1 item 7 and §4.2.4.2, the digest object that stands for an array element). A
+VC-JWT never carries one, so a payload that does, at ANY depth (an issuer that keeps a ``vc``
+object keeps its disclosable claims INSIDE it), is an SD-JWT issuer JWT whatever its ``typ``.
+Both lanes now refuse it, with ``MalformedToken``, before any signature is checked (the
+VP-JWT lane also before the holder key is resolved; on the VC-JWT lane the verify_credential
+pipeline has already resolved the issuer key, and the suite builds its verification key only
+after the fence):
 
 * ``VcJwtProofSuite.verify`` (so ``verify_credential``, ``verify_credential_async`` and
   ``verify_many`` on a compact JWS) calls ``_reject_sd_jwt_payload`` on the peeked payload.
@@ -24,10 +27,10 @@ INSIDE it), is an SD-JWT issuer JWT whatever its ``typ``. Both lanes now refuse 
 walk of a hostile list raises a bare ``RecursionError`` that escapes ``OpenvcError``.
 
 THE DOCUMENTED RESIDUAL (#291, pinned in section C, not fixed). A zero-disclosure SD-JWT
-issuer JWT with no ``typ``, a ``vc`` object and a ``cnf`` has no marker, so nothing tells it
-from a VC-JWT that carries a ``cnf``, and the VC-JWT lane never enforces ``cnf`` (it has no
-key binding to enforce). With its ``~`` tail dropped it still verifies as a VC-JWT. Whoever
-closes that gap has to change the test that says so.
+issuer JWT with no ``typ``, a ``vc`` object and a ``cnf`` carries none of ``_sd``, ``_sd_alg``,
+``...``, so nothing tells it from a VC-JWT that carries a ``cnf``, and the VC-JWT lane never
+enforces ``cnf`` (it has no key binding to enforce). With its ``~`` tail dropped it still
+verifies as a VC-JWT. Whoever closes that gap has to change the test that says so.
 
 A. each marker, alone, at each position, is refused, and before the signature is checked
 B. controls: a VC-JWT without markers, and payloads with look-alike names, still verify

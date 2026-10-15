@@ -84,7 +84,12 @@ whose payload carries an SD-JWT marker at any depth (a member named `_sd` or
 (#291). The walk covers the whole payload, so an embedded Data Integrity credential
 object is scanned; a nested VC-JWT is a string there and meets the same fence when the
 cascade verifies it. No real presentation carries these members. The limit stated on
-that page applies here too: a zero-disclosure SD-JWT issuer JWT carries none of the markers.
+that page applies here too: a zero-disclosure SD-JWT issuer JWT carries none of `_sd`,
+`_sd_alg`, `...`. The algorithm allow-list and the `crit` check also run before the holder
+key is resolved (since 1.34.0; before, `verify_compact` ran them after the resolver), so a
+VP-JWT with a disallowed `alg` or any `crit` fails with `UnsupportedAlgorithm` /
+`MalformedToken` without a resolver call, where an unresolvable holder used to report
+`KeyResolutionFailed` first.
 
 A VC-JWT nested in the presentation is checked against `policy.audience`, not the
 presentation's `audience`. If it carries its own `aud`, pass
