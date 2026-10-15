@@ -226,9 +226,14 @@ def test_a_string_relationship_is_still_refused_before_any_lookup():
         verify_credential(credential, resolver=_sync(doc), policy=POLICY)
     assert type(exc.value) is KeyResolutionError
     assert type(exc.value.__cause__) is DidResolutionError
-    with pytest.raises(KeyResolutionFailed, match="could not resolve") as afail:
+    # the async lane raises the same class as the sync one (#283), which is also a
+    # KeyResolutionFailed
+    assert isinstance(exc.value, KeyResolutionFailed)
+    with pytest.raises(KeyResolutionError, match="could not resolve") as afail:
         asyncio.run(verify_credential_async(credential, resolver=_async(doc), policy=POLICY))
-    assert type(afail.value) is KeyResolutionFailed
+    assert type(afail.value) is KeyResolutionError
+    assert isinstance(afail.value, KeyResolutionFailed)
+    assert type(afail.value.__cause__) is DidResolutionError
 
 
 # --------------------------------------------------------------------------- #

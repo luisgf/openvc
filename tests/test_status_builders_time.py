@@ -21,6 +21,12 @@ plain ``datetime`` that returns, never from the caller's object), ``issued_at`` 
 ``expires`` must otherwise pass the verifier's NumericDate gate, and ``ttl`` is ``None``
 or a positive ``int``.
 
+#286 (maintainer decision, 2026-10-15): a ``datetime`` SUBCLASS is read from its fields
+and ``tzinfo`` through the base class and none of its methods is called, so one whose
+``astimezone()`` or ``utcoffset()`` lies is no longer refused (#255 refused it); it
+reads as the plain ``datetime`` it holds. The two rows that pinned the refusal now pin
+that reading, below; tests/test_clock_reading_subclass.py covers the rest.
+
 Every refusal is asserted against the EXACT class ``StatusListError`` (it has no
 subclasses), never ``ValueError`` / ``TypeError`` / ``OverflowError`` /
 ``AttributeError``. The token negatives sign with a key whose ``sign`` raises, which proves
@@ -211,8 +217,9 @@ def test_credential_refuses_what_is_not_a_datetime(field, value):
 
 class _BadOffsetDatetime(datetime):
     """A naive ``datetime`` whose ``utcoffset()`` answers something that is not a
-    ``timedelta``: Python's own test for "naive" (``utcoffset() is None``) is not met,
-    so a reader that trusted it fell through to the host's local zone."""
+    ``timedelta``: Python's own test for "naive" (``utcoffset() is None``) is not met by
+    asking it, so a reader that trusted it fell through to the host's local zone (#255
+    refused it; since #286 nothing asks the subclass, and it reads as its fields)."""
 
     def utcoffset(self) -> Any:                                 # type: ignore[override]
         return "x"
@@ -221,15 +228,14 @@ class _BadOffsetDatetime(datetime):
 # A ``datetime`` with no UTC reading: refused by BOTH builders, for the same four fields'
 # worth of reasons (a UTC form outside years 1..9999 was a bare OverflowError in the
 # credential and a minted ``iat`` of -62135600400 in the token; a tzinfo that raises
-# escaped as itself).
+# escaped as itself). A subclass that LIES about its UTC form is not in this table since
+# #286: nothing asks the subclass, so it has the reading of its fields (next tests).
 _NO_UTC_READING = [
     pytest.param(datetime(1, 1, 1, tzinfo=PLUS_ONE), id="year1-at-+01:00"),
     pytest.param(datetime(9999, 12, 31, 23, tzinfo=MINUS_FIVE), id="year9999-at--05:00"),
     pytest.param(datetime(1, 1, 1, 0, 30, tzinfo=timezone(timedelta(hours=14))),
                  id="year1-at-+14:00"),
     pytest.param(datetime(2026, 1, 1, tzinfo=_RaisingTz()), id="raising-tzinfo"),
-    pytest.param(_LyingDatetime(2026, 1, 1, tzinfo=PLUS_ONE), id="astimezone-lies"),
-    pytest.param(_BadOffsetDatetime(2026, 1, 1), id="naive-utcoffset-lies"),
 ]
 
 
@@ -246,6 +252,34 @@ def test_token_refuses_a_datetime_with_no_utc_reading(field, value):
     # ``iat = -62135600400`` and 9999-12-31T23:00-05:00 as 253402315200 where the
     # credential refused them, and it asked the caller's object for the epoch
     refused(lambda: tok_unsigned(**{field: value}), names=field)
+
+
+# A subclass whose ``astimezone()`` / ``utcoffset()`` lies. #255 refused both (a typed
+# StatusListError); since #286 (maintainer decision, 2026-10-15) neither method is
+# called: the value is read from its fields and ``tzinfo`` through the base class, so
+# each is the instant its plain twin is. The exact strings and epochs, never "no error".
+_LYING_SUBCLASS_READING = [
+    # 2026-01-01T00:00+01:00 is 2025-12-31T23:00Z; astimezone() claimed year 2000
+    pytest.param(_LyingDatetime(2026, 1, 1, tzinfo=PLUS_ONE), "2025-12-31T23:00:00Z",
+                 1767222000, id="astimezone-lies"),
+    # naive, so UTC: 2026-01-01T00:00Z; utcoffset() answered "x"
+    pytest.param(_BadOffsetDatetime(2026, 1, 1), "2026-01-01T00:00:00Z", 1767225600,
+                 id="naive-utcoffset-lies"),
+]
+
+
+@pytest.mark.parametrize("field", ["valid_from", "valid_until"])
+@pytest.mark.parametrize("value, iso, _epoch", _LYING_SUBCLASS_READING)
+def test_credential_reads_a_lying_subclass_from_its_fields(field, value, iso, _epoch):
+    assert cred(**{field: value})[{"valid_from": "validFrom",
+                                   "valid_until": "validUntil"}[field]] == iso
+
+
+@pytest.mark.parametrize("field, claim", [("issued_at", "iat"), ("expires", "exp")])
+@pytest.mark.parametrize("value, _iso, epoch", _LYING_SUBCLASS_READING)
+def test_token_reads_a_lying_subclass_from_its_fields(field, claim, value, _iso, epoch):
+    got = claims_of(tok(**{field: value}))[claim]
+    assert got == epoch and type(got) is int
 
 
 def test_the_error_names_the_parameter_and_the_value_safely():

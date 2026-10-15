@@ -10,7 +10,10 @@ Same formats, same `VerificationPolicy`, same `VerificationResult`, same
 fail-closed guarantees: the async path reuses every proof suite and codec
 unchanged and only re-expresses the I/O sequencing
 ([ADR-0002](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0002-async-verification.md)
-— no second implementation of any signature check).
+— no second implementation of any signature check). The async API also raises the same
+error classes as the sync one, a failed key resolution included: `KeyResolutionFailed` on the
+JOSE lanes and its subclass `KeyResolutionError` on the Data Integrity lanes
+([one error family](Resolving-Issuer-Keys#one-error-family-for-a-failed-key-resolution)).
 
 ```python
 import asyncio
