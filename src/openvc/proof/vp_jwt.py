@@ -28,7 +28,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from ._jws import parse_compact, sign_compact, verify_compact
-from ._verify_common import check_jwt_temporal, reject_unknown_crit, safe_repr
+from ._verify_common import (
+    check_jwt_temporal,
+    leeway_seconds,
+    reject_unknown_crit,
+    safe_repr,
+)
 from .vc_jwt import (
     ALLOWED_ALGS,
     ClaimsInvalid,
@@ -56,7 +61,7 @@ class VpJwtProofSuite:
     """Sign and verify VP-JWT holder presentations."""
 
     def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S) -> None:
-        self._leeway = leeway_s
+        self._leeway = leeway_seconds(leeway_s)       # fail closed, up front (0..MAX_LEEWAY_S)
 
     # -- untrusted inspection --------------------------------------------- #
 

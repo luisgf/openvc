@@ -84,6 +84,12 @@ def safe_repr(value: Any) -> str:
 
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew, matching the JOSE suites
 
+# The widest clock-skew tolerance any verifier here accepts: one day. A leeway is skew
+# between two clocks, not a validity period; "verify as of another date" is what `now` is
+# for. Anything wider is refused (:func:`leeway_seconds`) rather than silently turning an
+# expiry check into a no-op, and the bound keeps every `timedelta` / epoch sum in range.
+MAX_LEEWAY_S = 86_400
+
 # How old an SD-JWT Key Binding JWT's `iat` may be (RFC 9901 §7.3, step 5.5: "within an
 # acceptable window" — the size is verifier policy). A KB-JWT is minted when the holder
 # submits the presentation, so minutes are generous; same budget as an OpenID4VCI key
@@ -303,6 +309,7 @@ def check_jwt_temporal(
     ``current + leeway_s``: a huge leeway would overflow a float sum into a bare
     ``OverflowError`` and abort ``verify_many``.
     """
+    leeway_s = leeway_seconds(leeway_s, error=ClaimsInvalid)     # backstop; see utc_window
     check_numeric_dates(claims, "exp", "nbf", "iat", subject=subject)
     current: float = time.time() if now is None else now
     expired = False
@@ -437,31 +444,50 @@ def utc_window(
     now: Any, leeway_s: Any, *, error: type[Exception] = ProofError,
 ) -> tuple[datetime, timedelta]:
     """``(instant, leeway)`` for a validity window evaluated at *now*: the instant from
-    :func:`utc_instant`, and the leeway as a ``timedelta``. A negative or ``NaN`` leeway
-    counts as 0, and one wider than ``timedelta`` holds is ``timedelta.max``.
+    :func:`utc_instant`, and the leeway as a ``timedelta``. The leeway must already be a
+    valid :func:`leeway_seconds` value: every entry point checks it up front, and this is
+    the backstop for a caller that did not, so it raises *error* rather than clamping a
+    negative or ``NaN`` leeway to 0 or saturating an oversized one.
 
     Compare *differences* against the leeway (``instant - not_after > leeway``), never
     ``instant ± leeway``: that leaves datetime's range for a *now* near
-    ``datetime.max`` / ``datetime.min`` or a huge leeway, while two datetimes always
-    subtract cleanly. A leeway that is not a number becomes *error* here, not a bare
-    ``TypeError`` mid-check.
+    ``datetime.max`` / ``datetime.min``, while two datetimes always subtract cleanly.
     """
     instant = utc_instant(now, error=error)
-    try:
-        leeway = timedelta(seconds=max(0, leeway_s))
-    except OverflowError:               # wider than timedelta holds: the widest one, not a
-        leeway = timedelta.max          # bare error that would abort verify_many
-    except (TypeError, ValueError) as exc:
-        raise error(f"leeway_s must be a number of seconds, not "
-                    f"{type(leeway_s).__name__}") from exc
-    return instant, leeway
+    return instant, timedelta(seconds=leeway_seconds(leeway_s, error=error))
+
+
+def leeway_seconds(
+    value: Any, *, name: str = "leeway_s", error: type[Exception] = ProofError,
+) -> int:
+    """Validate a clock-skew leeway and return it as a plain ``int``: whole seconds from
+    0 to :data:`MAX_LEEWAY_S`, else *error*. This is the one rule every entry point that
+    takes ``leeway_s`` applies, once and before it reads anything else.
+
+    ``NaN`` and ``Infinity`` are refused because every comparison against ``NaN`` is
+    ``False`` and an infinite window never closes: either switches expiry off. So is
+    anything else that is not a whole number of seconds (a float, a string, ``None``, a
+    ``bool``, a ``Decimal``, a numpy scalar), a negative leeway (a configuration
+    mistake, not a stricter clock) and one wider than a day. An ``int`` subclass is read
+    as the plain integer it holds, so an overridden comparison cannot change the verdict.
+    *name* is how the message calls the value.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        seconds = None
+    else:
+        seconds = int.__index__(value)          # the integer itself, not a subclass's idea
+    if seconds is None or not 0 <= seconds <= MAX_LEEWAY_S:
+        raise error(f"{name} must be a whole number of seconds from 0 to "
+                    f"{MAX_LEEWAY_S}, got {safe_repr(value)}")
+    return seconds
 
 
 def non_negative_seconds(value: Any, *, name: str, error: type[Exception] = ProofError) -> int:
-    """Validate a duration knob — a leeway, a maximum age — as a non-negative ``int``
-    of seconds (not a ``bool``). A ``NaN``/``Infinity`` leeway would make every window
-    comparison ``False``, i.e. switch the window off, and ``None`` or a string would
-    surface mid-verification as a bare ``TypeError``."""
+    """Validate a duration knob with no upper bound — a maximum age — as a non-negative
+    ``int`` of seconds (not a ``bool``). A ``NaN``/``Infinity`` age would make a window
+    comparison ``False``, and ``None`` or a string would surface mid-verification as a
+    bare ``TypeError``. A clock-skew leeway is :func:`leeway_seconds`, which also
+    bounds it."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise error(f"{name} must be a non-negative int (seconds), got {value!r}")
     return value
@@ -483,6 +509,7 @@ def check_iat_freshness(
     future-dated direction is the one implementations forget: without it a holder
     signs once with ``iat = now + 10y`` and holds a proof that never goes stale.
     """
+    leeway_s = leeway_seconds(leeway_s, error=ClaimsInvalid)     # backstop; see utc_window
     if iat is None:
         raise ClaimsInvalid(f"{subject} is missing the required iat")
     if not is_numeric_date(iat):
@@ -654,6 +681,7 @@ __all__ = [
     "DEFAULT_KB_MAX_AGE_S",
     "DEFAULT_LEEWAY_S",
     "KeyResolutionError",
+    "MAX_LEEWAY_S",
     "MalformedTimestamp",
     "PresentationBindingError",
     "ProofPurposeMismatch",
@@ -667,6 +695,7 @@ __all__ = [
     "check_validity_window",
     "prepare_di_proof",
     "is_numeric_date",
+    "leeway_seconds",
     "match_alg",
     "non_negative_seconds",
     "reject_unknown_crit",

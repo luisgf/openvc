@@ -76,6 +76,47 @@ In production the issuer key usually lives in an HSM/KMS and is addressed by
 - Every failure raises a subclass of a single root, so
   `except OpenvcError` catches any openvc rejection.
 
+## Clock skew: `leeway_s`
+
+`VerificationPolicy.leeway_s` is the clock-skew tolerance every lane adds to its temporal
+checks: a JWT's `exp`, `nbf` and `iat`, a W3C credential's `validFrom` / `validUntil`, a
+Data Integrity proof's `expires`, a status list's window. The default is 60 seconds. One rule
+holds everywhere openvc takes a `leeway_s`:
+
+- **A whole number of seconds from 0 to `MAX_LEEWAY_S` (86 400, one day), as an `int` that
+  is not a `bool`.** Anything else is refused, up front, with a typed error: a float
+  (`60.5`, `60.0`, `NaN`, `Infinity`), a negative, a `bool`, a string, `None`, a
+  `Decimal` or a numpy scalar (pass `int(x)`), and anything past a day.
+- **Why so strict.** Every comparison against `NaN` is false and an infinite or huge
+  window never closes, so either one switched expiry off. A string or `None` used to
+  escape as a bare `TypeError` mid-batch. A leeway is the skew between two clocks, not a
+  validity period: to verify as of another date, pin `now`.
+- **Where it is checked, and what it raises.** `VerificationPolicy(...)` raises
+  `InvalidPolicy` when it is built, so a misconfiguration fails once and not once per
+  credential. Each proof suite's constructor (`VcJwtProofSuite`, `VpJwtProofSuite`, the Data
+  Integrity suites) raises `ProofError`, `SdJwtVcProofSuite` raises `SdJwtError`, and the
+  function entry points raise their own family: `verify_vp_token` and
+  `verify_encrypted_vp_response` `OpenID4VPError`, `verify_status_list_token` and the
+  four `default_status_list*_resolver` factories `StatusListError`,
+  `verify_credential_request_proofs` `CredentialRequestMalformed`, the mdoc verifiers
+  `MdocError`, `verify_rp_registration_certificate` `RpRegistrationError`. Each checks it
+  before it reads anything else.
+- `kb_max_age_s` on the policy must be a non-negative `int` too (`InvalidPolicy`), with no
+  upper bound.
+
+```python
+from openvc import InvalidPolicy, VerificationPolicy
+
+VerificationPolicy(leeway_s=0)       # no tolerance at all
+VerificationPolicy(leeway_s=300)     # five minutes of skew
+
+for bad in (60.5, float("nan"), float("inf"), -1, "60", None, True, 86_401):
+    try:
+        VerificationPolicy(leeway_s=bad)
+    except InvalidPolicy as exc:
+        print("refused:", exc)
+```
+
 ## Waiving expiry or revocation
 
 Two `VerificationPolicy` knobs, both `True` by default, turn an *expired* or

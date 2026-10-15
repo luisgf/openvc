@@ -48,7 +48,8 @@ still fails before any KB check.
 **KB-JWT freshness.** RFC 9901 makes the KB-JWT `iat` REQUIRED (§4.3) and has the
 verifier check it is "within an acceptable window" (§7.3 step 5.5). openvc requires
 it, refuses a non-numeric or non-finite one, and refuses a KB-JWT older than
-`kb_max_age_s` — default `DEFAULT_KB_MAX_AGE_S`, 300 seconds — plus the leeway, or
+`kb_max_age_s` — default `DEFAULT_KB_MAX_AGE_S`, 300 seconds — plus the leeway (`leeway_s`, a
+whole number of seconds from 0 to a day, [Getting started](Getting-Started#clock-skew-leeway_s)), or
 dated in the future beyond the leeway. Any KB-JWT that is present is held to it,
 whether or not binding was required. A KB-JWT's own `exp`/`nbf`, which RFC 9901
 does not define, are held to the same rule when present: finite numbers (`null`

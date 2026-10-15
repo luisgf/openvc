@@ -74,6 +74,7 @@ from ..proof._jws import sign_compact, verify_compact
 from ..proof._verify_common import (
     check_jwt_temporal,
     is_numeric_date,
+    leeway_seconds,
     utc_epoch,
     utc_instant,
 )
@@ -502,7 +503,12 @@ def verify_status_list_token(
     given — that ``sub`` equals the URL it was fetched from (the IETF anti-swap
     check). The returned dict carries the ``status_list`` member, so it can be
     handed straight to :func:`~openvc.status.token_status_list.check_token_status`
-    as the resolver's result."""
+    as the resolver's result.
+
+    *leeway_s* is a whole number of seconds from 0 to one day (86 400); anything else
+    is a :class:`~openvc.status.bitstring.StatusListError`, raised before the token
+    is read."""
+    leeway_seconds(leeway_s, error=StatusListError)
     header, claims = verify_compact(token, public_key_jwk=public_key_jwk)
     if header.get("typ") != STATUS_LIST_JWT_TYP:
         raise StatusListError(
@@ -528,7 +534,7 @@ def verify_status_list_token(
     else:                                         # a datetime; anything else is typed
         instant = utc_epoch(now, error=StatusListError)
     try:
-        check_jwt_temporal(claims, leeway_s=max(0, leeway_s),
+        check_jwt_temporal(claims, leeway_s=leeway_s,
                            subject="status list token", now=instant)
     except ClaimsInvalid as exc:
         raise StatusListError(str(exc)) from exc

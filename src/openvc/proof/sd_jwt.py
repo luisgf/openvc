@@ -57,6 +57,7 @@ from ._verify_common import (
     check_jwt_temporal,
     check_numeric_dates,
     check_validity_window,
+    leeway_seconds,
     non_negative_seconds,
     reject_unknown_crit,
     safe_repr,
@@ -464,10 +465,10 @@ class SdJwtVcProofSuite:
         self, *, leeway_s: int = DEFAULT_LEEWAY_S, hash_name: str = _DEFAULT_HASH,
         allow_pq: bool = False,
     ) -> None:
+        # Added to both edges of every window here, so NaN would switch them off.
+        self._leeway = leeway_seconds(leeway_s, error=SdJwtError)
         if hash_name not in _HASHES:
             raise SdJwtError(f"unsupported hash {hash_name!r}")
-        # Added to both edges of every window here, so NaN would switch them off.
-        self._leeway = non_negative_seconds(leeway_s, name="leeway_s", error=SdJwtError)
         self._hash_name = hash_name
         # allow_pq merges the EXPERIMENTAL ML-DSA algs into this suite's allow-list; the
         # default suite rejects ML-DSA at the allow-list, before any crypto (ADR-0004).

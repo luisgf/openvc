@@ -31,6 +31,7 @@ from openvc.errors import OpenvcError
 from openvc.keys import Ed25519SigningKey
 from openvc.multibase import encode_multibase
 from openvc.proof._verify_common import (
+    MAX_LEEWAY_S,
     CredentialExpired,
     CredentialNotYetValid,
     check_validity_window,
@@ -179,14 +180,19 @@ def test_utc_window_returns_the_instant_and_the_leeway():
     assert utc_window(NOW_2021, 60) == (NOW_2021, timedelta(seconds=60))
 
 
-@pytest.mark.parametrize("leeway", [-60, float("nan"), float("-inf")])
-def test_utc_window_counts_a_negative_or_nan_leeway_as_zero(leeway):
-    assert utc_window(NOW_2021, leeway) == (NOW_2021, timedelta(0))
+@pytest.mark.parametrize("leeway", [-60, float("nan"), float("-inf"), float("inf"),
+                                    10**30, MAX_LEEWAY_S + 1, 60.5])
+def test_utc_window_refuses_a_leeway_it_used_to_clamp(leeway):
+    # Used to count a negative or NaN leeway as 0 and to saturate a wide one at
+    # timedelta.max, which switched expiry off. Entry points validate the leeway; this
+    # is the backstop, and it fails closed (#228).
+    with pytest.raises(_ConfigError, match="leeway_s"):
+        utc_window(NOW_2021, leeway, error=_ConfigError)
 
 
-@pytest.mark.parametrize("leeway", [float("inf"), 10**30])
-def test_utc_window_saturates_a_leeway_wider_than_timedelta(leeway):
-    assert utc_window(NOW_2021, leeway) == (NOW_2021, timedelta.max)
+@pytest.mark.parametrize("leeway", [0, MAX_LEEWAY_S])
+def test_utc_window_keeps_the_edges_of_the_range(leeway):
+    assert utc_window(NOW_2021, leeway) == (NOW_2021, timedelta(seconds=leeway))
 
 
 @pytest.mark.parametrize("now", _EDGE_NOWS)
@@ -294,10 +300,13 @@ def test_verify_many_fails_each_item_on_a_bad_now(now):
 
 
 def test_verify_many_fails_each_item_on_a_leeway_that_is_not_a_number():
-    out = verify_many([_di_credential()],
-                      policy=VerificationPolicy(require_status=False, now=NOW_2021,
-                                                leeway_s="60"))
-    assert isinstance(out[0].error, ProofError) and "leeway_s" in str(out[0].error)
+    # A policy cannot be built with one (#232), so reach the per-suite check by corrupting
+    # a valid policy the way a caller's monkeypatch or a duck-typed policy would.
+    policy = VerificationPolicy(require_status=False, now=NOW_2021)
+    object.__setattr__(policy, "leeway_s", "60")
+    out = verify_many([_di_credential(), _di_credential()], policy=policy)
+    assert [r.index for r in out] == [0, 1]
+    assert all(type(r.error) is ProofError and "leeway_s" in str(r.error) for r in out)
 
 
 @pytest.mark.parametrize("now", [1_609_459_200, "2021-01-01"])

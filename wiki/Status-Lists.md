@@ -142,7 +142,9 @@ The order of a window is not checked, by the builders or by the verifiers: a pas
 `valid_until` before `valid_from` all build. `verify_status_list_token` /
 `VcJwtProofSuite.verify` refuse the artefact when the time they read it at falls outside
 the window by more than their leeway (60 seconds by default), so a window inverted by less
-than the leeway is still accepted.
+than the leeway is still accepted. The leeway is a whole number of seconds from 0 to a day
+([Getting started](Getting-Started#clock-skew-leeway_s)); `verify_status_list_token` and the four `default_status_list*_resolver` factories
+refuse anything else with `StatusListError`, before they read the token.
 
 This is a behaviour change in 1.32.4. A digit string or a `bool` for `issued_at` /
 `expires`, a `Decimal` or `Fraction` there (pass `int(x)`), and a `ttl` that is not a

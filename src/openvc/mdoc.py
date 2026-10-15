@@ -32,7 +32,7 @@ from typing import Any, Callable, Sequence
 
 from . import cbor, cose
 from .errors import OpenvcError
-from .proof._verify_common import utc_window
+from .proof._verify_common import leeway_seconds, utc_window
 from .x5c import X5cError, check_mdoc_signed_within_ds_validity, resolve_mdoc_signer_key
 
 __all__ = [
@@ -179,8 +179,11 @@ def verify_device_response(
     (proximity); the OpenID4VP online flow uses ``DeviceSignature`` and does not need it.
 
     Raises a typed :class:`MdocError` (fail closed) on any malformed structure or failed
-    check; a single document failing rejects the whole response.
+    check; a single document failing rejects the whole response. *leeway_s* is a whole
+    number of seconds from 0 to one day (86 400); anything else is a :class:`MdocError`
+    before the response is read.
     """
+    leeway_seconds(leeway_s, error=MdocError)
     documents = _parse_response(device_response)
     results = []
     for document in documents:
@@ -210,8 +213,10 @@ def verify_issuer_signed(
     This does **not** check device authentication (holder binding) — the returned
     :class:`VerifiedMdoc` has ``device_signed=False``. Use it to verify the issuer seal of
     an mdoc at rest; for a presented mdoc use :func:`verify_device_response`, which also
-    binds the holder to the session.
+    binds the holder to the session. *leeway_s* is checked as in
+    :func:`verify_device_response`.
     """
+    leeway_seconds(leeway_s, error=MdocError)
     parts = _verify_issuer_signed(
         document, trust_anchors=trust_anchors, now=now, leeway_s=leeway_s,
         expected_doc_type=expected_doc_type)

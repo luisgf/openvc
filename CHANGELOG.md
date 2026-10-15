@@ -4,6 +4,166 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] — unreleased
+
+**Upgrading from 1.34.0.** One rule now holds for every `leeway_s`, the clock-skew tolerance
+(#228, #232): **a whole number of seconds from 0 to `MAX_LEEWAY_S` (86 400, one day), as an
+`int` that is not a `bool`**. Anything else raises a typed error where the value is first
+read. Three things can change what a caller sees, each detailed under *Changed*:
+
+1. A float (`60.5`, `60.0`), a negative, a `bool`, a `Decimal` / `Fraction` / numpy scalar or a
+   value over a day that some lane took before is now refused. Pass an `int` from 0 to 86 400
+   (`int(x)` for a numpy scalar).
+2. `VerificationPolicy(leeway_s=...)` and `VerificationPolicy(kb_max_age_s=...)` are checked
+   when the policy is built (`InvalidPolicy`), not once per credential at verify time.
+3. To verify as of another date, pin `now`; to keep a KB-JWT fresh for longer, raise
+   `kb_max_age_s`, which has no cap. A leeway is skew between two clocks, not a validity
+   period.
+
+**Maintainer decisions (taken 2026-10-15).** (1) `leeway_s` is a finite non-negative `int`,
+validated once, up front, at every entry point, with a typed error; `NaN`, `±Infinity`,
+negatives, floats (`60.5` included), `bool`, `str` and `None` are all refused. (2) The upper
+bound is `MAX_LEEWAY_S = 86_400`, one day. Before fixing it the repo was searched for a
+leeway above it, or a float or negative one, in `src`, `tests`, `wiki`, `README.md`, `docs`
+and `examples`: nothing in `src`, `wiki`, `README.md`, `docs` or `examples` uses one (the
+defaults are 60 s and, for mdoc, 300 s). Five test sites did, and each was rewritten rather
+than the bound widened: `leeway_s=10 ** 8` in `test_interop_vectors.py` (it kept an EUDI
+capture's KB-JWT fresh; `kb_max_age_s=10 ** 8` does that job now), `10**12` in
+`test_rp_registration.py`, `10**12` / `10**14` / `10**30` in `test_sd_jwt_vcdm_validity.py`,
+`2 ** 1100` in `test_jose_temporal_claims.py`, and the clamp / saturation cases in
+`test_typed_clock_pins.py`. (3) The ad-hoc checks the shared validator replaces are gone, so
+there is one rule: `max(0, leeway_s)` in `verify_status_list_token`, `leeway_s < 0` in
+`verify_credential_request_proofs`, `non_negative_seconds(leeway_s, ...)` in the SD-JWT suite
+and `verify_vp_token`, and the clamp and `timedelta.max` saturation in `utc_window`.
+
+### Security
+
+- **`NaN`, `Infinity` or a huge `leeway_s` switched expiry off, and a string or `None`
+  escaped as a bare `TypeError`**
+  ([#228](https://github.com/luisgf/openvc/issues/228),
+  [#232](https://github.com/luisgf/openvc/issues/232)). Every comparison against `NaN` is
+  `False`, and an infinite or huge window never closes, so an expired or not-yet-valid
+  credential verified. Measured on 1.34.0 with an item that lapsed an hour before: `NaN`
+  switched the JWT `exp` / `nbf` / `iat` checks off on VC-JWT (the classic lane through PyJWT,
+  and ML-DSA), VP-JWT, and `check_jwt_temporal` / `check_iat_freshness` (the OpenID4VCI key
+  proof and the KB-JWT `iat` window); `Infinity` and a huge `int` such as `10**12` did the
+  same on every lane, the status-list token and Data Integrity included (which saturated an
+  oversized leeway to `timedelta.max`) and SD-JWT for the `int` (it already refused `NaN` and
+  `Infinity`). A string or `None` was a bare
+  `TypeError` on the ML-DSA VC-JWT, VP-JWT, the status-list token, `check_jwt_temporal` and
+  `check_iat_freshness`, which `verify_many` / `verify_many_async` do not isolate, so one misconfigured policy aborted
+  the batch. Both need the verifier's own misconfiguration (an attacker cannot set `leeway_s`),
+  but it comes from config files and environment variables, where `float("inf")` and
+  `json.loads('NaN')` both parse, and a silent fail-open is the worst way to find out. Found
+  by the adversarial reviews of #218 and of the merge of #231.
+
+  `leeway_seconds` (`openvc.proof._verify_common`) is now the single check, applied before an
+  entry point reads anything else: `VerificationPolicy.__post_init__`, each proof suite's
+  constructor (`VcJwtProofSuite` classic and ML-DSA, `VpJwtProofSuite`, `SdJwtVcProofSuite`,
+  `DataIntegrityProofSuite`, `EcdsaRdfcProofSuite`, `EddsaJcsProofSuite`,
+  `EcdsaJcsProofSuite`, `EcdsaSdProofSuite`), `verify_status_list_token` and the four
+  `default_status_list*_resolver` factories, `verify_credential_request_proofs`,
+  `verify_device_response` and `verify_issuer_signed`, `verify_rp_registration_certificate`,
+  `verify_vp_token` and `verify_encrypted_vp_response`. Each raises its own family's error:
+  `InvalidPolicy`, `ProofError` (`SdJwtError` for SD-JWT), `StatusListError`,
+  `CredentialRequestMalformed`, `MdocError`, `RpRegistrationError`, `OpenID4VPError`.
+  `check_jwt_temporal`, `check_iat_freshness` and `utc_window` call it as well, as a backstop:
+  a caller that skipped the entry-point check fails closed there instead of reading `NaN` as
+  "never expires".
+
+### Added
+
+- **`openvc.proof._verify_common.leeway_seconds(value, *, name="leeway_s", error=ProofError)`
+  and `MAX_LEEWAY_S`** (86 400). `leeway_seconds` returns the leeway as a plain `int` and
+  raises *error* for everything else; the message names the value through `safe_repr`, so a
+  10 000-character string or a `10**400` stays short. An `int` subclass is read as the integer
+  it holds, so an overridden comparison cannot change the verdict.
+- **`openvc.InvalidPolicy`** (also `openvc.verify.InvalidPolicy`), a `ProofError` leaf raised
+  when a `VerificationPolicy` knob is out of range. `ProofError` is the family root for
+  verification knobs, as #232 proposed; a `VerificationError` would have put a configuration
+  error outside the family every suite's constructor raises.
+
+### Changed
+
+Every bullet below is something that used to succeed, or fail differently, and now raises.
+
+- **A float leeway is refused everywhere.** `60.5`, `60.0` and `1.5` were accepted by VC-JWT,
+  VP-JWT, Data Integrity, mdoc, the WRPRC verifier and the status-list token (SD-JWT and
+  `verify_vp_token` already refused them). Pass an `int`.
+- **A negative leeway is refused everywhere.** Data Integrity, mdoc, WRPRC and the status-list
+  token clamped it to 0, and the classic VC-JWT lane handed it to PyJWT, which then rejected
+  even a *fresh* token (it read `iat` as in the future). Pass `0` for no tolerance.
+- **A `bool` is refused everywhere.** `True` was read as one second by most lanes. Pass an
+  `int`.
+- **A leeway over one day (`86_400`) is refused everywhere.** SD-JWT and `verify_vp_token`
+  took any non-negative `int`, and the other lanes any number, which `utc_window` saturated.
+  `MAX_LEEWAY_S` is generous for clock skew; to verify as of another date, pin `now`, and to
+  accept an older KB-JWT, raise `kb_max_age_s`, which is not capped.
+- **A `Decimal`, a `Fraction` or a numpy scalar is refused** (a numpy `float64` is a `float`;
+  a numpy `int64` is not an `int`). Pass `int(x)`.
+- **A string or `None`** now raises the entry point's own error up front on the lanes that
+  raised a bare `TypeError`; the lanes that already typed it are unchanged.
+- **`VerificationPolicy` checks `leeway_s` and `kb_max_age_s` when it is built.**
+  `VerificationPolicy(leeway_s=float("nan"))` raises `InvalidPolicy` at construction. Before,
+  an SD-JWT verified under it raised `SdJwtError` and every other lane ran with the bad value.
+  `kb_max_age_s` must be a non-negative `int`, with no upper bound; a bad one was `SdJwtError`
+  at verify time on the SD-JWT lane and silently ignored on every other. The suites keep
+  their own check, because suites are public and built directly. `dataclasses.replace` runs
+  the check again.
+- **The status-list resolver factories check the leeway when they are built.**
+  `default_status_list_resolver` and its token and async twins raise `StatusListError` at the
+  call, not on the first status fetch.
+- **`verify_encrypted_vp_response` checks `leeway_s` before it decrypts**, so a bad leeway
+  with an undecryptable response is an `OpenID4VPError`, no longer a `JweMalformed` (a
+  `JweError`).
+  `verify_vp_token` checks it before the nonce.
+- **`verify_credential_request_proofs`** raises `CredentialRequestMalformed` for a bad leeway
+  before it reads `credential_issuer`. The message changed: it was `max_age_s and leeway_s
+  must not be negative`, it is now `leeway_s must be a whole number of seconds from 0 to
+  86400, got ...` and, for `max_age_s` alone, `max_age_s must not be negative`.
+  `max_age_s` itself is unchanged and still unvalidated beyond that sign test.
+- **`utc_window`, `check_jwt_temporal` and `check_iat_freshness` no longer clamp or
+  saturate.** They are private helpers (`openvc.proof._verify_common`); `utc_window` counted
+  a negative or `NaN` leeway as 0 and an oversized one as `timedelta.max`, and now raises its
+  `error` like the entry points do.
+
+### Fixed
+
+- The bare `TypeError` from a string or `None` leeway on the ML-DSA VC-JWT lane, VP-JWT, the
+  status-list token, `check_jwt_temporal` and `check_iat_freshness` (#228): a typed error, so `verify_many` and
+  `verify_many_async` no longer abort the batch on it. With the policy checked at
+  construction, a bad leeway cannot reach a batch at all; one that bypasses the dataclass
+  (`object.__setattr__`) still fails each item typed, with the batch intact.
+
+### Tests
+
+- **`tests/test_leeway_validation.py`** (new). The value matrix (`NaN`, `±inf`, `-1`, `-60`,
+  `True` / `False`, `"60"`, `None`, `[]`, `b"60"`, `1j`, `60.0`, `60.5`, `1.5`, `10**12`,
+  `10**400`, `MAX_LEEWAY_S + 1`, `Decimal`, `Fraction`, a float subclass, an `__index__`-only
+  object, a lying `int` subclass) against every suite constructor, every function entry point
+  (each fed garbage everywhere else, so the match on `leeway_s` proves the check runs first),
+  `VerificationPolicy`, `dataclasses.replace`, the three backstop helpers, and the pipeline
+  through `verify_credential`, `verify_credential_async`, `verify_many` and `verify_many_async`
+  over VC-JWT, SD-JWT and Data Integrity with a corrupted policy. Each case asserts the exact
+  error class, never a bare exception, and that an expired item is not accepted; the
+  fail-open rows run an expired and a not-yet-valid item under `NaN`, `inf`, `"60"`, `None`,
+  `10**12` and `10**400`. Controls: `0` and `60` reject an item that lapsed an hour ago, `60`
+  absorbs one that lapsed 30 s ago (and `0` does not), `MAX_LEEWAY_S` absorbs an hour but not
+  a day and an hour, on VC-JWT, VP-JWT, SD-JWT, the status-list token and Data Integrity.
+- Existing tests rewritten for the new range: `test_interop_vectors.py`,
+  `test_rp_registration.py`, `test_sd_jwt_vcdm_validity.py`, `test_jose_temporal_claims.py`,
+  `test_typed_clock_pins.py`, `test_sd_jwt_kb_freshness.py` and `test_openid4vci.py` (see the
+  decisions above).
+
+### Docs
+
+- `wiki/Getting-Started.md` states the range once (new *Clock skew: `leeway_s`* section);
+  `VC-JWT`, `SD-JWT-VC`, `Presentations`, `Status-Lists` and `Data-Integrity` point to it, and
+  the Data Integrity page no longer says a negative or `NaN` leeway counts as 0.
+  `docs/CONVENTIONS.md` records the rule for new knobs, `docs/audit/threat-model.md` R10 closes
+  the caller-configuration class it left open, and `docs/audit/assurance.md` §4 cites #228
+  and #232.
+
 ## [1.34.0] — 2026-10-15
 
 **Upgrading from 1.33.2.** Five things can change what a caller sees (each is detailed in

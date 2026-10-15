@@ -118,6 +118,12 @@ drive a trust decision.
   `UnsupportedAlgorithm`, `MalformedToken`); add an `*Error` / `*Failed` suffix only
   when the noun is neutral and would not otherwise read as a failure
   (`KeyResolutionError`, `DidResolutionError`, `UnsafeUrlError`).
+- **A misconfigured knob fails where it is set, with the entry point's own error.** A
+  clock-skew `leeway_s` is a whole number of seconds from 0 to `MAX_LEEWAY_S` (one day),
+  checked once, up front, by `leeway_seconds`: `InvalidPolicy` (a `ProofError`) from
+  `VerificationPolicy`, `SdJwtError` from the SD-JWT suite, `OpenID4VPError`,
+  `StatusListError`, `MdocError` and so on from their own entry points. Never clamp,
+  never saturate, never `max(0, x)`: `NaN` and `Infinity` switch a window off.
 - A caller can always catch a whole family by its root (`except ProofError`,
   `except DidError`, `except OpenvcError`).
 

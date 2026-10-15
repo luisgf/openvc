@@ -35,6 +35,7 @@ from ._verify_common import (
     check_presentation_binding,
     check_proof_purpose,
     check_validity_window,
+    leeway_seconds,
     match_alg,
     prepare_di_proof,
     resolve_verification_key,
@@ -97,7 +98,7 @@ class _JcsProofSuite:
     _allowed_algs: frozenset[str]
 
     def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S) -> None:
-        self._leeway = leeway_s
+        self._leeway = leeway_seconds(leeway_s)       # fail closed, up front (0..MAX_LEEWAY_S)
 
     def _match_alg(self, jwk: dict[str, Any]) -> str:
         """The allowed alg whose (kty, crv) matches *jwk*, or fail closed."""

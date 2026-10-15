@@ -56,6 +56,7 @@ from ._verify_common import (
     ProofPurposeMismatch,
     check_proof_purpose,
     check_validity_window,
+    leeway_seconds,
     resolve_verification_key,
     safe_repr,
 )
@@ -521,7 +522,7 @@ class EcdsaSdProofSuite:
     Data Integrity proofs over P-256."""
 
     def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S) -> None:
-        self._leeway = leeway_s
+        self._leeway = leeway_seconds(leeway_s)       # fail closed, up front (0..MAX_LEEWAY_S)
 
     def add_base_proof(
         self,

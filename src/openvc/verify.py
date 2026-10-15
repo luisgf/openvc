@@ -59,8 +59,14 @@ from . import _json
 from .cache import batch_resolvers
 from .errors import OpenvcError
 from .observability import logger, span
-from .proof._verify_common import DEFAULT_KB_MAX_AGE_S, DEFAULT_LEEWAY_S, safe_repr
-from .proof.errors import ClaimsInvalid
+from .proof._verify_common import (
+    DEFAULT_KB_MAX_AGE_S,
+    DEFAULT_LEEWAY_S,
+    leeway_seconds,
+    non_negative_seconds,
+    safe_repr,
+)
+from .proof.errors import ClaimsInvalid, ProofError
 from .schema import (
     SchemaUnavailable,
     SchemaValidationResult,
@@ -123,6 +129,14 @@ class StatusUnavailable(VerificationError):
     ``require_status`` is set (fail-closed)."""
 
 
+class InvalidPolicy(ProofError):
+    """A :class:`VerificationPolicy` knob is out of range: ``leeway_s`` is not a whole
+    number of seconds from 0 to ``MAX_LEEWAY_S`` (one day), or ``kb_max_age_s`` is not a
+    non-negative ``int``. Raised where the policy is built, so a misconfiguration fails
+    once, before any credential is read, instead of once per credential. It is a
+    :class:`~openvc.proof.errors.ProofError`, the family the per-suite check raises."""
+
+
 # --------------------------------------------------------------------------- #
 # Policy + result
 # --------------------------------------------------------------------------- #
@@ -149,7 +163,13 @@ class VerificationPolicy:
     with ``expected_vct``. On the RDF Data Integrity suites a name matches by IRI,
     resolved through the contexts the verifier serves (bundled or ``extra_contexts``),
     never the credential's own ``@context``: a type only an inline ``@vocab`` names
-    needs a served context naming it, or its full IRI."""
+    needs a served context naming it, or its full IRI.
+
+    ``leeway_s`` is the clock-skew tolerance every lane adds to its temporal checks: a
+    whole number of seconds from 0 to ``MAX_LEEWAY_S`` (86 400, one day). A float
+    (``60.5``, ``NaN``, ``Infinity``), a negative, a ``bool``, a string, ``None`` or
+    anything wider raises :class:`InvalidPolicy` when the policy is built; to verify as
+    of another date, pin ``now``. ``kb_max_age_s`` must be a non-negative ``int``."""
     leeway_s: int = DEFAULT_LEEWAY_S
     expected_types: Sequence[str] | None = None
     expected_vct: str | None = None
@@ -175,6 +195,10 @@ class VerificationPolicy:
     # 5.5). Any KB-JWT present is held to it. To re-verify an archived one, pin `now`
     # to the receipt time your system recorded — never a value read from the token.
     kb_max_age_s: int = DEFAULT_KB_MAX_AGE_S
+
+    def __post_init__(self) -> None:
+        leeway_seconds(self.leeway_s, error=InvalidPolicy)
+        non_negative_seconds(self.kb_max_age_s, name="kb_max_age_s", error=InvalidPolicy)
 
 
 @dataclass(frozen=True)
@@ -946,6 +970,7 @@ __all__ = [
     "FORMAT_SD_JWT_VC",
     "FORMAT_VC_JWT",
     "BatchResult",
+    "InvalidPolicy",
     "IssuerBindingError",
     "KeyResolutionFailed",
     "StatusListIssuerUntrusted",

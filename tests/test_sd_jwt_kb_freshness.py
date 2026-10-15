@@ -358,8 +358,11 @@ def test_leeway_must_be_a_non_negative_int(bad):
 
 
 def test_nan_leeway_in_the_policy_fails_typed_not_open(parties):
+    # Refused where the policy is built, before a stale presentation is ever read (#232)
+    from openvc import InvalidPolicy
+
     ancient = _present(parties, iat=0)              # 56 years stale
-    with pytest.raises(SdJwtError, match="leeway_s"):
+    with pytest.raises(InvalidPolicy, match="leeway_s"):
         verify_credential(ancient, policy=_policy(now=NOW, leeway_s=float("nan")))
 
 

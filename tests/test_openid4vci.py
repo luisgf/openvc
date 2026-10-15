@@ -669,10 +669,13 @@ def test_an_empty_credential_issuer_is_rejected():
         _verify(_request(_proof(key)), credential_issuer="")
 
 
-@pytest.mark.parametrize("kw", [{"max_age_s": -1}, {"leeway_s": -1}])
-def test_negative_time_windows_are_rejected(kw):
+@pytest.mark.parametrize("kw, match", [
+    ({"max_age_s": -1}, "max_age_s must not be negative"),
+    ({"leeway_s": -1}, "leeway_s must be a whole number of seconds from 0 to 86400"),
+])
+def test_negative_time_windows_are_rejected(kw, match):
     key = P256SigningKey.generate(kid="w")
-    with pytest.raises(CredentialRequestMalformed, match="must not be negative"):
+    with pytest.raises(CredentialRequestMalformed, match=match):
         _verify(_request(_proof(key)), **kw)
 
 

@@ -447,12 +447,18 @@ def test_verify_types_a_leeway_that_is_not_a_number(registrar, leeway_s):
             token, trust_anchors=[root], now=_AT, leeway_s=leeway_s)
 
 
-def test_verify_compares_the_window_without_overflow_on_a_huge_leeway(registrar):
-    # `instant + leeway` past year 9999 raised a bare OverflowError; the window now
-    # compares differences, so a huge leeway is only very wide (#228 bounds it)
+def test_verify_compares_the_window_without_overflow_on_the_widest_leeway(registrar):
+    # `instant + leeway` past year 9999 raised a bare OverflowError; the window compares
+    # differences, so the widest leeway (one day, #228) is only wide
+    from openvc.proof._verify_common import MAX_LEEWAY_S
+
     root, chain, key = registrar
     token = jwt_wrprc(claims(), chain, key)
-    verify_rp_registration_certificate(token, trust_anchors=[root], now=_AT, leeway_s=10**12)
+    verify_rp_registration_certificate(
+        token, trust_anchors=[root], now=_AT, leeway_s=MAX_LEEWAY_S)
+    with pytest.raises(RpRegistrationError, match="leeway_s"):       # one second more
+        verify_rp_registration_certificate(
+            token, trust_anchors=[root], now=_AT, leeway_s=MAX_LEEWAY_S + 1)
 
 
 def test_verify_rejects_mistyped_trust_params(registrar):
