@@ -6,6 +6,50 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.35.0] — unreleased
 
+### Changed
+
+- **A `datetime` subclass whose own methods lie is read as the plain `datetime` its fields
+  describe, where 1.32.4 refused some of them. This is a maintainer decision (taken on
+  2026-10-15, option A of #286: "read from the fields"), and it supersedes the #255 /
+  1.32.4 line "a naive subclass whose `utcoffset()` answers something that is not a
+  `timedelta` ... is now a `StatusListError`" and the three tests that pinned "a subclass
+  that lies is refused".** The alternative, to keep refusing a subclass that contradicts
+  itself, needs one comparison per overridable method and so keeps growing; reading the
+  fields has no list of methods to keep current, and it matches "a naive datetime is UTC".
+  - What changes: a subclass whose `astimezone()` returned something else (1.32.4: a
+    `StatusListError` from both status builders, a `ProofError` from `utc_instant`)
+    reads as the instant its fields and `tzinfo` hold; a naive subclass whose
+    `utcoffset()` answered something that is not a `timedelta` (a `StatusListError`
+    from both builders) reads as UTC. No genuine `datetime` (plain or a subclass) that
+    was read before is refused now; the one exception is not a `datetime` at all, in the
+    next bullet.
+  - An object that is not a `datetime` but only answers `isinstance(x, datetime)` (a class
+    that sets `__class__ = datetime`, a `MagicMock(spec=datetime)`) is now a typed error
+    from `utc_epoch` too (`ProofError`, or the caller's `error=`): the snapshot is taken
+    through the base class, which does not apply to it. `utc_epoch` used to read it
+    through its own `utcoffset()` / `replace()` / `timestamp()` and return whatever they
+    led to (a `MagicMock(spec=datetime)` gave `1`); `utc_instant` already refused it,
+    with another message. Pass a real `datetime`. This is the only case found where
+    something that succeeded before raises now.
+  - A caller who passed such a subclass as `now=` and relied on the host-local reading
+    (or compensated for it) sees the pin move by the host's UTC offset, to the value its
+    fields say. A caller who wants the old refusal of a self-contradicting object must
+    check it before passing it in.
+  - The `ProofError` message `now cannot be read as an instant: astimezone(UTC) gave
+    offset ...` no longer exists.
+  - Nine existing cases were updated deliberately, each to assert the exact new reading
+    rather than a refusal: `tests/test_status_builders_time.py::
+    test_credential_refuses_a_datetime_with_no_utc_reading` and
+    `::test_token_refuses_a_datetime_with_no_utc_reading` (the `astimezone-lies` and
+    `naive-utcoffset-lies` rows, four each; now
+    `test_credential_reads_a_lying_subclass_from_its_fields` and
+    `test_token_reads_a_lying_subclass_from_its_fields`, which pin
+    `validFrom` / `iat` to `2025-12-31T23:00:00Z` / `1767222000` and `2026-01-01T00:00:00Z`
+    / `1767225600`) and `tests/test_typed_clock_pins.py::
+    test_utc_instant_rejects_a_subclass_whose_utc_conversion_lies` (now
+    `..._reads_a_subclass_whose_utc_conversion_lies_from_its_fields`: `05:00Z`,
+    `1609477200`, and the window edge judged to the second).
+
 ### Fixed
 
 - **The status-list issuer binding accepts a list its own issuer signed with no `issuer`
@@ -67,6 +111,50 @@ All notable changes to **openvc** are documented here. The format follows
   `{"id": <id>}`, or leave it out and let the signer be filled in.
   `test_an_at_id_only_issuer_is_still_refused_under_the_binding` pins this on every lane,
   so a later change to it has to be deliberate.
+- **A `datetime` subclass can no longer change how openvc reads a clock pin or a
+  builder time** ([#286](https://github.com/luisgf/openvc/issues/286)). Hardening;
+  caller-only, no wrong-accept from remote input. openvc's rule is "a naive `datetime`
+  is UTC, whatever zone the host is in" (#187, #255), but `utc_instant` and `utc_epoch`,
+  the two readers behind the `now=` of every lane and the status builders' times, decided
+  "naive" by asking the caller's own object (`now.utcoffset() is None`). A subclass that
+  answered `timedelta(0)` with no `tzinfo` was not naive, so `now.astimezone(UTC)` read
+  its fields as the **host's local time**, and the post-check that was meant to catch it
+  called `utcoffset()` on the same subclass and passed. `datetime(2026, 1, 1, 12)` of such
+  a class was `11:00Z` on a UTC+1 host and `03:00Z` on a UTC+9 one. Hosts east of UTC read
+  the pin earlier, so an expired credential, status list, certificate or mdoc MSO was
+  accepted 15 minutes after its window closed and a fresh KB-JWT was refused as
+  future-dated; west of UTC the reverse. The same object as `valid_from` / `issued_at`
+  signed a different `validFrom` / `iat` per host. The other overrides the helpers
+  consulted were wrong too: a naive subclass whose `utcoffset()` answered `+5 h`
+  (`utc_epoch`: shifted, silent), an aware `+09:00` one whose `utcoffset()` answered
+  `None` (`utc_epoch`: the `+09:00` dropped, 9 h wrong, silent; `utc_instant`: a
+  `ProofError` by accident) and a naive one whose `timestamp()` answered `86400.0`
+  (`utc_epoch`: `86400`).
+
+  Both helpers now read the value from its fields and `tzinfo` **through the base
+  class** (`datetime.date` and `datetime.timetz`, called on the class), once, and run the
+  same logic on the plain `datetime` that returns. No method of the caller's object is
+  called, so no override of `utcoffset`, `astimezone`, `replace`, `timestamp` or a field
+  property can change the reading, in either direction; `fold` is kept. The error class,
+  the `name=` keyword, the typed handling of a `tzinfo` that raises or that has no UTC
+  form, and `utc_epoch`'s range (a pin at year 1 or 9999 is still a number, not routed
+  through `utc_instant`) are unchanged. The post-check on `astimezone(UTC)` is gone: on a
+  plain value it cannot fail. One fix covers every entry point that reads a pin or a
+  builder time: `VerificationPolicy.now` (`verify_credential`, `verify_many` and their
+  async twins), every Data Integrity suite's `verify(now=)`, the SD-JWT KB-JWT window,
+  `verify_vp_token` / `verify_encrypted_vp_response`, `mdoc.verify_device_response` /
+  `verify_issuer_signed`, `x5c.validate_cert_chain` / `resolve_x5c_key` /
+  `resolve_mdoc_signer_key`, `rp_cert.verify_rp_access_certificate`,
+  `rp_registration.verify_rp_registration_certificate`, `trustlist.walk_lotl` /
+  `walk_lote` / `consume_lote`, `openid4vci.verify_credential_request_proofs`,
+  `status.verify_status_list_token`, and `status.build_status_list_token` /
+  `build_status_list_credential`. A plain `datetime` (naive or aware), a subclass that
+  overrides nothing (the pendulum / pandas shape), an aware subclass whose `utcoffset()`
+  answers `timedelta(0)`, a `tzinfo` that answers `None` (naive, so UTC) and a `None` pin
+  read exactly as before.
+
+  `created=` on the Data Integrity issuers goes through its own `_iso`, not these
+  helpers; it is left to [#287](https://github.com/luisgf/openvc/issues/287).
 
 ### Tests
 
@@ -79,6 +167,22 @@ All notable changes to **openvc** are documented here. The format follows
   (`ClaimsInvalid` on VC-JWT and `vc+sd-jwt`, `StatusListError` on `dc+sd-jwt`), and a
   victim-signed list whose issuer is `{"@id": <victim>}` is pinned as still refused
   under the binding on every lane.
+- `tests/test_clock_reading_subclass.py` (694 cases): `utc_instant` and `utc_epoch` of 13
+  lying subclasses and 6 controls, each at 4 pinned host zones (`UTC`, POSIX UTC+9,
+  UTC+1 and UTC-5 with DST, which need no tzdata, with a check that the pin took effect);
+  the status builders, `verify_status_list_token`, `verify_credential` on
+  `eddsa-jcs-2022`, the SD-JWT KB-JWT window through `verify_vp_token` and
+  `x5c.validate_cert_chain` at an instant inside the window, 15 minutes after it closes
+  and 15 minutes before it opens, for 10 kinds of pin; a tripwire subclass that records
+  every attribute read off it; `fold`; the typed error for an object that only claims
+  `isinstance(x, datetime)` (a `__class__ = datetime` class, a `MagicMock(spec=datetime)`);
+  and the unchanged year-1 / year-9999 range, error class and `name=` of the helpers.
+  Every expectation is an exact value or an exact class.
+  Against the code before this change (`65c1e03`) the negatives fail and the controls
+  pass; with a mutant of the fix that puts `now.utcoffset()` back in either helper, asks
+  `now.replace()` / `now.timestamp()`, drops `fold` or `tzinfo`, routes `utc_epoch`
+  through `utc_instant`, reads the fields through instance methods, or takes the snapshot
+  outside the `try`, each is killed.
 
 ## [1.34.0] — 2026-10-15
 
