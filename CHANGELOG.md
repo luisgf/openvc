@@ -6,6 +6,74 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.35.0] — unreleased
 
+### Security
+
+- **An SD-JWT VC whose issuer restricted it to another relying party no longer verifies
+  for you** ([#227](https://github.com/luisgf/openvc/issues/227)). Low severity, a
+  wrong-accept: an audience restriction that the issuer signed was ignored. The SD-JWT VC
+  lane never read the issuer JWT's `aud`, so a credential with
+  `aud: "https://other-rp.example"` verified for every verifier, with no audience given,
+  under `VerificationPolicy(audience=ME)`, and for a holder who presented it to `ME` with a
+  KB-JWT correctly bound to `ME`, `key_bound=True` included. The KB-JWT's `aud` binds the
+  holder's presentation to a verifier (RFC 9901 §7.3 step 5.6); it says nothing about a
+  restriction the issuer put on the credential. The VC-JWT lanes got this rule in 1.30.5
+  (ADR-0008 D3), so the two credential formats disagreed on the same claim.
+
+  **The fix** is RFC 7519 §4.1.3 on the issuer JWT, when it has an `aud`
+  ([ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md) D4):
+
+  - `aud` present: a string or an array of strings, else `ClaimsInvalid`, and the
+    audience the lane receives must be one of them, else `ClaimsInvalid`. With no audience
+    a credential that names one is refused (the message cites RFC 7519 §4.1.3), since the
+    verifier cannot be one of them.
+  - `aud` absent: **unchanged.** The credential verifies with or without an audience, and
+    the audience is not inspected. This is the one asymmetry with VC-JWT, where a token
+    without `aud` fails when an audience is expected. On this lane the caller's `audience`
+    is primarily the KB-JWT's, and requiring an issuer-JWT `aud` would reject essentially
+    every SD-JWT VC: neither third-party vector pinned in `tests/fixtures/interop`
+    (RFC 9901 A.3 and the EUDI reference PID) nor the OpenID4VP capture has one.
+  - **Which audience.** The one `SdJwtVcProofSuite.verify` already receives:
+    `policy.audience` at the top level, the *presentation's* audience when the SD-JWT VC is
+    nested in a `jwt_vc_json` or `ldp_vc` presentation (the one its KB-JWT is bound to), and
+    the `client_id`, or `origin:<origin>` over the Digital Credentials API, on the OpenID4VP
+    `dc+sd-jwt` lane. A credential addressed to the verifier that receives the presentation
+    therefore verifies on every lane. The sync and async pipelines, `verify_many`,
+    `verify_many_async`, the VP-JWT cascade and `verify_vp_token` all reach it through the
+    suite; none needed a change.
+  - **Where.** On the processed payload, after the KB-JWT when `require_key_binding` is set
+    (so an `aud` failure from such a call means the presentation was bound, as for the
+    issuer JWT's dates), and not as a temporal check: `require_not_expired=False` does not
+    waive it, and its message ("issuer JWT aud does not include …", or "issuer JWT is
+    restricted to an audience (aud) and no audience was given …") does not describe an
+    expiry, which callers read as "bound, but the issuer JWT expired" (it quotes only the
+    audience the verifier configured, so an audience that itself contains the word
+    "expired" is the one way the word can appear). Reading the processed payload
+    judges an `aud` the issuer made selectively disclosable once it is disclosed, and does
+    not call malformed an `aud` array whose entries are `{"...": digest}` objects, which RFC
+    9901 §9.7 lets an issuer do (the entries the holder discloses are what is matched; an
+    array with every entry withheld is `aud: []` and names no one).
+  - **A withheld `aud` disclosure is invisible**, the same limit as a withheld `exp`
+    (residual R7). Issuers must never make the whole `aud` claim disclosable. `issue()` does
+    not refuse it (the SD-JWT VC draft's non-disclosable list does not include `aud`);
+    that is an issuer-side follow-up, out of scope here.
+  - The `~`-appended W3C JWS with no `iss` and no `typ` that 1.34.0 (#290) lets reach this
+    lane is held to the same rule, so an issuer's `aud` restriction on it is now enforced.
+    The "known limit" that 1.34.0 recorded for it is closed.
+
+  **Maintainer decisions** (taken on 2026-10-15, recorded in ADR-0008 D4): option 1 of the
+  issue (enforce when present), over keeping the current behaviour and over an opt-in policy
+  knob. A KB-JWT made for another verifier still reports `key_bound=True` when the caller
+  passes neither `audience` nor `nonce`. That deviates from RFC 7519 §4.1.3 on purpose, was
+  decided in #191 and is documented in *What `key_bound` attests*; changing it is a breaking
+  change to a return field and belongs to 2.0 (#74). It is recorded in the ADR and not
+  changed here.
+
+  **Spec check.** `draft-ietf-oauth-sd-jwt-vc-19` does not mention the issuer JWT's `aud`
+  in prose, and its examples carry none (checked against the text for this change; §2.2.2.3's list of
+  claims that must not be disclosable omits it). RFC 9901 §9.7 names `aud` among the
+  security-critical claims and allows individual entries of an `aud` array to be
+  selectively disclosable. Nothing there overrides RFC 7519 §4.1.3.
+
 ### Changed
 
 - **A `datetime` subclass whose own methods lie is read as the plain `datetime` its fields
@@ -170,6 +238,31 @@ All notable changes to **openvc** are documented here. The format follows
   `wiki/Security-Model.md`, `wiki/Async-Verification.md`, `wiki/Versioning-and-Deprecation.md`,
   `docs/CONVENTIONS.md` (Errors), `docs/audit/assurance.md` and the docstrings of
   `openvc.verify`, `openvc.errors`, `KeyResolutionError` and `aio._preresolved_di_resolver`.
+- **Behaviour change: an SD-JWT VC whose issuer JWT carries an `aud` that does not name
+  your audience is now rejected (`ClaimsInvalid`), and so is one that carries any `aud`
+  when you pass no audience.** Before, both verified. What to pass: a credential whose
+  issuer names you in `aud` verifies once you tell the verifier who you are.
+  - Top level: `VerificationPolicy(audience="<the identifier your issuers name>")` (and
+    `nonce` when a KB-JWT is present: the two bind it together, unchanged), or
+    `audience=` on `SdJwtVcProofSuite.verify`.
+  - Nested in a `jwt_vc_json` / `ldp_vc` presentation: nothing to set on the policy. The
+    credential's `aud` must name the presentation's audience (the VP-JWT's `aud`, the
+    proof's `domain`, or the matched `origin:<origin>`). That is the opposite of a nested
+    VC-JWT, which is checked against `policy.audience` (ADR-0008 D3).
+  - OpenID4VP `dc+sd-jwt`: the credential's `aud` must name the `client_id`, or the
+    `origin:<origin>` form over the Digital Credentials API (a bare origin is not it).
+  - An SD-JWT VC whose issuer JWT has no `aud`, which is nearly every one, is unaffected,
+    with or without an audience, and an empty or non-string `audience` is still not
+    inspected when there is no `aud` to match it against. When there is one, an
+    audience that is not a non-empty string is refused with that message.
+  - If you relied on an issuer-JWT `aud` being ignored, read `result.claims.get("aud")` and
+    decide yourself, or have the issuer drop it. Nothing opts the check off.
+  - `check_jwt_audience` (`openvc.proof._verify_common`, internal) gained a keyword
+    `require_present` (default `True`, the VC-JWT behaviour); this lane passes `False`.
+  - In `tests/test_sd_jwt_vcdm_typ_interop.py`, the control for #293 minted a VCDM
+    *presentation* payload (with `aud: CLIENT_ID`) as a credential. It is such a case, so it
+    now passes `VerificationPolicy(audience=CLIENT_ID)`. Read as a credential, a
+    presentation addressed to one verifier no longer verifies for the others.
 
 ### Fixed
 
@@ -439,6 +532,38 @@ All notable changes to **openvc** are documented here. The format follows
   `test_did_reference_exact_match.py`, `test_did_webvh_state_envelope.py`,
   `test_lone_surrogate_typed.py`) now assert the new exact class and the new `isinstance`
   relations; none was loosened.
+- **`tests/test_sd_jwt_issuer_aud.py`** (#227, 327 tests, negatives first, each pinning
+  the exact class and that the message does not describe an expiry). Every rejection runs under
+  the default policy and `require_not_expired=False`, sync and async: `aud` naming someone
+  else as a string, an array, `""` and `[]`, with no audience, with a different audience,
+  and with a KB-JWT correctly bound to you on both the required-binding and the hosted
+  path; the six malformed shapes (`null`, a number, `{}`, `true`, `[ME, 5]`, `[[ME]]`) with
+  and without an audience; `verify_many` / `verify_many_async` isolating the one item;
+  the near-miss audiences (trailing slash, case, prefix); an `aud` made disclosable
+  (disclosed and mismatched, disclosed and matching, withheld pinned as the limit) and one
+  made of digests per entry (one entry disclosed, only someone else's, none, never called
+  malformed); the expiry waiver not waiving it; the KB-JWT failing first under
+  `require_key_binding`; nested in a VP-JWT, bare and enveloped, and in a Data Integrity
+  presentation, with a mixed set and the policy audience having no say; the OpenID4VP
+  `dc+sd-jwt` lane and the DC API origin form; the helper's `require_present` modes;
+  and the unchanged cases (no `aud` with and without an audience, the two third-party
+  vectors and the OpenID4VP capture still verifying with an audience, a forged `aud`
+  failing on the signature). A final section pins the W3C VCDM payloads the first
+  version of the file never minted: a hand-minted credential with `typ` absent,
+  `vc+sd-jwt`, `vc+ld+json+sd-jwt` (each with and without `iss`, #290) and `dc+sd-jwt`,
+  `aud` naming someone else rejected with no audience, with a different one and behind a
+  correct KB-JWT, `aud` naming the verifier (alone or in an array) verifying with
+  `vcdm` true, and no `aud` unchanged.
+- **Mutation check.** Run on 65c1e03 (`git archive`), the new file has 224 failures and 103
+  passes, the 103 being the accept-side controls. Thirteen targeted mutants of the change
+  (checking the signed body instead of the processed payload, requiring `aud`, no check,
+  no audience accepted, a message that says "expired", an unvalidated expected audience,
+  the present-only mode returning on a present `aud`, an unvalidated shape, the waiver
+  skipping the check, a substring or case-insensitive match, a mismatch ignored, and the
+  body checked before the KB-JWT) are each killed. Five more (skipping the check for a VCDM
+  payload, for a token with no `typ`, for one with no `iss`, or for `vc+sd-jwt` or
+  `vc+ld+json+sd-jwt`) survived the first version of the file and the 1974 tests around
+  it, which is why the VCDM section exists; each is killed by it.
 
 ## [1.34.0] — 2026-10-15
 
