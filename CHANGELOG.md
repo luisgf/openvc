@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.35.0] — unreleased
+## [1.35.0] — 2026-10-15
 
 ### Security
 
@@ -525,8 +525,9 @@ All notable changes to **openvc** are documented here. The format follows
     presentation addressed to one verifier no longer verifies for the others.
 - **A naive `created` on a non-UTC host now yields its UTC reading: a different
   `created` string, and a different `proofValue` on the deterministic suites, for the
-  same call** ([#287](https://github.com/luisgf/openvc/issues/287)). This is the one
-  change in this release that does not fail closed. `datetime(2026, 1, 1, 12, 0)` was
+  same call** ([#287](https://github.com/luisgf/openvc/issues/287)). Unlike most of the
+  changes in this release, this one does not fail closed: the call keeps succeeding and
+  signs a different value. `datetime(2026, 1, 1, 12, 0)` was
   signed as `03:00:00Z` under `Asia/Tokyo` and `17:00:00Z` under `America/New_York`
   (under `America/New_York`, 2026-07-01 12:00 gave `16:00:00Z`: the host's DST rules
   applied); it is `12:00:00Z` on every host. A caller that passes `datetime.utcnow()`
@@ -6628,6 +6629,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.35.0]: https://github.com/luisgf/openvc/releases/tag/v1.35.0
 [1.34.0]: https://github.com/luisgf/openvc/releases/tag/v1.34.0
 [1.33.2]: https://github.com/luisgf/openvc/releases/tag/v1.33.2
 [1.33.1]: https://github.com/luisgf/openvc/releases/tag/v1.33.1
