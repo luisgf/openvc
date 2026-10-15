@@ -8,6 +8,47 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Changed
 
+- **A `datetime` subclass whose own methods lie is read as the plain `datetime` its fields
+  describe, where 1.32.4 refused some of them. This is a maintainer decision (taken on
+  2026-10-15, option A of #286: "read from the fields"), and it supersedes the #255 /
+  1.32.4 line "a naive subclass whose `utcoffset()` answers something that is not a
+  `timedelta` ... is now a `StatusListError`" and the three tests that pinned "a subclass
+  that lies is refused".** The alternative, to keep refusing a subclass that contradicts
+  itself, needs one comparison per overridable method and so keeps growing; reading the
+  fields has no list of methods to keep current, and it matches "a naive datetime is UTC".
+  - What changes: a subclass whose `astimezone()` returned something else (1.32.4: a
+    `StatusListError` from both status builders, a `ProofError` from `utc_instant`)
+    reads as the instant its fields and `tzinfo` hold; a naive subclass whose
+    `utcoffset()` answered something that is not a `timedelta` (a `StatusListError`
+    from both builders) reads as UTC. No genuine `datetime` (plain or a subclass) that
+    was read before is refused now; the one exception is not a `datetime` at all, in the
+    next bullet.
+  - An object that is not a `datetime` but only answers `isinstance(x, datetime)` (a class
+    that sets `__class__ = datetime`, a `MagicMock(spec=datetime)`) is now a typed error
+    from `utc_epoch` too (`ProofError`, or the caller's `error=`): the snapshot is taken
+    through the base class, which does not apply to it. `utc_epoch` used to read it
+    through its own `utcoffset()` / `replace()` / `timestamp()` and return whatever they
+    led to (a `MagicMock(spec=datetime)` gave `1`); `utc_instant` already refused it,
+    with another message. Pass a real `datetime`. This is the only case found where
+    something that succeeded before raises now.
+  - A caller who passed such a subclass as `now=` and relied on the host-local reading
+    (or compensated for it) sees the pin move by the host's UTC offset, to the value its
+    fields say. A caller who wants the old refusal of a self-contradicting object must
+    check it before passing it in.
+  - The `ProofError` message `now cannot be read as an instant: astimezone(UTC) gave
+    offset ...` no longer exists.
+  - Nine existing cases were updated deliberately, each to assert the exact new reading
+    rather than a refusal: `tests/test_status_builders_time.py::
+    test_credential_refuses_a_datetime_with_no_utc_reading` and
+    `::test_token_refuses_a_datetime_with_no_utc_reading` (the `astimezone-lies` and
+    `naive-utcoffset-lies` rows, four each; now
+    `test_credential_reads_a_lying_subclass_from_its_fields` and
+    `test_token_reads_a_lying_subclass_from_its_fields`, which pin
+    `validFrom` / `iat` to `2025-12-31T23:00:00Z` / `1767222000` and `2026-01-01T00:00:00Z`
+    / `1767225600`) and `tests/test_typed_clock_pins.py::
+    test_utc_instant_rejects_a_subclass_whose_utc_conversion_lies` (now
+    `..._reads_a_subclass_whose_utc_conversion_lies_from_its_fields`: `05:00Z`,
+    `1609477200`, and the window edge judged to the second).
 - **A failed key resolution is one error family on every lane, sync and async**
   ([#283](https://github.com/luisgf/openvc/issues/283)). Nothing is accepted that was
   refused, and nothing that was refused is accepted: every case below failed closed before
@@ -130,8 +171,262 @@ All notable changes to **openvc** are documented here. The format follows
   `docs/CONVENTIONS.md` (Errors), `docs/audit/assurance.md` and the docstrings of
   `openvc.verify`, `openvc.errors`, `KeyResolutionError` and `aio._preresolved_di_resolver`.
 
+### Fixed
+
+- **The status-list issuer binding accepts a list its own issuer signed with no `issuer`
+  in the body** ([#226](https://github.com/luisgf/openvc/issues/226), found by the
+  adversarial review of #221; it predates it). `VerificationPolicy(
+  require_status_issuer_binding=True)` (ADR-0006) reads the list's issuer from its body.
+  A legitimate list secured as a VC-JWT in the VCDM 1.1 JWT encoding may carry its
+  issuer only in the JWT `iss`, which leaves `vc.issuer` absent or an object with no
+  `id` such as `{"name": "Example University"}`. The pipeline had authenticated that
+  issuer, but the default resolvers returned the body as it was, so the binding refused
+  with `StatusListIssuerUntrusted` ("has no issuer to bind against"). It failed closed,
+  so this was interop, not a vulnerability; it also contradicted #221, which accepts the
+  same two shapes on a credential. `default_status_list_resolver` and its async twin now
+  fill in the issuer the pipeline verified the list for (`result.issuer`) where the body
+  names no one: `issuer` is set to it when absent, and `id` is added to an id-less
+  object, which keeps its other members. The change is made on a copy;
+  `result.credential` (shared with `result.claims` on an SD-JWT) is never written to.
+  What the binding decides:
+
+  - a list signed by the credential's issuer is accepted, so the bit is read
+    (`CredentialRevoked`, or `status.revoked is True` under `require_not_revoked=False`);
+  - a list an attacker signed gets the **attacker's** id and is refused with
+    `StatusListIssuerUntrusted` naming the attacker, as before, unless the attacker is in
+    `status_issuer_allowlist`; a list signed by an allow-listed delegate is accepted;
+  - a list whose body names an issuer other than its signer is refused (#221); the class
+    depends on the lane. A VC-JWT or `vc+sd-jwt` list has its `iss` reconciled with its
+    `issuer` by the pipeline before the resolver sees it, so it raises `ClaimsInvalid`
+    from the inner verification. A `dc+sd-jwt` list has no such reconciliation, so
+    `_authenticated_list` raises `StatusListError`. Both are `OpenvcError`s, but a caller
+    that catches one class only misses the other lane.
+    A custom `resolve_status_list` that returns an issuer-less body still fails closed
+    with `StatusListIssuerUntrusted`, the IETF Token Status List path (bound on the
+    token's `iss`) is unaffected, and a Data Integrity list cannot be issuer-less
+    (`IssuerBindingError` earlier).
+
+  Without the binding nothing changes: the bit is read as before. A caller of a default
+  resolver who reads the returned dict itself now sees an `issuer` where the body had
+  none. A custom `resolve_status_list` that wants the same interop must fill in the
+  `result.issuer` of the `verify_credential` call that checked the list; see
+  [Status lists](https://github.com/luisgf/openvc/wiki/Status-Lists) and the 1.35.0
+  amendment to ADR-0006.
+
+  *Decisions.* The fill-in lives in the default resolvers' shared `_authenticated_list`, not
+  in the pipeline: `_enforce_status_issuer` and the `resolve(url) -> dict` contract of a
+  custom resolver are not relaxed, and no richer return type is introduced. It fills in
+  only from `result.issuer` and only when that is a non-empty string; a present
+  identifier is never rewritten. Copies are shallow: nothing downstream writes to a
+  resolved list.
+
+  *Known gap, left on purpose.* An issuer object that names the signer only by `@id`
+  (`{"@id": <signer>}`) is not filled in, and under the binding it is still refused with
+  `StatusListIssuerUntrusted` ("no issuer to bind against"), as it was before this change.
+  It is not the issuer-less shape #226 fixes: it names someone, so `_authenticated_list`
+  has nothing to fill in. Copying a signer-matching `@id` into `id` there would admit
+  nothing the signature did not already prove, but how the binding reads an issuer object
+  (`_enforce_status_issuer` reads `id` only, for every resolver) is a separate decision,
+  and reading `@id` in `_enforce_status_issuer` itself would widen what a custom
+  resolver's body can bind on. Neither is taken here. Spell the issuer `<id>` or
+  `{"id": <id>}`, or leave it out and let the signer be filled in.
+  `test_an_at_id_only_issuer_is_still_refused_under_the_binding` pins this on every lane,
+  so a later change to it has to be deliberate.
+- **A `datetime` subclass can no longer change how openvc reads a clock pin or a
+  builder time** ([#286](https://github.com/luisgf/openvc/issues/286)). Hardening;
+  caller-only, no wrong-accept from remote input. openvc's rule is "a naive `datetime`
+  is UTC, whatever zone the host is in" (#187, #255), but `utc_instant` and `utc_epoch`,
+  the two readers behind the `now=` of every lane and the status builders' times, decided
+  "naive" by asking the caller's own object (`now.utcoffset() is None`). A subclass that
+  answered `timedelta(0)` with no `tzinfo` was not naive, so `now.astimezone(UTC)` read
+  its fields as the **host's local time**, and the post-check that was meant to catch it
+  called `utcoffset()` on the same subclass and passed. `datetime(2026, 1, 1, 12)` of such
+  a class was `11:00Z` on a UTC+1 host and `03:00Z` on a UTC+9 one. Hosts east of UTC read
+  the pin earlier, so an expired credential, status list, certificate or mdoc MSO was
+  accepted 15 minutes after its window closed and a fresh KB-JWT was refused as
+  future-dated; west of UTC the reverse. The same object as `valid_from` / `issued_at`
+  signed a different `validFrom` / `iat` per host. The other overrides the helpers
+  consulted were wrong too: a naive subclass whose `utcoffset()` answered `+5 h`
+  (`utc_epoch`: shifted, silent), an aware `+09:00` one whose `utcoffset()` answered
+  `None` (`utc_epoch`: the `+09:00` dropped, 9 h wrong, silent; `utc_instant`: a
+  `ProofError` by accident) and a naive one whose `timestamp()` answered `86400.0`
+  (`utc_epoch`: `86400`).
+
+  Both helpers now read the value from its fields and `tzinfo` **through the base
+  class** (`datetime.date` and `datetime.timetz`, called on the class), once, and run the
+  same logic on the plain `datetime` that returns. No method of the caller's object is
+  called, so no override of `utcoffset`, `astimezone`, `replace`, `timestamp` or a field
+  property can change the reading, in either direction; `fold` is kept. The error class,
+  the `name=` keyword, the typed handling of a `tzinfo` that raises or that has no UTC
+  form, and `utc_epoch`'s range (a pin at year 1 or 9999 is still a number, not routed
+  through `utc_instant`) are unchanged. The post-check on `astimezone(UTC)` is gone: on a
+  plain value it cannot fail. One fix covers every entry point that reads a pin or a
+  builder time: `VerificationPolicy.now` (`verify_credential`, `verify_many` and their
+  async twins), every Data Integrity suite's `verify(now=)`, the SD-JWT KB-JWT window,
+  `verify_vp_token` / `verify_encrypted_vp_response`, `mdoc.verify_device_response` /
+  `verify_issuer_signed`, `x5c.validate_cert_chain` / `resolve_x5c_key` /
+  `resolve_mdoc_signer_key`, `rp_cert.verify_rp_access_certificate`,
+  `rp_registration.verify_rp_registration_certificate`, `trustlist.walk_lotl` /
+  `walk_lote` / `consume_lote`, `openid4vci.verify_credential_request_proofs`,
+  `status.verify_status_list_token`, and `status.build_status_list_token` /
+  `build_status_list_credential`. A plain `datetime` (naive or aware), a subclass that
+  overrides nothing (the pendulum / pandas shape), an aware subclass whose `utcoffset()`
+  answers `timedelta(0)`, a `tzinfo` that answers `None` (naive, so UTC) and a `None` pin
+  read exactly as before.
+
+  `created=` on the Data Integrity issuers goes through its own `_iso`, not these
+  helpers; it is left to [#287](https://github.com/luisgf/openvc/issues/287).
+- **The helpers that turn a value into error-message text are total for a caller's object**
+  ([#282](https://github.com/luisgf/openvc/issues/282)). Hardening, caller-only, no
+  wrong-accept: nothing a JSON, CBOR or XML parser returns can carry a custom dunder, so no
+  credential, token or response reaches this, and every path that failed was a refusal (the
+  one false refusal is the `did:web` case below). One message in this change does echo wire
+  data, the `id` of a fetched `did.json` in the `did:web` mismatch refusal, and it is cut now
+  (also below). `brief()` (`openvc.status`, 32 call sites), `safe_repr()`
+  (`openvc.proof`, 91 call sites in 20 modules, `openvc_ebsi` included) and `_brief()` (the
+  Data Integrity context check, 6 call sites) exist so that reporting a bad value cannot itself
+  fail. They bounded the length and named a container by its type, which settled deep nesting
+  (#213) and huge ints, but not a value whose own class answers `repr()`, `len()` or
+  `bit_length()` badly: the exception that method raised, the `ValueError` of the int-to-str
+  limit (an `int` subclass of 5000 digits whose `bit_length()` says 1) or a megabyte of `repr`
+  text came out of the `raise` that was meant to report the problem. #269 closed the `str` side
+  of `brief`; this is the rest. Two public effects:
+  - **The status builders and codec.** Every parameter whose error path formats the caller's
+    object (`ttl`, `valid_from`, `valid_until`, `issued_at`, `issuer`, `id`, `subject_id`,
+    `contexts` and its entries, `bitstring`, `status_list`, `status_purpose`, an entry or reference
+    `index` / `uri`, `bits`, `size`, the `get_status*` / `set_status*` arguments, and what a
+    resolver hands back to `check_credential_status` / `check_token_status`) raised the
+    hostile method's exception: `build_status_list_credential(ttl=BadInt(0))` with a
+    raising `__repr__` was that `RuntimeError`, and `id=Mock(spec=int)` a bare `TypeError`
+    (`'>' not supported between 'Mock' and 'int'`). They are `StatusListError`, as the same
+    value as a plain `int` always was. A job that publishes lists on a schedule and wraps the
+    build in `except OpenvcError` sees a typed error again; a caller that caught a builtin
+    exception there catches `OpenvcError` instead.
+  - **A success path.** `did_web._check_host` formatted the DID with `safe_repr()` before any
+    check, so `DidWebResolver.resolve` and `AsyncDidWebResolver.resolve` failed on a *valid* DID
+    given as a `str` subclass whose `__repr__` raises. They resolve it; an invalid one is a
+    `DidResolutionError`. The refusal for a document whose `id` is not the requested DID (or
+    has none) formatted both values with a raw `!r`, so a hostile DID gave the dunder's
+    exception there and the document's `id`, which is wire data, came back whole: a 5,000,000
+    character `id` made a 5,000,049 character `DidResolutionError`. Both go through
+    `safe_repr()` now (`_validated_document`, shared by the sync and async resolvers); a plain
+    DID and an `id` of 200 characters or fewer read as before.
+
+  `non_negative_seconds` (`SdJwtVcProofSuite(leeway_s=...)`, `SdJwtVcProofSuite.verify(
+  kb_max_age_s=...)`, `verify_vp_token(leeway_s=..., kb_max_age_s=...)`) formatted its value
+  with a raw `{value!r}`: `-(10**5000)` was a bare `ValueError` and `BadInt(-1)` the dunder's
+  exception, instead of `ProofError` / `SdJwtError` / `OpenID4VPError`. This is a one-line
+  change to the message; the leeway semantics (#228, #232) are untouched.
+
+  Each helper now reads a value only through the built-in's unbound methods, never its own
+  (`str.__str__`, `int.bit_length`, `int.__repr__`, `float.__repr__`; the `int` size is read
+  before any decimal conversion), and catches `Exception` as the last resort, so a value that
+  still cannot be read (a test double that claims to be an `int`, a type whose metaclass
+  `__name__` raises or is not a string) is `an object`. `_brief` also cuts before `repr()`
+  now: it is reached from RDF credential JSON (`@id`, `@type` or a property name), and the
+  helper's transient peak on a 16 MB string of NULs was 64 MB (four times the string); it is
+  below 1 MiB.
+
+  **Behaviour change, message text only.** Plain values render byte for byte as before
+  (pinned by controls that pass on the unfixed tree). What changes:
+  - A subclass is shown as the number or characters it holds (cut, or named by its size,
+    when long, as a plain value is), not by its own `repr()`, the stance `plain_int` /
+    `plain_str` already take: `brief(E.A)` for an `IntEnum` was
+    `<E.A: 1>` and is `1`; `safe_repr(S.A)` and `_brief(S.A)` for a `StrEnum` were
+    `<S.A: 'a'>` and are `'a'`.
+  - `non_negative_seconds` cuts a string longer than 200 characters (`got 'xxxx...'...
+    (500 chars)`, where it used to print all 500) and names a container or an int past 64
+    bits by its type, as `safe_repr` does everywhere else: `leeway_s must be a non-negative
+    int (seconds), got list`, where it used to print the list; `got int` for `-(2**64)`.
+  - `_brief` cuts a string to 100 characters *before* `repr()`, so on a string longer than
+    100 characters the quote style (`'` or `"`) is chosen from its first 100 characters, not
+    from the whole string. Diagnostic text only.
+  - A type name longer than 64 characters is cut and ends in `...` (`brief`: `a NNNN...`).
+  - The `did:web` id-mismatch message prints the DID and the document `id` through
+    `safe_repr()`: the same text for a plain value of up to 200 characters, a longer one cut
+    with its length (`'xxxx...'... (5000000 chars)`).
+
+  **Maintainer decisions taken in this change:**
+  - The fallback word is `an object`, in all three helpers, although `brief` says
+    `a <type>` and `safe_repr` says `<type>` elsewhere: when the type's name cannot be read
+    there is no type to name.
+  - A type whose `__name__` is not a `str` falls back to `an object` too, so the three
+    helpers return a `str` whatever a metaclass says (the issue named only a `__name__` that
+    raises).
+  - A type name is cut to 64 characters and ends in `...` in all three helpers (one number,
+    not each helper's own value limit: it is a name, not a value, and a class name is far
+    shorter), because a metaclass can return any string from `__name__`; a 5,000,000 character
+    one gave a 5,000,002 character message. A class name of 64 characters or fewer prints as
+    before.
+  - The `did:web` id-mismatch message is in scope although the other raw `!r` sites are not:
+    the claim that `resolve()` handles a hostile `str` subclass for a valid DID holds only if
+    that refusal is total too, and the document `id` it echoes is wire data.
+  - The three helpers stay three. Their limits differ (32, 200 and 100 characters) and `status`
+    cannot import from `proof`.
+  - Left as it is, out of this issue's scope (the `did:web` id-mismatch message, above, is
+    the one exception): the raw `!r` fields and the inline
+    `type(x).__name__` sites besides these helpers (a mechanical sweep with no accept-set
+    change, its own issue); data-path consumers of a `str` subclass, such as `_did_web_url`
+    slicing the DID through the subclass's own `__getitem__` (a question of which bytes are
+    used, not of a message); and a `Mock(spec=int)` passed as a *numeric* argument (`index`,
+    `ttl`, `size`), which `plain_int` still turns into a bare `TypeError` before any message
+    is built.
+
 ### Tests
 
+- `tests/test_status_issuer_binding_issuerless.py` runs every case through the sync and
+  async default resolvers and pipelines, and `verify_many` / `verify_many_async` (two
+  credentials, two status URLs, both orders): the shapes that must still be refused, the
+  shapes now accepted, delegation, the shape and non-mutation of the returned body,
+  hostile `issuer` values, a custom resolver, the IETF token path, the Data Integrity
+  lane, and no binding. The refusal of a foreign body issuer is pinned per lane
+  (`ClaimsInvalid` on VC-JWT and `vc+sd-jwt`, `StatusListError` on `dc+sd-jwt`), and a
+  victim-signed list whose issuer is `{"@id": <victim>}` is pinned as still refused
+  under the binding on every lane.
+- `tests/test_clock_reading_subclass.py` (694 cases): `utc_instant` and `utc_epoch` of 13
+  lying subclasses and 6 controls, each at 4 pinned host zones (`UTC`, POSIX UTC+9,
+  UTC+1 and UTC-5 with DST, which need no tzdata, with a check that the pin took effect);
+  the status builders, `verify_status_list_token`, `verify_credential` on
+  `eddsa-jcs-2022`, the SD-JWT KB-JWT window through `verify_vp_token` and
+  `x5c.validate_cert_chain` at an instant inside the window, 15 minutes after it closes
+  and 15 minutes before it opens, for 10 kinds of pin; a tripwire subclass that records
+  every attribute read off it; `fold`; the typed error for an object that only claims
+  `isinstance(x, datetime)` (a `__class__ = datetime` class, a `MagicMock(spec=datetime)`);
+  and the unchanged year-1 / year-9999 range, error class and `name=` of the helpers.
+  Every expectation is an exact value or an exact class.
+  Against the code before this change (`65c1e03`) the negatives fail and the controls
+  pass; with a mutant of the fix that puts `now.utcoffset()` back in either helper, asks
+  `now.replace()` / `now.timestamp()`, drops `fold` or `tzinfo`, routes `utc_epoch`
+  through `utc_instant`, reads the fields through instance methods, or takes the snapshot
+  outside the `try`, each is killed.
+- **`tests/test_message_helpers_total.py`** (#282). 164 tests, self-contained (`tests/` is not
+  a package), with the hostile objects built inside the tests because pytest builds a
+  parameter id by calling `str()`, which on an `int` subclass calls its `__repr__`. The helper
+  matrix runs 15 objects (an `int` and a `float` subclass with a raising `__repr__`; a `str`
+  subclass with a raising `__repr__`, `__len__` and `__getitem__`; an `int` subclass with a
+  raising `bit_length`; one of 10**5000 whose `bit_length` returns 1; an `int` and a `float`
+  subclass whose `__repr__` returns a non-`str`; an `int` and a `str` subclass whose `__repr__`
+  returns 1 MB; a type whose metaclass `__name__` raises, and one whose `__name__` is not a
+  string; a type name of 5 million characters, from a metaclass and from `type(name, ...)`)
+  through each of the three helpers, asserting the exact text; a separate test pins the 64
+  character edge (63, 64 and 65 characters). 46 status entry points
+  (the builders, the codecs and the checks, one hostile object per parameter that reaches
+  `brief`) assert the exact class `StatusListError` and the message. `did:web` resolves a
+  valid DID given as a hostile `str` subclass (sync and async), refuses an invalid one with
+  exactly `DidResolutionError`, and refuses a document whose `id` is another DID, missing or
+  not a string with exactly `DidResolutionError` and the exact message, for a DID that is a
+  hostile `str` subclass (sync and async), and cuts a 5-million-character `id`. `non_negative_seconds`, `SdJwtVcProofSuite(leeway_s=...)`,
+  `SdJwtVcProofSuite.verify(kb_max_age_s=...)` and `verify_vp_token(leeway_s=..., kb_max_age_s=...)`
+  raise exactly `ProofError`, `SdJwtError` and `OpenID4VPError` with the exact message. Controls
+  that pass before and after pin the plain-value text of all three helpers and of
+  `non_negative_seconds`. Against `65c1e03` 143 fail and 21 pass (the 6 controls, the structural
+  check and 14 cells that were already total: the `str` cells of `brief`, the numeric cells of
+  `_brief`, a lying `str.__getitem__` on `safe_repr`); 24 targeted mutants of the fix (each
+  call of a method of the value restored, each `try` / `except` and `str`-name guard removed,
+  each limit moved by one) are each killed, and so are 14 more for the type-name cut and the
+  `did:web` message (each of the three cuts removed, moved by one either way and its `...`
+  dropped; each of the two `safe_repr()` calls in `_validated_document` put back as `!r`,
+  which fails 14 tests when both are).
 - `tests/test_key_resolution_error_family.py` (new, 218 cases): the lane-by-scenario map
   (VC-JWT, SD-JWT VC, `eddsa-jcs-2022`, `eddsa-rdfc-2022` through the four entry points, plus
   the suite called directly and the three ECDSA suites) with a control for every row that
