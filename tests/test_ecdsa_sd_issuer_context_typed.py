@@ -17,7 +17,9 @@ raise ``ProofMalformed`` with the prefix ``could not canonicalize the credential
 class ``verify`` and ``_utf8_nquads`` already use. Only the canonicalization is guarded:
 a signing-backend error (an HSM or Vault failure) surfaces as itself, and a ``ProofError``
 raised inside the guarded block (a bad pointer, a ``validate_document`` refusal) keeps its
-own class and message.
+own class and message. The pyld text in the message is cut at 500 characters in the three
+arms (``verify`` included), because pyld quotes the context it refused and a 1 MB
+``@context`` made a 1 MB message.
 
 Every negative asserts the EXACT class (``type(exc) is ProofMalformed``) and the message
 prefix, so it cannot pass on a different failure; the issuer is a resolvable ``did:key``
@@ -338,3 +340,109 @@ def test_the_rdf_siblings_keep_their_classes(sibling, name, context):
     with pytest.raises(expected) as caught:
         suite.add_proof(credential(context), signing_key=key, verification_method=VM)
     assert type(caught.value) is expected
+
+
+# -- the message quotes the canonicalizer's text, cut ------------------------- #
+#
+# pyld puts the context it refused into its error text, so a 1 MB @context made a 1 MB
+# ProofMalformed (derive_proof and verify read a credential a third party chose). All
+# three arms now quote at most 500 characters and show the full length; the pyld error is
+# the __cause__, whole. The cap is written out here, not imported, so a change to it shows
+# up as a failing test.
+
+_CAP = 500
+_BIG = 1_000_000
+
+
+def _call_add() -> Any:
+    return issue()
+
+
+def _call_derive() -> Any:
+    return SUITE.derive_proof(copy.deepcopy(BASE), selective_pointers=SELECTIVE)
+
+
+def _call_verify() -> Any:
+    return SUITE.verify(copy.deepcopy(DERIVED), public_key_jwk=SK.public_jwk())
+
+
+# (the first canonicalizing call inside each arm's guard, the call, the message prefix)
+ARMS = [
+    pytest.param("_proof_config_hash", _call_add, _PREFIX, id="add_base_proof"),
+    pytest.param("_transform", _call_derive, _PREFIX, id="derive_proof"),
+    pytest.param("_to_nquads", _call_verify, _DERIVED_PREFIX, id="verify"),
+]
+
+
+def _text(size: int) -> str:
+    return ("0123456789" * (size // 10 + 1))[:size]
+
+
+def _raising(error: Exception) -> Callable[..., Any]:
+    def raiser(*args: Any, **kwargs: Any) -> Any:
+        raise error
+    return raiser
+
+
+@pytest.mark.parametrize("target, call, prefix", ARMS)
+@pytest.mark.parametrize("size", [0, 1, 499, _CAP])
+def test_a_canonicalizer_text_up_to_the_cap_is_quoted_whole(
+        monkeypatch, target, call, prefix, size):
+    original = ValueError(_text(size))
+    monkeypatch.setattr(ecdsa_sd, target, _raising(original))
+    exc = refused(call, prefix=prefix)
+    assert str(exc) == f"{prefix}: {_text(size)}"
+    assert exc.__cause__ is original
+
+
+@pytest.mark.parametrize("target, call, prefix", ARMS)
+@pytest.mark.parametrize("size", [_CAP + 1, 5_000, _BIG])
+def test_a_longer_canonicalizer_text_is_cut_and_its_length_shown(
+        monkeypatch, target, call, prefix, size):
+    original = ValueError(_text(size))
+    monkeypatch.setattr(ecdsa_sd, target, _raising(original))
+    exc = refused(call, prefix=prefix)
+    assert str(exc) == f"{prefix}: {_text(_CAP)}... ({size} chars)"
+    assert exc.__cause__ is original
+    assert len(str(exc.__cause__)) == size, "the cause keeps the whole text"
+
+
+def _cut(exc: ProofMalformed, prefix: str) -> None:
+    assert len(str(exc)) <= len(prefix) + len(": ") + _CAP + len("... (1000000 chars)")
+    assert exc.__cause__ is not None
+    # the premise: pyld really did quote the oversized context, so a pass is not vacuous
+    assert len(str(exc.__cause__)) > _BIG * 9 // 10
+
+
+def test_add_base_proof_cuts_a_pyld_message_quoting_a_huge_context():
+    exc = refused(lambda: issue(credential("x" * _BIG)))
+    _cut(exc, _PREFIX)
+
+
+def test_derive_proof_cuts_a_pyld_message_quoting_a_huge_context():
+    for context in ("x" * _BIG, [V2, "https://example.org/" + "a" * _BIG]):
+        exc = refused(lambda: SUITE.derive_proof(
+            with_context(BASE, context), selective_pointers=SELECTIVE))
+        _cut(exc, _PREFIX)
+
+
+def test_verify_cuts_a_pyld_message_quoting_a_huge_context():
+    exc = refused(lambda: SUITE.verify(
+        with_context(DERIVED, "x" * _BIG), public_key_jwk=SK.public_jwk()),
+        prefix=_DERIVED_PREFIX)
+    _cut(exc, _DERIVED_PREFIX)
+
+
+def test_an_ordinary_pyld_refusal_is_quoted_whole_by_every_arm():
+    # the cap leaves the usual 130 to 470 character refusal alone: the text after the
+    # prefix is exactly what pyld said, and the three arms agree on it
+    for call, prefix in (
+            (lambda: SUITE.derive_proof(with_context(BASE, [V2, 5]),
+                                        selective_pointers=SELECTIVE), _PREFIX),
+            (lambda: SUITE.verify(with_context(DERIVED, [V2, 5]),
+                                  public_key_jwk=SK.public_jwk()), _DERIVED_PREFIX),
+            (lambda: issue(credential([V2, 5])), _PREFIX)):
+        exc = refused(call, prefix=prefix)
+        cause_text = str(exc.__cause__)
+        assert len(cause_text) <= _CAP
+        assert str(exc) == f"{prefix}: {cause_text}"

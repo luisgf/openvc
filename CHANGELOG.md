@@ -9,6 +9,8 @@ All notable changes to **openvc** are documented here. The format follows
 Two issuer-side fixes in the Data Integrity suites. Both are caller-side: nothing is
 signed or derived from the input they refuse, no accept-set of a verifier changes, and
 the one change that does not fail closed (a naive `created`) is stated under Changed.
+The `could not canonicalize` message of `ecdsa-sd-2023` is also bounded, `verify`'s
+included (under #281, below); it is text only.
 
 ### Fixed
 
@@ -17,21 +19,41 @@ the one change that does not fail closed (a naive `created`) is stated under Cha
   ([#281](https://github.com/luisgf/openvc/issues/281)). Hardening; no wrong-accept, and
   nothing was signed or derived on the failing path. An `@context` that `pyld` cannot
   process (an unknown URL, a typo'd one, a value that is neither an array nor a string,
-  an inline object with a bad term definition), or a body it refuses (a `type` holding
-  an integer, a numeric `credentialSubject.id`), let a bare `pyld.jsonld.JsonLdError`
-  escape from both methods since `ecdsa-sd-2023` landed (v0.3.0). It is not an
-  `OpenvcError`, so an `except OpenvcError` around issuance or derivation missed it.
-  `verify` already turned the same failures into `ProofMalformed`, and so did the two
-  RDF siblings' issuers. `derive_proof` reads a credential a third-party issuer chose,
-  so a hostile or misconfigured issuer could make a wallet's call raise a type its
-  handler does not cover.
+  an inline object with a bad term definition) let a bare `pyld.jsonld.JsonLdError`
+  escape from both methods since `ecdsa-sd-2023` landed (v0.3.0); so did a body `pyld`
+  refuses (a `type` holding an integer, a numeric `credentialSubject.id`), but from
+  `derive_proof` only: `add_base_proof` already typed those through `validate_document`
+  (`cannot validate the document's JSON-LD form`, and `the document uses @reverse` for a
+  `@reverse`), and keeps that message. The bare error is not an `OpenvcError`, so an
+  `except OpenvcError` around issuance or derivation missed it. `verify` already turned
+  the same failures into `ProofMalformed`, and so did the two RDF siblings' issuers.
+  `derive_proof` reads a credential a third-party issuer chose, so a hostile or
+  misconfigured issuer could make a wallet's call raise a type its handler does not
+  cover.
 
   - **Decision (class and message):** `ProofMalformed`, the class `verify` and
     `_utf8_nquads` already use for a canonicalization failure, with the prefix
     `could not canonicalize the credential` (`verify` keeps `the derived credential`) and
-    the `pyld` error chained as `__cause__`. The message tail is `{exc}`, as in `verify`.
-    The escaping class changes from `pyld.jsonld.JsonLdError` to `ProofMalformed`; it
-    was never documented. No accept-set changes.
+    the `pyld` error chained as `__cause__`. The message tail is the `pyld` error text, as
+    in `verify`. The escaping class changes from `pyld.jsonld.JsonLdError` to
+    `ProofMalformed`; it was never documented. No accept-set changes.
+  - **Decision (message length):** the `pyld` text in the message is cut at 500
+    characters, with the full length shown (`... (1000000 chars)`), in all three arms,
+    `verify`'s included. `pyld` quotes the context it refused, so a 1 000 000-character
+    `@context` string made a message of about 1 000 000 characters in all three arms, and
+    a 1 000 000-character URL in `derive_proof` (`derive_proof` and `verify` read a
+    credential a third party chose). An ordinary refusal is 130 to 470 characters and is
+    kept whole, so `verify`'s message is unchanged unless it was longer than 500
+    characters. The cause keeps the full text.
+    `safe_repr` was not used: it cuts at 200 and would add quotes around the text.
+  - **Decision (RDF siblings' messages, left as they were):** the two RDF siblings'
+    issuers carry the same unbounded text, in their `DataIntegrityError`
+    (`canonicalization failed: ...`) and `DocumentLoaderError` messages (1 000 076 and
+    1 000 110 characters for the same two inputs). Cutting them means changing
+    `data_integrity._canonize` and the document loader, and choosing one bound for the
+    whole family; `_canonize` is kept byte-identical here so that
+    [#225](https://github.com/luisgf/openvc/issues/225) merges without a conflict there.
+    It is a follow-up.
   - **What is guarded.** `add_base_proof`: `_proof_config_hash` through the mandatory
     hash. `derive_proof`: `_transform` through `_reveal_view`. A `ProofError` raised
     inside (a bad JSON pointer, a `validate_document` refusal) keeps its own class and
@@ -116,22 +138,26 @@ the one change that does not fail closed (a naive `created`) is stated under Cha
 
 - `tests/test_ecdsa_sd_issuer_context_typed.py` (#281): the ten `@context` values of the
   issue on `add_base_proof` and on `derive_proof` (a genuine base proof with its
-  `@context` swapped), plus the bodies `pyld` refuses (a `type` holding an integer, a
-  numeric `credentialSubject.id` / `@id`, a `@reverse` that expands but does not compact,
-  and a nested node spelled `urn:bnid:c14n0`, which ended in a bare `KeyError` in the
-  last guarded step), each asserted as exactly `ProofMalformed` with the prefix;
-  controls for the round trip, the `validate_document`
-  refusals that keep their message, a signing-backend and an ephemeral-key error that
-  surface as themselves, a bad pointer that stays `EcdsaSdError`, a context served
-  through `extra_contexts`, the verify side (`verify`, `verify_credential`,
-  `verify_many`, `verify_many_async`) and the RDF siblings' unchanged classes.
+  `@context` swapped), plus, on `derive_proof`, the bodies `pyld` refuses (a `type`
+  holding an integer, a numeric `credentialSubject.id` / `@id`, a `@reverse` that expands
+  but does not compact, and a nested node spelled `urn:bnid:c14n0`, which ended in a bare
+  `KeyError` in the last guarded step), each asserted as exactly `ProofMalformed` with the
+  prefix; the message cut in all three arms (a synthetic error text around the 500
+  boundary, up to 1 000 000 characters, and a real 1 MB `@context` and URL, with the
+  oversized text shown to reach the cause); controls for the round trip, the
+  `validate_document` refusals that keep their message (the `add_base_proof` body
+  refusals included), a signing-backend and an ephemeral-key error that surface as
+  themselves, a bad pointer that stays `EcdsaSdError`, a context served through
+  `extra_contexts`, the verify side (`verify`, `verify_credential`, `verify_many`,
+  `verify_many_async`) and the RDF siblings' unchanged classes.
 - `tests/test_proof_created_time.py` (#287): the five entry points against eleven values
   that are not a `datetime`, three with no UTC reading, the order of the checks, the
   host zone pinned by `TZ` + `tzset` (five zones; winter, DST summer, `datetime.min` /
   `max`, a `tzinfo` with no offset), the same `proofValue` on any host for the
   deterministic suites, round trips for years 1, 2999 and 9999 (and
   base / derive / verify for `ecdsa-sd-2023`), and a Hypothesis differential against the
-  old `astimezone(...).strftime(...)` for every aware `datetime`.
+  old `astimezone(...).strftime(...)` for aware datetimes in years 1001 to 9998 (the
+  edges and years before 1000 have their own cases).
 
 ## [1.34.0] — 2026-10-15
 

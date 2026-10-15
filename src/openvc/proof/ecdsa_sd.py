@@ -323,6 +323,23 @@ def _pyld() -> Any:
     return jsonld
 
 
+# How much of the canonicalizer's own error text a ProofMalformed message quotes. pyld puts
+# the context it refused into its message (a 1 MB @context made a 1 MB error), and
+# derive_proof and verify read a credential a third party chose. An ordinary pyld refusal
+# (its message plus the Type / Code / Details lines) runs to about 470 characters and is
+# kept whole; the cause is chained untouched, so nothing is lost to a debugger.
+_DETAIL_MAX = 500
+
+
+def _canonicalization_failure(subject: str, exc: Exception) -> ProofMalformed:
+    """The one ``ProofMalformed`` the three canonicalization arms raise (``add_base_proof``,
+    ``derive_proof``, ``verify``); the caller adds ``from exc``."""
+    detail = str(exc)
+    if len(detail) > _DETAIL_MAX:
+        detail = f"{detail[:_DETAIL_MAX]}... ({len(detail)} chars)"
+    return ProofMalformed(f"could not canonicalize the {subject}: {detail}")
+
+
 def _skolemize(node: Any, counter: list[int]) -> Any:
     """Give every blank node a stable ``urn:bnid:`` IRI so selection preserves
     identity across the full document and any selected subset."""
@@ -587,8 +604,7 @@ class EcdsaSdProofSuite:
             # cannot process) next to the usual value/type errors, and none is an
             # OpenvcError. Only canonicalization is guarded: the signing calls below are
             # outside, so an HSM / Vault backend error surfaces as itself.
-            raise ProofMalformed(
-                f"could not canonicalize the credential: {exc}") from exc
+            raise _canonicalization_failure("credential", exc) from exc
 
         ephemeral = P256SigningKey.generate(kid="urn:ephemeral")
         public_key = p256_public_multikey(ephemeral.public_jwk())
@@ -648,8 +664,7 @@ class EcdsaSdProofSuite:
             # The credential is the one the holder received, so its issuer chose the
             # @context and the body: whatever pyld refuses is a typed ProofMalformed, as in
             # verify, not a bare JsonLdError. A bad pointer (EcdsaSdError) passes through.
-            raise ProofMalformed(
-                f"could not canonicalize the credential: {exc}") from exc
+            raise _canonicalization_failure("credential", exc) from exc
 
         filtered_sigs: list[bytes] = []
         for i, ln in enumerate(reveal_relabeled):
@@ -754,8 +769,7 @@ class EcdsaSdProofSuite:
             # usual value/type errors — none is an OpenvcError. Surface a typed
             # ProofMalformed so a hostile derived credential never escapes the family
             # (add_base_proof and derive_proof have the same arm).
-            raise ProofMalformed(
-                f"could not canonicalize the derived credential: {exc}") from exc
+            raise _canonicalization_failure("derived credential", exc) from exc
         mandatory_hash = _sha256_lines(mandatory_lines)
         to_verify = proof_hash + parsed["public_key"] + mandatory_hash
 
