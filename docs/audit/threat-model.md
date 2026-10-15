@@ -510,11 +510,13 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   `ecdsa-sd-2023` derived proof value in v1.33.1).** In v1.32.3 these were the last
   known attacker-controlled inputs that escaped `OpenvcError`, so that I14 did not hold for
   them; that claim was too strong, and a second class is listed below. (Caller
-  configuration is a separate class: a string or `None`
-  `leeway_s` still raises a bare `TypeError` on the VP-JWT, status-list-token and
-  `check_jwt_temporal` lanes, tracked as
-  [#228](https://github.com/luisgf/openvc/issues/228) /
-  [#232](https://github.com/luisgf/openvc/issues/232).) Three EBSI exits
+  configuration was a separate class: a string or `None` `leeway_s` raised a bare
+  `TypeError` on the VP-JWT, status-list-token and `check_jwt_temporal` lanes, and `NaN`,
+  `Infinity` or a huge value switched expiry off on VC-JWT, VP-JWT, the status-list token
+  and Data Integrity. Closed in v1.35.0
+  ([#228](https://github.com/luisgf/openvc/issues/228) /
+  [#232](https://github.com/luisgf/openvc/issues/232)): `leeway_s` is a whole number of
+  seconds from 0 to one day, refused with a typed error at every entry point.) Three EBSI exits
   were typed in v1.32.1 (§7): a registry URL that `_origin` could not parse (#243), a URL
   the HTTP client could not parse, reachable from a token's `iss` (#246), and a registry
   body that does not decompress (#248). The fourth, the only one that reached

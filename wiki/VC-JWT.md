@@ -81,7 +81,8 @@ already hold the key. Normally you let the pipeline resolve it from the
   every case: it applies only when `iss` is absent altogether, never for a `null` or empty
   one, and it accepts an issuer object only when all of its `id` and `@id` members agree.
 - **Temporal checks fail closed.** `exp` / `nbf` / `iat` (with a small
-  clock-skew leeway) and the credential's `validFrom` / `validUntil`; a
+  clock-skew leeway, `leeway_s`: a whole number of seconds from 0 to a day, see
+  [Getting started](Getting-Started#clock-skew-leeway_s)) and the credential's `validFrom` / `validUntil`; a
   present-but-unparseable timestamp rejects. `exp`, `nbf` and `iat` must each be
   a finite JSON number (RFC 7519 NumericDate) when present. `null`, a string
   (even `"1700000000"`), a bool, `NaN`/`Infinity` or a container is a

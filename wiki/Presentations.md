@@ -72,7 +72,9 @@ bool, `null`) is rejected with `ClaimsInvalid`.
 
 The VP-JWT's own `exp`, `nbf` and `iat` must each be a finite JSON number when
 present (`null` included), and an `iat` more than the leeway in the future is
-rejected, as on the credential lanes. These have no waiver: a `policy` passed to
+rejected, as on the credential lanes. `VpJwtProofSuite(leeway_s=...)` takes the same range
+as the policy ([Getting started](Getting-Started#clock-skew-leeway_s)), and `verify_vp_token` checks its
+`leeway_s` before it reads the response (`OpenID4VPError`). These have no waiver: a `policy` passed to
 `verify` reaches only the embedded credentials, so `require_not_expired=False`
 leaves the presentation's dates enforced. `aud` and `nonce` are always required.
 

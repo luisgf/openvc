@@ -42,7 +42,7 @@ from openvc import (
     verify_many_async,
 )
 from openvc.keys import P256SigningKey, mldsa_available
-from openvc.proof._verify_common import check_jwt_temporal
+from openvc.proof._verify_common import MAX_LEEWAY_S, check_jwt_temporal
 from openvc.proof.errors import ClaimsInvalid
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
 from openvc.proof.vc_jwt import VcJwtProofSuite
@@ -447,25 +447,33 @@ def test_vc_jwt_lanes_require_string_sub_and_jti(lane, claim, raw, check_tempora
 # -- found by the adversarial review of the merge onto v1.30.4 --------------------- #
 
 HUGE_LEEWAY = 2 ** 1100                  # no float holds it
+WIDEST_LEEWAY = MAX_LEEWAY_S             # the widest one a verifier accepts: one day (#228)
 
 
-def test_helper_huge_leeway_never_overflows():
+def test_helper_widest_leeway_never_overflows():
     # `current + leeway_s` with a float clock overflowed into a bare OverflowError,
     # which escapes OpenvcError and aborts verify_many. Differences never overflow.
     assert check_jwt_temporal({"exp": NOW, "nbf": NOW, "iat": NOW},
-                              leeway_s=HUGE_LEEWAY) is False
-    assert check_jwt_temporal({"exp": 1e308, "nbf": -1e308, "iat": 1e308},
-                              leeway_s=HUGE_LEEWAY, now=NOW) is False
+                              leeway_s=WIDEST_LEEWAY) is False
+    assert check_jwt_temporal({"exp": 1e308, "nbf": -1e308, "iat": NOW},
+                              leeway_s=WIDEST_LEEWAY, now=NOW) is False
 
 
-def test_huge_leeway_stays_typed_on_every_lane():
+def test_helper_refuses_a_leeway_no_float_holds_typed():
+    # The cap makes the overflow unreachable; the helper itself is the backstop for a
+    # caller that skipped the entry-point check, and it fails closed, not open.
+    with pytest.raises(ClaimsInvalid, match="leeway_s"):
+        check_jwt_temporal({"exp": NOW - 10 ** 6}, leeway_s=HUGE_LEEWAY)
+
+
+def test_widest_leeway_stays_typed_on_every_lane():
     token = _status_token({"exp": str(NOW + 3600), "nbf": str(NOW), "iat": str(NOW)})
     verify_status_list_token(token, public_key_jwk=ISSUER.public_jwk(),
-                             leeway_s=HUGE_LEEWAY)
-    SdJwtVcProofSuite(leeway_s=HUGE_LEEWAY).verify(
+                             leeway_s=WIDEST_LEEWAY)
+    SdJwtVcProofSuite(leeway_s=WIDEST_LEEWAY).verify(
         _sd_jwt({"exp": f"{NOW + 3600}.5", "iat": str(NOW)}),
         public_key_jwk=ISSUER.public_jwk())
-    VpJwtProofSuite(leeway_s=HUGE_LEEWAY).verify(
+    VpJwtProofSuite(leeway_s=WIDEST_LEEWAY).verify(
         _vp({"exp": str(NOW + 300), "iat": str(NOW)}), audience=AUD, nonce=NONCE)
 
 

@@ -68,6 +68,7 @@ from .errors import OpenvcError
 from .proof._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
     DEFAULT_LEEWAY_S,
+    leeway_seconds,
     non_negative_seconds,
     safe_repr,
 )
@@ -251,7 +252,9 @@ def verify_vp_token(
     §7.3 step 5.5). It applies to SD-JWT VCs nested in ``jwt_vc_json`` / ``ldp_vc``
     presentations too. To verify an archived response, pin *now* to the receipt time
     your system recorded — never to a value read from the response itself. A naive
-    *now* is UTC.
+    *now* is UTC. *leeway_s* is the clock-skew tolerance every lane adds to its temporal
+    checks: a whole number of seconds from 0 to one day (86 400); anything else is an
+    :class:`OpenID4VPError`, raised before the response is read.
 
     An ``mso_mdoc`` Presentation (ISO 18013-5, **experimental**) is verified over the
     Digital Credentials API flow: pass *trust_anchors* (the IACA root
@@ -393,14 +396,13 @@ def verify_vp_token(
     ``credential_sets``, whatever it held, switched the completeness check off; ``null``,
     ``[]`` and the other falsy values read as absent, with every query required.
     """
+    # Validate the duration knobs once, up front — a NaN leeway would switch every window
+    # off, and a lane with no SD-JWT in it would otherwise never look at kb_max_age_s.
+    leeway_seconds(leeway_s, error=OpenID4VPError)
+    non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=OpenID4VPError)
     if not nonce:
         raise ClaimsInvalid("verify_vp_token requires a non-empty nonce")
     accepted_auds = _dc_api_accepted_auds(client_id, expected_origins)
-
-    # Validate the duration knobs once, up front — a NaN leeway would switch every window
-    # off, and a lane with no SD-JWT in it would otherwise never look at kb_max_age_s.
-    non_negative_seconds(leeway_s, name="leeway_s", error=OpenID4VPError)
-    non_negative_seconds(kb_max_age_s, name="kb_max_age_s", error=OpenID4VPError)
     token = _parse_vp_token(vp_token)
     if not token:
         raise VpTokenMalformed("vp_token contains no presentations")
@@ -469,6 +471,7 @@ def verify_encrypted_vp_response(
     """
     from .jwe import decrypt_compact
 
+    leeway_seconds(leeway_s, error=OpenID4VPError)     # before the decryption, not after it
     plaintext = decrypt_compact(response, key=key)
     try:
         payload = _json.loads(plaintext)

@@ -251,12 +251,13 @@ def test_eudi_dev_capture_an_hour_later_is_stale():
 
 def test_eudi_dev_capture_after_the_issuer_leaf_expires_is_rejected():
     # The pin covers the x5c validity window as well — nothing here reads the wall clock.
-    # The huge leeway keeps the KB-JWT "fresh", so only the certificate window can refuse.
+    # The wide kb_max_age_s keeps the KB-JWT "fresh", so only the certificate window can
+    # refuse. (A leeway is capped at a day, so it cannot do this job: #228.)
     from openvc.verify import KeyResolutionFailed
 
     with pytest.raises(KeyResolutionFailed):
         _verify_capture(now=datetime.datetime(2026, 12, 1, tzinfo=datetime.timezone.utc),
-                        leeway_s=10 ** 8)
+                        kb_max_age_s=10 ** 8)
 
 
 def test_eudi_dev_capture_unrelated_anchor_rejected():

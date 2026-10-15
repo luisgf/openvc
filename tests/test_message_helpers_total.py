@@ -584,7 +584,9 @@ def test_sd_jwt_suite_leeway_is_a_typed_error(case: tuple) -> None:
     with pytest.raises(Exception) as caught:
         SdJwtVcProofSuite(leeway_s=make())
     assert type(caught.value) is SdJwtError, repr(caught.value)
-    assert str(caught.value) == f"leeway_s must be a non-negative int (seconds), got {shown}"
+    # the one leeway rule (#228 / #232): 0 to MAX_LEEWAY_S whole seconds, bound in the text
+    assert str(caught.value) == (
+        f"leeway_s must be a whole number of seconds from 0 to 86400, got {shown}")
 
 
 @pytest.mark.parametrize("case", SECONDS_CASES, ids=SECONDS_IDS)
@@ -606,7 +608,11 @@ def test_verify_vp_token_duration_knobs_are_a_typed_error(case: tuple, knob: str
             {}, dcql_query={"credentials": []}, nonce="n-0S6_WzA2Mj",
             client_id="x509_san_dns:verifier.example", **{knob: make()})
     assert type(caught.value) is OpenID4VPError, repr(caught.value)
-    assert str(caught.value) == f"{knob} must be a non-negative int (seconds), got {shown}"
+    if knob == "leeway_s":            # the one leeway rule (#228 / #232): 0 to MAX_LEEWAY_S
+        expected = f"leeway_s must be a whole number of seconds from 0 to 86400, got {shown}"
+    else:                             # kb_max_age_s keeps the unbounded non-negative rule
+        expected = f"{knob} must be a non-negative int (seconds), got {shown}"
+    assert str(caught.value) == expected
 
 
 # --------------------------------------------------------------------------- #

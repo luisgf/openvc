@@ -81,6 +81,7 @@ from .proof._verify_common import (
     check_iat_freshness,
     check_jwt_temporal,
     is_numeric_date,
+    leeway_seconds,
     reject_unknown_crit,
     safe_repr,
     utc_epoch,
@@ -866,7 +867,9 @@ def verify_credential_request_proofs(
     error. *expected_client_id*, when given, pins the proof's ``iss``.
     *require_key_attestation* refuses a missing ``key_attestation`` header before
     crypto and before the nonce is spent; default ``False``. *now* pins the
-    instant for deterministic tests.
+    instant for deterministic tests. *leeway_s* is the clock-skew tolerance, a whole number
+    of seconds from 0 to one day (86 400); anything else is a
+    :class:`CredentialRequestMalformed`, raised before the request is read.
 
     When a proof carries ``key_attestation``, App. D's MUST is enforced: the key that
     signed it must be one of the attestation's ``attested_keys``. That check **stops no
@@ -883,6 +886,7 @@ def verify_credential_request_proofs(
     :class:`~openvc.proof.errors.MalformedToken`,
     :class:`~openvc.proof.errors.UnsupportedAlgorithm`).
     """
+    leeway_seconds(leeway_s, error=CredentialRequestMalformed)     # first: see the docstring
     if not isinstance(credential_issuer, str) or not credential_issuer:
         raise CredentialRequestMalformed("credential_issuer must be a non-empty string")
     if require_nonce and check_nonce is None:
@@ -890,8 +894,8 @@ def verify_credential_request_proofs(
         raise ClaimsInvalid(
             "a nonce is required but no check_nonce was given to consume it; pass "
             "check_nonce, or set require_nonce=False to opt out explicitly")
-    if max_age_s < 0 or leeway_s < 0:
-        raise CredentialRequestMalformed("max_age_s and leeway_s must not be negative")
+    if max_age_s < 0:
+        raise CredentialRequestMalformed("max_age_s must not be negative")
     if resolve_proof_key is not None and resolve_proof_key_in_context is not None:
         # Two resolvers means a precedence between them, and a silent precedence among
         # key sources is the defect this verifier is built to refuse (see _KEY_PARAMS).

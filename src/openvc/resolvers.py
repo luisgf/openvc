@@ -47,12 +47,14 @@ from .fetch import (
     https_text_fetch,
     https_text_fetch_async,
 )
+from .proof._verify_common import leeway_seconds
 from .schema import AsyncResolveCredentialSchema, ResolveCredentialSchema
 from .status import (
     AsyncResolveStatusList,
     AsyncResolveStatusListToken,
     ResolveStatusList,
     ResolveStatusListToken,
+    StatusListError,
 )
 from .type_metadata import ResolveTypeMetadata
 
@@ -97,6 +99,8 @@ def default_status_list_resolver(
     ``dc+sd-jwt`` list, where it does not), and one whose body names no one (the issuer is
     in the JWT ``iss`` only) gets the verified signer filled in, on a copy, so
     ``require_status_issuer_binding`` can bind it (ADR-0006, #226)."""
+    leeway_s = leeway_seconds(leeway_s, error=StatusListError)
+
     def resolve(url: str) -> dict:
         from .verify import VerificationPolicy, verify_credential
         credential = _as_credential(fetch(url))
@@ -118,6 +122,8 @@ def default_status_list_token_resolver(
     token over the SSRF-guarded https fetch, resolves the issuer key, verifies the
     token (typ + signature + ``exp`` + ``sub`` == the fetched URI, the IETF
     anti-swap check), and returns its claims."""
+    leeway_s = leeway_seconds(leeway_s, error=StatusListError)
+
     def resolve(uri: str) -> dict:
         from .proof._jws import parse_compact
         from .status import StatusListError, verify_status_list_token
@@ -258,6 +264,8 @@ def default_status_list_resolver_async(
     over the SSRF-guarded async fetch and **verifies** it through the async pipeline
     before returning it. *resolver* is an :class:`AsyncDidResolver`. The returned body
     names its issuer exactly as :func:`default_status_list_resolver`'s does."""
+    leeway_s = leeway_seconds(leeway_s, error=StatusListError)
+
     async def resolve(url: str) -> dict:
         from .aio import verify_credential_async
         from .verify import VerificationPolicy
@@ -279,6 +287,8 @@ def default_status_list_token_resolver_async(
     """Async :func:`default_status_list_token_resolver` — fetches the ``statuslist+jwt``
     over the SSRF-guarded async fetch, resolves the issuer key via the async pipeline,
     and verifies the token (typ + signature + ``exp`` + ``sub`` == the fetched URI)."""
+    leeway_s = leeway_seconds(leeway_s, error=StatusListError)
+
     async def resolve(uri: str) -> dict:
         from .aio import _resolve_jose_key_async, default_async_resolver
         from .proof._jws import parse_compact

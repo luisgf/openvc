@@ -59,6 +59,7 @@ from ._verify_common import (
     check_numeric_dates,
     check_validity_window,
     issuer_identifiers,
+    leeway_seconds,
     reject_unknown_crit,
     safe_repr,
 )
@@ -204,7 +205,7 @@ class VcJwtProofSuite:
     """VC-JWT (JOSE-secured Verifiable Credential) proof suite."""
 
     def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S, allow_pq: bool = False) -> None:
-        self._leeway = leeway_s
+        self._leeway = leeway_seconds(leeway_s)       # fail closed, up front (0..MAX_LEEWAY_S)
         # allow_pq merges the EXPERIMENTAL ML-DSA algs into this suite's allow-list; the
         # default suite rejects ML-DSA at the allow-list, before any crypto (ADR-0004).
         self._algs = ALLOWED_ALGS | ALLOWED_ALGS_PQ if allow_pq else ALLOWED_ALGS

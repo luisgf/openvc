@@ -71,7 +71,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from . import _json
 from .errors import OpenvcError
-from .proof._verify_common import utc_window
+from .proof._verify_common import leeway_seconds, utc_window
 
 __all__ = [
     "ENTITLEMENT_URI_PREFIX",
@@ -672,6 +672,7 @@ def verify_rp_registration_certificate(
     """
     from .x5c import X5cError, leaf_public_jwk, validate_cert_chain
 
+    leeway_seconds(leeway_s, error=RpRegistrationError)      # first: whole seconds, 0..1 day
     if isinstance(trust_anchors, (str, bytes)) or not isinstance(trust_anchors, Iterable):
         raise RpRegistrationError(
             "trust_anchors must be a sequence of registrar roots, not a single value")

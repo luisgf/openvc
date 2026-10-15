@@ -43,6 +43,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from openvc import VerificationPolicy, verify_credential, verify_credential_async
 from openvc.keys import P256SigningKey
+from openvc.proof._verify_common import MAX_LEEWAY_S
 from openvc.proof.errors import (
     ClaimsInvalid,
     CredentialExpired,
@@ -477,25 +478,36 @@ def test_policy_now_does_not_move_the_jose_window(run):
 
 
 @pytest.mark.parametrize("leeway", [10**12, 10**14, 10**30])
-def test_huge_leeway_is_honoured_not_a_crash(run, leeway):
-    # `instant ± leeway` used to overflow datetime: a bare OverflowError, not an OpenvcError.
-    result = run(_mint(_vcdm(validUntil=PAST)), VerificationPolicy(leeway_s=leeway))
-    assert result.expired is False
+def test_huge_leeway_is_refused_not_honoured(leeway):
+    # `instant ± leeway` used to overflow datetime (a bare OverflowError), and a leeway
+    # wide enough switched the window off. A leeway is capped at a day (#228) and refused
+    # where the policy is built.
+    from openvc import InvalidPolicy
+
+    with pytest.raises(InvalidPolicy, match="leeway_s"):
+        VerificationPolicy(leeway_s=leeway)
 
 
-def test_huge_leeway_does_not_abort_verify_many():
+def test_widest_leeway_is_honoured_not_a_crash(run):
+    widest = VerificationPolicy(leeway_s=MAX_LEEWAY_S)
+    assert run(_mint(_vcdm(validUntil=_iso(-3600))), widest).expired is False
+    with pytest.raises(CredentialExpired):                  # a lapse past the leeway still is
+        run(_mint(_vcdm(validUntil=_iso(-(MAX_LEEWAY_S + 3600)))), widest)
+
+
+def test_widest_leeway_does_not_abort_verify_many():
     from openvc import verify_many, verify_many_async
-    batch = [_mint(_vcdm(validUntil=PAST)), _mint(_vcdm(validFrom=FUTURE))]
-    policy = VerificationPolicy(leeway_s=10**14)
+    batch = [_mint(_vcdm(validUntil=_iso(-3600))), _mint(_vcdm(validFrom=_iso(3600)))]
+    policy = VerificationPolicy(leeway_s=MAX_LEEWAY_S)
     for results in (verify_many(batch, policy=policy),
                     asyncio.run(verify_many_async(batch, policy=policy))):
         assert [r.ok for r in results] == [True, True]   # the leeway covers both bounds
 
 
-def test_huge_leeway_on_the_vc_jwt_window(run):
+def test_widest_leeway_on_the_vc_jwt_window(run):
     # The window helper is shared: the VC-JWT lane overflowed the same way.
     from openvc.proof.vc_jwt import VcJwtProofSuite
-    token = VcJwtProofSuite().sign(_vcdm(validUntil=PAST), signing_key=KEY)
+    token = VcJwtProofSuite().sign(_vcdm(validUntil=_iso(-3600)), signing_key=KEY)
     with pytest.raises(CredentialExpired):
         run(token, None)
-    assert run(token, VerificationPolicy(leeway_s=10**14)).expired is False
+    assert run(token, VerificationPolicy(leeway_s=MAX_LEEWAY_S)).expired is False

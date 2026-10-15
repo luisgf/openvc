@@ -32,6 +32,7 @@ from .keys import (  # noqa: E402
 from .proof.vc_jwt import SigningKey  # noqa: E402
 from .verify import (  # noqa: E402
     BatchResult,
+    InvalidPolicy,
     VerificationError,
     VerificationPolicy,
     VerificationResult,
@@ -53,6 +54,7 @@ __all__ = [
     "VerificationPolicy",
     "VerificationResult",
     "BatchResult",
+    "InvalidPolicy",
     "VerificationError",
     "Ed25519SigningKey",
     "MLDSASigningKey",
