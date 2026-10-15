@@ -78,6 +78,7 @@ __all__ = [
     "VpTokenVerification",
     "OpenID4VPError",
     "VpTokenMalformed",
+    "VpTokenIncomplete",
     "UnsupportedPresentationFormat",
     "dcapi_session_transcript",
     "FORMAT_SD_JWT_VC",
@@ -111,6 +112,15 @@ class OpenID4VPError(OpenvcError):
 
 class VpTokenMalformed(OpenID4VPError):
     """The ``vp_token`` / ``dcql_query`` shape is invalid (not the wire contract)."""
+
+
+class VpTokenIncomplete(VpTokenMalformed):
+    """The ``vp_token`` is well-formed but does not answer what the ``dcql_query`` requires
+    (OpenID4VP 1.0 §6.4.2, §8.6): a Credential Query is missing when the query has no
+    ``credential_sets`` (every query is required), or no option of a required Credential
+    Set Query has every one of its Credential Query ids answered. A subclass of
+    :class:`VpTokenMalformed`, so an ``except VpTokenMalformed`` keeps catching it. Raised
+    before any Presentation is read, so it says nothing about the Presentations."""
 
 
 class UnsupportedPresentationFormat(OpenID4VPError):
@@ -318,11 +328,28 @@ def verify_vp_token(
     nested result's ``key_bound=True`` means bound to this exchange. With the flag
     ``false``, a nested SD-JWT VC without one reports ``key_bound=False``.
 
-    With no ``credential_sets``, every Credential Query is required and its absence is
-    rejected. When the query *does* carry ``credential_sets``, per-query completeness
-    is **not** enforced here (a follow-up): an empty ``vp_token`` is still rejected, but
-    the caller MUST inspect :meth:`VpTokenVerification.for_query` to confirm the
-    specific credentials it needs came back.
+    **Completeness** (OpenID4VP 1.0 §6.4.2 and §8.6). With no ``credential_sets``, every
+    Credential Query is required and the absence of one raises :class:`VpTokenIncomplete`.
+    With ``credential_sets``, every set whose ``required`` is ``true`` or omitted must be
+    satisfied: at least one of its ``options`` must have **every** Credential Query id
+    answered in the ``vp_token``, else :class:`VpTokenIncomplete` names the set
+    (``credential_sets[1]``). A set with ``"required": false`` and a Credential Query that
+    no set references may be left out. This is checked on the keys of the ``vp_token``,
+    before any Presentation is read, and an empty ``vp_token`` is rejected whatever the
+    sets say. Extra answers (several options of a set, a query outside every option) are
+    not refused: each Presentation is still verified in full.
+    :meth:`VpTokenVerification.for_query` returns ``()`` for a query that was left out, so
+    use it to learn which option of a set the wallet answered, and which optional queries
+    it chose to answer.
+
+    The shape of ``credential_sets`` is validated for every query set, answered or not,
+    after the queries and before any Presentation is read (OpenID4VP 1.0 §6.2): it is a
+    non-empty array of objects; each ``options`` is a non-empty array of non-empty arrays
+    of ids, every id naming a Credential Query of ``credentials``; ``required``, when
+    present, is a JSON boolean. Anything else (``null`` and ``[]`` included) is
+    :class:`VpTokenMalformed`, naming the path (``dcql_query.credential_sets[0].options``).
+    ``purpose`` and unknown members are not read. Before 1.35.0 a present
+    ``credential_sets`` switched the completeness check off, whatever it held.
     """
     if not nonce:
         raise ClaimsInvalid("verify_vp_token requires a non-empty nonce")
@@ -458,7 +485,8 @@ def _index_dcql(dcql_query: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
         # query out of holder binding, and would let "false" / 1 open a query to several
         # Presentations (#268). Both are checked for EVERY query, answered or not; a bool
         # is exact (0, 1 and 1.0 are not JSON booleans). _presentation_list reads
-        # ``multiple`` after this, so it only ever sees a bool.
+        # ``multiple`` after this, so it only ever sees a bool. A credential set's
+        # ``required`` is held to the same rule, after the walk (_check_credential_sets).
         if not isinstance(entry.get("require_cryptographic_holder_binding", True), bool):
             raise VpTokenMalformed(
                 f"Credential Query {query_id!r}: require_cryptographic_holder_binding "
@@ -468,7 +496,48 @@ def _index_dcql(dcql_query: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
                 f"Credential Query {query_id!r}: multiple must be a boolean")
         _check_constraint(query_id, entry, fmt)
         queries[query_id] = entry
+    # After the query walk (the ids are needed, and a query's own shape error is reported
+    # first) and before any Presentation is read. Only a PRESENT key is checked: an absent
+    # one means "every query is required", but ``null`` and ``[]`` are never "absent" (#284).
+    if "credential_sets" in dcql_query:
+        _check_credential_sets(dcql_query["credential_sets"], queries)
     return queries
+
+
+def _check_credential_sets(value: Any, queries: Mapping[str, Any]) -> None:
+    # OpenID4VP 1.0 §6.2: ``credential_sets`` is a non-empty array of objects. Each has a
+    # REQUIRED ``options`` (a non-empty array of non-empty arrays of Credential Query ids,
+    # each an entry of ``credentials``) and an OPTIONAL boolean ``required`` (default
+    # true). It was read once, by truthiness, as the switch that turned completeness off
+    # (#284). Every set is checked, answered or not; ``purpose``, unknown members and
+    # duplicate ids inside one option are not read. Messages name the path, never the
+    # value; an unknown id is named, like a query id elsewhere, cut by safe_repr.
+    if not isinstance(value, list) or not value:
+        raise VpTokenMalformed("dcql_query.credential_sets must be a non-empty array")
+    for index, entry in enumerate(value):
+        where = f"dcql_query.credential_sets[{index}]"
+        if not isinstance(entry, Mapping):
+            raise VpTokenMalformed(f"{where} must be an object")
+        options = entry.get("options")
+        if not isinstance(options, list) or not options:
+            raise VpTokenMalformed(f"{where}.options must be a non-empty array")
+        for position, option in enumerate(options):
+            if not isinstance(option, list) or not option:
+                raise VpTokenMalformed(
+                    f"{where}.options[{position}] must be a non-empty array of "
+                    f"Credential Query ids")
+            for query_id in option:
+                if not isinstance(query_id, str):
+                    raise VpTokenMalformed(
+                        f"{where}.options[{position}] must hold only Credential Query "
+                        f"ids (strings)")
+                if query_id not in queries:
+                    raise VpTokenMalformed(
+                        f"{where}.options[{position}] names Credential Query "
+                        f"{safe_repr(query_id)}, which is not in dcql_query.credentials")
+        # A bool is exact: 0, 1 and 1.0 are not JSON booleans, and "false" is truthy.
+        if not isinstance(entry.get("required", True), bool):
+            raise VpTokenMalformed(f"{where}.required must be a boolean")
 
 
 def _check_constraint(query_id: str, query: Mapping[str, Any], fmt: str) -> None:
@@ -490,14 +559,35 @@ def _check_completeness(
     token: Mapping[str, Any], queries: Mapping[str, Any],
     dcql_query: Mapping[str, Any],
 ) -> None:
-    # With no credential_sets, every Credential Query is required (OpenID4VP 1.0 §7);
-    # optionality via credential_sets is a follow-up, so only enforce the simple case.
-    if dcql_query.get("credential_sets"):
+    # OpenID4VP 1.0 §6.4.2 says what the Verifier requests, and §8.6 (the last step) makes
+    # "the set of Presentations returned satisfies all requirements" a reason to reject.
+    # It runs on the keys of the vp_token, before any Presentation is read: openvc rejects
+    # the whole response when any Presentation fails, so a key that is present and then
+    # fails never leaves a set satisfied. ``_index_dcql`` has already validated the shape
+    # (#284): the key is absent, or a non-empty list of objects whose ``options`` are
+    # non-empty lists of known query ids and whose ``required`` is a bool.
+    if "credential_sets" not in dcql_query:
+        # No credential_sets: the Verifier requests every Credential Query.
+        missing = [qid for qid in queries if qid not in token]
+        if missing:
+            raise VpTokenIncomplete(
+                f"vp_token is missing required Credential Query id(s): {sorted(missing)}")
         return
-    missing = [qid for qid in queries if qid not in token]
-    if missing:
-        raise VpTokenMalformed(
-            f"vp_token is missing required Credential Query id(s): {sorted(missing)}")
+    # With credential_sets: every set whose ``required`` is true or omitted (default true,
+    # §6.2) must be satisfied by ONE of its options, every id of which is answered. A set
+    # with ``required: false`` is not checked, and a query that no set references is not
+    # requested (§6.4.2 read literally), so either may be left out. Extra answers are not
+    # refused here: each Presentation sent is still verified in full.
+    for index, entry in enumerate(dcql_query["credential_sets"]):
+        if not entry.get("required", True):
+            continue
+        lacking = [[qid for qid in option if qid not in token] for option in entry["options"]]
+        if all(lacking):                  # no option is answered in full
+            closest = min(range(len(lacking)), key=lambda i: len(lacking[i]))
+            raise VpTokenIncomplete(
+                f"vp_token does not satisfy credential_sets[{index}]: no option is "
+                f"answered in full; the closest is options[{closest}], which lacks "
+                f"Credential Query id(s) {sorted(lacking[closest])}")
 
 
 def _presentation_list(query_id: str, query: Mapping[str, Any], value: Any) -> list[Any]:

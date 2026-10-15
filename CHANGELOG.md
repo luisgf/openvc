@@ -4,6 +4,167 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] — unreleased
+
+**Upgrading from 1.34.0.** `verify_vp_token` and `verify_encrypted_vp_response` now read
+`credential_sets` instead of treating its presence as a switch, which can change what a
+caller sees in two ways (each is detailed below):
+
+1. A `dcql_query` whose `credential_sets` is not well formed now raises `VpTokenMalformed`
+   on every response (#284). That includes `null` and `[]`, which used to read as absent.
+2. A response that leaves a required set unsatisfied is now refused with
+   `VpTokenIncomplete` (#285), where it used to verify. The missing-query error of a
+   `dcql_query` with no `credential_sets` is the same new class, a subclass of
+   `VpTokenMalformed`.
+
+### Security
+
+- **`verify_vp_token` enforces the required `credential_sets`**
+  ([#285](https://github.com/luisgf/openvc/issues/285)). The holder could leave out a
+  credential the verifier had marked as required. Holder-reachable completeness gap; no
+  unverified credential was accepted, because every Presentation that is returned still goes
+  through the full pipeline (signature, holder binding, nonce and audience, type
+  constraint, status) and an empty `vp_token` was always refused.
+
+  With a `credential_sets` in the query, `_check_completeness` returned at once: any
+  non-empty `vp_token` whose Presentations all verified was accepted, whatever `options`
+  and `required` said. `result.presentations` was non-empty and `result.for_query("age")`
+  was `()`, so a caller that relies on an exception to signal an incomplete response went
+  ahead without the credential, and one that unpacks `(p,) = result.for_query(...)` got a
+  bare `ValueError` in its own code. The `verify_vp_token` docstring called this "a
+  follow-up" from the day the function landed (v1.1.0, #18); `wiki/Presentations.md`
+  never said so.
+
+  OpenID4VP 1.0 §6.4.2 says that with no `credential_sets` the Verifier requests every
+  Credential Query, and otherwise presentations satisfying every Credential Set Query
+  whose `required` is true or omitted (§6.2: default `true`), and optionally any of the
+  others; a set is satisfied by presentations matching one of its `options`. §8.6 makes
+  "the set of Presentations returned satisfies all requirements defined in the Verifier's
+  request" (§6.4) the last validation step, and says the VP Token MUST be rejected when a
+  check on the response fails. The text was read on openid.net (OpenID4VP 1.0 Final) while
+  writing this entry.
+
+  `_check_completeness` now reads the validated `credential_sets` (#284) and, for every
+  set whose `required` is `true` or omitted, requires that at least one of its `options`
+  has **every** Credential Query id answered as a key of the `vp_token`. When none does it
+  raises `VpTokenIncomplete`: `vp_token does not satisfy credential_sets[N]: no option is
+  answered in full; the closest is options[J], which lacks Credential Query id(s) [...]`.
+  The set index is named; the caller's structure is never `repr()`-ed. The check reads the
+  keys, before any Presentation is read, which is exact: openvc rejects the whole response
+  when any Presentation fails and never discards one and keeps the rest. So an unsatisfied
+  set is reported before an unknown `vp_token` key, a presentation list that is not an
+  array or is empty, and a Presentation failure; a shape error in the `dcql_query`
+  (including `credential_sets`) is still reported first, and an empty `vp_token` is still
+  "contains no presentations". `verify_encrypted_vp_response` gets the same check through
+  `verify_vp_token`.
+
+  Unchanged: a set with `"required": false` may be left out; the no-`credential_sets` path
+  (every query required); extra answers; `VpTokenVerification` and `for_query`, which still
+  returns `()` for a query that was left out and is how the caller learns which option was
+  answered.
+
+  **Behaviour change.** A verifier whose `credential_sets` does not say what it actually
+  needs, for example a mandatory set that should have been `required: false`, starts
+  failing responses that passed before. A response that verified under 1.34.0 and is now
+  refused is the intended effect: it left a required set unsatisfied.
+
+### Changed
+
+- **A present `credential_sets` is validated, not read by truthiness**
+  ([#284](https://github.com/luisgf/openvc/issues/284)). `verify_vp_token` read
+  `credential_sets` in one place, as an on/off switch for the completeness check, and read
+  none of its members: `required: "false"` and `required: true` were the same thing, and an
+  option naming no query was accepted. The `dcql_query` is the verifier's own input, so
+  this is a fail-safe and a conformance fix, not an attacker-reachable bypass (same family
+  as #224, #254 and #268).
+
+  `_index_dcql` now checks, after the query walk (so a query's own shape error is still
+  reported first) and before any Presentation is read, for every set, answered or not, and
+  only when the key is present (an absent one still means "every query is required"):
+  `credential_sets` is a non-empty array; each entry is an object; `options` is a
+  non-empty array of non-empty arrays of strings, each the `id` of a Credential Query in
+  `credentials`; `required`, when present, is a JSON boolean (`0`, `1` and `1.0` are not).
+  Anything else raises `VpTokenMalformed` naming the path, for example
+  `dcql_query.credential_sets[1].options[0] names Credential Query 'zzz', which is not in
+  dcql_query.credentials`. `purpose`, unknown members and duplicate ids inside one option
+  are not read.
+
+  **What changes for a caller.** A `dcql_query` whose `credential_sets` is not a
+  well-formed non-empty array used to verify and now raises `VpTokenMalformed` on every
+  response, including one that answers every query. Two groups: a truthy junk value
+  (`true`, `1`, `"x"`, `"false"`, `{"a": 1}`, `[null]`, `[[]]`, an option naming no query,
+  a non-boolean `required`) used to switch the per-query completeness check off; a falsy
+  one (`null`, `false`, `0`, `""`, `[]`, `{}`) used to read as absent, with every query
+  required. To get "every query is required", leave the key out; to say "any one of", pass
+  `[{"options": [["a"], ["b"]]}]`; to make a query optional, give it a set with
+  `"required": false`. A well-formed `credential_sets` is unchanged by #284 alone; #285
+  (above) is what makes it bite.
+
+- **Maintainer decisions (#284, #285).** Each takes the option the issue proposed.
+  1. **`null` and `[]` are rejected (#284).** Both used to read as absent. A present
+     `credential_sets` is a non-empty array in the spec (§6.2) and a present `null` was
+     never "absent" in #224 or #268; the cost is that a template that always emits
+     `"credential_sets": []` now fails on every response. The alternative (treating them as
+     absent and keeping the accidental fail-safe on those two) was not taken.
+  2. **A query that no set references is optional (#285).** §6.4.2 defines the request as
+     "all of `credentials`" only when `credential_sets` is absent; otherwise it is whatever
+     satisfies the required sets, plus optionally the others, so a query no set names is not
+     requested and its absence is not an error. The stricter reading (keep it required) would
+     refuse responses a conforming wallet sends. A `dcql_query` with such a query is not
+     rejected as malformed either: the spec does not forbid it.
+  3. **The error class is a new `VpTokenIncomplete(VpTokenMalformed)` (#285).** Raised for
+     both completeness failures: a missing query when there is no `credential_sets`, and an
+     unsatisfied required set. An unsatisfied set is a requirements failure, not a shape
+     failure, but the missing-query message already raised `VpTokenMalformed` and callers
+     catch it; a subclass keeps every `except VpTokenMalformed` working. The exact class of
+     the missing-query error changes from `VpTokenMalformed` to `VpTokenIncomplete`: a
+     caller that tests `type(exc) is VpTokenMalformed` stops matching it (the message is
+     unchanged). `VpTokenIncomplete` is exported from `openvc.openid4vp` and listed in
+     `__all__`.
+  4. **Extra answers are accepted (#285).** A wallet that answers several options of one
+     set, or a query outside every option, is not refused and each Presentation is verified
+     in full, as before. Minimisation is the wallet's duty (§6.4.2); rejecting extra answers
+     is a separate policy question.
+  5. **SemVer: minor (1.35.0).** A response that verified is now refused, which the
+     precedents for "the verifier now enforces a request requirement it used to skip"
+     (#196, v1.29.0; #221, v1.31.0) shipped as minors under `### Security`, and the new
+     public exception class is an API addition anyway. #224, #254 and #268 were patches
+     because they refused only a malformed `dcql_query`. The issue proposed 1.34.0 as the
+     number; 1.34.0 has shipped since.
+
+### Tests
+
+- **`tests/test_dcql_credential_sets_shape.py`** (#284). Negatives first, each pinning the
+  exact class and a `match` on the field (and the set or option index), so none can pass
+  on the "missing required Credential Query id(s)" message or on another failure: the
+  twelve non-conforming top-level values, each with the wallet answering a subset and every
+  query; the non-object entries; the missing, `null`, string, empty, object and number
+  `options`; the empty and flat options; an option holding a number, `null`, a bool, an
+  array (the unhashable case) or an object beside the answered `a` and the unanswered `b`;
+  an unknown, empty or near-miss id; a good set or option followed by a bad one, and the last
+  of several; the nine non-boolean `required` values. Ordering: a malformed `multiple`,
+  `meta`, `require_cryptographic_holder_binding` or a later query with no `id` is reported
+  before a malformed `credential_sets`, which is reported before an unknown `vp_token` key,
+  a non-array and an empty presentation list and a junk Presentation; an empty `vp_token`
+  is still reported first. Controls that pass before and after: the absent key, a
+  well-formed set answered in part and in full, `required` `true` and `false`, `purpose` as
+  a string, number, object and `null`, unknown members, a duplicate id in an option.
+- **`tests/test_dcql_credential_sets_enforced.py`** (#285). The issue's rows B to F, a
+  required set followed by an optional one and the reverse, three required sets with the
+  first, middle and last left out, a two-id option answered by either id alone, and the
+  same through `verify_encrypted_vp_response`, each pinning `type(exc) is VpTokenIncomplete`
+  and the set index. Ordering: an unsatisfied set is reported before an unknown key,
+  `{"pid": "notalist"}`, `{"pid": []}` and a junk Presentation (built on `pid`, so the bad
+  entry cannot satisfy the required set `[["age"]]`), and after a malformed
+  `credential_sets` and a malformed query member. Controls: the issue's rows G, H, I and J,
+  every set optional, a set satisfied by its second option, extra answers returned by
+  `for_query`, the omitted `required` meaning `true`, a complete response with no
+  `credential_sets`, and an unsatisfied response still caught by `except VpTokenMalformed`.
+- **`tests/test_dcql_meta_upfront.py`, `tests/test_dcql_multiple_boolean.py`** (#285). The
+  `missing-required-query-id` case of `LATER_CHECKS` pins the exact class of the
+  missing-query error, which is now `VpTokenIncomplete` (decision 3 above); the other three
+  cases keep `VpTokenMalformed`. No other existing test changed.
+
 ## [1.34.0] — 2026-10-15
 
 **Upgrading from 1.33.2.** Five things can change what a caller sees (each is detailed in

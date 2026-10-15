@@ -36,6 +36,7 @@ from openvc.multibase import encode_multibase
 from openvc.openid4vp import (
     OpenID4VPError,
     UnsupportedPresentationFormat,
+    VpTokenIncomplete,
     VpTokenMalformed,
     verify_vp_token,
 )
@@ -269,15 +270,18 @@ def test_control_a_sound_mdoc_constraint_keeps_the_old_order():
 # a malformed meta also wins over the checks that run after _index_dcql
 # --------------------------------------------------------------------------- #
 
-# (vp_token, credential_sets?, what the same token says when "b" is sound)
+# (vp_token, credential_sets?, what the same token says when "b" is sound, its exact class).
+# The missing-query check raises VpTokenIncomplete, a VpTokenMalformed, since #285.
 LATER_CHECKS = [
     pytest.param({"a": ["PLACEHOLDER"]}, False, "missing required Credential Query id",
-                 id="missing-required-query-id"),
+                 VpTokenIncomplete, id="missing-required-query-id"),
     pytest.param({"a": ["PLACEHOLDER"], "zzz": ["x"]}, True,
-                 "'zzz' is not a Credential Query id", id="unknown-vp-token-key"),
+                 "'zzz' is not a Credential Query id", VpTokenMalformed,
+                 id="unknown-vp-token-key"),
     pytest.param({"a": "not-an-array"}, True, "must be an array of Presentations",
-                 id="non-array-presentation-list"),
-    pytest.param({"a": []}, True, "is an empty array", id="empty-presentation-list"),
+                 VpTokenMalformed, id="non-array-presentation-list"),
+    pytest.param({"a": []}, True, "is an empty array", VpTokenMalformed,
+                 id="empty-presentation-list"),
 ]
 
 
@@ -285,16 +289,16 @@ def _fill(vp_token, good):
     return {k: [good] if v == ["PLACEHOLDER"] else v for k, v in vp_token.items()}
 
 
-@pytest.mark.parametrize("vp_token, sets, _later", LATER_CHECKS)
+@pytest.mark.parametrize("vp_token, sets, _later, _cls", LATER_CHECKS)
 def test_a_malformed_meta_is_reported_before_the_later_shape_checks(
-        good, vp_token, sets, _later):
+        good, vp_token, sets, _later, _cls):
     with _exact(VpTokenMalformed, r"Credential Query 'b': meta"):
         _run(_fill(vp_token, good), _two(_b(SD, None), sets=sets))
 
 
-@pytest.mark.parametrize("vp_token, sets, later", LATER_CHECKS)
-def test_control_the_later_shape_checks_fire_on_their_own(good, vp_token, sets, later):
-    with _exact(VpTokenMalformed, later):
+@pytest.mark.parametrize("vp_token, sets, later, cls", LATER_CHECKS)
+def test_control_the_later_shape_checks_fire_on_their_own(good, vp_token, sets, later, cls):
+    with _exact(cls, later):
         _run(_fill(vp_token, good), _two(_b(SD, SOUND[SD]), sets=sets))
 
 

@@ -173,6 +173,91 @@ a `dc+sd-jwt` query, whatever `meta.vct_values` says, or whether it sets any. Be
 calls every SD-JWT `sd-jwt-vc` and the lane did not look at the typ (#272). A
 `dc+sd-jwt` token needs a `vct` in any case ([SD-JWT VC](SD-JWT-VC)).
 
+### Credential sets (`credential_sets`)
+
+`credential_sets` lets a query say which of its Credential Queries must come back
+(OpenID4VP 1.0 §6.2, §6.4.2). openvc enforces it, and checks its shape first.
+
+- **Shape** (since 1.35.0). When present, `credential_sets` is a non-empty array of
+  objects; each has a non-empty `options` array of non-empty arrays of Credential Query
+  ids, every id naming a query in `credentials`, and an optional `required` that is a JSON
+  boolean (default `true`). Anything else is `VpTokenMalformed` naming the path, for every
+  set, answered or not, before any Presentation is read:
+  `dcql_query.credential_sets must be a non-empty array`,
+  `dcql_query.credential_sets[1].options must be a non-empty array`, `…options[0] names
+  Credential Query 'zzz', which is not in dcql_query.credentials`,
+  `….required must be a boolean`. `null` and `[]` are malformed too; leave the key out to
+  require every query. `purpose` and unknown members are not read. Before 1.35.0 any
+  truthy value (`true`, `"false"`, `[[]]`, …) silently switched the completeness check off.
+- **Completeness** (since 1.35.0). With no `credential_sets`, every Credential Query is
+  required. With it, **every set whose `required` is `true` or omitted must be satisfied**:
+  at least one of its `options` must have **every** id answered in the `vp_token`. A set
+  that is not satisfied raises `VpTokenIncomplete` (a `VpTokenMalformed`, so an
+  `except VpTokenMalformed` keeps working) naming it, `credential_sets[1]`, and the option
+  that came closest. A set with `"required": false`, and a Credential Query that **no set
+  references**, may be left out. Before 1.35.0 the sets were not enforced: a response that
+  left a required set out verified, and a caller had to notice. The check reads the keys of
+  the `vp_token` before any Presentation is verified, so an unsatisfied set is reported
+  ahead of a bad Presentation; an empty `vp_token` is rejected whatever the sets say.
+- **Extra answers are accepted.** A wallet that answers several options of one set, or a
+  query outside every option, is not refused: each Presentation it sends is still verified
+  in full. Use `for_query` to learn which option it answered and which optional queries it
+  chose to answer; it returns `()` for a query that was left out.
+
+```python
+from cryptography.hazmat.primitives.asymmetric import ec
+
+from openvc import verify_vp_token
+from openvc.keys import P256SigningKey
+from openvc.multibase import encode_multibase
+from openvc.openid4vp import VpTokenIncomplete
+from openvc.proof.sd_jwt import SdJwtVcProofSuite
+
+NONCE = "n-0S6_WzA2Mj"
+CLIENT_ID = "x509_san_dns:verifier.example"
+VCT = "https://credentials.example.com/identity_credential"
+
+
+def did_key_p256():
+    priv = ec.generate_private_key(ec.SECP256R1())
+    raw = P256SigningKey(priv, kid="_").public_key_raw(compressed=True)
+    mb = encode_multibase(bytes([0x80, 0x24]) + raw)
+    return P256SigningKey(priv, kid=f"did:key:{mb}#{mb}"), f"did:key:{mb}"
+
+
+issuer, issuer_did = did_key_p256()
+holder, _ = did_key_p256()
+issued = SdJwtVcProofSuite().issue(
+    {"iss": issuer_did, "sub": "did:example:alice"}, signing_key=issuer, vct=VCT,
+    holder_jwk=holder.public_jwk())
+presentation = SdJwtVcProofSuite().create_presentation(
+    issued, holder_key=holder, audience=CLIENT_ID, nonce=NONCE)
+
+dcql_query = {
+    "credentials": [
+        {"id": "pid", "format": "dc+sd-jwt"},
+        {"id": "age", "format": "dc+sd-jwt"}],
+    "credential_sets": [
+        {"options": [["pid"]]},                          # required: `required` defaults to true
+        {"options": [["age"]], "required": False}],      # optional
+}
+
+# The required set is answered, the optional one is left out: accepted.
+result = verify_vp_token({"pid": [presentation]}, dcql_query=dcql_query,
+                         nonce=NONCE, client_id=CLIENT_ID)
+assert len(result.for_query("pid")) == 1
+assert result.for_query("age") == ()                     # the wallet chose not to answer
+
+# The required set is left out: rejected, naming the set.
+try:
+    verify_vp_token({"age": [presentation]}, dcql_query=dcql_query,
+                    nonce=NONCE, client_id=CLIENT_ID)
+except VpTokenIncomplete as exc:
+    print(exc)       # vp_token does not satisfy credential_sets[0]: no option is answered ...
+else:
+    raise AssertionError("a required set was left out")
+```
+
 ### Type constraints in the query
 
 A Credential Query selects the credential type through its `meta`: `vct_values`
@@ -197,9 +282,11 @@ for `dc+sd-jwt`, `doctype_value` for `mso_mdoc`, and
   The `vp_token` container itself (valid JSON, a non-empty object, within the
   nesting bound) and the `nonce` and `client_id` / `expected_origins` arguments
   are checked before any query is read. After that, the constraint check comes
-  before the per-query shape checks of the response (a missing required query
-  id, an unknown `vp_token` key, a presentation list that is not an array or is
-  empty), which are `VpTokenMalformed` too. For `mso_mdoc` the constraint
+  before the per-query shape checks of the response (a required query or set
+  left out, an unknown `vp_token` key, a presentation list that is not an array
+  or is empty), which are `VpTokenMalformed` too. The shape of `credential_sets`
+  ([above](#credential-sets-credential_sets)) is checked right after the queries,
+  so it comes before those response checks as well. For `mso_mdoc` the constraint
   comes first: before a missing `expected_origins` or `trust_anchors` and
   before a presentation that is not a string, as for `dc+sd-jwt`. A query whose
   `format` openvc does not know is not read, and each format reads only its own
