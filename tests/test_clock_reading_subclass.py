@@ -44,6 +44,7 @@ import json
 import time
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Callable
+from unittest.mock import MagicMock
 
 import pytest
 from cryptography import x509
@@ -330,6 +331,54 @@ def test_a_subclass_with_a_raising_tzinfo_is_still_typed():
             helper(NoOverride(2026, 1, 1, tzinfo=RaisingTz()))
         assert type(caught.value) is ProofError
         assert str(caught.value) == "now cannot be read as an instant: tz database unavailable"
+
+
+class _OnlyClaimsToBeADatetime:
+    """NOT a datetime: ``__class__`` makes ``isinstance(x, datetime)`` true and nothing
+    else. Every method a reader might ask answers like a plausible datetime (or raises),
+    so a reading that reaches one returns a number instead of failing."""
+    __class__ = datetime
+
+    def utcoffset(self) -> None:
+        return None
+
+    def replace(self, **_changes: Any) -> datetime:
+        return datetime(2026, 1, 1)
+
+    def astimezone(self, _tz: Any = None) -> datetime:
+        return datetime(2026, 1, 1, tzinfo=UTC)
+
+    def timestamp(self) -> float:
+        return 5.0
+
+
+@pytest.mark.parametrize(
+    "make", [_OnlyClaimsToBeADatetime, lambda: MagicMock(spec=datetime)],
+    ids=["class-attribute", "magicmock-spec"],
+)
+@pytest.mark.parametrize("helper", [utc_instant, utc_epoch])
+def test_an_object_that_only_claims_to_be_a_datetime_is_a_typed_error(helper, make):
+    # The one thing that read before and is refused now (#286): the snapshot is taken
+    # through the base class, which does not apply to an object that is not a datetime.
+    # Before, utc_epoch asked the object's own methods and returned a number (a
+    # MagicMock(spec=datetime) gave 1). The failure is typed, with the caller's class.
+    class LaneError(Exception):
+        pass
+
+    assert isinstance(make(), datetime)                        # it passes the isinstance gate
+    with pytest.raises(ProofError) as caught:
+        helper(make())
+    assert type(caught.value) is ProofError
+    assert str(caught.value).startswith("now cannot be read as an instant: ")
+    # raised by the base-class snapshot: if a method of the object ran instead, this would
+    # be a different cause (or a number)
+    assert type(caught.value.__cause__) is TypeError
+
+    with pytest.raises(LaneError) as caught_lane:
+        helper(make(), error=LaneError, name="valid_from")
+    assert type(caught_lane.value) is LaneError
+    assert str(caught_lane.value).startswith("valid_from cannot be read as an instant: ")
+    assert type(caught_lane.value.__cause__) is TypeError
 
 
 def test_year_one_at_a_positive_offset_keeps_each_helpers_reading():

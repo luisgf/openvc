@@ -67,7 +67,17 @@ All notable changes to **openvc** are documented here. The format follows
     `StatusListError` from both status builders, a `ProofError` from `utc_instant`)
     reads as the instant its fields and `tzinfo` hold; a naive subclass whose
     `utcoffset()` answered something that is not a `timedelta` (a `StatusListError`
-    from both builders) reads as UTC. Nothing that succeeded before raises now.
+    from both builders) reads as UTC. No genuine `datetime` (plain or a subclass) that
+    was read before is refused now; the one exception is not a `datetime` at all, in the
+    next bullet.
+  - An object that is not a `datetime` but only answers `isinstance(x, datetime)` (a class
+    that sets `__class__ = datetime`, a `MagicMock(spec=datetime)`) is now a typed error
+    from `utc_epoch` too (`ProofError`, or the caller's `error=`): the snapshot is taken
+    through the base class, which does not apply to it. `utc_epoch` used to read it
+    through its own `utcoffset()` / `replace()` / `timestamp()` and return whatever they
+    led to (a `MagicMock(spec=datetime)` gave `1`); `utc_instant` already refused it,
+    with another message. Pass a real `datetime`. This is the only case found where
+    something that succeeded before raises now.
   - A caller who passed such a subclass as `now=` and relied on the host-local reading
     (or compensated for it) sees the pin move by the host's UTC offset, to the value its
     fields say. A caller who wants the old refusal of a self-contradicting object must
@@ -89,19 +99,22 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Tests
 
-- `tests/test_clock_reading_subclass.py` (690 cases): `utc_instant` and `utc_epoch` of 13
+- `tests/test_clock_reading_subclass.py` (694 cases): `utc_instant` and `utc_epoch` of 13
   lying subclasses and 6 controls, each at 4 pinned host zones (`UTC`, POSIX UTC+9,
   UTC+1 and UTC-5 with DST, which need no tzdata, with a check that the pin took effect);
   the status builders, `verify_status_list_token`, `verify_credential` on
   `eddsa-jcs-2022`, the SD-JWT KB-JWT window through `verify_vp_token` and
   `x5c.validate_cert_chain` at an instant inside the window, 15 minutes after it closes
   and 15 minutes before it opens, for 10 kinds of pin; a tripwire subclass that records
-  every attribute read off it; `fold`; and the unchanged year-1 / year-9999 range, error
-  class and `name=` of the helpers. Every expectation is an exact value or an exact class.
+  every attribute read off it; `fold`; the typed error for an object that only claims
+  `isinstance(x, datetime)` (a `__class__ = datetime` class, a `MagicMock(spec=datetime)`);
+  and the unchanged year-1 / year-9999 range, error class and `name=` of the helpers.
+  Every expectation is an exact value or an exact class.
   Against the code before this change (`65c1e03`) the negatives fail and the controls
   pass; with a mutant of the fix that puts `now.utcoffset()` back in either helper, asks
   `now.replace()` / `now.timestamp()`, drops `fold` or `tzinfo`, routes `utc_epoch`
-  through `utc_instant`, or reads the fields through instance methods, each is killed.
+  through `utc_instant`, reads the fields through instance methods, or takes the snapshot
+  outside the `try`, each is killed.
 
 ## [1.34.0] — 2026-10-15
 

@@ -399,6 +399,8 @@ def utc_epoch(
     ``utcoffset()``, ``timestamp()``, ``replace()`` and ``astimezone()`` are never called,
     and cannot move the pin (a naive subclass whose ``utcoffset()`` said ``timedelta(0)``
     was read in the host's local zone). Only the ``tzinfo`` the caller attached is asked.
+    An object that is not a ``datetime`` but only answers ``isinstance`` (a class with
+    ``__class__ = datetime``, ``MagicMock(spec=datetime)``) is the typed *error*.
 
     *name* is how the messages call the value (default ``"now"``): a caller that reads
     some other datetime the same way, such as an issuer-side ``valid_from``, passes its
@@ -437,6 +439,8 @@ def utc_instant(
     holds, and none of its methods is called, so one that lies about ``utcoffset()`` or
     ``astimezone()`` cannot change the instant (it used to be read in the host's local
     zone, or refused). Only the ``tzinfo`` the caller attached is asked.
+    An object that is not a ``datetime`` but only answers ``isinstance`` is the typed
+    *error*, as in :func:`utc_epoch`.
 
     *name* is how the messages call the value (default ``"now"``), as in
     :func:`utc_epoch`.
