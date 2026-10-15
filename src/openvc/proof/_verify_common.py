@@ -493,6 +493,20 @@ def utc_instant(
         raise error(f"{name} cannot be read as an instant: {exc}") from exc
 
 
+def utc_iso(value: Any, *, error: type[Exception] = ProofError, name: str) -> str:
+    """*value* as the ``YYYY-MM-DDTHH:MM:SSZ`` string an issuer signs into a proof's
+    ``created``: :func:`utc_instant`'s reading, so a naive ``datetime`` is UTC (never the
+    host's local time), an aware one is converted, and ``None`` is the current time.
+
+    Whole seconds, truncated rather than rounded. Anything :func:`utc_instant` refuses
+    — not a ``datetime``, a ``tzinfo`` that raises, no UTC equivalent — is *error*, so
+    nothing is canonicalized or signed. ``isoformat`` pads a year below 1000 on every
+    platform, which ``strftime("%Y")`` does not on glibc. *name* is how the messages call
+    the value."""
+    aware = utc_instant(value, error=error, name=name)
+    return aware.replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+
+
 def utc_window(
     now: Any, leeway_s: Any, *, error: type[Exception] = ProofError,
 ) -> tuple[datetime, timedelta]:
@@ -744,5 +758,6 @@ __all__ = [
     "safe_repr",
     "utc_epoch",
     "utc_instant",
+    "utc_iso",
     "utc_window",
 ]
