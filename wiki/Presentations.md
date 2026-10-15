@@ -580,8 +580,15 @@ without guessing:
   claim), is ambiguous and is `VpTokenMalformed`. Anything that is not positively a
   credential, including a token that does not parse, goes to the presentation lane and its
   usual typed error. A bare value is verified as a VC-JWT, never as a VP-JWT or an SD-JWT: a
-  string with a `~` is never routed here, and a tail-dropped SD-JWT issuer JWT is refused by
-  the [VC-JWT lane's fence](VC-JWT#what-the-verifier-enforces) as before.
+  string with a `~` is never routed here, and a tail-dropped SD-JWT issuer JWT that is
+  typed as one, or carries SD-JWT markers, is refused by the
+  [VC-JWT lane's fence](VC-JWT#what-the-verifier-enforces) as before. That fence has a
+  documented **limit**: a zero-disclosure issuer JWT with no `typ`, a `vc` object and a
+  `cnf` cannot be told from a VC-JWT. With the flag `false` it now verifies here as a bare
+  VC-JWT (`format='vc-jwt'`, `key_bound=None`, `holder=None`), where it used to fail on the
+  missing `aud`. The query waived the binding it lacks, as the `dc+sd-jwt` lane already
+  allows, and the issuer had to sign the hybrid. Do not read a `key_bound` of `None` as
+  "no key binding was needed".
 - **Under `ldp_vc`** it is a JSON object whose `type` has `VerifiableCredential` and not
   `VerifiablePresentation`, secured with any Data Integrity suite `verify_credential`
   knows, `ecdsa-sd-2023` derived proofs included. A `type` with both is ambiguous

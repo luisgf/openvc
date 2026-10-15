@@ -76,6 +76,16 @@ All notable changes to **openvc** are documented here. The format follows
   authenticated holder to bind its subject to. Neither is a regression: no bare credential
   was accepted before. Written up in the wiki under *Presentations → Bare credentials*.
 
+  One documented limit now has a wider reach. An SD-JWT issuer JWT typed as one, or with
+  SD-JWT markers, is still refused on the bare route by the VC-JWT lane's fence. A
+  zero-disclosure one with no `typ`, a `vc` object and a `cnf` cannot be told from a VC-JWT
+  (the residual of [#291](https://github.com/luisgf/openvc/issues/291), pinned in
+  `test_vc_jwt_sd_fence.py`). With its `~` tail dropped it used to fail under `jwt_vc_json`
+  on the missing `aud`; with the flag `false` it now verifies as a bare VC-JWT
+  (`format='vc-jwt'`, `key_bound=None`, `holder=None`). That equals what the `dc+sd-jwt`
+  lane accepts under a waived binding, and it takes an issuer who signed the hybrid, but a
+  caller must not read `key_bound=None` as "binding was not needed". The new tests pin it.
+
 ### Changed
 
 - **A bare credential under a query that requires holder binding is

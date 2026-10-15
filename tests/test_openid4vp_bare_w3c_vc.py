@@ -412,6 +412,23 @@ def test_a_tail_dropped_sd_jwt_issuer_jwt_is_not_a_bare_vc_jwt(issuer, claims, m
     assert type(info.value) is MalformedToken
 
 
+def test_the_documented_sd_jwt_residual_reaches_the_bare_route(issuer, holder):
+    # THE RESIDUAL OF #291, pinned, not fixed. A zero-disclosure SD-JWT issuer JWT with no
+    # `typ`, a `vc` object and a `cnf` carries none of the SD-JWT markers, so nothing tells
+    # it from a VC-JWT that carries a `cnf`, and the VC-JWT lane never enforces `cnf`. With
+    # its `~` tail dropped it used to die on the missing `aud` under jwt_vc_json; with the
+    # flag false it now verifies as a bare VC-JWT: format `vc-jwt`, `key_bound` None,
+    # `holder` None. The query waived the binding it lacks, as `dc+sd-jwt` already allows,
+    # and it takes an issuer who signed the hybrid. Whoever closes the gap changes this test.
+    claims = _vc_jwt_claims(issuer, holder[1], cnf={"jwk": holder[0].public_jwk()})
+    token = _jws(issuer, claims, typ=None)
+    p = _verify("jwt_vc_json", token)
+    (cred,) = p.credentials
+    assert cred.format == FORMAT_VC_JWT and cred.key_bound is None and p.holder is None
+    with pytest.raises(VpTokenMalformed, match=REFUSES):          # the default query refuses it
+        _verify("jwt_vc_json", token, ABSENT)
+
+
 @pytest.mark.parametrize("flag", [False, *REQUIRED])
 def test_a_vp_jwt_is_never_verified_as_a_bare_credential(issuer, holder, flag, monkeypatch):
     # A VP-JWT is routed to the VP lane, whatever the flag, so its aud + nonce still bind.
