@@ -603,6 +603,11 @@ def resolve_verification_key(
     returns its own document type instead of a ``DidDocument`` is used through its
     ``key_for_purpose``, and a refusal is classified by its ``key_by_kid``: no method
     is a :class:`KeyResolutionError`, else :class:`ProofPurposeMismatch`.
+
+    Every failure to resolve — the resolver raising :class:`DidResolutionError`, a DID
+    with no resolver that is not a ``did:key``, a malformed ``did:key`` on the offline
+    fallback, a method the document does not hold — is a :class:`KeyResolutionError`,
+    which is also the pipeline's :class:`~openvc.errors.KeyResolutionFailed`.
     """
     if not isinstance(verification_method, str) or not verification_method:
         raise KeyResolutionError("proof has no verificationMethod to resolve")
@@ -634,7 +639,12 @@ def resolve_verification_key(
                     f"cannot resolve {verification_method!r} offline "
                     f"(pass a resolver, or an injected public_key_jwk)")
             from ..did.did_key import DidKeyResolver
-            doc = DidKeyResolver().resolve(did)
+            try:
+                doc = DidKeyResolver().resolve(did)
+            except DidResolutionError as exc:
+                # the registry path above types the same failure; a malformed did:key
+                # must not escape as a bare DidError that is no ProofError either
+                raise KeyResolutionError(f"could not resolve {did!r}: {exc}") from exc
 
     purpose = proof_purpose or "assertionMethod"
     vm = doc.key_for_purpose(verification_method, purpose)

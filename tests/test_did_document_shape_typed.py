@@ -24,9 +24,10 @@ Two rules, besides "typed":
   grants nothing.
 
 Every assertion is on the exact typed class: ``DidResolutionError`` from the parser, and from
-the pipeline ``KeyResolutionFailed`` on the JOSE lanes and on the async API, but
-``KeyResolutionError`` (a ``ProofError``, not a ``VerificationError``) on the synchronous
-Data Integrity lane. That split predates #219 and is pinned as it is.
+the pipeline ``KeyResolutionFailed`` on the JOSE lanes and ``KeyResolutionError`` on the Data
+Integrity lanes, sync and async alike. The Data Integrity class is a ``ProofError`` and a
+``KeyResolutionFailed`` (#283); before that it was a ``ProofError`` only, and the async Data
+Integrity lane raised ``KeyResolutionFailed`` for a wrong-shaped document.
 
 One more rule is pinned because it is not strictly a narrowing: a dropped method that carries
 a key is not counted by the ``kid``-less fallback to "the sole key", as a method with an
@@ -503,11 +504,12 @@ def test_data_integrity_lane_never_selects_a_key_through_a_wrong_shaped_document
                 _di_doc(key, assertionMethod=junk)))
 
 
-def test_the_error_class_differs_between_the_sync_data_integrity_lane_and_the_rest():
-    # The same wrong-shaped document, the same DidResolutionError cause, two classes: the
-    # sync Data Integrity lane raises KeyResolutionError (a ProofError), every other lane
-    # KeyResolutionFailed (a VerificationError). The split predates #219; the docs state it,
-    # so it is pinned. Making the two one class is a separate change.
+def test_the_data_integrity_error_class_is_one_class_and_a_key_resolution_failed():
+    # The same wrong-shaped document, the same DidResolutionError cause. The Data Integrity
+    # lane raises KeyResolutionError sync and async (#283); it is a ProofError and also the
+    # KeyResolutionFailed the JOSE lanes raise (before #283 the sync lane was not one, and
+    # the async lane raised the plain KeyResolutionFailed here). The full lane-by-lane map
+    # is tests/test_key_resolution_error_family.py.
     key = Ed25519SigningKey(ed25519.Ed25519PrivateKey.generate(), kid=KID)
     cred = _di_credential(key, KID)
     doc = _di_doc(key, verificationMethod=None)
@@ -515,19 +517,20 @@ def test_the_error_class_differs_between_the_sync_data_integrity_lane_and_the_re
     with pytest.raises(KeyResolutionError) as sync_exc:
         verify_credential(cred, resolver=_sync_registry(doc))
     assert type(sync_exc.value) is KeyResolutionError
-    assert not isinstance(sync_exc.value, KeyResolutionFailed)
+    assert isinstance(sync_exc.value, KeyResolutionFailed)
     assert type(sync_exc.value.__cause__) is DidResolutionError
 
-    with pytest.raises(KeyResolutionFailed) as async_exc:
+    with pytest.raises(KeyResolutionError) as async_exc:
         asyncio.run(verify_credential_async(cred, resolver=_async_registry(doc)))
-    assert type(async_exc.value) is KeyResolutionFailed
+    assert type(async_exc.value) is KeyResolutionError
+    assert isinstance(async_exc.value, KeyResolutionFailed)
     assert type(async_exc.value.__cause__) is DidResolutionError
 
     # verify_many reports the class of its lane, and still isolates the item
     assert [type(r.error) for r in verify_many([cred], resolver=_sync_registry(doc))] \
         == [KeyResolutionError]
     assert [type(r.error) for r in asyncio.run(
-        verify_many_async([cred], resolver=_async_registry(doc)))] == [KeyResolutionFailed]
+        verify_many_async([cred], resolver=_async_registry(doc)))] == [KeyResolutionError]
 
 
 # --------------------------------------------------------------------------- #
