@@ -37,6 +37,14 @@ controls show the well-formed inputs still build, sign and verify on the VC-JWT,
 named ``_sd``, ``_sd_alg`` or ``...`` at any depth is refused too (the VC-JWT lane refuses such
 a payload), so ``_model_issuer``, ``_model_contexts`` and the "valid" strategies exclude them.
 The negatives and the end-to-end pins live in ``test_status_builder_sd_markers.py``.
+
+#311 added the other one: an ``issuer`` object nested past 98 levels, or an inline context object
+past 97 (the object's own root is level 1), is refused too, because the VC-JWT lane reads the
+payload through the bounded loader that stops at 100. So the model (``_model_issuer``,
+``_model_contexts``) knows the cap, the "valid" strategies cannot draw past it, the refusal
+strategies draw on both sides of it, and the refusal properties pin the cap and cap + 1. The
+negatives, the measured table and the parity with the lane live in
+``test_status_builder_nesting_cap.py``.
 """
 from __future__ import annotations
 
@@ -896,6 +904,39 @@ def _has_marker(node: Any) -> bool:
     return False
 
 
+# The deepest an ``issuer`` object / an inline context object may nest, its own root counted as
+# level 1: what the VC-JWT lane reads back (#311). Written out, not imported: the real lane is
+# measured against these numbers in ``test_status_builder_nesting_cap.py``.
+_CAP_ISSUER = 98
+_CAP_CONTEXT = 97
+
+
+def _depth(node: Any) -> int:
+    """The nesting of a dict / list / tuple tree, its own root counted as level 1 (iterative).
+    A model of the rule, written out here and not imported."""
+    deepest = 0
+    stack = [(node, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if isinstance(current, dict):
+            children: Any = current.values()
+        elif isinstance(current, (list, tuple)):
+            children = current
+        else:
+            continue
+        deepest = max(deepest, depth)
+        stack.extend((child, depth + 1) for child in children)
+    return deepest
+
+
+def _chain(levels: int, kind: str = "dict") -> Any:
+    """A leaf inside *levels* containers of *kind* (``dict``, ``list`` or ``tuple``)."""
+    node: Any = "leaf"
+    for _ in range(levels):
+        node = {"n": node} if kind == "dict" else [node] if kind == "list" else (node,)
+    return node
+
+
 def _plant(extra: dict[str, Any], marker: str, where: int) -> dict[str, Any]:
     """*extra* with a marker member planted at the top (0), inside a nested object (1) or
     inside an object that is an array element (2)."""
@@ -910,7 +951,7 @@ def _model_issuer(value: Any) -> bool:
     if isinstance(value, str):
         return bool(value)
     return (isinstance(value, dict) and "@id" not in value and _is_text(value.get("id"))
-            and not _has_marker(value))
+            and not _has_marker(value) and _depth(value) <= _CAP_ISSUER)
 
 
 def _model_contexts(value: Any) -> bool:
@@ -920,7 +961,8 @@ def _model_contexts(value: Any) -> bool:
         return False
     if not (isinstance(value[0], str) and value[0] in (VC2, VC1)):
         return False
-    return all((isinstance(e, dict) and not _has_marker(e)) or _is_text(e) for e in value[1:])
+    return all((isinstance(e, dict) and not _has_marker(e) and _depth(e) <= _CAP_CONTEXT)
+               or _is_text(e) for e in value[1:])
 
 
 _ISSUERS = st.one_of(
@@ -930,11 +972,17 @@ _ISSUERS = st.one_of(
     st.builds(lambda i, extra: {**extra, "id": i}, _JUNK, _JSON_OBJECT),
     # a well-formed issuer that carries a marker, at the top, nested or in an array (#309)
     st.builds(lambda i, extra, marker, where: _plant({**extra, "id": i}, marker, where),
-              _DID, _JSON_OBJECT, st.sampled_from(_MARKERS), st.integers(0, 2)))
+              _DID, _JSON_OBJECT, st.sampled_from(_MARKERS), st.integers(0, 2)),
+    # a well-formed issuer nested on both sides of the cap (98): 95..101 levels (#311)
+    st.builds(lambda i, levels, kind: {"id": i, "x": _chain(levels - 1, kind)},
+              _DID, st.integers(95, 101), st.sampled_from(["dict", "list", "tuple"])))
 _TEXTS = st.one_of(st.none(), st.text(max_size=20), _JUNK)
 _CONTEXT_ENTRY = st.one_of(
     st.sampled_from([VC2, VC1, "https://x/ctx"]), st.text(max_size=12), _JSON_OBJECT, _JUNK,
-    st.builds(_plant, _JSON_OBJECT, st.sampled_from(_MARKERS), st.integers(0, 2)))
+    st.builds(_plant, _JSON_OBJECT, st.sampled_from(_MARKERS), st.integers(0, 2)),
+    # an object nested on both sides of the cap (97): 94..100 levels (#311)
+    st.builds(lambda levels, kind: {"x": _chain(levels - 1, kind)},
+              st.integers(94, 100), st.sampled_from(["dict", "list", "tuple"])))
 _CONTEXTS = st.one_of(
     st.none(), _JUNK,
     st.builds(lambda first, rest, as_tuple: tuple([first, *rest]) if as_tuple
@@ -954,6 +1002,12 @@ _CONTEXTS = st.one_of(
 @example(issuer={"...": None, "id": "did:a:0"})
 @example(issuer={"_sd": [], "id": "did:a:0"})
 @example(issuer={"_sd_alg": "sha-256", "id": "did:a:0"})
+@example(issuer={"id": "did:a:0", "x": _chain(_CAP_ISSUER - 1)})                 # AT the cap
+@example(issuer={"id": "did:a:0", "x": _chain(_CAP_ISSUER)})                     # cap + 1
+@example(issuer={"id": "did:a:0", "x": _chain(_CAP_ISSUER - 1, "list")})
+@example(issuer={"id": "did:a:0", "x": _chain(_CAP_ISSUER, "list")})
+@example(issuer={"id": "did:a:0", "x": _chain(_CAP_ISSUER - 1, "tuple")})
+@example(issuer={"id": "did:a:0", "x": _chain(_CAP_ISSUER, "tuple")})
 @given(issuer=_ISSUERS)
 def test_property_credential_issuer_matches_the_rule(issuer):
     if _model_issuer(issuer):
@@ -979,6 +1033,12 @@ def test_property_subject_id_matches_the_rule(subject_id):
 @example(contexts=[VC2, {"...": None}])
 @example(contexts=[VC2, {"@vocab": "https://x/", "n": {"_sd": []}}])
 @example(contexts=(VC2, {"n": [{"_sd_alg": "sha-256"}]}))
+@example(contexts=[VC2, {"x": _chain(_CAP_CONTEXT - 1)}])                        # AT the cap
+@example(contexts=[VC2, {"x": _chain(_CAP_CONTEXT)}])                            # cap + 1
+@example(contexts=[VC2, {"x": _chain(_CAP_CONTEXT - 1, "list")}])
+@example(contexts=[VC2, {"x": _chain(_CAP_CONTEXT, "list")}])
+@example(contexts=(VC2, {"x": _chain(_CAP_CONTEXT - 1, "tuple")}))
+@example(contexts=(VC2, {"x": _chain(_CAP_CONTEXT, "tuple")}))
 @given(contexts=_CONTEXTS)
 def test_property_contexts_matches_the_rule(contexts):
     if _model_contexts(contexts):
@@ -1009,19 +1069,30 @@ def test_property_entry_id_and_token_issuer_match_the_rule(value):
 # refuses the payload, so the builder refuses the object. The filter drops a draw that holds
 # one (``text(max_size=6)`` draws a marker name rarely, which is why this property used to
 # fail only now and then), and ``_model_issuer`` / ``_model_contexts`` say the same.
+# Nor is an object nested past the cap (#311): the strategies cannot draw one (the random
+# JSON is a few levels deep, and the filters bound it anyway, so a change in how Hypothesis
+# sizes recursion cannot make them), and they draw objects up to the cap on purpose, so that
+# the accepted side of the boundary is exercised on both lanes.
+_KINDS = st.sampled_from(["dict", "list", "tuple"])
 _EXTRAS = _JSON_OBJECT.map(lambda d: {k: v for k, v in d.items() if k not in ("id", "@id")}
                            ).filter(lambda d: not _has_marker(d))
 _VALID_ISSUERS = st.one_of(
-    _DID, st.builds(lambda i, extra: {**extra, "id": i}, _DID, _EXTRAS))
+    _DID,
+    st.builds(lambda i, extra: {**extra, "id": i}, _DID, _EXTRAS
+              ).filter(lambda o: _depth(o) <= _CAP_ISSUER),
+    st.builds(lambda i, levels, kind: {"id": i, "x": _chain(levels - 1, kind)},
+              _DID, st.integers(90, _CAP_ISSUER), _KINDS))
 _VALID_SUBJECTS = st.one_of(st.none(), st.text(min_size=1, max_size=20))
+_VALID_CONTEXT_ENTRY = st.one_of(
+    st.text(min_size=1, max_size=12),
+    _JSON_OBJECT.filter(lambda d: not _has_marker(d) and _depth(d) <= _CAP_CONTEXT),
+    st.builds(lambda levels, kind: {"x": _chain(levels - 1, kind)},
+              st.integers(90, _CAP_CONTEXT), _KINDS))
 _VALID_CONTEXTS = st.one_of(
     st.none(),
     st.builds(lambda first, rest, as_tuple: tuple([first, *rest]) if as_tuple
               else [first, *rest],
-              st.sampled_from([VC2, VC1]),
-              st.lists(st.one_of(st.text(min_size=1, max_size=12),
-                                 _JSON_OBJECT.filter(lambda d: not _has_marker(d))),
-                       max_size=3),
+              st.sampled_from([VC2, VC1]), st.lists(_VALID_CONTEXT_ENTRY, max_size=3),
               st.booleans()))
 
 
@@ -1046,7 +1117,8 @@ def test_property_whatever_the_builder_accepts_the_pipeline_accepts(
             vc, signing_key=key, verification_method=f"{did}#0"))
     got = default_status_list_resolver(resolver=_AnyDid(), fetch=lambda u: wire)(LIST_URL)
     assert got["credentialSubject"]["id"] == vc["credentialSubject"]["id"]
-    assert got["@context"] == vc["@context"]
+    assert got["@context"] == json.loads(json.dumps(vc["@context"]))   # a tuple is an array
+    assert got["issuer"] == json.loads(json.dumps(vc["issuer"]))
 
 
 @settings(max_examples=100, deadline=None)
