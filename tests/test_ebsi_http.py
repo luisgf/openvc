@@ -254,11 +254,11 @@ def test_parity_a_url_off_the_allow_list_is_refused_before_any_request(method, u
 
 @pytest.mark.parametrize("method", READERS)
 def test_parity_guard_refuses_non_ascii_before_urlparse(monkeypatch, method):
-    from openvc_ebsi import http as ebsi_http
+    from openvc_ebsi import _url
 
     def no_urlparse(url):
         raise AssertionError("urlparse reached")
-    monkeypatch.setattr(ebsi_http, "urlparse", no_urlparse)
+    monkeypatch.setattr(_url, "urlparse", no_urlparse)   # the one reader, shared with the pin
     c = _client(_play(_ok)[0], retry=FAST_RETRY)
     with pytest.raises(HttpForbiddenHost):
         getattr(c, method)(f"https://{HOST}́/x")
