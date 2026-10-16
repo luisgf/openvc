@@ -57,13 +57,19 @@ lane: only the VC 2.0 context defines the terms of a ``BitstringStatusListCreden
 only it is bundled with openvc (see :func:`build_status_list_credential`). Every string
 the builders take is copied to an exact ``str`` before it is tested, and the copy is what
 is emitted (:func:`~openvc.status._index.plain_str`). The members of an ``issuer`` or
-inline context object besides the ones named here are the caller's, with one exception:
-none of them, at any depth, may be an SD-JWT marker (a member named ``_sd``, ``_sd_alg``
-or ``...``). The VC-JWT lane reads a payload that carries one as an SD-JWT issuer JWT and
-refuses it (#189, #291), and a builder cannot know which lane will secure the list, so
-such an object is refused at build time on every lane (:func:`_refuse_sd_markers`, which
-runs the lane's own test on the JSON the object encodes to). The marker as a *value*
-(``{"name": "..."}``) is fine: only member names are read.
+inline context object besides the ones named here are the caller's, with two exceptions,
+both rules of the VC-JWT lane that reads the list back. None of them, at any depth, may be
+an SD-JWT marker (a member named ``_sd``, ``_sd_alg`` or ``...``): the lane reads a payload
+that carries one as an SD-JWT issuer JWT and refuses it (#189, #291). And the object may not
+nest past ``MAX_DEPTH - 2`` levels (``issuer``) or ``MAX_DEPTH - 3`` levels (an inline
+context object), the object itself counting as level 1: the lane decodes the payload
+through the bounded loader, which refuses nesting past ``MAX_DEPTH`` (100, #213) in the
+whole payload, and the object sits two or three containers inside it. A builder cannot know
+which lane will secure the list, so such an object is refused at build time on every lane
+(:func:`_refuse_unreadable`, which runs the lane's own test on the JSON the object encodes
+to; ``eddsa-jcs-2022`` would take one more level in each field, and the builder holds it to
+the VC-JWT limit all the same). The marker as a *value* (``{"name": "..."}``) is fine: only
+member names are read.
 
 This is the only :mod:`openvc.status` module that touches :mod:`openvc.proof` (to
 sign/verify the token); the codecs and the check side stay pure stdlib.
@@ -76,6 +82,7 @@ import time
 from datetime import datetime
 from typing import Any
 
+from .. import _json
 from ..proof._context_validation import VC_BASE_CONTEXTS
 from ..proof._jws import sign_compact, verify_compact
 from ..proof._verify_common import (
@@ -97,6 +104,19 @@ BITSTRING_CREDENTIAL_TYPE = "BitstringStatusListCredential"
 BITSTRING_SUBJECT_TYPE = "BitstringStatusList"
 BITSTRING_ENTRY_TYPE = "BitstringStatusListEntry"
 STATUS_LIST_JWT_TYP = "statuslist+jwt"
+
+# How deep a caller's ``issuer`` object or inline ``@context`` object may nest. The VC-JWT
+# lane reads the signed payload through the bounded loader (``openvc._json.loads``, #213),
+# which refuses a container at a depth past ``_json.MAX_DEPTH``, counting the payload's own
+# root as level 1. The object sits inside that payload, so its own nesting (its root
+# container is level 1) is capped by where it sits:
+#   payload (1) -> vc (2) -> issuer (3)                  : N levels reach depth 2 + N
+#   payload (1) -> vc (2) -> @context (3) -> entry (4)   : N levels reach depth 3 + N
+# The context entry is one container deeper, hence the limit one lower. ``eddsa-jcs-2022``
+# (the credential is the root) takes one more level in each field; the builder cannot know
+# the lane and VC-JWT is the default, so it holds every lane to the VC-JWT limit.
+_ISSUER_MAX_DEPTH = _json.MAX_DEPTH - 2
+_CONTEXT_ENTRY_MAX_DEPTH = _json.MAX_DEPTH - 3
 
 
 def _iso(value: Any, *, name: str) -> str:
@@ -146,27 +166,46 @@ def _snapshot(value: Any, kind: type, *, field: str) -> Any:
             f"{field} could not be read: {type(exc).__name__}") from None
 
 
-def _refuse_sd_markers(value: Any, *, field: str) -> None:
+def _refuse_unreadable(value: Any, *, field: str, max_depth: int) -> None:
     """Refuse a caller-supplied *value* (the ``issuer`` object, an inline context object)
-    that carries an SD-JWT marker member (``_sd``, ``_sd_alg`` or ``...``) at any depth.
+    that the VC-JWT lane would refuse to read back: one nested past *max_depth* levels, or
+    one that carries an SD-JWT marker member (``_sd``, ``_sd_alg`` or ``...``) at any depth.
 
-    ``VcJwtProofSuite.verify`` refuses a payload with one (an SD-JWT issuer JWT is not a
-    VC-JWT, #189 / #291), so a list the builder minted with such a member was signed and
-    then refused by the default resolver. A builder cannot know which lane will secure the
-    list, and VC-JWT is the default for status lists, so the rule applies to every lane.
-    The test is the lane's own, :func:`~openvc.proof.vc_jwt._carries_sd_jwt_marker`, so the
-    two cannot drift, and it is run on what the lane reads: the JSON the value encodes to
-    (a ``tuple`` is an array, a non-string key is its string, a member the encoder cannot
-    write is ``null`` here and fails at sign, as before), not on the Python object, whose
-    ``tuple`` the predicate does not walk and whose cycle it would never leave. A value
+    Both are rules of the lane that reads the signed list, not of the builder, and a list
+    the builder minted against either was signed and then refused by the default resolver.
+    A builder cannot know which lane will secure the list, and VC-JWT is the default for
+    status lists, so each rule applies to every lane.
+
+    *Depth.* The lane decodes the payload with the bounded loader (``openvc._json.loads``,
+    #213), which refuses nesting past :data:`~openvc._json.MAX_DEPTH` in the whole payload.
+    *max_depth* is the share of that bound this object may use given where it sits
+    (:data:`_ISSUER_MAX_DEPTH`, :data:`_CONTEXT_ENTRY_MAX_DEPTH`), and the test is the
+    loader's own, :func:`openvc._json.nesting_exceeds`, so the two cannot drift.
+
+    *Markers.* ``VcJwtProofSuite.verify`` refuses a payload with one (an SD-JWT issuer JWT
+    is not a VC-JWT, #189 / #291). The test is the lane's own,
+    :func:`~openvc.proof.vc_jwt._carries_sd_jwt_marker`.
+
+    Both are run on what the lane reads: the JSON the value encodes to (a ``tuple`` is an
+    array, a non-string key is its string, a member the encoder cannot write is ``null``
+    here and fails at sign, as before), not on the Python object, whose ``tuple`` the marker
+    predicate does not walk, whose cycle it would never leave, and whose depth is not the
+    wire's (a ``Mapping`` the encoder writes as ``null`` is deep as an object and shallow
+    as JSON). The depth test is iterative, so a deep value is never recursed into. A value
     that cannot be encoded at all (a cycle, a key that is no scalar, nesting past the
-    interpreter's limit) is a typed error. The message names the field and the reserved
-    keys, never the object."""
+    interpreter's limit) is a typed error. The messages name the field, the cap and the
+    reserved keys, never the object."""
     try:
         wire = json.loads(json.dumps(value, separators=(",", ":"), default=_not_json))
     except Exception as exc:
         raise StatusListError(
             f"{field} could not be read as JSON: {type(exc).__name__}") from None
+    if _json.nesting_exceeds(wire, max_depth):
+        raise StatusListError(
+            f"{field} is nested deeper than {max_depth} levels (the object itself is level "
+            f"1): it sits inside a payload that the loader reading the signed list back "
+            f"limits to {_json.MAX_DEPTH} levels, so this list could not be read back. "
+            f"Flatten it")
     if _carries_sd_jwt_marker(wire):
         raise StatusListError(
             f"{field} carries an SD-JWT marker member (`_sd`, `_sd_alg` or `...`) at some "
@@ -176,8 +215,9 @@ def _refuse_sd_markers(value: Any, *, field: str) -> None:
 
 
 def _not_json(_value: Any) -> None:
-    """``json.dumps(default=...)`` for :func:`_refuse_sd_markers`: a member the encoder cannot
-    write is ``null`` in the probe. It carries no marker; signing it fails later."""
+    """``json.dumps(default=...)`` for :func:`_refuse_unreadable`: a member the encoder cannot
+    write is ``null`` in the probe. It carries no marker and no depth; signing it fails
+    later."""
     return None
 
 
@@ -190,8 +230,9 @@ def _credential_issuer(value: Any) -> str | dict[str, Any]:
     identifier :func:`~openvc.proof._verify_common.issuer_identifiers` returns (``id`` and
     ``@id``); and ``eddsa-rdfc-2022`` refuses the ``@id`` spelling. ``id`` alone is the one
     form every lane reads the same. An object is shallow-copied, and the other members it
-    carries are the caller's, held to one rule only: no SD-JWT marker member (``_sd``,
-    ``_sd_alg``, ``...``) at any depth (:func:`_refuse_sd_markers`)."""
+    carries are the caller's, held to two rules only (:func:`_refuse_unreadable`): no SD-JWT
+    marker member (``_sd``, ``_sd_alg``, ``...``) at any depth, and no nesting past
+    :data:`_ISSUER_MAX_DEPTH` levels (the object itself is level 1)."""
     if isinstance(value, str):
         return _text(value, field="issuer")
     if not isinstance(value, dict):
@@ -209,7 +250,7 @@ def _credential_issuer(value: Any) -> str | dict[str, Any]:
     if "id" not in issuer:
         raise StatusListError("issuer object has no `id`: it names no one")
     issuer["id"] = _text(issuer["id"], field="issuer id")
-    _refuse_sd_markers(issuer, field="issuer")
+    _refuse_unreadable(issuer, field="issuer", max_depth=_ISSUER_MAX_DEPTH)
     return issuer
 
 
@@ -225,8 +266,9 @@ def _contexts(value: Any) -> list[str | dict[str, Any]]:
     says so). A ``str`` is refused, not read one character at a time, and so is a ``dict``
     (its keys), an iterator or a ``set``. The tested copy is the one returned: strings are
     plain ``str`` and the list is a new ``list``; an inline context object is the caller's
-    own, and its members are not inspected except that none, at any depth, may be an SD-JWT
-    marker member (:func:`_refuse_sd_markers`)."""
+    own, and its members are not inspected except for two rules (:func:`_refuse_unreadable`):
+    none, at any depth, may be an SD-JWT marker member, and the object may not nest past
+    :data:`_CONTEXT_ENTRY_MAX_DEPTH` levels (itself level 1)."""
     if value is None:
         return [_VC2_CONTEXT]
     if not isinstance(value, (list, tuple)):
@@ -254,7 +296,8 @@ def _contexts(value: Any) -> list[str | dict[str, Any]]:
                 f"contexts[{position}] must be a non-empty string or an object, "
                 f"got {brief(entry)}")
         else:
-            _refuse_sd_markers(entry, field=f"contexts[{position}]")
+            _refuse_unreadable(entry, field=f"contexts[{position}]",
+                               max_depth=_CONTEXT_ENTRY_MAX_DEPTH)
     return entries
 
 
@@ -367,37 +410,39 @@ def build_status_list_credential(
     ``id`` and no ``@id``; other members of the object (``name``) are carried as given, but
     none, at any depth, may be named ``_sd``, ``_sd_alg`` or ``...`` (the SD-JWT markers: the
     VC-JWT lane refuses a payload that holds one, so the list would be signed and then not
-    read back).
-    *subject_id* is the ``credentialSubject.id``: ``None`` gives ``<id>#list``, and an
-    explicit value is a non-empty string. *contexts* is the ``@context``: ``None`` gives
-    ``["https://www.w3.org/ns/credentials/v2"]``, and an explicit value is a non-empty
-    ``list`` or ``tuple`` that starts with a VC base context, followed by context URLs or
-    inline context objects (whose members are not inspected, except for the same marker
-    names: one that is not JSON fails when the credential is signed). Pass the VC 2.0
-    context first unless you have a reason: it is the one that defines
-    ``BitstringStatusListCredential``, ``encodedList`` and ``statusPurpose``, and the only
-    one bundled. The VC 1.1 context is accepted as a base
-    context (the shape the RDF suites accept) and builds; VC-JWT and ``eddsa-jcs-2022`` read
-    no context, while ``eddsa-rdfc-2022`` refuses it with ``DocumentLoaderError`` (it is not
-    bundled, and it does not define those terms). A context URL that is not bundled needs
-    ``extra_contexts`` on the ``eddsa-rdfc-2022`` suite.
+    read back), and the object may not nest past 98 levels (``MAX_DEPTH - 2``, the object
+    itself being level 1: the bounded loader that reads the list back stops at 100 levels
+    of the whole payload, and the issuer sits two containers inside it).
+    *subject_id* is the ``credentialSubject.id``: ``None`` gives ``<id>#list``, and an explicit
+    value is a non-empty string. *contexts* is the ``@context``: ``None`` gives
+    ``["https://www.w3.org/ns/credentials/v2"]``, and an explicit value is a non-empty ``list``
+    or ``tuple`` that starts with a VC base context, followed by context URLs or inline context
+    objects (whose members are not inspected, except for the same marker names and a nesting
+    past 97 levels, ``MAX_DEPTH - 3``: one that is not JSON fails when the credential is
+    signed). The limits are the VC-JWT lane's; ``eddsa-jcs-2022`` takes one more level in each
+    field, which the builder, not knowing the lane, does not use. Pass the VC 2.0 context first
+    unless you have a reason: it is the one that defines ``BitstringStatusListCredential``,
+    ``encodedList`` and ``statusPurpose``, and the only one bundled. The VC 1.1 context is
+    accepted as a base context (the shape the RDF suites accept) and builds; VC-JWT and
+    ``eddsa-jcs-2022`` read no context, while ``eddsa-rdfc-2022`` refuses it with
+    ``DocumentLoaderError`` (it is not bundled, and it does not define those terms). A context
+    URL that is not bundled needs ``extra_contexts`` on the ``eddsa-rdfc-2022`` suite.
 
     Raises :class:`~openvc.status.bitstring.StatusListError` for an *id* or
     *status_purpose* that is not a non-empty string, for an *issuer* that is not a
     non-empty string or an object whose ``id`` is one and which has no ``@id``, for an
-    *issuer* object or an inline context object that carries an SD-JWT marker member
-    (``_sd``, ``_sd_alg``, ``...``) at any depth or cannot be read as JSON (a cycle, a
-    key that is no scalar), for a
-    *subject_id* that is neither ``None`` nor a non-empty string (``""``, ``0``, ``[]``
-    and ``{}`` are errors, not the default), for *contexts* that is neither ``None`` nor a
-    non-empty ``list`` / ``tuple`` of that shape (a ``str``, a ``dict``, an iterator, an
-    empty list, a first entry that is not a VC base context, an entry that is not a
-    non-empty string or an object), for a *bitstring* that is not
-    a buffer or is longer than the 16 MiB the verifier inflates, for a *valid_from* /
-    *valid_until* that is not a ``datetime`` (a string, an epoch number, a ``date``), has
-    a ``tzinfo`` that raises or has no UTC equivalent (year 1 at ``+01:00``), and for a
-    *ttl* that is a ``bool``, a ``float`` (``NaN`` included), a string, zero, negative
-    or an integer no float holds.
+    *issuer* object or an inline context object that carries an SD-JWT marker member (``_sd``,
+    ``_sd_alg``, ``...``) at any depth, that is nested past the loader's cap (more than 98
+    levels for the issuer, 97 for a context object) or that cannot be read as JSON (a cycle, a
+    key that is no scalar), for a *subject_id* that is neither ``None`` nor a non-empty string
+    (``""``, ``0``, ``[]`` and ``{}`` are errors, not the default), for *contexts* that is
+    neither ``None`` nor a non-empty ``list`` / ``tuple`` of that shape (a ``str``, a ``dict``,
+    an iterator, an empty list, a first entry that is not a VC base context, an entry that is
+    not a non-empty string or an object), for a *bitstring* that is not a buffer or is longer
+    than the 16 MiB the verifier inflates, for a *valid_from* / *valid_until* that is not a
+    ``datetime`` (a string, an epoch number, a ``date``), has a ``tzinfo`` that raises or has
+    no UTC equivalent (year 1 at ``+01:00``), and for a *ttl* that is a ``bool``, a ``float``
+    (``NaN`` included), a string, zero, negative or an integer no float holds.
     """
     id = _text(id, field="status list credential id")
     status_purpose = _text(status_purpose, field="statusPurpose")

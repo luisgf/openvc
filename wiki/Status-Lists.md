@@ -166,9 +166,9 @@ one place that can decide for all of them, so it holds these to what the verifie
 
 | Parameter | Accepted | `StatusListError` |
 |---|---|---|
-| `issuer`, `build_status_list_credential` | a non-empty string, or an object with a non-empty string `id` and no `@id` (other members, such as `name`, are carried as given) | `None`, `""`, a number, `bytes`, a list; an object with no string `id`, or with an `@id`, equal or not, or with a member named `_sd`, `_sd_alg` or `...` at any depth |
+| `issuer`, `build_status_list_credential` | a non-empty string, or an object with a non-empty string `id` and no `@id` (other members, such as `name`, are carried as given) | `None`, `""`, a number, `bytes`, a list; an object with no string `id`, or with an `@id`, equal or not, or with a member named `_sd`, `_sd_alg` or `...` at any depth, or nested past 98 levels |
 | `subject_id` | `None` (the subject is `<id>#list`) or a non-empty string | `""`, `0`, `[]`, `{}`, any non-string |
-| `contexts` | `None` (the VC 2.0 context) or a non-empty `list` / `tuple` that starts with a VC base context, followed by context URLs (non-empty strings) or inline context objects | a bare string (it was read one character at a time), a `dict`, an iterator, an empty list, a first entry that is not a VC base context, any other entry that is not a non-empty string or an object, an inline object with a member named `_sd`, `_sd_alg` or `...` at any depth |
+| `contexts` | `None` (the VC 2.0 context) or a non-empty `list` / `tuple` that starts with a VC base context, followed by context URLs (non-empty strings) or inline context objects | a bare string (it was read one character at a time), a `dict`, an iterator, an empty list, a first entry that is not a VC base context, any other entry that is not a non-empty string or an object, an inline object with a member named `_sd`, `_sd_alg` or `...` at any depth, or nested past 97 levels |
 | `id`, `build_status_list_entry` | `None` (the entry has no `id`) or a non-empty string | `""`, `0`, `[]`, `{}`, any non-string |
 | `issuer`, `build_status_list_token` | `None` (no `iss` claim) or a non-empty string | `""`, `0`, `[]`, `{}`, any non-string |
 
@@ -215,11 +215,17 @@ object by its type (`an object` if even that cannot be read), so a hostile value
 Not checked, by design: that an identifier is a URI (`"not a uri"` builds; only key
 resolution, and the RDF suites at `add_proof`, refuse one), its length, the members of
 an `issuer` object besides `id` and `@id`, and the members of an inline context object (a
-member that is not JSON, such as `{"id": b"x"}`, builds and fails at sign), with one
-exception: an `issuer` object or an inline context object that has a member *named*
+member that is not JSON, such as `{"id": b"x"}`, builds and fails at sign), with two
+exceptions: an `issuer` object or an inline context object that has a member *named*
 `_sd`, `_sd_alg` or `...` at any depth (the SD-JWT markers) is a `StatusListError`, on every
 lane, because the VC-JWT lane would refuse the list the builder signed, and the marker
-as a *value* (`{"name": "..."}`) is fine. A token built without `issuer` is still allowed,
+as a *value* (`{"name": "..."}`) is fine. The same goes for nesting: the lane reads the
+signed payload through a loader that stops at 100 levels, so an `issuer` object nested past
+98 levels, or an inline context object past 97 (the object itself is level 1; the context
+entry sits one container deeper), is a `StatusListError` at build time instead of a list
+that signs and then cannot be read back. `eddsa-jcs-2022` would take one more level in each
+field, and the builder holds every lane to the VC-JWT limit, as it does for the markers.
+A token built without `issuer` is still allowed,
 and `default_status_list_token_resolver` refuses it (`StatusListError`: no `iss` to find
 the key with), so pass the issuer unless you resolve the key some other way.
 

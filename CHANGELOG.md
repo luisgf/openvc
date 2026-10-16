@@ -4,6 +4,87 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.1] — unreleased
+
+### Fixed
+
+- **`build_status_list_credential` refuses an `issuer` or inline `@context` object nested
+  past the loader's cap** ([#311](https://github.com/luisgf/openvc/issues/311), found by
+  the review of #310; it predates it). Low severity, no wrong-accept: caller-side
+  configuration. The VC-JWT lane reads the signed payload through the bounded loader
+  (`openvc._json.loads`, #213), which refuses nesting past 100 levels in the whole payload,
+  and the builder accepted an `issuer` or context object of any depth. So an `issuer`
+  nested 99 levels (no marker, no cycle; depths up to 30 000 were measured) built, signed
+  as a VC-JWT, and was then refused by `default_status_list_resolver` with `MalformedToken:
+  header/payload is not valid base64url JSON`: the class #230, #269 and #309 closed,
+  openvc minting what its own verifier refuses.
+
+  The builder now raises `StatusListError` at build time, before anything is signed, for an
+  `issuer` object nested past **98** levels or a `contexts` entry (`contexts[N]` in the
+  message) nested past **97**, counting the object's own root as level 1. The message names
+  the field and the cap, never the object. The test is the loader's own
+  `openvc._json.nesting_exceeds`, so the two limits cannot drift, run in the place and on the
+  snapshot of #309's marker check: the JSON the object encodes to, which is what the lane
+  decodes. A `tuple` is an array there, and a `Mapping` the encoder cannot write is `null`,
+  so a value that is deep as a Python object and shallow as JSON is judged by the JSON; the
+  check never recurses, and a value nested past what the interpreter can encode (200 000
+  levels) was already a typed error.
+
+  - **Why the two limits differ by one.** The payload is `{"iss": ..., "vc": {"issuer": ...,
+    "@context": [...]}}`: the issuer object is the third container (payload, vc, issuer) and a
+    context entry the fourth (payload, vc, `@context`, entry), so each uses `MAX_DEPTH - 2`
+    and `MAX_DEPTH - 3` of the loader's 100. Measured against the real lane (sign with
+    `VcJwtProofSuite`, read back through `default_status_list_resolver`), for chains of dicts,
+    lists, tuples and a mix of both: an `issuer` of up to 98 levels is accepted and one of 99
+    is refused, a context entry of up to 97 is accepted and one of 98 is refused.
+  - **Behaviour change.** An `issuer` object or a context entry nested past the cap used to
+    build and sign and then be refused when read back. It is now a `StatusListError` at build
+    time. Nothing nested that deep is a real issuer or context.
+  - **Behaviour change, by decision (#309): the rule is the same on every lane.**
+    `eddsa-jcs-2022` (the credential is the root of the document) takes exactly one more
+    level in each field, 99 for the `issuer` and 98 for a context entry, and refuses the next
+    one at `add_proof`. The builder cannot know which lane will secure the list and VC-JWT
+    is the default, so it holds every lane to the VC-JWT limit and refuses exactly one level
+    that JCS would accept, as it refuses the SD-JWT markers JCS would accept.
+  - **Not changed:** the loader's cap, the marker rule (#309), the IETF Token Status List
+    builder (it takes no caller-supplied object), a member that is not JSON (it builds and
+    fails at sign), and the build-time-snapshot caveat of #309: a nested member stays the
+    caller's own object, and one deepened afterwards can still produce a list the lane
+    refuses.
+  - The property test `test_property_whatever_the_builder_accepts_the_pipeline_accepts`,
+    its model (`_model_issuer`, `_model_contexts`) and its strategies know the cap now: the
+    accept-side strategies draw objects up to the cap on purpose and cannot draw one past
+    it, and the refusal strategies draw on both sides.
+
+### Tests
+
+- **`tests/test_status_builder_nesting_cap.py`** (#311, 298 tests, self-contained). A
+  parity table driven by the measured numbers: for dict, list, tuple and mixed chains at
+  depths 95 to 102, in both fields, the builder refuses exactly when the real VC-JWT lane
+  does, and the lane's refusal is the loader's (not the marker fence's), so the table
+  cannot pass for the wrong reason; the same under Hypothesis with a random mix of levels.
+  The `eddsa-jcs-2022` asymmetry pinned: at the first depth the builder refuses, JCS signs
+  and reads the list back, and refuses one level further. Negatives against the exact class
+  `StatusListError` with a key that fails the test if it is asked to sign and a 60 KB
+  sentinel that must not reach the message: one level past the cap as dicts, lists, tuples,
+  mixes and `dict` / `list` subclasses; a dict subclass whose `items()` hides the deep
+  member from `values()`; depth together with a marker; every depth past the cap, not only
+  the first; and 1 000, 30 000 and 200 000 levels. Controls that build, sign and verify on
+  VC-JWT and `eddsa-jcs-2022`: objects at ordinary depths and AT the cap, a wide object,
+  and a deep `Mapping` that is shallow JSON (a hostile one is never walked). In
+  `tests/test_status_builders_inputs.py` the model and the strategies know the cap, and the
+  refusal properties pin the cap and cap + 1 as `@example`s. Against `origin/main`
+  (b19835f) 83 of the 298 cases fail (the negatives and the parity cases past the cap) and
+  the other 215 pass, and the two refusal properties of the other file fail; on this branch
+  the accept-side property passes on Hypothesis seeds 1 to 60 (example database cleared
+  before each). Mutation check: seventeen mutants of the fix (each limit one too high and
+  one too low, both together, the loader's own 100, the comparison off by one in both
+  directions, the check removed, the check on the Python object instead of the JSON, the
+  limit applied to the wrong field, either field unchecked, the probe parsed by the capped
+  loader, the check disabled while the marker check stays) are each killed; the parity
+  table alone kills fifteen of them, and the other two (the Python-object check and the
+  capped-loader parse) are killed by the hostile-value tests and the message test.
+
 ## [1.35.0] — 2026-10-15
 
 ### Security
