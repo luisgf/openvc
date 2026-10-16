@@ -217,6 +217,14 @@ What the opt-in is, and is not:
   other algorithm never verifies with a secp256k1 key; both are a plain `ProofError`, also in a
   DID document that holds a secp256k1 and a P-256 key and a `kid` that names the wrong one. The
   signature is raw `R‖S`, 64 octets, never DER.
+- **The JWK members RFC 8812 section 3.2 names are checked.** If the key carries an `alg`, it
+  must be `ES256K`; a `use`, `sig`; a `key_ops`, an array of strings that includes `verify`. A
+  member that is present and wrong (a `null` too) is a plain `ProofError`. The ES256, ES384 and
+  EdDSA branches do not read these members, as before.
+- **The flag is a real boolean.** `allow_es256k` must be exactly `True` or `False`: any other
+  value (the string `"false"` or `"0"` a configuration file or an environment variable
+  hands over, `1`, `None`) is a `ProofError` when the suite is built, instead of being read as
+  true and widening the allow-list by accident.
 - **Same claim handling as ES256.** `exp`, `nbf`, `aud`, `crit`, `typ` and the SD-JWT-marker
   gates are the VC-JWT ones, unchanged. Both the low-`s` and the high-`s` form of a signature
   verify, as they already do for ES256 (RFC 8812 does not restrict `s`).

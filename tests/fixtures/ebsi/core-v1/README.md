@@ -60,7 +60,8 @@ suite. The only two files not listed in the manifest are the manifest itself and
   (`/did-registry/details` and `/issuers-registry/details`). Every address in the two `/details`
   bodies is `0x` followed by 40 hexadecimal digits.
 - The preprod and prod RootTAO accreditation JWTs (`attribute.body`) are signed `ES256K`
-  (`alg` in the protected header), which the JOSE allow-list refuses; the key named by `kid` is the
+  (`alg` in the protected header), which the DEFAULT JOSE allow-list refuses (only
+  `VcJwtProofSuite(allow_es256k=True)` verifies them, #323); the key named by `kid` is the
   DID document's `secp256k1` method.
 - The `credentialSchema.id` and `accreditedFor[].schemaId` hosts inside the JWTs
   (`api-test.ebsi.eu`, `api-prod.ebsi.eu`) are in no node list; no test fetches them.

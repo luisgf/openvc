@@ -25,7 +25,10 @@ Security posture
   ``allow_es256k=True`` the single name ``ES256K`` (RFC 8812, ECDSA over secp256k1 with
   SHA-256), which EBSI Core API v1 uses for its RootTAO accreditations. ``ES256K`` is
   VERIFY-ONLY (this module never signs it) and never in :data:`ALLOWED_ALGS`; neither
-  opt-in implies the other.
+  opt-in implies the other. ``allow_es256k`` must be exactly ``True`` or ``False`` (a string
+  such as ``"false"`` from a configuration file is refused, not read as true), and an ES256K
+  JWK is held to RFC 8812 section 3.2: ``alg``, ``use`` and ``key_ops``, when present, must be
+  ``ES256K``, ``sig`` and an array including ``verify``.
 * The verification algorithm is taken from the token header ONLY after checking it
   against the allow-list, and is then pinned when calling the verifier.
 * peek_issuer never influences verification; it exists solely to select a key.
@@ -237,13 +240,38 @@ def _es256k_coordinate(jwk: dict[str, Any], member: str) -> int:
     return number
 
 
+def _es256k_check_members(jwk: dict[str, Any]) -> None:
+    """RFC 8812 section 3.2, for a JWK used to VERIFY ES256K: "if present", ``alg`` MUST be
+    ``ES256K``, ``key_ops`` MUST include ``verify`` and ``use`` MUST be ``sig``. Presence is
+    tested with ``in``, so a ``null`` member is present and fails. ``key_ops`` is an array of
+    strings (RFC 7517 section 4.3); a bare string such as ``"verify"`` is not that array, and
+    it would pass a substring test, so it is refused."""
+    if "alg" in jwk and jwk["alg"] != "ES256K":
+        raise ProofError(
+            f"ES256K key member 'alg' must be 'ES256K' when present, got {safe_repr(jwk['alg'])}")
+    if "use" in jwk and jwk["use"] != "sig":
+        raise ProofError(
+            f"ES256K key member 'use' must be 'sig' when present, got {safe_repr(jwk['use'])}")
+    if "key_ops" in jwk:
+        ops = jwk["key_ops"]
+        if (not isinstance(ops, list) or any(not isinstance(op, str) for op in ops)
+                or "verify" not in ops):
+            raise ProofError(
+                f"ES256K key member 'key_ops' must be an array of strings that includes "
+                f"'verify' when present, got {safe_repr(ops)}")
+
+
 def _es256k_public_key(jwk: Any) -> Any:
     """The secp256k1 public key a JWK carries, or a plain :class:`ProofError`.
 
     ``alg: ES256K`` verifies only with ``kty: EC`` / ``crv: secp256k1`` (RFC 8812), so a P-256,
     P-384, OKP, AKP or RSA-shaped JWK is refused HERE, before PyJWT loads anything: PyJWT
     would raise ``InvalidKeyError``, which :meth:`VcJwtProofSuite._decode` maps to
-    ``ClaimsInvalid``, the wrong family for a key/alg mismatch. ``x`` and ``y`` must be
+    ``ClaimsInvalid``, the wrong family for a key/alg mismatch. RFC 8812 section 3.2 adds three
+    checks that apply "if present": ``alg`` must be ``ES256K``, ``use`` must be ``sig`` and
+    ``key_ops`` must include ``verify``; they are enforced here (a JSON ``null`` is present, so
+    it fails), and only for this algorithm: the classic branches ignore those members, as before.
+    ``x`` and ``y`` must be
     canonical, full-width coordinates below the field prime and the point must be on the curve
     (cofactor 1, so on-curve is sufficient). Only the public coordinates are read: a ``d`` member
     is ignored, never loaded."""
@@ -252,6 +280,7 @@ def _es256k_public_key(jwk: Any) -> Any:
     if jwk.get("kty") != "EC" or jwk.get("crv") != "secp256k1":
         raise ProofError(f"ES256K requires an EC secp256k1 key, got "
                          f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
+    _es256k_check_members(jwk)
     x = _es256k_coordinate(jwk, "x")
     y = _es256k_coordinate(jwk, "y")
     try:
@@ -272,6 +301,12 @@ class VcJwtProofSuite:
         allow_es256k: bool = False,
     ) -> None:
         self._leeway = leeway_seconds(leeway_s)       # fail closed, up front (0..MAX_LEEWAY_S)
+        # A flag that widens the allow-list is exactly True or exactly False. `if flag:` would
+        # read the strings "false" and "0" (a config or environment value) as True. type() is
+        # used, never isinstance(): a __class__ property fools isinstance (see _plain_int).
+        if type(allow_es256k) is not bool:
+            raise ProofError(
+                f"allow_es256k must be True or False, got {type(allow_es256k).__name__}")
         # allow_pq merges the EXPERIMENTAL ML-DSA algs into this suite's allow-list; the
         # default suite rejects ML-DSA at the allow-list, before any crypto (ADR-0004).
         # allow_es256k merges the single name ES256K (EBSI interop, ADR-0009), verification

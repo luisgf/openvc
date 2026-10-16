@@ -445,6 +445,81 @@ def test_a_private_member_in_the_jwk_is_ignored_never_loaded():
                                    .to_bytes(32, "big").hex()))
 
 
+# RFC 8812 section 3.2: when a JWK is used for this algorithm, "if present" `alg` MUST be
+# ES256K, `key_ops` MUST include verify (when verifying) and `use` MUST be sig. A member that is
+# present with the wrong value, or with no usable value (null, the wrong type), is refused.
+# (The classic algorithms' branches ignore these members; that is not touched here.)
+MEMBER_REFUSALS: dict[str, tuple[dict[str, Any], str]] = {
+    "alg is ES256": ({"alg": "ES256"}, "'alg' must be 'ES256K'"),
+    "alg is RS256": ({"alg": "RS256"}, "'alg' must be 'ES256K'"),
+    "alg is the recoverable variant": ({"alg": "ES256K-R"}, "'alg' must be 'ES256K'"),
+    "alg in lower case": ({"alg": "es256k"}, "'alg' must be 'ES256K'"),
+    "alg with a trailing space": ({"alg": "ES256K "}, "'alg' must be 'ES256K'"),
+    "alg is null": ({"alg": None}, "'alg' must be 'ES256K'"),
+    "alg is empty": ({"alg": ""}, "'alg' must be 'ES256K'"),
+    "alg is a list holding the name": ({"alg": ["ES256K"]}, "'alg' must be 'ES256K'"),
+    "alg is a number": ({"alg": 7}, "'alg' must be 'ES256K'"),
+    "use is enc": ({"use": "enc"}, "'use' must be 'sig'"),
+    "use in capitals": ({"use": "SIG"}, "'use' must be 'sig'"),
+    "use is null": ({"use": None}, "'use' must be 'sig'"),
+    "use is empty": ({"use": ""}, "'use' must be 'sig'"),
+    "use is a list holding sig": ({"use": ["sig"]}, "'use' must be 'sig'"),
+    "key_ops is sign only": ({"key_ops": ["sign"]}, "'key_ops' must be an array"),
+    "key_ops is empty": ({"key_ops": []}, "'key_ops' must be an array"),
+    "key_ops is the bare string verify": ({"key_ops": "verify"}, "'key_ops' must be an array"),
+    "key_ops is a longer string containing verify":
+        ({"key_ops": "verify,sign"}, "'key_ops' must be an array"),
+    "key_ops is null": ({"key_ops": None}, "'key_ops' must be an array"),
+    "key_ops is an object": ({"key_ops": {"verify": True}}, "'key_ops' must be an array"),
+    "key_ops in capitals": ({"key_ops": ["VERIFY"]}, "'key_ops' must be an array"),
+    "key_ops with a non-string entry": ({"key_ops": ["verify", 7]}, "'key_ops' must be an array"),
+    "key_ops with a nested array": ({"key_ops": [["verify"]]}, "'key_ops' must be an array"),
+    "key_ops with a null entry": ({"key_ops": ["verify", None]}, "'key_ops' must be an array"),
+    # the three at once: the first check to fail answers, and none lets the others through
+    "all three wrong": ({"alg": "RS256", "use": "enc", "key_ops": []}, "'alg' must be"),
+    "a right alg does not excuse a wrong use": ({"alg": "ES256K", "use": "enc"}, "'use' must be"),
+    "a right use does not excuse a wrong key_ops":
+        ({"alg": "ES256K", "use": "sig", "key_ops": ["sign"]}, "'key_ops' must be an array"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(MEMBER_REFUSALS))
+def test_a_jwk_member_that_rfc_8812_forbids_is_a_proof_error_before_pyjwt(name, no_pyjwt):
+    members, fragment = MEMBER_REFUSALS[name]
+    with pytest.raises(ProofError) as exc:
+        verify(K1, token(K1), dict(K1.jwk, **members))
+    assert type(exc.value) is ProofError, name
+    assert fragment in str(exc.value), (name, str(exc.value))
+
+
+MEMBER_ACCEPTANCES: dict[str, dict[str, Any]] = {
+    "no optional member": {},
+    "alg ES256K": {"alg": "ES256K"},
+    "use sig": {"use": "sig"},
+    "key_ops verify": {"key_ops": ["verify"]},
+    "key_ops sign and verify": {"key_ops": ["sign", "verify"]},
+    "key_ops verify and an unrelated operation": {"key_ops": ["verify", "deriveKey"]},
+    "all three, right": {"alg": "ES256K", "use": "sig", "key_ops": ["verify"]},
+    "unrelated members (kid, a private d)": {"kid": "k1", "d": b64(b"\x01" * 32), "x5c": []},
+}
+
+
+@pytest.mark.parametrize("name", sorted(MEMBER_ACCEPTANCES))
+def test_the_controls_for_the_member_table_do_verify(name):
+    # each refusal above differs from one of these only by the named member
+    jwk = dict(K1.jwk, **MEMBER_ACCEPTANCES[name])
+    assert verify(K1, token(K1), jwk).issuer == ISSUER
+
+
+def test_the_member_checks_are_for_es256k_only_the_classic_algs_are_unchanged():
+    # Documents the scope of #323, not an endorsement: the ES256 / ES384 / EdDSA branches
+    # ignore alg / use / key_ops on a JWK, as they did before this opt-in existed. Tightening
+    # them is another change with its own differential; the opt-in must not move them.
+    tok, genuine = _foreign_token("ES256")
+    assert verify(K1, tok, dict(genuine, use="enc")).issuer == ISSUER
+    assert verify(K1, tok, dict(genuine, alg="RS256", key_ops=["sign"])).issuer == ISSUER
+
+
 def test_pyjwt_registers_es256k_as_sha256_on_secp256k1():
     # The dependency this opt-in rests on, pinned where it can drift. pyproject floors
     # pyjwt>=2.13, and the suite's private PyJWT instance was measured to carry ES256K on 2.13.0,
@@ -810,6 +885,57 @@ def test_the_flag_is_keyword_only():
         VcJwtProofSuite(60, False, True)           # type: ignore[misc]
 
 
+# Truthy AND falsy non-bools: the test pins "not a bool", not "truthy". "false" and "0" are
+# what a configuration file or an environment variable hands over, and `if flag:` reads both
+# as True, which would widen the allow-list by accident.
+NOT_A_BOOL = ["false", "False", "0", "true", "yes", "", 1, 0, 2, -1, 1.0, 0.0, None, [], [True],
+              {}, {"a": 1}, (), (True,), b"true", object()]
+
+
+@pytest.mark.parametrize(
+    "value", NOT_A_BOOL,
+    ids=["object" if type(v) is object else repr(v)[:24] for v in NOT_A_BOOL])    # stable ids
+def test_a_flag_that_is_not_a_bool_is_refused_at_construction(value):
+    with pytest.raises(ProofError, match="allow_es256k must be True or False") as exc:
+        VcJwtProofSuite(allow_es256k=value)
+    assert type(exc.value) is ProofError
+    assert type(value).__name__ in str(exc.value)       # names the type, never echoes the value
+
+
+def test_the_refusal_of_a_non_bool_flag_does_not_echo_it():
+    secret = "a-very-long-value-" * 40
+    with pytest.raises(ProofError) as exc:
+        VcJwtProofSuite(allow_es256k=secret)             # type: ignore[arg-type]
+    assert secret not in str(exc.value)
+    assert len(str(exc.value)) < 100
+
+
+def test_a_bool_subclass_cannot_exist_so_the_check_cannot_be_steered():
+    # bool cannot be subclassed, and type() (not isinstance()) reads the real type of an
+    # object that claims a __class__: neither can be passed off as True
+    with pytest.raises(TypeError):
+        type("B", (bool,), {})
+
+    class Liar:
+        __class__ = bool                     # type: ignore[assignment]
+
+    assert isinstance(Liar(), bool)                       # isinstance() is fooled ...
+    with pytest.raises(ProofError, match="allow_es256k must be True or False"):
+        VcJwtProofSuite(allow_es256k=Liar())              # type: ignore[arg-type]
+
+
+def test_the_two_bools_still_build_the_two_suites():
+    assert "ES256K" not in VcJwtProofSuite(allow_es256k=False)._algs
+    assert "ES256K" in VcJwtProofSuite(allow_es256k=True)._algs
+    assert "ES256K" not in VcJwtProofSuite()._algs
+
+
+def test_a_non_bool_flag_is_refused_before_anything_else_is_built():
+    # the refusal comes from the constructor, so no half-configured suite exists to misuse
+    with pytest.raises(ProofError):
+        VcJwtProofSuite(leeway_s=60, allow_pq=True, allow_es256k="false")   # type: ignore[arg-type]
+
+
 # --------------------------------------------------------------------------- #
 # Positives: the synthetic round trip, low-s and high-s
 # --------------------------------------------------------------------------- #
@@ -913,6 +1039,7 @@ _member_value = st.one_of(
 @given(st.fixed_dictionaries({}, optional={"kty": _member_value, "crv": _member_value,
                                            "x": _member_value, "y": _member_value,
                                            "d": _member_value, "alg": _member_value,
+                                           "use": _member_value, "key_ops": _member_value,
                                            "kid": _member_value}))
 def test_arbitrary_jwk_members_never_escape_the_taxonomy(jwk):
     base = dict(K1.jwk)
