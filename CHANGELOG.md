@@ -4,6 +4,187 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.0] — unreleased
+
+### Added
+
+- **`RelyingPartyRegistrationCertificate.claimed_signing_time`**
+  ([#134](https://github.com/luisgf/openvc/issues/134)). The JWS header `sigT` of a WRPRC
+  (the JAdES V1.1.1 claimed signing time) as an aware UTC `datetime`, or `None` when the
+  token carries none. **JWT form only**: `sigT` is a JAdES JOSE header parameter with no COSE
+  meaning, so the property is gated on the form and is `None` for every CWT, whatever its
+  COSE protected header holds. It is **surfaced, never trusted**:
+  it sits in the protected header, so the registrar's key does vouch for it, but it is the
+  registrar's own claim with no timestamp token behind it, and nothing in the module bases a
+  validity decision on it. Validity still comes from the payload's `iat` / `exp` / `nbf` and
+  the signing certificate's window.
+- **Five real signed WRPRCs, vendored as PROVISIONAL goldens**
+  ([#134](https://github.com/luisgf/openvc/issues/134)), in
+  `tests/fixtures/rp_registration/` with a `PROVENANCE.md` (per file: source repository,
+  commit, path, retrieval date, licence, SHA-256, who signs it, how it was verified), a
+  `NOTICE.md` and the licence texts in `LICENSES/` (BSD-2-Clause, Apache-2.0 twice, CC0-1.0).
+  They are the first WRPRCs to exist outside this repository: the German EUDI sandbox
+  registrar (via Siros, `SUNET/vc`), the Hopae development registrar (two tokens, one
+  intermediated; `openwallet-foundation-labs/axle`), the DIGG wallet ecosystem
+  (`diggsweden/wallet-ecosystem`, the only one with a leaf-under-root chain) and an EU
+  verifier-endpoint test resource (`eudi-srv-verifier-endpoint`). Each carries a genuine
+  ES256 signature that verifies against its own `x5c`. **They are third-party-signed, not
+  registrar-anchored**: none comes from a Member State production registrar and none chains
+  to a LoTE anchor; the German and Hopae signers are self-signed CA certificates that are
+  their own anchor, and the EU sample is signed with a throwaway `CN=test` certificate.
+  They settle what producers emit; they do **not** close #134's end-to-end goal.
+  Two licensing facts are recorded rather than smoothed over: the licence of the
+  German sandbox's token itself is not stated (only the repository's BSD-2-Clause is), and
+  `axle` had no `LICENSE` file at the pinned commit (2026-07-12) — its Apache-2.0 text is
+  taken from the commit that added one two days later (`d40c55d`), with both token files
+  unchanged since.
+
+### Changed
+
+- **The WRPRC lane understands two `crit` names, `sigT` and `b64`, and nothing else**
+  ([#134](https://github.com/luisgf/openvc/issues/134); maintainer decision, 2026-10-16).
+  The Hopae registrar's tokens carry `"crit": ["sigT", "b64"]` in their JWS header, and
+  openvc 1.35.1 refused them (`RpRegistrationError: ... critical, which this verifier does
+  not process`): its `crit` allow-list for this lane was `{alg, typ, x5c, iat}`. They now
+  verify. **Why:** as #134 reads ETSI TS 119 182-1 (JAdES), V1.1.1 required every
+  non-registered header parameter to be listed in `crit`, and V1.2.1 dropped that
+  requirement and forbids `sigT` in favour of a header `iat`. Real registrars emit the
+  V1.1.1 form, and refusing the registrar that exists today would make the lane unusable
+  against it: this is interoperability with what producers emit, not an endorsement of the
+  V1.1.1 form.
+
+  The rules, all enforced and all tested:
+
+  - `crit` must be a **non-empty array of unique strings** (RFC 7515 §4.1.11), every name in
+    it must be **present in the header**, and the allowed names are exactly the lane's
+    existing `{alg, typ, x5c, iat}` plus `sigT` and `b64`. A duplicate (`["sigT", "sigT"]`),
+    a non-array, an empty array, a non-string member, an unknown name or a name the header
+    lacks is `RpRegistrationError`.
+  - **`b64` must be exactly the JSON boolean `true`** (RFC 7797). `b64: false` means an
+    *unencoded* payload, a different signing input this verifier does not build, and is
+    refused, as are the string `"true"`, `1`, `1.0`, `null`, an array and an object (the
+    check is identity, not equality: `1 == True` in Python).
+  - **`sigT` must be an RFC 3339 UTC time**, `YYYY-MM-DDThh:mm:ssZ` with optional fractional
+    seconds (kept to microseconds). Stricter than RFC 3339 on purpose: a numeric offset
+    (`+00:00`), lower-case `t` / `z`, a space separator, a leap second, a trailing newline or
+    space, non-ASCII digits and any non-string are refused.
+  - **`b64` and `sigT` are checked whether or not `crit` names them.** A `b64: false` that
+    is not listed is read as an unencoded payload by a verifier that honours the parameter
+    and as base64url by this one: a parser differential, refused wherever it appears. A
+    `sigT` that is surfaced must be well-formed. This is the **JWT form** only: the CWT
+    envelope does not read or value-check a text-labelled `sigT`, `b64` or `crit` entry in
+    its COSE protected header (they have no meaning there; a critical COSE label still fails
+    closed, as before) and `claimed_signing_time` is `None` for a CWT.
+  - **Nothing else changes, in this lane or any other.** The shared
+    `openvc.proof._verify_common.reject_unknown_crit` (VC-JWT, SD-JWT VC issuer JWT, KB-JWT,
+    VP-JWT, the status-list token, OID4VCI key proofs), which refuses any `crit`, and the
+    LoTE verifier's own allow-list, which is the JAdES set `{alg, typ, x5c, iat}` the WRPRC
+    lane started from, are **not modified** in behaviour (`_verify_common.py` and `_jws.py`
+    have no diff; `lote.py` differs in its module docstring and one comment only, which no
+    longer say it matches the WRPRC lane), and tests now pin that each still refuses `crit` naming `sigT`, `b64` or
+    both, with a header that is otherwise valid for the WRPRC lane. The WRPRC lane already kept
+    its own `crit` check rather than calling the shared one, so no opt-in parameter was
+    added to shared code: the exception lives in the one lane and cannot be reached from
+    another. The CWT form (`crit` as a COSE label) is untouched.
+
+  **Limits.** `sigT` is never used for a validity decision and is not a timestamp: there is
+  no JAdES signature-timestamp, no policy processing, no augmentation (the lane is still a
+  verify *subset* of B-B). `alg`, `typ` and `x5c` are still accepted in `crit` as before
+  (RFC 7515 forbids producers from listing registered names there; the lane's earlier
+  leniency, shared with the LoTE verifier, is kept, not widened). The decision is recorded
+  in the threat model (I22), the assurance register and the wiki as the one documented
+  exception: the only lane that honours an extension header parameter beyond the JAdES set.
+  The LoTE verifier's `crit` check also accepts a name listed twice (`["iat", "iat"]`), as
+  it did before; that is not touched here.
+
+  **Behaviour changes.** Newly *accepted*: a WRPRC whose `crit` is a unique subset of
+  `{alg, typ, x5c, iat, sigT, b64}` with `b64: true` and a well-formed `sigT`. Newly
+  *refused*, each a tightening: a `crit` that repeats a name (`["iat", "iat"]` verified on
+  1.35.1); a `b64` header with any value other than `true`, even when `crit` does not list it
+  (1.35.1 ignored it); a `sigT` header that is not a UTC `Z` time, even when `crit` does not
+  list it (1.35.1 ignored it). The refusals of an unknown or absent critical name keep their
+  wording, except that the names in those messages are now shown one by one through the
+  bounded `safe_repr` (no list brackets) instead of as a list `repr`.
+
+- **What the real tokens settled in #134, and what they left open.** The three judgement
+  calls #89 had to make from the specification alone:
+  `intermediary.sname` is what producers emit, never `intermediary.name` (both are still
+  read); `intermediary.sub` and `act.sub` are emitted **together** and agree (both are
+  still read); and **no token carries a JWS header `iat`** (it stays surfaced and not
+  required). `crit` does appear, on the Hopae tokens, hence the change above.
+  `srv_description` is the nested `[[{lang, value}]]` in the German and Hopae tokens and the
+  flat `[{lang, value}]` in the DIGG and EU ones; the parser already flattened both, so
+  **no parsing change was needed**, and the field is display text read by no authorization
+  check (a test replaces it and the verdict does not move). Digg adds a `service_identifier`
+  claim that TS 119 475 does not define; it stays in `reg.claims`, with no typed field.
+  Two real registrations also confirm the fail-closed reading: the Hopae `credentials`
+  entry lists a format and a `meta` but no `claim` (an empty grant, which authorizes
+  nothing), and the EU sample describes an issuer (`provides_attestations`, no
+  `credentials`).
+  **Still open:** #134's end-to-end goal (a WRPRC verified against the issuing registrar's
+  *published* anchors, which waits for a Member State registrar going live; CIR (EU)
+  2025/848 applies 2026-12-24) and the CWT form (no CWT artifact exists and TS 119 152-1
+  allocates no claim keys). This work refs #134 and does not close it.
+
+### Tests
+
+- **`tests/test_rp_registration_real_artifacts.py`** (#134, 173 tests, self-contained). Each
+  of the five tokens verifies end to end through `verify_rp_registration_certificate` with
+  its **own** root as the trust anchor, the anchor a constant pinned by DER digest (never
+  "whatever the token carries"; the German root file is checked to be the token's own
+  `x5c[0]`), with the clock pinned inside every certificate window. The decoded facts are
+  pinned: header parameters and `crit` per token, no header `iat` in any of the five,
+  `sname` / `intermediary.sub` / `act.sub`, the nested and flat `srv_description`, `sigT`
+  equal to the payload `iat` on the Hopae tokens, `x5t#S256` equal to the digest of
+  `x5c[0]`, the CA-versus-leaf shape of each signer, `exp` (DIGG, 365 days) and its absence.
+  Controls: one flipped payload byte, one flipped signature byte and an edited `sigT` are
+  signature failures (the payload edit is checked to still parse, so the failure is the
+  signature's); every other producer's root is refused (`did not validate to a trust
+  anchor`); each certificate fails outside its validity window; and, with the genuine
+  signature left stale, an `alg` outside the allow-list, an unknown or duplicated or
+  malformed `crit`, a `b64` other than `true` (listed or not) and a malformed `sigT`
+  (listed or not) are each refused by the pre-crypto check and never reach the signature.
+  The scope cross-check runs on real grants (German and DIGG), including a requested
+  `address` container refused because only its four members are registered, and on the two
+  producers whose registration grants nothing. A fixture-integrity block pins the SHA-256 of
+  every vendored file, fails on an unlisted file, checks that `PROVENANCE.md` quotes every
+  digest, and that it keeps its "not registrar-anchored" statement.
+- **`tests/test_rp_registration.py`** (+104 cases, to 233). The narrow rules with a **valid
+  signature** on every accept path: `sigT` / `b64` listed in any order, alone and together;
+  `b64` other than `true` (ten values) listed and not; `sigT` malformed (30 values) listed
+  and not, including a 10 000-character string, non-ASCII digits, a trailing newline and
+  each of the `T` and `Z` letters in lower case on its own; the accepted `sigT` forms and
+  their fractional seconds; a `sigT` of 1970 or 2999 changing nothing the temporal gate
+  decides; duplicates; a named parameter missing; the parse entry point enforcing the same
+  rules; `claimed_signing_time` never raising on a hand-built header and `None` for a CWT
+  whose protected header carries a valid, a malformed, a non-string or a null `sigT` (the raw
+  entry is still in `header`, so the `None` is the form gate and not an absent key).
+- **`tests/test_jws_crit.py`** (+40, to 49). The exception is one lane: for each of
+  `["sigT"]`, `["b64"]` and both orders of `["sigT", "b64"]`, with a header otherwise valid
+  for the WRPRC lane, the shared `reject_unknown_crit`, `verify_compact`, VC-JWT, the SD-JWT
+  VC issuer JWT, the KB-JWT, the status-list token, VP-JWT, the OID4VCI key proofs and the
+  LoTE verifier still refuse it, and the WRPRC lane alone accepts it.
+- **Against `origin/main` (65e137f)**, the three files overlaid with their fixtures: 178 of
+  the 455 cases fail and 277 pass (71 of the 173 in the real-artifact file, 103 of the 233 in
+  `test_rp_registration.py`, 4 of the 49 in `test_jws_crit.py`). The failures are the Hopae
+  verifications and the new `crit` / `sigT` / `b64` rules; every pre-existing case passes,
+  as do the German, DIGG and EU verifications, the fixture-integrity block and every
+  refusal that 1.35.1 already made.
+  **Mutation check:** twenty runs against copies of the source, each with one edit or none;
+  the unmutated copy passed all 447 cases of the first revision, and all nineteen mutants
+  were killed — the `crit` check
+  removed, the `b64` value check removed, the `sigT` check removed, the presence check
+  removed, duplicates allowed, an empty `crit` allowed, the WRPRC allow-list widened by a
+  name (`sigD`), the allow-list widened for the shared lanes, the allow-list widened for the
+  LoTE verifier, `b64` compared by equality instead of identity, the value checks run only
+  for a listed name, a numeric offset accepted in `sigT`, the `sigT` type check removed,
+  Unicode digits accepted, `match` instead of `fullmatch`, lower-case `t` / `z` accepted, a
+  leap second clamped, `claimed_signing_time` allowed to raise, and the value checks left
+  out of the envelope. After the review of the PR, three more against the final tree (which
+  passes all 455): the form gate on `claimed_signing_time` removed, `Z` accepted in either
+  case with `T` unchanged, and `T` accepted in either case with `Z` unchanged — each is
+  killed (the first revision's tests killed only the mutant that changed both letters).
+
 ## [1.35.1] — 2026-10-16
 
 ### Fixed

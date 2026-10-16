@@ -18,10 +18,11 @@ A JSON LoTE is distributed as a **compact JAdES baseline-B signature whose
 payload is the list** (clause 6.8 + Annexes D.4–I.4: "compact JAdES Baseline B
 … as specified in ETSI TS 119 182-1"), so verification runs on the library's
 JOSE primitives: the ``{ES256, ES384, EdDSA, Ed25519}`` allow-list is applied
-**before** any crypto, ``crit`` is allow-listed exactly like the WRPRC lane
-(:mod:`openvc.rp_registration`), the signer comes from ``x5c`` and must
-authenticate against **caller-pinned** certificates (no implicit root — the
-same discipline as :func:`openvc.trustlist.walk_lotl`), and clause 6.8's DN
+**before** any crypto, ``crit`` is allow-listed to the JAdES set ``alg`` / ``typ`` /
+``x5c`` / ``iat`` (the WRPRC lane, :mod:`openvc.rp_registration`, started from the same
+set and has since added ``sigT`` and ``b64: true``; this verifier has not), the signer
+comes from ``x5c`` and must authenticate against **caller-pinned** certificates (no
+implicit root — the same discipline as :func:`openvc.trustlist.walk_lotl`), and clause 6.8's DN
 binding is enforced: the signing certificate's ``organizationName`` must match
 a ``SchemeOperatorName`` value and its ``countryName`` the ``SchemeTerritory``.
 
@@ -81,10 +82,11 @@ FetchLote = Callable[[str], bytes]
 
 _URI_19602 = "http://uri.etsi.org/19602"
 
-# JAdES header parameters this verifier processes — the same set as the WRPRC
-# lane (openvc.rp_registration): a V1.1.1-era JAdES producer listed its
-# non-registered parameters in ``crit``, so the check allow-lists exactly what
-# is understood and fails closed on the rest.
+# JAdES header parameters this verifier processes. The WRPRC lane
+# (openvc.rp_registration) starts from the same set but also understands ``sigT`` and
+# ``b64: true``; this verifier does not, and refuses both in ``crit`` (a test pins it).
+# A V1.1.1-era JAdES producer listed its non-registered parameters in ``crit``, so the
+# check allow-lists exactly what is understood and fails closed on the rest.
 _KNOWN_CRIT = frozenset({"alg", "typ", "x5c", "iat"})
 
 

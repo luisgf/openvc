@@ -47,6 +47,30 @@ that JAdES clause 5.1.11 mandates a *header* ``iat`` for signatures made after
 the header ``iat`` is surfaced but **not** required — the security-bearing timestamps
 are the payload's.
 
+**``crit`` — the one lane that understands two extensions.** The library's other JOSE
+lanes split in two. The shared check
+(:func:`openvc.proof._verify_common.reject_unknown_crit`, behind VC-JWT, SD-JWT VC,
+KB-JWT, VP-JWT, the status-list token and the OID4VCI key proofs) processes no
+extension header parameter and refuses any ``crit``. The two JAdES lanes — this one and
+the LoTE verifier (:mod:`openvc.trustlist.lote`) — allow-list the JAdES set
+``alg``/``typ``/``x5c``/``iat`` and refuse the rest. Only this lane goes further,
+because the registrars that emit WRPRCs today follow JAdES V1.1.1 (as issue #134 reads
+TS 119 182-1), which required every non-registered header parameter to be listed
+there: the two Hopae-registrar tokens in ``tests/fixtures/rp_registration`` carry
+``"crit": ["sigT", "b64"]``. So this lane understands exactly two names beyond
+``alg``/``typ``/``x5c``/``iat``, each under a narrow rule, and nothing else: ``b64``
+only as the JSON boolean ``true`` (RFC 7797 — ``false`` is an *unencoded* payload, a
+different signing input, and is refused) and ``sigT`` only as an RFC 3339 UTC time,
+which is surfaced as :attr:`RelyingPartyRegistrationCertificate.claimed_signing_time`
+and never used for a validity decision. The list must be a non-empty array of unique
+strings, each name in it must be present in the header, and a ``b64`` or ``sigT`` value
+is checked whether or not ``crit`` names it. Any other critical name fails closed.
+All of this is the **JWT form** only: a CWT's COSE protected header is read for ``alg``,
+``typ`` and ``x5chain`` and a critical COSE label fails closed (:mod:`openvc.cose`), but
+a text-labelled ``sigT`` / ``b64`` / ``crit`` entry in it is neither interpreted nor
+value-checked, and ``claimed_signing_time`` is ``None`` for a CWT. The decision and its
+limits are recorded in the CHANGELOG (v1.36.0).
+
 Two entry points, mirroring the library's trusted/untrusted split (and
 :mod:`openvc.rp_cert`):
 
@@ -65,9 +89,10 @@ issuance — openvc is a consumer.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import _json
 from .errors import OpenvcError
@@ -122,7 +147,21 @@ _BMI_TYP = "rc-rp+jwt"
 # JAdES V1.1.1-era producers listed their non-registered parameters in `crit`. Anything
 # outside this set fails closed — an unprocessed critical parameter is precisely what
 # `crit` exists to stop being ignored.
-_KNOWN_CRIT = frozenset({"alg", "typ", "x5c", "iat"})
+#
+# The registrars' real tokens also list `sigT` (JAdES V1.1.1 claimed signing time) and
+# `b64` (RFC 7797) there (issue #134). Those two are understood, under the narrow value
+# rules of `_UNDERSTOOD_PARAMS` below, by THIS LANE ONLY: the shared
+# `reject_unknown_crit` (which refuses any `crit`) and the LoTE verifier (which
+# allow-lists the JAdES set above, as this lane did before #134) keep their own rules,
+# and a test pins that both still refuse `sigT` and `b64`.
+_JADES_CRIT = frozenset({"alg", "typ", "x5c", "iat"})
+
+# RFC 3339 `date-time` restricted to UTC `Z`, the JAdES V1.1.1 `sigT` form. ASCII digits
+# only (`\d` takes any Unicode decimal), upper-case `T`/`Z`, and used with `fullmatch` so
+# a trailing newline cannot ride past a `$`.
+_SIG_T = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})"
+    r"(?:\.([0-9]{1,9}))?Z")
 
 # COSE header labels: RFC 9052 §3.1 (`alg`), RFC 9596 (`typ`), RFC 9360 §2 (`x5chain`).
 _COSE_HDR_TYP = 16
@@ -203,6 +242,29 @@ class RelyingPartyRegistrationCertificate:
     form: str
     header: Mapping[str, Any]
     claims: Mapping[str, Any]
+
+    @property
+    def claimed_signing_time(self) -> datetime | None:
+        """The JWS header ``sigT`` — the time the registrar *says* it signed — or ``None``.
+
+        Surfaced for display and audit only. It sits in the protected header, so the
+        registrar's key does vouch for it, but it is a self-asserted time with no
+        timestamp token behind it: nothing in this module bases a validity decision on
+        it (the security-bearing timestamps are the payload's ``iat`` / ``exp`` / ``nbf``
+        and the signing certificate's own validity). JWT form only: ``sigT`` is a JAdES
+        JOSE header parameter with no COSE meaning, so a CWT yields ``None`` whatever its
+        protected header holds (a text-labelled entry there is not interpreted or
+        value-checked at all).
+
+        The value was checked when the token was read; a header built by hand with a
+        malformed ``sigT`` yields ``None`` here rather than raising."""
+        if self.form != "jwt":
+            return None
+        value = self.header.get("sigT")
+        try:
+            return _parse_sig_t(value) if value is not None else None
+        except RpRegistrationError:
+            return None
 
     @property
     def intermediary_identifier(self) -> str | None:
@@ -401,29 +463,106 @@ def _build(
 # envelope: the JWT (JAdES B-B subset) and CWT (COSE_Sign1) forms
 # --------------------------------------------------------------------------- #
 
+def _parse_sig_t(value: Any) -> datetime:
+    """A ``sigT`` value as an aware UTC datetime, or :class:`RpRegistrationError`.
+
+    The JAdES V1.1.1 form is an RFC 3339 ``date-time`` in UTC, ``YYYY-MM-DDThh:mm:ssZ``,
+    optionally with fractional seconds. Stricter than RFC 3339 on purpose, and failing
+    closed: a numeric offset (``+00:00`` is UTC to RFC 3339 but is not the ``Z`` form
+    JAdES writes), lower-case ``t`` / ``z``, a leap second (``:60``, which ``datetime``
+    cannot hold) and any non-string are refused. The type check comes first so an array
+    or an object is a typed error, not an ``AttributeError`` out of the matcher."""
+    from .proof._verify_common import safe_repr
+
+    match = _SIG_T.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
+        raise RpRegistrationError(
+            f"WRPRC header 'sigT' must be an RFC 3339 UTC time (YYYY-MM-DDThh:mm:ssZ), "
+            f"got {safe_repr(value)}")
+    year, month, day, hour, minute, second = (int(g) for g in match.groups()[:6])
+    fraction = match.group(7) or ""
+    try:
+        return datetime(year, month, day, hour, minute, second,
+                        int((fraction + "000000")[:6]), tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise RpRegistrationError(
+            f"WRPRC header 'sigT' {safe_repr(value)} is not a valid UTC time") from exc
+
+
+def _check_sig_t(value: Any) -> None:
+    _parse_sig_t(value)
+
+
+def _check_b64(value: Any) -> None:
+    """RFC 7797 ``b64``: only the JSON boolean ``true`` — the default, a payload that is
+    base64url-encoded as in every other compact JWS. ``false`` means an *unencoded*
+    payload, i.e. a different signing input that this verifier does not build; accepting
+    it would verify a signature over bytes other than the ones it then parses. Identity,
+    not equality: ``1 == True`` in Python, and ``"true"`` and ``null`` are not booleans."""
+    if value is not True:
+        from .proof._verify_common import safe_repr
+
+        raise RpRegistrationError(
+            f"WRPRC header 'b64' must be the JSON boolean true, got {safe_repr(value)} "
+            f"(an unencoded payload, RFC 7797 'b64': false, is not supported)")
+
+
+#: The non-registered header parameters whose VALUE this lane checks, and which it may
+#: therefore also accept in ``crit``. A name added here is a name a registrar can mark
+#: critical and have honoured, so extending it is a decision (CHANGELOG, v1.36.0).
+_UNDERSTOOD_PARAMS: Mapping[str, Callable[[Any], None]] = {
+    "sigT": _check_sig_t,
+    "b64": _check_b64,
+}
+
+_KNOWN_CRIT = _JADES_CRIT | frozenset(_UNDERSTOOD_PARAMS)
+
+
 def _reject_unknown_crit(header: Mapping[str, Any]) -> None:
     """RFC 7515 §4.1.11 — a verifier MUST reject a JWS whose ``crit`` names an
     extension it does not process.
 
     The plain-JWS lanes (:func:`openvc.proof._verify_common.reject_unknown_crit`)
-    process no extensions at all and so reject ``crit`` outright. This lane cannot: a
-    JAdES V1.1.1-era producer listed its non-registered header parameters there, so the
-    check allow-lists exactly the parameters this verifier *understands*
-    (:data:`_KNOWN_CRIT`) and fails closed on the rest."""
+    process no extensions at all and so reject ``crit`` outright. The JAdES lanes cannot
+    (this one and the LoTE verifier): a JAdES V1.1.1-era producer listed its
+    non-registered header parameters there, so the check allow-lists exactly the
+    parameters this verifier *understands* (:data:`_KNOWN_CRIT`, which adds ``sigT`` and
+    ``b64`` to the LoTE set) and fails closed on the rest. ``crit`` must be a non-empty
+    array of **unique** strings, and every name in it must be present in the header."""
+    from .proof._verify_common import safe_repr
+
     if "crit" not in header:
         return
     crit = header["crit"]
     if not isinstance(crit, list) or not crit or not all(isinstance(c, str) for c in crit):
         raise RpRegistrationError("WRPRC 'crit' must be a non-empty array of strings")
-    unknown = [c for c in crit if c not in _KNOWN_CRIT]
+    if len(set(crit)) != len(crit):
+        raise RpRegistrationError(
+            "WRPRC 'crit' names a header parameter more than once (RFC 7515 §4.1.11)")
+    unknown = [safe_repr(c) for c in crit if c not in _KNOWN_CRIT]
     if unknown:
         raise RpRegistrationError(
-            f"WRPRC marks header parameter(s) {unknown!r} critical, which this verifier "
-            f"does not process (understood: {sorted(_KNOWN_CRIT)})")
-    missing = [c for c in crit if c not in header]
+            f"WRPRC marks header parameter(s) {', '.join(unknown)} critical, which this "
+            f"verifier does not process (understood: {sorted(_KNOWN_CRIT)})")
+    missing = [safe_repr(c) for c in crit if c not in header]
     if missing:
         raise RpRegistrationError(
-            f"WRPRC 'crit' names header parameter(s) {missing!r} that are not present")
+            f"WRPRC 'crit' names header parameter(s) {', '.join(missing)} that are not "
+            f"present")
+
+
+def _check_understood_params(header: Mapping[str, Any]) -> None:
+    """Check the value of every understood header parameter *whether or not* ``crit``
+    names it.
+
+    Listing is not what makes ``b64: false`` dangerous: a token that sets it without
+    saying so is read by a verifier that honours the parameter as an unencoded payload
+    and by this one as base64url, a parser differential. And a ``sigT`` that is
+    surfaced (:attr:`RelyingPartyRegistrationCertificate.claimed_signing_time`) must be
+    well-formed. So a malformed value is refused wherever it appears."""
+    for name, check in _UNDERSTOOD_PARAMS.items():
+        if name in header:
+            check(header[name])
 
 
 def _check_alg(alg: Any) -> str:
@@ -467,6 +606,7 @@ def _jwt_envelope(token: str) -> tuple[dict[str, Any], dict[str, Any], bytes, by
     _check_typ(header.get("typ"), WRPRC_JWT_TYP)
     _check_alg(header.get("alg"))
     _reject_unknown_crit(header)
+    _check_understood_params(header)
     return header, claims, signing_input, signature
 
 
@@ -476,7 +616,9 @@ def _cwt_envelope(data: bytes) -> tuple[dict[str, Any], dict[str, Any], Any]:
 
     The COSE lane's own hardening applies: ``alg`` is read from the **protected** header
     only (never from the unsigned one), and an unhandled critical label fails closed
-    (:mod:`openvc.cose`)."""
+    (:mod:`openvc.cose`). The JOSE-only checks of :func:`_jwt_envelope` — the JWS ``crit``
+    allow-list and the ``sigT`` / ``b64`` value rules — do not apply: a text-labelled
+    entry in the COSE protected header is carried through to ``header`` unread."""
     from . import cbor, cose
 
     try:
@@ -635,7 +777,8 @@ def verify_rp_registration_certificate(
     """Verify a WRPRC and return its parsed content.
 
     In order: the signed-header profile (``typ``, the ``{ES256, ES384, EdDSA, Ed25519}``
-    allow-list applied **before** any crypto, a fail-closed ``crit``); the signer's chain
+    allow-list applied **before** any crypto, a fail-closed ``crit`` that understands
+    ``sigT`` and ``b64: true`` and nothing else — see the module docstring); the signer's chain
     — ``x5c`` for the JWT form, ``x5chain`` for the CWT form, plus any caller-supplied
     *intermediates* — path-validated to *trust_anchors* (the registrar roots) by
     ``cryptography``'s verifier; then the **signature** against that chain's leaf key;

@@ -93,8 +93,10 @@ Properties worth knowing:
 
 - **JOSE, no extra needed** — a LoTE verifies on the library's own JWS
   primitives: the `{ES256, ES384, EdDSA, Ed25519}` allow-list runs **before**
-  any crypto, `crit` is allow-listed (`{alg, typ, x5c, iat}`, the WRPRC lane's
-  JAdES stance), and the signer comes from `x5c`, authenticated against the
+  any crypto, `crit` is allow-listed (`{alg, typ, x5c, iat}`, the JAdES stance the
+  WRPRC lane started from; the WRPRC lane has since added `sigT` and `b64: true`
+  for the registrars that emit them, a widening the LoTE verifier does **not**
+  share), and the signer comes from `x5c`, authenticated against the
   pinned certificates byte-for-byte or by path validation to them.
 - **Clause 6.8 DN binding** — the signing certificate's `organizationName`
   must match a `SchemeOperatorName` value and its `countryName` the

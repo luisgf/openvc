@@ -131,6 +131,62 @@ Two known spec defects are absorbed rather than inherited: `intermediary` is spe
 `reg.intermediary_name`), and the intermediary identifier appears as both
 `intermediary.sub` and `act.sub` (both via `reg.intermediary_identifier`).
 
+### `crit`: the one lane that understands two extensions
+
+openvc's other JOSE lanes split in two. The shared check (VC-JWT, SD-JWT VC, KB-JWT,
+VP-JWT, the status-list token, OID4VCI key proofs) processes no extension header parameter
+and refuses any JWS `crit` (RFC 7515 §4.1.11). The two JAdES lanes, the LoTE verifier and
+this one, allow-list the JAdES set `alg`, `typ`, `x5c`, `iat` and refuse the rest. The WRPRC
+lane alone goes further, because the registrars that issue WRPRCs today follow JAdES
+V1.1.1, which required every non-registered header parameter to be listed there: the Hopae
+registrar’s tokens carry `"crit": ["sigT", "b64"]`. (That is issue #134’s reading of
+TS 119 182-1: V1.1.1 required the listing, and V1.2.1 dropped that requirement and forbids
+`sigT` in favour of the header `iat`. Accepting it is interoperability with what
+producers actually emit, not an endorsement.) So this lane
+understands **exactly two names beyond that set, under narrow rules, and refuses
+everything else**:
+
+| rule | what is enforced |
+|---|---|
+| the list | a non-empty array of **unique** strings; every name in it must be present in the header |
+| allowed names | `alg`, `typ`, `x5c`, `iat` (as before) plus `sigT` and `b64`; any other name is refused |
+| `b64` | only the JSON boolean `true`. `false` is an *unencoded* payload (RFC 7797), a different signing input, and is refused — as are `"true"`, `1` and `null` |
+| `sigT` | only an RFC 3339 UTC time, `YYYY-MM-DDThh:mm:ssZ` with optional fractional seconds. A numeric offset, lower-case `t`/`z`, a leap second and any non-string are refused |
+| where | `b64` and `sigT` values are checked **whether or not `crit` names them**: a `b64: false` that is not listed is a parser differential, and a `sigT` that is surfaced must be well-formed |
+
+`sigT` is surfaced as `reg.claimed_signing_time` and is **never used for a validity
+decision**: it is the registrar’s own claim of when it signed, with no timestamp token
+behind it. Validity comes from the payload’s `iat` / `exp` / `nbf` and the certificate
+chain, as before. The shared check and the LoTE verifier are unchanged in behaviour and
+still refuse both names; `tests/test_jws_crit.py` pins that the exception is this one lane.
+
+All of this is the **JWT form**. The COSE (CWT) form is untouched: a text-labelled `sigT`,
+`b64` or `crit` entry in a CWT’s protected header is not interpreted or value-checked
+(a critical COSE label still fails closed), and `claimed_signing_time` is `None` for a CWT.
+
+### What the first real tokens settled, and what they did not
+
+Five real signed WRPRCs from four producers (the German EUDI sandbox registrar, the Hopae
+development registrar twice, the DIGG wallet ecosystem, and an EU verifier-endpoint test
+resource) are vendored under `tests/fixtures/rp_registration/` and verify end to end
+(`tests/test_rp_registration_real_artifacts.py`). They answer the judgement calls this
+module had to make from the specification alone:
+
+- **`intermediary.sname`**, never `name`: the producer follows Table 10 (both spellings
+  are still read). `intermediary.sub` and `act.sub` are emitted **together** and agree.
+- **No JWS header `iat`** in any of the five: producers follow Table 5, not JAdES clause
+  5.1.11. The header `iat` stays surfaced, not required.
+- **`crit` does appear** — `["sigT", "b64"]` on the Hopae tokens — hence the section above.
+- **`srv_description`** is the nested `[[{lang, value}]]` in the German and Hopae tokens and
+  the flat `[{lang, value}]` in DIGG and the EU sample. Both read to the same flat view;
+  it is display text and plays no part in any authorization check.
+
+These are **provisional goldens: third-party-signed, not registrar-anchored.** None comes
+from a Member State production registrar and none chains to a published trust-list anchor;
+each is verified against its own pinned root. Registrar-anchored verification (the goal of
+issue #134) and the CWT form are still open. `tests/fixtures/rp_registration/PROVENANCE.md`
+records, per file, the source repository, commit, licence and SHA-256.
+
 ## What this is not
 
 - **The German BMI registration certificate** (`rc-rp+jwt`, from the eIDAS 2.0
