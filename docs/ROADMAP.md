@@ -14,7 +14,9 @@ landed through its own pull request. Browse it by milestone:
 - **[Conformance & production readiness](https://github.com/luisgf/openvc/milestone/11)** —
   deferred follow-ups that each need a real signed artifact or a launched
   external service before they can land — today: the EBSI production launch
-  (Q4 2026 under EUROPEUM-EDIC).
+  (Q4 2026 under EUROPEUM-EDIC); how `openvc_ebsi` follows it (the Core API v1 and
+  trusting a node picked from the signed Trusted Nodes List) is proposed in
+  [ADR-0009](adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md).
 - **[Long term — PQ, BBS & 2.0](https://github.com/luisgf/openvc/milestone/8)** —
   the 2027 horizon: the BBS gate re-evaluation, the external security review,
   and the 2.0 breaking-cleanup window keyed to the W3C 2.1/1.1 maintenance
@@ -109,6 +111,13 @@ OpenID4VCI without moving it.
   mandatorily pairing-based (BLS12-381) with no mature, audited pure-Python library in
   2026 and a spec at Candidate Recommendation Draft. Revisited under a documented gate
   (CFRG RFC + W3C Recommendation + a bindable pairing library) —
-  [issue #73](https://github.com/luisgf/openvc/issues/73).
+  [issue #73](https://github.com/luisgf/openvc/issues/73). *Re-checked 2026-10-16:
+  none of the three conditions is met.* The CFRG draft is at -13 (2026-10-13) and
+  still an active research-group document, not yet in last call. `vc-di-bbs` is a
+  Candidate Recommendation Draft (2026-09-10) with a charter target of 2027-04-01 and
+  an empty issuer-to-verifier interoperability matrix. No Python library implements
+  the BBS ciphersuites: the nearest primitive, `py-arkworks-bls12381`, needs Python
+  3.11 or later and its upstream calls itself an unreviewed prototype. Next look:
+  January 2027.
 - **CycloneDX SBOM generation**: the runtime dependency graph is two nodes; PEP 740
   attestations (via Trusted Publishing) and `pip-audit` already cover provenance.
