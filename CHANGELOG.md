@@ -45,10 +45,18 @@ All notable changes to **openvc** are documented here. The format follows
     none and a node would read it against its *default* instance. With an address
     configured, `TirCoreV1` adds it as the last query parameter of the `attributes` link, of
     every `href` and of `links.next` when they name none, leaves one that names the
-    configured address, and raises `MalformedRegistryResponse` for one that names another,
-    however the parameter is spelled (case, percent-encoding, repeated). The
-    missing-`attributes` fallback is built from the path with the query last. With no
-    address configured, links are followed as written.
+    configured address as `contractAddress`, and raises `MalformedRegistryResponse` for any
+    other link that names the instance. A query parameter counts as naming it when its
+    percent-decoded name, case-folded, *contains* `contractaddress`; only the exact name with
+    the configured value is kept. So these are refused: another case, a percent-encoded
+    name, a repeat, a bracket suffix (`contractAddress[]`, `contractAddress[0]`), a longer
+    name (`contractAddress.x`, a trailing space, `%00`). A raw `;` anywhere in the link's
+    query is refused whatever it names, because a server may read it as a separator. That
+    is the list of spellings covered, not a claim about every way a server may read a name;
+    the configured address is also on the issuer URL, and the node is the one registry the
+    walk is already pinned to. The recorded links carry neither form (`page[after]` and
+    `page[size]` only). The missing-`attributes` fallback is built from the path with the
+    query last. With no address configured, links are followed as written.
 - **`HttpError.problem_type`** (add-only, `None` by default). EBSI Core API v1 answers errors
   as RFC 9457 Problem Details with a stable `type` (`urn:ebsi:problems:<slug>`; ADR-0001 D7
   asked for it and `http.py` mapped by status alone). `get_json` now reads it from an error
@@ -92,7 +100,11 @@ All notable changes to **openvc** are documented here. The format follows
      rejecting any other form the contract may allow.
   5. *A link that names no `contractAddress`* — gets the configured one (above). The other
      option, following it bare, reads the node's default instance for every hop after the
-     first whenever the configured address differs from it.
+     first whenever the configured address differs from it. A link whose query holds a `;`
+     is refused even when it names no address, and a name that merely contains
+     `contractaddress` is refused: the other option is to compare the name exactly and
+     split on `&` alone, which lets `contractAddress[]` and a `;`-separated parameter
+     through with the configured address appended after them.
   6. *Bounds on the error read* — 16 KiB for the body and 256 characters for `type`.
   7. *`TirCoreV1` takes `contract_address` too* — on the strength of the recorded 200s for
      the issuer, attribute list and attribute read with the Issuers Registry's own address
@@ -101,8 +113,8 @@ All notable changes to **openvc** are documented here. The format follows
      revision without an `attribute` object are `MalformedRegistryResponse` on `TirV5` as
      well, although the issue left the v5 lane as it is: the walk is shared, so "v5
      unchanged" and "one walk" cannot both hold. The other option is a hook so that only
-     `TirCoreV1` raises, which keeps a bare `AttributeError` and an unrestricted accreditation
-     on the legacy lane.
+     `TirCoreV1` raises, which keeps a bare `AttributeError` and the read of a missing
+     `attribute` object as an empty attribute on the legacy lane.
 
 ### Fixed
 
@@ -130,6 +142,13 @@ All notable changes to **openvc** are documented here. The format follows
   that answers `{"did": ...}` or `{"attribute": null}` for an `href` is malformed, not
   unrestricted; there is nothing to pass instead, the walk now stops with a typed error.
   Recursive trust was unaffected (an accreditation with no token is refused).
+  This is a shape check, not the end of the wildcard: an `attribute` object with no `body`,
+  an empty `body`, or a `body` whose claims name no `accreditedFor` is still an
+  accreditation with no type restriction, which single-level trust accepts for any
+  credential (its documented policy: that mode trusts the node's list). Recursive trust
+  refuses one that has no token (`AccreditationInvalid`) and otherwise needs a token that
+  verifies. Pinned by `test_an_attribute_object_with_no_usable_body_is_still_a_wildcard_by_design`
+  and its neighbour.
 
 ### Docs
 
@@ -147,14 +166,17 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Tests
 
-- **`tests/test_ebsi_core_v1.py`** (377 tests): the manifest hashes every recorded file; the
+- **`tests/test_ebsi_core_v1.py`** (426 tests): the manifest hashes every recorded file; the
   registry names and the defaults; the exact URLs; the `contract_address` bound (negatives
   first, a `str` subclass included) and the cache; hostile DIDs on the Core v1 pair with zero
   requests; wrong bodies; the origin pin per node (one node's issuer body read through
   another node's resolver, one node's attribute list served at another's route); the
   shared-walk guards (self-referential, off-origin and port-only `next` / `href` /
   `attributes`, `:443` against no port, an unparseable URL, `total: true`, the page and item
-  caps) run for **both** lanes by parametrisation; the contract-address walk; the ES256K
+  caps, non-object listing items) run for **both** lanes by parametrisation; the
+  contract-address walk, with a link naming another instance in a bracket, dotted, padded or
+  `;` spelling refused; the attribute shapes that stay a wildcard under single-level trust
+  (no body, an empty body, a body naming no `accreditedFor`); the ES256K
   RootTAO pinned as refused today (`UnsupportedAlgorithm`; `peek_claims`, the `IssuerRecord`
   and single-level trust still work; recursive trust is `AccreditationInvalid`; #323 flips
   it to a positive verification); the golden walk per recorded node, the cross-node
