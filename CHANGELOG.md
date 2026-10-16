@@ -31,10 +31,11 @@ All notable changes to **openvc** are documented here. The format follows
   empty forms `https://@host/` and `https://:@host/` included: userinfo is outside an origin,
   the list publishes none, and httpx 0.28.1 sends `https://u:p@host/x` with
   `Authorization: Basic dTpw`, a header the caller never set. An `@` in a path, query or
-  fragment is not userinfo and still passes. The userinfo refusal's message names the rule
-  and does not echo the credentials (a URL with userinfo that an earlier rule refuses, an
-  `http://` one say, is quoted by that rule's message as before). Every pre-existing refusal
-  keeps its class and its message.
+  fragment is not userinfo and still passes. The userinfo refusal names the rule and carries
+  no credentials: its message does not echo them and its `.url` is `None`. Every other
+  refusal keeps `.url` as the URL given, a URL with userinfo included (an `http://` one, or
+  one on another port, say), and the non-https rule's message quotes it as before. Every
+  pre-existing refusal keeps its class and its message.
 
   `allowed_hosts` is **unchanged**: a set of host names, port 443 implied. `for_ebsi`,
   `EBSI_HOSTS` and `EBSI_BASE` keep their shape, so every existing caller that stays on 443
@@ -87,7 +88,8 @@ All notable changes to **openvc** are documented here. The format follows
   `:4430`, `:8443`, `:9200`, `:65535`) on a lower-case, an upper-case and a mixed-case host,
   with and without a path and query, through `get_json` and `_guard_host`, against a
   transport that records every request (none); a cached body is not served for a refused
-  port; the userinfo forms; the admitted forms (`:443`, `:0443`, `:00443`, the empty port,
+  port; the userinfo forms (`.url` is `None` for each, and a recognisable credential is in
+  none of the message, `.url`, args, repr or cause); the admitted forms (`:443`, `:0443`, `:00443`, the empty port,
   an upper-case scheme and host); the recorded pilot registry end to end through the real
   client; a resolver `base` on another port refused at the first fetch; trailing dot,
   IPv6 literals, an ASCII-only host policy (an `xn--` A-label listed and admitted, a

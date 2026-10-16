@@ -256,10 +256,11 @@ class EbsiHttpClient:
         if port != HTTPS_PORT:
             raise HttpForbiddenHost(f"port {port} not allowed: https port 443 only", url=url)
         # Userinfo is outside an origin and the Trusted Nodes List publishes none (ADR-0009).
-        # httpx would send it as a Basic `Authorization` header. This message names the rule
-        # and does not echo the credentials (an earlier rule's message still quotes the URL).
+        # httpx would send it as a Basic `Authorization` header. This refusal names the rule
+        # and carries no credentials, in the message or in `.url` (None here); an earlier
+        # rule's message and `.url` still hold the URL as given.
         if carries_userinfo(url):
-            raise HttpForbiddenHost("URL rejected: carries userinfo", url=url)
+            raise HttpForbiddenHost("URL rejected: carries userinfo", url=None)
 
     def _sleep_before_retry(self, attempt: int, resp: httpx.Response | None = None) -> None:
         if attempt >= self._retry.attempts - 1:

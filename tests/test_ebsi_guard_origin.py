@@ -214,13 +214,35 @@ def test_userinfo_is_refused_before_any_request(url: str) -> None:
 
 
 def test_the_userinfo_refusal_does_not_echo_the_userinfo() -> None:
-    # The userinfo is caller- or registry-supplied; the message names the rule, not the secret.
+    # The userinfo is caller- or registry-supplied; the refusal names the rule, not the secret.
+    # Nothing the exception holds carries it: not the message, not `.url` (None here, where
+    # every other refusal keeps the URL as given), not the args, repr or cause/context.
     c = EbsiHttpClient(allowed_hosts={HOST})
     try:
-        with pytest.raises(HttpForbiddenHost) as exc_info:
-            c._guard_host(f"https://zq9name:s3cretpass@{HOST}/x")
-        assert "s3cretpass" not in str(exc_info.value)
-        assert "zq9name" not in str(exc_info.value)
+        for call in (c._guard_host, c.get_json):
+            with pytest.raises(HttpForbiddenHost) as exc_info:
+                call(f"https://zq9name:s3cretpass@{HOST}/x")
+            exc = exc_info.value
+            assert type(exc) is HttpForbiddenHost
+            assert exc.url is None
+            assert exc.args == ("URL rejected: carries userinfo",)
+            assert exc.__cause__ is None and exc.__context__ is None
+            held = "|".join((str(exc), repr(exc), repr(vars(exc)), repr(exc.args)))
+            assert "s3cretpass" not in held
+            assert "zq9name" not in held
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize("url", USERINFO_URLS)
+def test_the_userinfo_refusal_keeps_no_url(url: str) -> None:
+    # `.url` is the one attribute that used to hold the credentials; every form is None.
+    c = EbsiHttpClient(allowed_hosts={HOST})
+    try:
+        with pytest.raises(HttpForbiddenHost, match="carries userinfo") as exc_info:
+            c._guard_host(url)
+        assert type(exc_info.value) is HttpForbiddenHost
+        assert exc_info.value.url is None
     finally:
         c.close()
 
