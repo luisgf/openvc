@@ -663,7 +663,8 @@ Titles with one line each; none have been filed.
 - `docs(ebsi): correct the #113 checklist and publish the node-trust recipe` — there is no
   production host to add; document the TNL verification for consumers (Option A).
 - `feat(ebsi): DidRegistryCoreV1 and TirCoreV1 adapters with golden fixtures` — URL layout,
-  `parentAttributeId`, Problem Details `type`; preprod two-node vectors.
+  `parentAttributeId`, Problem Details `type`; preprod two-node vectors. Filed as
+  [#321](https://github.com/luisgf/openvc/issues/321).
 - `feat(ebsi): pure Trusted Nodes List verifier with a minimal ECDSA-only OpenPGP reader` —
   `(version, sha256)` rollback pairs for the list and the key list, the two floors, `max_age` and `min_threshold`, by-hand schema validation, fixed-clock tests, fuzzing, the narrow profile, key-block rejection rules.
 - `feat(ebsi): bytes GET and a tnl.ebsi.eu fetch helper` — separate one-host allow-list,
@@ -753,3 +754,31 @@ The expiry-signal claim (no key-expiration or signature-expiration subpacket) ca
 with the same framing parser: list the hashed subpacket types of every signature packet,
 including each key block's self-signatures and binding signatures. The hashed types present are 2, 11,
 20, 21, 22, 23, 27, 30, 33 and 34; types 3 and 9 do not occur.
+
+### Recording round for #321 (2026-10-16)
+
+The Core v1 vectors of the Fixtures plan were recorded for
+[#321](https://github.com/luisgf/openvc/issues/321) and vendored byte for byte in
+`tests/fixtures/ebsi/core-v1/` (`MANIFEST.json`: request URL, status, media type, node,
+retrieval time, headers sent and SHA-256 per file; `README.md`: provenance). 24 plain GET
+requests to EBSI hosts, `User-Agent: openvc-core/1.36.0` and the client's own `Accept`
+(except where noted), TLS verification on, no redirects followed, no credentials, about
+0.6 s apart. The error results the fixtures plan left to record:
+
+| Request | Result |
+|---|---|
+| `api-pilot.ebsi.grnet.gr/v1/did-registry/identifiers/did:ebsi:zZeKyEJfUTGwajhNyNX928z` | 404, `application/problem+json`, `type` `urn:ebsi:problems:identifier-not-found` (the pilot-node 404, re-recorded) |
+| `api-preprod.ebsi.grnet.gr/v1/did-registry/identifiers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io?contractAddress=0x0000000000000000000000000000000000000001` | 400, `application/problem+json`, `type` `urn:ebsi:problems:invalid-contract-address`, `detail` "No contract is deployed at address ..." |
+| the same path without `contractAddress`, `Accept: application/xml` | 406, `application/problem+json`, **`type` `about:blank`** (not a `urn:ebsi:problems:` slug), `detail` names the two media types supported |
+| 405 | **not recorded**: it needs a non-GET request to a read path, which neither the library nor these probes sent |
+
+Also recorded, and what the adapters rely on: every error answer above is
+`application/problem+json; charset=utf-8`, so the media-type gate of `HttpError.problem_type`
+needs no widening; a valid `contractAddress` is **not echoed** in `self`, `links`,
+`attributes` or `href` (the DID document, issuer, attribute list and attribute read with it
+are byte-identical to the bare reads), and the DID Registry and the Issuers Registry publish
+**different** addresses on their `/details` (`0x` and 40 hexadecimal digits each); both
+`attribute.body` JWTs of the preprod and prod RootTAOs are `ES256K` with a `kid` naming the
+DID document's `secp256k1` method; and `parentAttributeId` is `0` x 64 on a RootTAO. The
+OpenAPI contract could not be read for the same issue: `gitlab.com` answered 503 to three
+attempts, so the `contractAddress` format comes from the values the nodes publish.

@@ -216,7 +216,8 @@ finite input", with no explicit constant.
   (`for_ebsi` seeds it from one named environment of `src/openvc_ebsi/environments.py`:
   `legacy-pilot`, the default, and its alias `pilot` are `api-pilot.ebsi.eu`; `conformance` is
   `api-conformance.ebsi.eu`; `production` is `api.ebsi.eu`; any other name is
-  `UnknownEbsiEnvironment`; port 443 only), redirects off, TLS-verify on,
+  `UnknownEbsiEnvironment`; port 443 only; a Core API v1 caller supplies the host of each node it
+  uses, R4), redirects off, TLS-verify on,
   5 MiB cap, keeps no cookie jar (a `Set-Cookie` is dropped and nothing is sent back, so a
   node's affinity cookie cannot pin a retry or cross to a sibling host; #317). Purpose is
   to block registry-supplied `href` pivots; it matches the host and the port but does
@@ -233,10 +234,13 @@ finite input", with no explicit constant.
   alone and every other port of a listed host was fetched. Redirects stay off, and that is
   what stops a `Location` to another port: the guard never sees it
   (`test_a_redirect_is_a_failed_read_and_is_never_followed`).
-  The TIR v5 adapter's pin is a second check with its own job, keeping a walk on the node
-  it started on: it pins `links.next`, the HATEOAS `attributes` URL and every revision
+  The TIR adapters' pin (the legacy v5 and the Core API v1 `TirCoreV1`, which share one
+  attribute walk, #321) is a second check with its own job, keeping a walk on the node it
+  started on: it pins `links.next`, the HATEOAS `attributes` URL and every revision
   `href` to the listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`;
-  #172), and stays port-agnostic because the adapters take any injected `Fetch`. The
+  #172), and stays port-agnostic because the adapters take any injected `Fetch`. On Core
+  API v1 that listing is the answering node's own origin, since every link in a response
+  names the node that served it, so a walk cannot move from one node to another. The
   guard and the pin read a URL through the same function, and
   `test_the_guard_admits_a_url_exactly_when_the_pin_says_it_is_on_the_origin` keeps them in
   step (the two documented gaps: userinfo, which the pin ignores, and a URL over 8 KiB,
@@ -254,7 +258,10 @@ finite input", with no explicit constant.
   unsigned token whose `iss` held a control character escaped `verify_ebsi_badge` as
   a bare `httpx.InvalidURL` (#246). A body httpx cannot decompress is a
   `MalformedRegistryResponse`; before v1.32.1 it escaped as a bare
-  `httpx.DecodingError` (#248). The allow-list says which host answers, not which path
+  `httpx.DecodingError` (#248). An error answer's body is read at most 16 KiB, within the
+  client's deadline, and the connection is dropped past either; before v1.37.0 it was
+  drained with no cap and no deadline (#321), and the Problem Details `type` it carries
+  is kept only from an `application/problem+json` body. The allow-list says which host answers, not which path
   or which document, and the rest of this paragraph is what stands behind it.
   **The DID is validated before it is put in a registry URL** (#266, v1.33.0):
   `DidEbsiResolver.resolve` and `.issuer_record` accept only `did:ebsi:z` plus 22 or 23
@@ -373,7 +380,13 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   addresses and DNS rebinding are #322). DNS-rebinding of an allow-listed
   host is out of scope of this guard *by design* (its job is blocking
   registry-supplied `href` pivots), but a reviewer should confirm the threat
-  model accepts that.
+  model accepts that. Since the EBSI Core API v1 (`DidRegistryCoreV1` /
+  `TirCoreV1`, #321) the allow-listed hosts are **node operators' own domains**, not
+  only `*.ebsi.eu`: none of the 45 node hosts in the Trusted Nodes List read on
+  2026-10-16 is under `ebsi.eu`, and the 27 operator domains include second-level and
+  third-party zones ([ADR-0009](../adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)).
+  DNS for each of them is trusted, and a verified node list authenticates the
+  *operator*, not the content a node serves (ADR-0009 D7).
 - **R5 — `fetch.py` leans on stdlib `ipaddress` classification.** No explicit
   IPv4-mapped-IPv6 (`::ffff:a.b.c.d`) / NAT64 normalization beyond what
   `ipaddress` classifies on the target Python. Worth an auditor sanity-check

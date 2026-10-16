@@ -25,6 +25,7 @@ Pass ``client.get_json`` wherever a ``Fetch`` is expected (e.g. into the resolve
 from __future__ import annotations
 
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -49,6 +50,17 @@ from .errors import EbsiError, MalformedRegistryResponse, UnknownEbsiEnvironment
 # did:web at 1 MiB; TIR walks can be a little larger, so allow more headroom here.
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
+# An error answer is read for its RFC 9457 Problem Details ``type`` and nothing else. Problem
+# documents are a few hundred bytes (the recorded ones are 150 to 190); a node's firewall page
+# was measured at 35 KB. Past this the read stops and the connection is dropped, so a
+# compromised or flaky allow-listed host cannot make an error answer cost more than the
+# success answer it replaces (the 200 branch has MAX_RESPONSE_BYTES and a deadline).
+MAX_ERROR_BODY_BYTES = 16 * 1024
+_PROBLEM_MEDIA_TYPE = "application/problem+json"
+# ``type`` is an opaque URI reference: kept only as 1 to 256 characters of visible ASCII
+# (0x21 to 0x7e), so what ``HttpError.problem_type`` holds is short, printable and safe to log.
+_PROBLEM_TYPE = re.compile(r"[\x21-\x7e]{1,256}")
+
 # Host per EBSI environment name (used to seed the SSRF allow-list): the fixed-host projection
 # of the table in `environments.py`, which says what each name means.
 EBSI_HOSTS: dict[str, str] = fixed_hosts()
@@ -60,10 +72,18 @@ EBSI_BASE: dict[str, str] = {env: f"https://{host}" for env, host in EBSI_HOSTS.
 # --------------------------------------------------------------------------- #
 
 class HttpError(EbsiError):
-    def __init__(self, message: str, *, status: int | None = None, url: str | None = None):
+    """An HTTP failure. ``problem_type`` is the RFC 9457 Problem Details ``type`` of an error
+    answer, or ``None``: an opaque string (``"about:blank"``, a ``urn:ebsi:problems:...``
+    slug, anything the node wrote) that this module never interprets, kept only when the answer
+    was ``application/problem+json``, parsed within :data:`MAX_ERROR_BODY_BYTES` and a
+    visible-ASCII string of at most 256 characters. ``title`` and ``detail`` are not read."""
+
+    def __init__(self, message: str, *, status: int | None = None, url: str | None = None,
+                 problem_type: str | None = None):
         super().__init__(message)
         self.status = status
         self.url = url
+        self.problem_type = problem_type
 
 
 class HttpNotFound(HttpError): ...          # 404 — maps to DidNotFound upstream
@@ -114,6 +134,30 @@ def _parse_retry_after(value: str | None) -> float | None:
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _problem_type(content_type: str | None, body: bytes) -> str | None:
+    """The ``type`` member of an RFC 9457 Problem Details body, or ``None``. Pure, and it
+    never raises.
+
+    Only ``application/problem+json`` counts (the media type is compared without parameters
+    and without case): a node's firewall answers a 403 with a 35 KB ``text/html`` page, and a
+    JSON-looking body under any other type is not Problem Details. The body goes through the
+    bounded loader and must be a JSON object; ``type`` must be a string of 1 to 256 visible
+    ASCII characters. The value is opaque, and an absent ``type`` is ``None`` (RFC 9457 reads
+    it as ``about:blank``; this reports what the node wrote)."""
+    if not content_type or content_type.split(";", 1)[0].strip().lower() != _PROBLEM_MEDIA_TYPE:
+        return None
+    try:
+        data = _json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("type")
+    if isinstance(value, str) and _PROBLEM_TYPE.fullmatch(value):
+        return value
+    return None
 
 
 class _NoCookiePolicy(CookiePolicy):
@@ -203,6 +247,7 @@ class EbsiHttpClient:
         last_exc: Exception | None = None
         for attempt in range(self._retry.attempts):
             body: bytes | None = None
+            problem_type: str | None = None
             try:
                 # Stream so the body is read against a size cap AND a total wall-clock
                 # deadline (not just the per-socket timeout) — a compromised/flaky allow-listed
@@ -212,7 +257,7 @@ class EbsiHttpClient:
                     if status == 200:
                         body = self._read_capped(resp, url)
                     else:
-                        resp.read()                  # drain the small error body, reuse the conn
+                        problem_type = self._read_problem_type(resp)    # bounded; may drop the conn
             except httpx.InvalidURL as exc:          # not a TransportError: never retried
                 # Backstop for any other urlparse/httpx disagreement (#246).
                 raise HttpForbiddenHost("URL rejected by the HTTP client", url=url) from exc
@@ -237,15 +282,18 @@ class EbsiHttpClient:
                 self._cache.set(url, data)           # only cache successes
                 return data
             if status == 404:
-                raise HttpNotFound("not found", status=404, url=url)
+                raise HttpNotFound("not found", status=404, url=url, problem_type=problem_type)
             if status in self._retry.retry_statuses:
                 self._sleep_before_retry(attempt, resp)
-                last_exc = HttpError("transient", status=status, url=url)
+                last_exc = HttpError(
+                    "transient", status=status, url=url, problem_type=problem_type)
                 continue
-            raise HttpError(f"unexpected status {status}", status=status, url=url)
+            raise HttpError(f"unexpected status {status}", status=status, url=url,
+                            problem_type=problem_type)
 
         raise HttpTransientExhausted(
-            f"gave up after {self._retry.attempts} attempts: {last_exc}", url=url
+            f"gave up after {self._retry.attempts} attempts: {last_exc}", url=url,
+            problem_type=last_exc.problem_type if isinstance(last_exc, HttpError) else None,
         )
 
     def _read_capped(self, resp: httpx.Response, url: str) -> bytes:
@@ -260,6 +308,25 @@ class EbsiHttpClient:
                 raise HttpError(
                     f"response exceeds {self._max_bytes} bytes", status=200, url=url)
         return bytes(body)
+
+    def _read_problem_type(self, resp: httpx.Response) -> str | None:
+        """Read an error answer's body, bounded, and return its Problem Details ``type``.
+
+        Reads at most :data:`MAX_ERROR_BODY_BYTES` within the client's wall-clock deadline.
+        Past either, the rest is not read and the response is closed, which drops the
+        connection instead of draining it: the status error is raised as before, with no
+        ``type``. A body that is small enough is read to the end, so the connection can be
+        reused. Never raises for a body it cannot use; a body that does not decode
+        (``httpx.DecodingError``) and a transport failure propagate to ``get_json`` exactly
+        as they did when this was ``resp.read()`` (#248)."""
+        deadline = time.monotonic() + self._timeout_s
+        body = bytearray()
+        for chunk in resp.iter_bytes():
+            body += chunk
+            if len(body) > MAX_ERROR_BODY_BYTES or time.monotonic() > deadline:
+                resp.close()
+                return None
+        return _problem_type(resp.headers.get("content-type"), bytes(body))
 
     # -- internals --------------------------------------------------------- #
 

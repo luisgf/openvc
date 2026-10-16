@@ -1,0 +1,270 @@
+{
+  "about": "Recorded responses of the EBSI Core API v1, one entry per file. Bodies are byte-for-byte what the node sent (after HTTP transfer decoding), never edited. See README.md.",
+  "files": {
+    "contract-address/preprod-grnet_attribute_0dc6a111_with-address.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 2165,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/issuers-registry/issuers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io/attributes/0dc6a11138b6f6df1127006fdd4c2122f2b7f64afada725ae2942ae76faef262?contractAddress=0xF18307A7d81644Ae1478263D697Ec08C65fF70BD",
+      "retrieved": "2026-10-16T16:08:46Z",
+      "sha256": "9b7f51a3bc3baa72191d7da5b0908d32893df3bb33310a88150bc28ea621cbd9",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "contract-address/preprod-grnet_attributes_with-address.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 1015,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/issuers-registry/issuers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io/attributes?contractAddress=0xF18307A7d81644Ae1478263D697Ec08C65fF70BD",
+      "retrieved": "2026-10-16T16:08:45Z",
+      "sha256": "74028271a6b8e31fb8b22cee7c3a5f4b1378335abb470b070ef8d32a7575bbfa",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "contract-address/preprod-grnet_did-registry_details.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 136,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/did-registry/details",
+      "retrieved": "2026-10-16T16:07:42Z",
+      "sha256": "29fda6232eef74931219a054ddb9b6b9346e72657df2d5522821f057b16b687e",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "contract-address/preprod-grnet_did_document_with-address.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 1268,
+      "content_type": "application/did+ld+json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/did-registry/identifiers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io?contractAddress=0xd6ad334a8B230266AA8CDCCd38f42e67Fa5a52De",
+      "retrieved": "2026-10-16T16:08:29Z",
+      "sha256": "b5f7c342165033276cf44727d16839146397042454e5dc9899e5a3d6b83ffb3a",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "contract-address/preprod-grnet_issuer_with-address.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 184,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/issuers-registry/issuers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io?contractAddress=0xF18307A7d81644Ae1478263D697Ec08C65fF70BD",
+      "retrieved": "2026-10-16T16:08:30Z",
+      "sha256": "c2f74993e1c2217d44d7995ad5288f91f7afd0ba2565895fd9cb7222e31a25c0",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "contract-address/preprod-grnet_issuers-registry_details.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 203,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/issuers-registry/details",
+      "retrieved": "2026-10-16T16:07:43Z",
+      "sha256": "9d2a04566e54722cd98eff63a85efea1f74f5b06dc1d9ffe242cc3dce9c27900",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "errors/pilot-grnet_404_identifier-not-found.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 158,
+      "content_type": "application/problem+json; charset=utf-8",
+      "node": "api-pilot.ebsi.grnet.gr",
+      "request_url": "https://api-pilot.ebsi.grnet.gr/v1/did-registry/identifiers/did:ebsi:zZeKyEJfUTGwajhNyNX928z",
+      "retrieved": "2026-10-16T16:08:12Z",
+      "sha256": "83d827c46ad937eec6f5d75a0babe104f53cb79ae404f98e1443b1fdfd790270",
+      "status": 404,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "errors/preprod-grnet_400_invalid-contract-address.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 190,
+      "content_type": "application/problem+json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/did-registry/identifiers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io?contractAddress=0x0000000000000000000000000000000000000001",
+      "retrieved": "2026-10-16T16:08:14Z",
+      "sha256": "e28cb763430e08fd48c5a1fcb62e9c1d21b02a338d25434e0260e4937ce9a194",
+      "status": 400,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "errors/preprod-grnet_406_unsatisfiable-accept.json": {
+      "accept": "application/xml",
+      "bytes": 152,
+      "content_type": "application/problem+json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/did-registry/identifiers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io",
+      "retrieved": "2026-10-16T16:08:13Z",
+      "sha256": "16b440817595ba49f1804c2196e7bd47f1c99305c9f45cee10a4b35b6755118c",
+      "status": 406,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "negotiation/preprod-grnet_did_document_did+json.json": {
+      "accept": "application/did+json",
+      "bytes": 1177,
+      "content_type": "application/did+json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/did-registry/identifiers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io",
+      "retrieved": "2026-10-16T16:07:00Z",
+      "sha256": "db515f114d63bd69e1ad63335cebc7ed1e925f5d0fec65fbee37b3994588d617",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-grnet/attribute_0dc6a111.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 2165,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/issuers-registry/issuers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io/attributes/0dc6a11138b6f6df1127006fdd4c2122f2b7f64afada725ae2942ae76faef262",
+      "retrieved": "2026-10-16T16:06:56Z",
+      "sha256": "9b7f51a3bc3baa72191d7da5b0908d32893df3bb33310a88150bc28ea621cbd9",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-grnet/attributes.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 1015,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/issuers-registry/issuers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io/attributes",
+      "retrieved": "2026-10-16T16:06:27Z",
+      "sha256": "74028271a6b8e31fb8b22cee7c3a5f4b1378335abb470b070ef8d32a7575bbfa",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-grnet/did_document.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 1268,
+      "content_type": "application/did+ld+json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/did-registry/identifiers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io",
+      "retrieved": "2026-10-16T16:06:26Z",
+      "sha256": "b5f7c342165033276cf44727d16839146397042454e5dc9899e5a3d6b83ffb3a",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-grnet/issuer.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 184,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/issuers-registry/issuers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io",
+      "retrieved": "2026-10-16T16:06:27Z",
+      "sha256": "c2f74993e1c2217d44d7995ad5288f91f7afd0ba2565895fd9cb7222e31a25c0",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-grnet/issuers_page.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 686,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.grnet.gr",
+      "request_url": "https://api-preprod.ebsi.grnet.gr/v1/issuers-registry/issuers?page[size]=1",
+      "retrieved": "2026-10-16T16:06:22Z",
+      "sha256": "9ce3eee12ed7a8b47ec1b117b4650ba270e6df11c964575791d31c5b22801ca5",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-incm/attribute_0dc6a111.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 2165,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.incm.pt",
+      "request_url": "https://api-preprod.ebsi.incm.pt/v1/issuers-registry/issuers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io/attributes/0dc6a11138b6f6df1127006fdd4c2122f2b7f64afada725ae2942ae76faef262",
+      "retrieved": "2026-10-16T16:06:59Z",
+      "sha256": "9b7f51a3bc3baa72191d7da5b0908d32893df3bb33310a88150bc28ea621cbd9",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-incm/attributes.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 1009,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.incm.pt",
+      "request_url": "https://api-preprod.ebsi.incm.pt/v1/issuers-registry/issuers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io/attributes",
+      "retrieved": "2026-10-16T16:06:59Z",
+      "sha256": "fd18e5d98509d9f2d7ba2d54d38f033a48359f90ef4f6153a7b95260fc51a958",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-incm/did_document.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 1268,
+      "content_type": "application/did+ld+json; charset=utf-8",
+      "node": "api-preprod.ebsi.incm.pt",
+      "request_url": "https://api-preprod.ebsi.incm.pt/v1/did-registry/identifiers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io",
+      "retrieved": "2026-10-16T16:06:57Z",
+      "sha256": "b5f7c342165033276cf44727d16839146397042454e5dc9899e5a3d6b83ffb3a",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-incm/issuer.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 183,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.incm.pt",
+      "request_url": "https://api-preprod.ebsi.incm.pt/v1/issuers-registry/issuers/did:ebsi:zmaEptEHQRAmkJnFV6ki3io",
+      "retrieved": "2026-10-16T16:06:58Z",
+      "sha256": "b1e0541b23276c7db188a21f77e8a5f47588991942a5689895b38c91ce37707e",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "preprod-incm/issuers_page.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 680,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api-preprod.ebsi.incm.pt",
+      "request_url": "https://api-preprod.ebsi.incm.pt/v1/issuers-registry/issuers?page[size]=1",
+      "retrieved": "2026-10-16T16:06:56Z",
+      "sha256": "0a222c30de955f120a97e65c2c36264bc16b8b6f2f7b4f75f73d27947424a05e",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "prod-iti/attribute_030c5a3d.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 2174,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api.ebsi.iti.gr",
+      "request_url": "https://api.ebsi.iti.gr/v1/issuers-registry/issuers/did:ebsi:z262SoSjWAqmXpaGmzqGnJoc/attributes/030c5a3d324c9787cebddae40edd56b320f82306cce0ab23bafeacc6e345d7cc",
+      "retrieved": "2026-10-16T16:07:41Z",
+      "sha256": "cc28388e12e9ca608564b8381e189f68786e1b796bd038ecaf322dd6db16ded2",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "prod-iti/attributes.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 961,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api.ebsi.iti.gr",
+      "request_url": "https://api.ebsi.iti.gr/v1/issuers-registry/issuers/did:ebsi:z262SoSjWAqmXpaGmzqGnJoc/attributes",
+      "retrieved": "2026-10-16T16:07:13Z",
+      "sha256": "1c7ad1fc72403075eea65fb05d58f022f062cca0874fec4e080233fbf9baf095",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "prod-iti/did_document.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 208,
+      "content_type": "application/did+ld+json; charset=utf-8",
+      "node": "api.ebsi.iti.gr",
+      "request_url": "https://api.ebsi.iti.gr/v1/did-registry/identifiers/did:ebsi:z262SoSjWAqmXpaGmzqGnJoc",
+      "retrieved": "2026-10-16T16:07:12Z",
+      "sha256": "763fe6cdfea12a61f65bace756eb5fe6b5b31b6ba893104cf5eef08652e3c38d",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "prod-iti/issuer.json": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 176,
+      "content_type": "application/json; charset=utf-8",
+      "node": "api.ebsi.iti.gr",
+      "request_url": "https://api.ebsi.iti.gr/v1/issuers-registry/issuers/did:ebsi:z262SoSjWAqmXpaGmzqGnJoc",
+      "retrieved": "2026-10-16T16:07:11Z",
+      "sha256": "3dec2ea4822f669e6ace57b5be5665c20cddbe7f8271f5da63dc6078e135416f",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    }
+  },
+  "method": "GET"
+}
