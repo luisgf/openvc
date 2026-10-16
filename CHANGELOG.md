@@ -6,8 +6,81 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.37.0] — unreleased
 
+### Security
+
+- **The EBSI client's allow-list matches an origin, not a host name**
+  ([#318](https://github.com/luisgf/openvc/issues/318), follow-up D1 of
+  [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)). Hardening; no
+  wrong-accept: it narrows the SSRF guard. `EbsiHttpClient._guard_host` admitted any URL
+  whose scheme was `https` and whose host name was in `allowed_hosts`, and never looked at
+  the port, so a URL on an allow-listed host reached the socket on whatever port it named
+  (measured on `main` at 1.36.0, CPython 3.14.8, httpx 0.28.1, `allowed_hosts={"api-pilot.ebsi.eu"}`:
+  `:0`, `:80`, `:8443`, `:9200`, `:65535` and the empty `https://host:/x` were all admitted).
+  The only thing that kept a registry walk off another port was the TIR v5 adapter's own
+  origin pin (`versioning._origin`, #172, #253), which covers three hops of one adapter and
+  nothing else: any other URL given to `get_json` (a status-list URL permitted through
+  `for_ebsi(extra_hosts=...)`, a hand-written fetch) got host-only checking.
+
+  The guard now admits **`https` on a listed host at port 443**, which is what the Trusted
+  Nodes List publishes (every node URL a bare `https://` origin: no path, port or
+  credentials; ADR-0009, "What the Trusted Nodes List is"). An absent port, an empty port
+  (`https://host:/x`) and `:443`, `:0443`, `:00443` are 443. Every other port is
+  `HttpForbiddenHost` (exact class), naming the port, before the cache lookup and before any
+  I/O: `:0` is refused with the rest (`port is None`, never truthiness, so it does not fold
+  into 443, the #253 trap). A URL that carries **userinfo** is `HttpForbiddenHost` too, the
+  empty forms `https://@host/` and `https://:@host/` included: userinfo is outside an origin,
+  the list publishes none, and httpx 0.28.1 sends `https://u:p@host/x` with
+  `Authorization: Basic dTpw`, a header the caller never set. An `@` in a path, query or
+  fragment is not userinfo and still passes. The userinfo refusal names the rule and carries
+  no credentials: its message does not echo them and its `.url` is `None`. Every other
+  refusal keeps `.url` as the URL given, a URL with userinfo included (an `http://` one, or
+  one on another port, say), and the non-https rule's message quotes it as before. Every
+  pre-existing refusal keeps its class and its message.
+
+  `allowed_hosts` is **unchanged**: a set of host names, port 443 implied. `for_ebsi`,
+  `EBSI_HOSTS` and `EBSI_BASE` keep their shape, so every existing caller that stays on 443
+  works unchanged. An entry that spells a scheme or a port (`"host:8443"`, `"https://host"`)
+  never matched and still does not.
+
+  The guard and the adapter pin now read a URL through **one reader**, the private leaf
+  module `openvc_ebsi._url` (`read_origin`, `carries_userinfo`), so a rule about scheme, host
+  or port is written once and `_origin` returns exactly the strings it returned. The pin
+  stays, with its own job: it keeps a walk on the node it started on once an allow-list holds
+  several nodes (ADR-0009 D5), and it stays port-agnostic on purpose (the adapters take any
+  injected `Fetch`). The 8 KiB cap stays in `_origin`; the guard still has none (httpx's own
+  64 KiB backstop stays). Redirects stay off, pinned by a test per status and `Location`
+  shape (same host on another port, relative, scheme-relative, a scheme downgrade, another
+  host): each is one request, `HttpError`, never followed.
+
+  Not changed: a resolved-address guard and DNS rebinding (the rest of threat-model R4, #322),
+  origin strings in `allowed_hosts` (2.0, #74), the cookie jar (#317).
+
 ### Changed
 
+- **A URL on an allow-listed host with a port other than 443 is now `HttpForbiddenHost`**
+  (#318). It used to be fetched. Who is affected: a caller that gives `for_ebsi(extra_hosts=...)`
+  a status-list or other host and then fetches it on a non-default port (`:8443`), and a
+  `DidEbsiResolver` whose `base` names a port (`https://api-pilot.ebsi.eu:8443`) used with
+  the real `EbsiHttpClient`. Whether any consumer does either is not measurable from this
+  repository. What to do instead: serve it on 443 (an absent port is 443; `:443` also works),
+  or give the resolver or the status check a `Fetch` of your own for that host. There is no
+  opt-in for another port, on purpose (see the decisions below).
+- **A URL with userinfo is now `HttpForbiddenHost`** (#318), for example
+  `https://user:password@api-pilot.ebsi.eu/x`, which used to be fetched with a Basic
+  `Authorization` header. Drop the userinfo from the URL.
+
+  **Decisions taken, pending maintainer confirmation** (#318 lists them with the other option
+  of each):
+
+  - *Other ports*: refused with no opt-in (ADR-0009 D1: "host and port 443"). The alternative,
+    a per-entry `host:port` syntax, re-opens the hole.
+  - *Empty port* (`https://host:/x`): admitted, for parity with `_origin`, which already folds
+    it to 443, and because both parsers read it as no port. The alternative is to refuse it
+    as stricter than httpx.
+  - *Userinfo*: refused in the guard, since the list guarantees none. The alternative is to
+    leave it and file it separately.
+  - *Release placement*: a minor (1.37.0), the behaviour change stated here (precedent: #172,
+    #253). Holding it for 2.0 (#74) is the alternative.
 - **`EbsiHttpClient` keeps no cookie jar**
   ([#317](https://github.com/luisgf/openvc/issues/317); ADR-0009, "Where each design can
   be attacked", row "Cookie jar"). The pooled `httpx.Client` used httpx's default jar, so a
@@ -54,6 +127,21 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Tests
 
+- `tests/test_ebsi_guard_origin.py`: every port the issue lists (`:0`, `:00`, `:80`, `:444`,
+  `:4430`, `:8443`, `:9200`, `:65535`) on a lower-case, an upper-case and a mixed-case host,
+  with and without a path and query, through `get_json` and `_guard_host`, against a
+  transport that records every request (none); a cached body is not served for a refused
+  port; the userinfo forms (`.url` is `None` for each, and a recognisable credential is in
+  none of the message, `.url`, args, repr or cause); the admitted forms (`:443`, `:0443`, `:00443`, the empty port,
+  an upper-case scheme and host); the recorded pilot registry end to end through the real
+  client; a resolver `base` on another port refused at the first fetch; trailing dot,
+  IPv6 literals, an ASCII-only host policy (an `xn--` A-label listed and admitted, a
+  U-label never converted), a scheme downgrade, the redirect matrix; a parity table between
+  the guard and the pin; two Hypothesis properties (what the guard admits, httpx fetches from
+  the listed host on 443 with no userinfo; guard and pin agree except on userinfo); and the
+  reader's own contract. `test_guard_refuses_non_ascii_before_urlparse` and
+  `test_origin_refuses_non_ascii_before_urlparse` now patch `openvc_ebsi._url.urlparse`, the
+  one place the URL is parsed.
 - `tests/test_ebsi_http_cookies.py` (#317). The client is built through its real constructor
   with the transport injected by patching `httpx.Client` for the constructor call, because
   the existing EBSI suites assign `client._client = httpx.Client(...)`, which discards the

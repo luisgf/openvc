@@ -212,18 +212,34 @@ finite input", with no explicit constant.
   trusting it** and enforce the anti-swap `sub == uri`. A **caller-injected**
   resolver opts out of the guard — documented, and the reason the secure path is
   the opt-in default (`src/openvc/resolvers.py:4-17`).
-- **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **host allow-list**
-  (`api-pilot`/`api-conformance`/`api.ebsi.eu`), redirects off, TLS-verify on,
+- **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **origin allow-list**
+  (`api-pilot`/`api-conformance`/`api.ebsi.eu`, port 443), redirects off, TLS-verify on,
   5 MiB cap, keeps no cookie jar (a `Set-Cookie` is dropped and nothing is sent back, so a
   node's affinity cookie cannot pin a retry or cross to a sibling host; #317). Purpose is
-  to block registry-supplied `href` pivots; it is a
-  host-name allow-list and does **not** IP-pin (R4). `did:web` must **never** be
+  to block registry-supplied `href` pivots; it matches the host and the port but does
+  **not** IP-pin (R4). `did:web` must **never** be
   resolved through it (its allow-list would reject every legitimate host).
-  Because the allow-list matches the host and not the port, the TIR v5 adapter pins
-  `links.next`, the HATEOAS `attributes` URL and every revision `href` to the
-  listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`; #172). An
-  absent https port is 443 (RFC 3986 §6.2.3), so `:443` and no port are one origin,
-  as they are to httpx; an explicit `:0` or another port stays off-origin (#253).
+  **The guard admits an origin** (#318, v1.37.0): `EbsiHttpClient._guard_host` reads the
+  URL through `openvc_ebsi._url.read_origin` and admits `https` on a listed host at port
+  443 only. An absent or empty port, `:443`, `:0443` and `:00443` are 443; every other
+  port, `:0` included (`port is None`, never truthiness), is `HttpForbiddenHost` before
+  the cache lookup and any I/O, as is a URL that carries userinfo (`carries_userinfo`: an
+  `@` in the authority, the empty forms included; httpx sends it as a Basic
+  `Authorization` header). `allowed_hosts` still holds host names, port 443 implied;
+  origin strings in it are 2.0 work (#74). Before #318 the guard matched the host name
+  alone and every other port of a listed host was fetched. Redirects stay off, and that is
+  what stops a `Location` to another port: the guard never sees it
+  (`test_a_redirect_is_a_failed_read_and_is_never_followed`).
+  The TIR v5 adapter's pin is a second check with its own job, keeping a walk on the node
+  it started on: it pins `links.next`, the HATEOAS `attributes` URL and every revision
+  `href` to the listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`;
+  #172), and stays port-agnostic because the adapters take any injected `Fetch`. The
+  guard and the pin read a URL through the same function, and
+  `test_the_guard_admits_a_url_exactly_when_the_pin_says_it_is_on_the_origin` keeps them in
+  step (the two documented gaps: userinfo, which the pin ignores, and a URL over 8 KiB,
+  which only the pin caps). An absent https port is 443 (RFC 3986 §6.2.3), so `:443` and
+  no port are one origin, as they are to httpx; an explicit `:0` or another port stays
+  off-origin (#253).
   A URL with no origin to compare is treated as off-origin: a typed
   `MalformedRegistryResponse` on the `attributes` hop, skipped on `links.next` and
   `href`. That covers a port that does not parse (`:99999`, `:abc`) and a broken IPv6
@@ -347,9 +363,11 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   bound. *Impact:* CPU/allocation pressure under a large but well-formed
   document; no wrong-accept. *Consider:* an explicit element-count and/or
   cumulative-size cap.
-- **R4 — EBSI client is a host-name allow-list, no IP-pin.**
+- **R4 — EBSI client is an origin allow-list (host and port 443), no IP-pin.**
   `src/openvc_ebsi/http.py` trusts DNS for allow-listed EBSI hosts and does not
-  pin to a validated IP (unlike `fetch.py`). DNS-rebinding of an allow-listed
+  pin to a validated IP (unlike `fetch.py`). Since #318 it admits port 443 only, so the
+  port half of the old host-name allow-list is closed; the address half is not (resolved
+  addresses and DNS rebinding are #322). DNS-rebinding of an allow-listed
   host is out of scope of this guard *by design* (its job is blocking
   registry-supplied `href` pivots), but a reviewer should confirm the threat
   model accepts that.
