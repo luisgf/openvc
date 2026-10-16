@@ -14,13 +14,14 @@ which records the requests behind it. A dated statement is an observation, not a
 and this ecosystem is moving. Where the ADR gives no measurement, the text says *to be
 measured*.
 
-This page ships no node list and no trust anchor, and ADR-0009 rejects vendoring the list in
-the library: a list expires in at most 90 days. A pure list verifier for `openvc_ebsi` is the
-direction the maintainer accepted on 2026-10-16
-([#319](https://github.com/luisgf/openvc/issues/319)); it does not exist yet, so until it
-does, verification is yours. What the library does ship is the fetch half:
-`openvc_ebsi.http.get_tnl_files()` returns the four signed documents as unauthenticated bytes
-through a client that allow-lists `tnl.ebsi.eu` alone (see [Trust anchors](Trust)).
+This page ships no node list, and ADR-0009 rejects vendoring the list in the library: a list
+expires in at most 90 days. The library does ship both halves of the work. The fetch half is
+`openvc_ebsi.http.get_tnl_files()`, which returns the four signed documents as unauthenticated
+bytes through a client that allow-lists `tnl.ebsi.eu` alone. The verify half is
+`openvc_ebsi.nodes.verify_node_list` ([#319](https://github.com/luisgf/openvc/issues/319)): a
+pure, offline check of the chain with one pinned Europeum key-list key, described under
+[Trust anchors](Trust). The sections below say what that verification entails, so you can judge
+it, or do it yourself in your own stack.
 
 ## Where reads go today
 
@@ -191,8 +192,8 @@ custodian key. The key list's own `version` is what to compare, never the node l
 `tnl.json` only; treating the key list the same way is ADR-0009's reasoning, not a publisher
 rule.) Store the pair only after the
 whole chain has been accepted. Nothing can force a caller to store an honest value: starting
-again from no stored pair is always possible, and then only a version floor shipped with a
-verifier would bound replay (ADR-0009 D3, not implemented yet).
+again from no stored pair is always possible, and then only a version floor bounds replay:
+`verify_node_list` ships two (ADR-0009 D3), and it takes your stored pairs as required arguments.
 
 ## From a verified list to an explicit allow-list
 
