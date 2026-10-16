@@ -507,7 +507,11 @@ class _TlsServer:
         self.thread.join(timeout=5)
 
 
-def test_an_oversized_error_body_drops_the_connection_and_a_small_one_keeps_it(tmp_path):
+def test_an_oversized_error_body_drops_the_connection_and_a_small_one_keeps_it(
+        tmp_path, monkeypatch):
+    # The origin guard admits port 443 only (#318) and this server listens on an ephemeral port;
+    # the guard is not what this test is about (tests/test_ebsi_guard_origin.py pins it).
+    monkeypatch.setattr(EbsiHttpClient, "_guard_host", lambda self, url: None)
     with _TlsServer(tmp_path) as server:
         client = EbsiHttpClient(allowed_hosts={"127.0.0.1"}, verify_tls=False, retry=FAST_RETRY,
                                 timeout_s=10.0)
