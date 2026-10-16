@@ -43,11 +43,11 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Iterator
-from urllib.parse import urlparse
 
 from openvc.did.base import DidDocument, DidResolutionError, parse_did_document
 from openvc.observability import logger
 from openvc.proof._verify_common import safe_repr
+from ._url import UrlDoesNotParse, UrlNotVisibleAscii, read_origin
 from .errors import MalformedRegistryResponse
 from .models import Accreditation, IssuerRecord
 
@@ -58,9 +58,6 @@ DecodeJwt = Callable[[str], dict[str, Any]]      # VC-JWT body -> claims (proof 
 # EBSI's registry URLs run to a few hundred characters; this is far below httpx's own
 # 64 KiB URL limit, so the origin pin never passes a URL the client then rejects.
 _MAX_URL_LENGTH = 8192
-# The port an absent one stands for. Only https: the HTTP client refuses anything else, so
-# an http URL keeps an empty port and can never match an https listing anyway.
-_DEFAULT_PORTS = {"https": 443}
 
 # The ``did:ebsi`` identifier of a Legal Entity: ``z`` (multibase base58btc) followed by the
 # base58btc encoding of 17 bytes, a version byte (``1``) and 16 random bytes. EBSI DevHub,
@@ -79,10 +76,13 @@ _DID_EBSI = re.compile(r"did:ebsi:z[1-9A-HJ-NP-Za-km-z]{22,23}")
 
 def _origin(url: str) -> str:
     """``scheme://host:port`` (lowercased) — used to keep pagination on the listing's
-    own origin. A belt-and-suspenders check on top of the HTTP client's SSRF allow-list:
-    a ``links.next`` cursor may only advance within the same web origin as the listing —
-    the port is part of that origin, so a ``next`` that only changes the port is refused
-    (the SSRF host allow-list matches host but not port).
+    own origin. A second check behind the HTTP client's SSRF allow-list, which admits only
+    https on port 443 of a listed host (#318): this one keeps a walk on the node it started
+    on. A ``links.next`` cursor may only advance within the same web origin as the listing —
+    the port is part of that origin, so a ``next`` that only changes the port is refused.
+    It is port-agnostic on purpose (the adapters take any injected ``Fetch``): the 443 rule
+    belongs to the client, not here. The URL is read by ``openvc_ebsi._url.read_origin``,
+    the reader the client's guard uses too.
 
     A URL with no origin to compare — an out-of-range or non-numeric port, a broken IPv6
     literal — raises a typed :class:`MalformedRegistryResponse`, never a bare
@@ -98,17 +98,13 @@ def _origin(url: str) -> str:
     connect ``:0`` to 443, so refusing it is stricter than the client, and fails closed."""
     if len(url) > _MAX_URL_LENGTH:
         raise MalformedRegistryResponse("registry URL is too long")
-    if not (url.isascii() and url.isprintable()) or " " in url:
-        raise MalformedRegistryResponse("registry URL is not visible ASCII")
     try:
-        p = urlparse(url)                 # raises on a broken IPv6 literal
-        port = p.port                     # raises on a bad port
-    except ValueError as exc:
-        raise MalformedRegistryResponse("registry URL does not parse") from exc
-    scheme = p.scheme.lower()
-    if port is None:                      # `is None`: port 0 is falsy, not absent
-        port = _DEFAULT_PORTS.get(scheme)
-    return f"{scheme}://{(p.hostname or '').lower()}:{'' if port is None else port}"
+        scheme, host, port = read_origin(url)
+    except UrlNotVisibleAscii:
+        raise MalformedRegistryResponse("registry URL is not visible ASCII") from None
+    except UrlDoesNotParse as exc:
+        raise MalformedRegistryResponse("registry URL does not parse") from exc.__cause__
+    return f"{scheme}://{host}:{'' if port is None else port}"
 
 
 def _on_origin(url: str, origin: str) -> bool:
@@ -351,10 +347,11 @@ class TirV5(TirAdapter):
         if has_attrs:
             # ADR-0001 D6: the v5 issuer response carries the attributes URL in its
             # body (HATEOAS); follow it rather than reconstructing the path.
-            # The HTTP client allow-list is hostname-only; `links.next` is already
-            # pinned to scheme://host:port. The same pin must apply to `attributes`
-            # and each `href` or a compromised body can pivot to another port on
-            # an allow-listed EBSI host (#172). An `attributes` URL that does not
+            # The HTTP client allow-list admits only port 443 of a listed host (#318),
+            # but a walk must also stay on the node it started on, so `links.next` is
+            # pinned to scheme://host:port. The same pin applies to `attributes`
+            # and each `href` or a compromised body can pivot to another node of
+            # an allow-list (#172). An `attributes` URL that does not
             # parse raises from `_origin`; an `href` or `next` that does not parse is
             # off-origin, so it is skipped (#243).
             listing_origin = _origin(self.issuer_url(base, did))
