@@ -779,15 +779,67 @@ def test_an_attribute_revision_without_an_attribute_object_is_malformed(lane, at
         w.walk()
 
 
-@pytest.mark.parametrize("body", [None, ""])
-def test_an_absent_or_empty_attribute_body_is_still_an_accreditation_without_a_token(lane, body):
-    # unchanged behaviour: nothing to decode; recursive trust refuses it for lack of a token
+NO_USABLE_BODY = [
+    {"body": None, "issuerType": "TI", "tao": ROOT},
+    {"body": "", "issuerType": "TI", "tao": ROOT},
+    {"tao": ROOT},                                                        # no body key
+    {"hash": "h", "tao": ROOT},                                           # hash only
+]
+
+
+@pytest.mark.parametrize("attribute", NO_USABLE_BODY,
+                         ids=["body-none", "body-empty", "no-body-key", "hash-only"])
+def test_an_attribute_object_with_no_usable_body_is_still_a_wildcard_by_design(lane, attribute):
+    # The missing-`attribute`-object check above is a SHAPE check; it does not remove the
+    # wildcard. An attribute OBJECT with nothing to decode is an accreditation with no type
+    # restriction, which single-level trust accepts for any credential (its documented policy:
+    # that mode trusts the node's list); recursive trust refuses it for lack of a token.
     w = World(lane)
     w.routes[w.attributes_url] = {"items": [w.item(1)], "total": 1}
-    w.routes[w.href(1)] = {"attribute": {"body": body, "issuerType": "TI"}}
+    w.routes[w.href(1)] = {"attribute": attribute}
     record = w.walk()
-    assert record.accreditations[0].credential_jwt == body
+    accreditation = record.accreditations[0]
+    assert accreditation.credential_jwt == attribute.get("body")
+    assert accreditation.credential_types == ()
+    assert evaluate_issuer_trust(record, ["AnyCredentialType"]) is accreditation
+    resolver = DidEbsiResolver(w.fetch, _decode, base=w.base, didr=DidRegistryV5(), tir=w.tir)
+    with pytest.raises(AccreditationInvalid, match="no raw accreditation token") as exc:
+        verify_trust_chain(DID, ["AnyCredentialType"], resolver=resolver,
+                           proof_suite=VcJwtProofSuite(), anchors={OTHER_DID})
+    assert type(exc.value) is AccreditationInvalid
+
+
+def test_a_body_whose_claims_name_no_accredited_for_is_the_same_wildcard(lane):
+    # why rejecting a body-less attribute could not close the wildcard: a body that decodes to
+    # claims with no `accreditedFor` reads the same way
+    w = World(lane)
+    w.routes[w.attributes_url] = {"items": [w.item(1)], "total": 1}
+    w.serve_revision(w.href(1), 1)
+    resolver = DidEbsiResolver(w.fetch, lambda body: {"vc": {"credentialSubject": {}}},
+                               base=w.base, didr=DidRegistryV5(), tir=w.tir)
+    record = resolver.issuer_record(DID)
+    assert record.accreditations[0].credential_jwt == "jwt-1"
     assert record.accreditations[0].credential_types == ()
+    assert evaluate_issuer_trust(record, ["AnyCredentialType"]) is record.accreditations[0]
+
+
+def test_non_object_listing_items_are_skipped_and_the_valid_one_is_read(lane):
+    # a registry's `items` may hold anything: only an object can be an {id, href} entry
+    w = World(lane)
+    w.routes[w.attributes_url] = {"items": ["abc", 5, 1.5, None, True, [1], ["x", {"id": "y"}],
+                                            w.item(1)], "total": 1}
+    w.serve_revision(w.href(1), 1)
+    record = w.walk()
+    assert [a.attribute_id for a in record.accreditations] == [f"{1:064x}"]
+    assert w.calls == [w.issuer_url, w.attributes_url, w.href(1)]
+
+
+def test_a_listing_of_only_non_object_items_reads_no_accreditation(lane):
+    w = World(lane)
+    w.routes[w.attributes_url] = {"items": ["abc", 5, None, [1]], "total": 4}
+    record = w.walk()
+    assert record.accreditations == ()
+    assert w.calls == [w.issuer_url, w.attributes_url]
 
 
 # --------------------------------------------------------------------------- #
@@ -893,6 +945,22 @@ NAMING_ANOTHER = [
     "?contractAddress=",
     f"?contractAddress={ADDRESS.lower()}",            # exact comparison, no case folding
     f"?contractAddress={ADDRESS}%00",
+    # a name that CONTAINS the parameter name is refused, not read as some other parameter:
+    f"?contractAddress[]={OTHER_ADDRESS}",            # bracket suffix (qs-style array)
+    f"?contractAddress%5B%5D={OTHER_ADDRESS}",        # the same, percent-encoded
+    f"?contractAddress[0]={OTHER_ADDRESS}",
+    f"?contractAddress[]={ADDRESS}",                  # the configured value, in another spelling
+    f"?contractAddress.x={OTHER_ADDRESS}",
+    f"?contractAddress%20={OTHER_ADDRESS}",           # trailing space
+    f"?contractAddress+={OTHER_ADDRESS}",
+    f"?%00contractAddress={OTHER_ADDRESS}",
+    f"?contractAddressX={OTHER_ADDRESS}",
+    "?contractAddressX=1",
+    "?contractAddress",                               # no `=`: a blank value
+    # a ';' is refused whatever the query names (a server may read it as a separator):
+    f"?x=1;contractAddress={OTHER_ADDRESS}",
+    f"?x=1;contractAddress={ADDRESS}",
+    "?a=1;b=2",
 ]
 
 
@@ -950,10 +1018,20 @@ def test_without_a_configured_address_links_are_followed_as_the_node_wrote_them(
     (f"https://h/p?contractAddress={ADDRESS}", f"https://h/p?contractAddress={ADDRESS}"),
     (f"https://h/p?a=1&contractAddress={ADDRESS}&b=2",
      f"https://h/p?a=1&contractAddress={ADDRESS}&b=2"),
-    ("https://h/p?contractAddressX=1", f"https://h/p?contractAddressX=1&contractAddress={ADDRESS}"),
+    # a percent-encoded ';' is data in every server, so it neither separates nor is refused
+    ("https://h/p?x=1%3BcontractAddress=0xOTHER",
+     f"https://h/p?x=1%3BcontractAddress=0xOTHER&contractAddress={ADDRESS}"),
+    ("https://h/p;a=1?x=1", f"https://h/p;a=1?x=1&contractAddress={ADDRESS}"),   # a path ';'
 ])
 def test_on_contract_address_binds_or_keeps(url, expected):
     assert _on_contract_address(url, ADDRESS) == expected
+
+
+@pytest.mark.parametrize("query", NAMING_ANOTHER)
+def test_on_contract_address_refuses_every_spelling_of_another_instance(query):
+    with pytest.raises(MalformedRegistryResponse, match="contract address") as exc:
+        _on_contract_address(f"https://h/p{query}", ADDRESS)
+    assert type(exc.value) is MalformedRegistryResponse
 
 
 # --------------------------------------------------------------------------- #

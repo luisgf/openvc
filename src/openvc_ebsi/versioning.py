@@ -207,24 +207,35 @@ def _on_contract_address(url: str, address: str) -> str:
     ``href`` (recorded, ``tests/fixtures/ebsi/core-v1/contract-address/``), so a followed
     link names none and a node would read it against its *default* instance: a walk
     configured for another one would mix two. A link that names none therefore gets the
-    configured address as its last query parameter; one that names the configured address
-    is left as it is; one that names another, however spelled, is
-    :class:`MalformedRegistryResponse`. The parameter name is compared case-insensitively
-    and after percent-decoding, so a variant spelling cannot slip a different instance
-    past the check. The query is otherwise kept exactly as the node wrote it. Called only
-    on a URL that :func:`_origin` has already accepted, so it is visible ASCII, short and
-    parseable."""
+    configured address as its last query parameter; one that names the configured address,
+    spelled exactly ``contractAddress``, is left as it is; one that names another is
+    :class:`MalformedRegistryResponse`. A query parameter counts as naming the instance
+    when its percent-decoded name, case-folded, *contains* ``contractaddress``, so these are
+    all refused rather than read as some other parameter: another case, a percent-encoded
+    name, a repeat, a bracket suffix (``contractAddress[]``, ``contractAddress[0]``) and a
+    prefix or suffix on the name (``contractAddress.x``, a trailing space, ``%00``). A ``;``
+    anywhere in the query is refused too, whatever the query names: a server that reads it as
+    a separator would see a parameter this function does not. That is the list of spellings
+    covered, not a claim about every way a server may read a name; the configured address is
+    also on the issuer URL, and the node is the one registry the walk is already pinned to.
+    The query is otherwise kept exactly as the node wrote it. Called only on a URL that
+    :func:`_origin` has already accepted, so it is visible ASCII, short and parseable."""
     parts = urlsplit(url)
+    if ";" in parts.query:
+        raise MalformedRegistryResponse(
+            "registry link query uses ';', so a contract address in it cannot be told apart")
+    needle = _CONTRACT_ADDRESS_PARAM.casefold()
     named = [(name, value) for name, value in parse_qsl(parts.query, keep_blank_values=True)
-             if name.lower() == _CONTRACT_ADDRESS_PARAM.lower()]
+             if needle in name.casefold()]
     if not named:
         query = f"{parts.query}&" if parts.query else ""
         return urlunsplit(parts._replace(query=f"{query}{_CONTRACT_ADDRESS_PARAM}={address}"))
     for name, value in named:
         if name != _CONTRACT_ADDRESS_PARAM or value != address:
             raise MalformedRegistryResponse(
-                f"registry link names contract address {safe_repr(value)}, "
-                f"not the configured {safe_repr(address)}")
+                f"registry link names contract address {safe_repr(value)} as "
+                f"{safe_repr(name)}, not the configured {safe_repr(address)} as "
+                f"{_CONTRACT_ADDRESS_PARAM}")
     return url
 
 
@@ -488,8 +499,12 @@ class _TirAttributeWalk(TirAdapter):
                 # (whose `accreditedFor` carries the authorised types).
                 attribute = revision.get("attribute")
                 if not isinstance(attribute, dict):
-                    # not `{}`: an empty attribute reads as an accreditation with no type
-                    # restriction, which single-level trust accepts for any credential
+                    # a shape check: a revision with no attribute object is malformed, not an
+                    # empty attribute. It does not remove the wildcard: an attribute object with
+                    # no body, or a body whose claims name no `accreditedFor`, is still an
+                    # accreditation with no type restriction, which single-level trust accepts
+                    # for any credential (its documented policy, `evaluate_issuer_trust`);
+                    # recursive trust refuses it unless a verifiable token backs it
                     raise MalformedRegistryResponse(
                         "TIR attribute revision has no attribute object")
                 body = attribute.get("body")
