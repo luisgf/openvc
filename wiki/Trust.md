@@ -150,7 +150,7 @@ from openvc_ebsi.versioning import DidEbsiResolver
 from openvc_ebsi.verify import verify_ebsi_badge
 
 suite = VcJwtProofSuite()
-with for_ebsi("pilot") as http:
+with for_ebsi("legacy-pilot") as http:
     resolver = DidEbsiResolver(http.get_json, decode_jwt=suite.peek_claims)
     result = verify_ebsi_badge(token, resolver=resolver, proof_suite=suite,
                                expected_types=["VerifiableAttestation"])
@@ -179,12 +179,32 @@ with for_ebsi("pilot") as http:
   every API version), before any `attributes` page or revision is fetched, so
   `IssuerRecord.did` is the DID the registry answered for. The `attributes` / `href` path
   is still pinned to the registry's origin, not to the issuer.
-- **Environment-aware**: `for_ebsi("pilot" | "conformance" | "production")` seeds
-  the allow-list from the chosen EBSI environment — `production` (`api.ebsi.eu`) is
-  registered for EBSI's Q4 2026 business launch. Pass `extra_hosts` to also permit an
-  issuer's status-list origin. The v5 Trusted Issuers Registry `/attributes` listing
-  is paginated, and openvc walks every page (bounded, and immune to EBSI's
-  self-referential `next` cursor) so an issuer with many accreditations is read in full.
+- **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
+  named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
+  recorded on 2026-10-16
+  ([ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)):
+  - `legacy-pilot` is `api-pilot.ebsi.eu`, the legacy per-service lane (the v5 adapters), and
+    the only place the recorded fixtures and the weekly smoke test are valid.
+  - `pilot` is the same host and the same lane, kept as it was and not deprecated. EBSI now
+    also uses "pilot" for its Core API pilot, which is a different ledger that this name does
+    not reach; `legacy-pilot` says which one you mean. ADR-0009's planned end state gives
+    `pilot` the Core API meaning, at the earliest in the 2.0 window
+    ([#74](https://github.com/luisgf/openvc/issues/74); not decided yet), so prefer
+    `legacy-pilot` in code that will outlive a major upgrade.
+  - `conformance` (`api-conformance.ebsi.eu`) and `production` (`api.ebsi.eu`) are kept as
+    they were, with the same allow-list rule, but a client built from either is not known to
+    complete a request today. One 12-second probe of the conformance host (a single attempt
+    from one place, so possibly transient) completed no TCP connection; the certificate the
+    production host presented did not cover its name, and none of the 45 node URLs in version
+    4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a client fails
+    closed.
+  - Any other name (another case, an empty string, a value that is not a string) raises
+    `UnknownEbsiEnvironment`, which is also a `ValueError`.
+
+  Pass `extra_hosts` to also permit an issuer's status-list origin. The v5 Trusted Issuers
+  Registry `/attributes` listing is paginated, and openvc walks every page (bounded, and
+  immune to EBSI's self-referential `next` cursor) so an issuer with many accreditations is
+  read in full.
 - **Version drift, contained**: every EBSI API version specific lives behind
   one adapter in `openvc_ebsi.versioning`; the trust logic never sees wire
   formats. Conformance is pinned by recorded pilot fixtures, plus an opt-in

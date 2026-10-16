@@ -4,6 +4,122 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.0] — unreleased
+
+### Added
+
+- **`legacy-pilot`, a name for the legacy EBSI pilot lane**
+  ([#325](https://github.com/luisgf/openvc/issues/325), Part 1 of 3; refs
+  [#113](https://github.com/luisgf/openvc/issues/113)). `for_ebsi("legacy-pilot")` seeds
+  exactly the allow-list `for_ebsi("pilot")` always did, `{"api-pilot.ebsi.eu"}`: the legacy
+  per-service lane (the v5 adapters), the only place the recorded fixtures and the weekly
+  smoke test are valid. `EBSI_HOSTS["legacy-pilot"]` and `EBSI_BASE["legacy-pilot"]` are a
+  fourth key in each dict (same `dict[str, str]` type; the first three keep their keys, values
+  and order). **Why a new name:** EBSI now also uses "pilot" for its Core API pilot, which
+  ADR-0009 measured to be a different ledger (the legacy DID answers 404 on its nodes), so
+  `pilot` no longer says which pilot is meant. `legacy-pilot` does.
+- **`openvc_ebsi.environments`**, a new module that imports no HTTP library (it works
+  without the `ebsi` extra, and `versioning.py` reads it). It holds the environment-name
+  table as data: a frozen `EbsiEnvironment(name, fixed_host)` (`fixed_host=None` means an
+  environment with no fixed host), the read-only `ENVIRONMENTS` mapping,
+  `fixed_hosts()` and `LEGACY_PILOT_HOST` / `LEGACY_PILOT_BASE`. `http.EBSI_HOSTS` is now its
+  fixed-host projection and `EBSI_BASE` derives from that, both still plain `dict`s under the
+  same names. The table is data, never a version ladder: API-version specifics stay behind
+  the adapters in `versioning.py`.
+- **`UnknownEbsiEnvironment(EbsiError, ValueError)`** in `openvc_ebsi.errors`, raised by
+  `for_ebsi` for a name the table does not hold: an unknown, wrong-case or empty string, or a
+  value that is not a `str` (`None`, a number, `[]`, `{}`, `bytes`). It is the smallest typed
+  form that keeps `except ValueError` working. The message names the accepted names and shows
+  the offending value through the bounded `safe_repr`.
+
+### Changed
+
+- **`for_ebsi()` now defaults to `"legacy-pilot"`** (it was `"pilot"`), with the identical
+  allow-list `{"api-pilot.ebsi.eu"}`: a bare `for_ebsi()` builds the same client as before and
+  warns nothing. It is not a default that changes a security decision (the versioning
+  policy's MAJOR case), so it ships in a MINOR. `DidEbsiResolver`'s default `base` now reads
+  the same table (`openvc_ebsi.environments.LEGACY_PILOT_BASE`) instead of repeating the
+  literal; the value, `https://api-pilot.ebsi.eu`, is unchanged. The opt-in weekly smoke
+  (`test_live_resolve`) now defaults `OPENVC_EBSI_ENV` to `legacy-pilot`.
+- **A name `for_ebsi` does not know is now `UnknownEbsiEnvironment`, which is a `ValueError`.**
+  `except ValueError` keeps catching it, as the versioning policy's rule for a more specific
+  subclass of the old class requires (MINOR). Code that compares the exact class
+  (`type(exc) is ValueError`) must compare `UnknownEbsiEnvironment`, or catch `ValueError`.
+  **One thing that used to succeed now raises:** a value that is not a `str` but hashes and
+  compares equal to a name (`collections.UserString("pilot")`) was accepted by the old
+  dictionary lookup; it is refused after the `isinstance(str)` check. Pass `str(value)`. A
+  `str` or a `str` subclass (a `(str, Enum)` member, say) that holds a name is unaffected.
+- **Defaults taken, pending maintainer confirmation.** #325 leaves three switches to the
+  maintainer; Part 1 ships only the unconditional one and takes the non-breaking option on the
+  other two, so nothing is deprecated or removed here and each can still go either way:
+  1. *Switch 1, add `legacy-pilot`:* done, as above.
+  2. *Switch 2, `pilot`: 2a (taken)* leaves `pilot` silent and documents it as the same lane
+     as `legacy-pilot`. The alternative, 2b, would emit a `DeprecationWarning` naming
+     `legacy-pilot` from `for_ebsi("pilot")` (MINOR; the versioning policy's steps 1 to 3 would
+     apply: `### Deprecated` here with the earliest removal, removal only at a MAJOR).
+     A test pins that `pilot` is silent, so adding the warning later is a conscious edit.
+  3. *Switch 3, `production` and `conformance`: 3a (taken)* keeps both rows, with the same
+     allow-list rule, and documents them plainly (`wiki/Trust.md`, `for_ebsi`'s docstring,
+     `environments.py`). The alternatives: 3b, a `DeprecationWarning` from `for_ebsi` (there is
+     no replacement to name for either until the node-based client of #324, so the message
+     would have none); 3c, `for_ebsi` refuses, keeping the keys (a documented, pinned call that
+     built a client would raise, which the versioning policy reads as MAJOR unless the
+     CHANGELOG records a narrow decision, as 1.35.0 did for `did:key`); 3d, remove the keys
+     (MAJOR, and `test_for_ebsi_production_environment_is_registered` pins them). A test pins
+     that both are silent.
+
+  **Migration notes, whichever option is chosen later.** (i) In 1.x the Core API pilot that the
+  Trusted Nodes List calls `pilot` has no `for_ebsi` spelling, because `pilot` stays the legacy
+  lane until a MAJOR release. The node-based constructor planned in #324 takes the list's own
+  spelling, so `for_ebsi` need not carry it; a 1.x spelling would be a new name for the
+  maintainer to choose (ADR-0009's end state calls it `pilot`). (ii) At that MAJOR (the 2.0
+  window, [#74](https://github.com/luisgf/openvc/issues/74); not decided), `pilot` may change
+  meaning. A caller who ignored the warning (2b) or the documentation (2a) would then read a
+  different ledger, where ADR-0009 measured the legacy DID to be a 404. Use `legacy-pilot`
+  today to say which one you mean.
+
+### Fixed
+
+- **`for_ebsi` no longer lets bare exceptions escape for a name it does not hold**
+  ([#325](https://github.com/luisgf/openvc/issues/325)). An unhashable name (`[]`, `{}`)
+  was a bare `TypeError`; a `str` subclass whose `__hash__` raises was that exception, and an
+  object whose `repr()` raises escaped from the very `raise` meant to refuse it; a long string
+  was echoed in full (10 000 characters came back as a 10 028-character message, measured on
+  v1.36.0). All of these are now `UnknownEbsiEnvironment` (an `EbsiError`, an `OpenvcError` and
+  a `ValueError`): the name is checked with `isinstance(str)`, a `str` subclass is read as the
+  characters it holds (so what is checked is what is looked up, the #266 rule), and the
+  message cuts the value through `safe_repr`. A `str` subclass that holds a known name, such
+  as a `(str, Enum)` member, still selects its environment.
+
+### Docs
+
+- `wiki/Trust.md` says what each environment name means, from what ADR-0009 measured on
+  2026-10-16, and no longer says `production` (`api.ebsi.eu`) is "registered for EBSI's Q4
+  2026 business launch": the certificate that host presented did not cover its name, and none
+  of the 45 node URLs in version 4 of the Trusted Nodes List is under `ebsi.eu`. A single
+  fresh `GET https://api-conformance.ebsi.eu/` on 2026-10-16 (one attempt, one vantage point)
+  again completed no TCP connection inside a 12-second limit (curl exit 28), so `conformance`
+  is documented as not known to complete a request, and possibly transient. No code changed
+  for either: both rows are kept (switch 3a above). `docs/audit/threat-model.md` lists the
+  names; `docs/audit/assurance.md` has the row for the typed error. The stale docstring and
+  heading in `tests/test_ebsi_verifier.py` that called the live smoke a "conformance" test,
+  and the weekly workflow's job name, now say it resolves a DID on the legacy pilot lane.
+  Recording the outcome of ADR-0009's open question 4 waits for the maintainer.
+
+### Tests
+
+- `tests/test_ebsi_environments.py`: the baseline first (the three names and hosts, the
+  default and `pilot` allow-lists, `extra_hosts`, a foreign host refused before any I/O, the
+  bare `ValueError` / `TypeError` refusals, the resolver's default base, and the class a
+  first request through `for_ebsi("production")` raises when the connection fails,
+  `HttpTransientExhausted`, measured), written and green on v1.36.0; then the refusals
+  (`UnknownEbsiEnvironment`, exact class, for seven inputs and twelve more shapes, a
+  bounded message, a hostile `repr` and a hostile `str` subclass), the controls (`legacy-pilot`
+  seeds the same allow-list, the default is pinned by the signature, every known name is silent
+  under `warnings.simplefilter("error")`), the table (read-only, bare lower-case hosts, a row
+  with no fixed host is not projected) and an import of `environments`, `errors` and
+  `versioning` with `httpx` blocked.
+
 ## [1.36.0] — 2026-10-16
 
 ### Added
