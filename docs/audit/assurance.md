@@ -39,6 +39,18 @@ strings, trailing byte, bad head, bool; no-base multibase, bad-b58, garbage) —
 each asserted to raise the module's typed error. There is no external seeded
 corpus directory; "corpus" = these parametrized lists.
 
+The EBSI exact-bytes path (`EbsiHttpClient.get_bytes`, #320) has no format parser of its
+own, but three things it hands on are attacker-influenced, so `test_ebsi_http_bytes.py`
+fuzzes them with Hypothesis (300 examples each): (1) arbitrary bytes, and valid or damaged
+`gzip` / `deflate` streams split into arbitrary chunks, under a random cap, must give
+exactly what a whole-buffer `zlib` decode gives within the cap, or an `OpenvcError`, never
+a bare `zlib.error` or `OverflowError`; (2) an arbitrary `Content-Encoding` or received
+`ETag` header (raw bytes) must give a body or a typed error, with a kept `ETag` always a
+plausible header value and the body intact; (3) an arbitrary supplied `etag` (text,
+surrogates, integers, bytes, floats) is an `HttpError` before any request or is sent
+verbatim, never anything else. The decode bound itself is pinned by the 256 MiB gzip and
+zlib bomb (260 KB on the wire) with a `tracemalloc` peak, not by the exception alone.
+
 ## 2. Coverage map — the "harden next" list
 
 "Property-fuzz" = a Hypothesis `@given` arbitrary-input harness. Only the
@@ -196,6 +208,28 @@ Example-based, but broad. Representative anchors:
   `links.next` or `href`, is typed or skipped, never fetched (`test_ebsi_verifier.py`).
   The client refuses such a URL, typed, before any request; a hostile token `iss`
   through `verify_ebsi_badge` included (`test_ebsi_http.py`, `test_ebsi_verifier.py`).
+- **EBSI exact-bytes path and the list host (plugin)** — `get_bytes` shares the request
+  loop of `get_json`, and the guard, `InvalidURL`, retry, 404 and unexpected-status rows
+  run against both with the same exact classes (`test_ebsi_http.py`). On the bytes path:
+  a 301/302/303/307/308 to an allow-listed host, a private address or loopback is an
+  `HttpError` after one request, `Location` never requested and body never read; a wire
+  body or a `Content-Length` over the cap stops the iterator before the cap is passed and
+  `max_bytes` can only lower the client's; a gzip and a zlib bomb (260 KB, 256 MiB
+  inflated), also split over many raw chunks, is refused at about 2 MiB peak where
+  `get_json` peaks at 557 MiB on the same bytes; `br`, `zstd`, `x-gzip`, `gzip, gzip` and
+  `gzip, br` are `HttpUnexpectedEncoding`; a corrupt, truncated, over-long or raw-deflate
+  stream is `MalformedRegistryResponse`, not retried; an unsolicited 304, 403, 204 and 206
+  are `HttpError` with the body unread; a `Retry-After: 86400` sleep is clamped to
+  `deadline_s`; a supplied `etag` that is empty, `*`, spaced, CR/LF, non-ASCII, 257
+  characters or not a `str` is refused before any request; and the body is byte-exact (all
+  256 values, CRLFs, a NUL, a BOM) through `identity`, `gzip` and `deflate`, with the
+  cache never written. `for_tnl()` refuses every host but `tnl.ebsi.eu` (`api.ebsi.iti.gr`,
+  `api-pilot.ebsi.eu`, `tnl.ebsi.eu.example`, `tnl.ebsi.eu@api.ebsi.iti.gr`) and takes no
+  `allowed_hosts`; `for_ebsi("pilot")` refuses `tnl.ebsi.eu`; `get_tnl_files` refuses a
+  client that allows any other host, or none, before any request, issues exactly four
+  requests in a fixed order (never for the pinned key), is all-or-nothing, keeps no
+  cookie, and replays the recorded `tnl.ebsi.eu` header sets
+  (`test_ebsi_http_bytes.py`, `tests/fixtures/ebsi/tnl_response_headers.json`).
 - **OpenID4VP `vp_token` (W3C lanes)** — a victim's credential re-wrapped in another
   holder's correctly bound `jwt_vc_json` / `ldp_vc` VP, including a KB-stripped
   SD-JWT VC, enveloped or over the DC API; a nested SD-JWT VC whose KB-JWT names
@@ -265,6 +299,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
+- `#320` — *new attacker-influenced network path, hardening, no wrong-accept* — the Trusted Nodes List needs a GET that returns exact bytes (the signatures cover the served bytes; two of the four files are binary), which `get_json` cannot be: it parses, caches and refuses binary. Measured on the existing path: `get_json` appends a chunk and only then checks its cap, and `iter_bytes` yields an already-decoded chunk, so a 260 935-byte gzip body that inflates to 256 MiB peaks at 557 MiB before the 1 KiB cap fires. The new `EbsiHttpClient.get_bytes` reads with `iter_raw`, checks the wire size and the `Content-Length` before appending, decodes at most one `gzip` / `deflate` coding with `zlib` asked for `remaining + 1` bytes per call (about 2 MiB peak on the same bomb), refuses any other coding (`HttpUnexpectedEncoding`) and a corrupt, truncated or over-long stream (`MalformedRegistryResponse`), never reads a non-200 body, accepts a 304 only for a validator that was sent, validates a supplied `etag` as a header value before any I/O (a non-ASCII value would escape httpx's header encoding as a bare `UnicodeEncodeError`, the class #246 closed) and drops a received one that is not, and clamps a `Retry-After` sleep to an overall `deadline_s`. The list is fetched by a separate client allow-listing `tnl.ebsi.eu` alone. `get_json` is unchanged: its per-chunk inflation, uncapped error-body drain and unbounded `Retry-After` sleep remain and are tracked separately (v1.37.0; `test_ebsi_http_bytes.py`, `test_ebsi_http.py`)
 - `#311` — *minted what the verifier refuses, no wrong-accept* — `build_status_list_credential` accepted an `issuer` object or an inline `@context` object of any depth, while the VC-JWT lane decodes the payload through the bounded loader (`openvc._json.loads`, #213), which refuses nesting past 100 levels in the whole payload, so an object of 99 levels (depths to 30 000 were measured) built, signed and was refused by `default_status_list_resolver` with `MalformedToken`; found by the review of #310, the class #230, #269 and #309 closed. The builder now raises `StatusListError` at build time, before anything is signed, for an `issuer` nested past 98 levels or a `contexts[N]` object past 97 (the object's own root is level 1; a context entry sits one container deeper: payload, vc, `@context`, entry), the numbers measured against the real lane for dict, list, tuple and mixed chains at depths 95 to 102 and held by a parity test. The test is the loader's own `nesting_exceeds`, run on the JSON the object encodes to (the snapshot #309's marker check reads), so the two limits cannot drift and a `Mapping` that the encoder writes as `null` is judged by the JSON, not by its depth as a Python object; the message names the field and the cap and never echoes the object. `eddsa-jcs-2022` takes one more level in each field (99 and 98) and the builder, which cannot know the lane, refuses that level too: the #309 decision (one rule on every lane), pinned in the tests (v1.35.1; `test_status_builder_nesting_cap.py`)
 - `#228`, `#232` — **wrong-accept, conditional on a misconfigured verifier** — `leeway_s`, the clock-skew tolerance, was read a different way on every lane. `NaN` (every comparison is `False`), `Infinity` and a huge `int` switched expiry off: an expired or not-yet-valid item verified on VC-JWT (the PyJWT lane and ML-DSA), VP-JWT, the status-list token and the `iat` freshness check, and Data Integrity saturated an oversized leeway to `timedelta.max`; a string or `None` was a bare `TypeError` on the ML-DSA VC-JWT, VP-JWT, the status-list token and `check_iat_freshness`, which aborts `verify_many`. An attacker cannot set `leeway_s`, but config files and environment variables produce `NaN` and `inf` easily (`json.loads` and `float()` both parse them). One rule now, `leeway_seconds`: a whole number of seconds from 0 to `MAX_LEEWAY_S` (one day), an `int` that is not a `bool`, checked first at every entry point (`VerificationPolicy`, each suite's constructor, the status-list token and its four resolver factories, the OpenID4VCI key-proof check, the mdoc and WRPRC verifiers, `verify_vp_token` and `verify_encrypted_vp_response`) with that entry point's own error, and again as a backstop in `check_jwt_temporal`, `check_iat_freshness` and `utc_window`, which no longer clamp or saturate. Behaviour change: a float, a negative, a `bool` or anything over a day that a lane took before is refused (v1.35.0; `test_leeway_validation.py`)
 - `#309` — *minted what the verifier refuses, no wrong-accept* — `build_status_list_credential` accepted any member of an `issuer` object or an inline `@context` object, while `VcJwtProofSuite.verify` refuses a payload with a member named `_sd`, `_sd_alg` or `...` at any depth (#189, #291), so `issuer={"...": None, "id": did}` built, signed as a VC-JWT and was refused by `default_status_list_resolver` with `MalformedToken`; found as a flaky Hypothesis counterexample in `test_property_whatever_the_builder_accepts_the_pipeline_accepts`, whose strategy drew the marker name rarely. The builder now raises `StatusListError` at build time, before anything is signed, for such an `issuer` or `contexts[N]` object on every lane, with the lane's own `_carries_sd_jwt_marker` (imported, so the rules cannot drift) run on the JSON the object encodes to, so a marker held in a `tuple` is found and a cycle, nesting past the limit or a non-scalar key is a typed error instead of a hang; the message names the field and the three reserved keys and never echoes the object, and the marker as a value is fine (v1.35.0; `test_status_builder_sd_markers.py`)

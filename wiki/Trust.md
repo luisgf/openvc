@@ -185,6 +185,33 @@ with for_ebsi("pilot") as http:
   issuer's status-list origin. The v5 Trusted Issuers Registry `/attributes` listing
   is paginated, and openvc walks every page (bounded, and immune to EBSI's
   self-referential `next` cursor) so an issuer with many accreditations is read in full.
+  The Trusted Nodes List host (`tnl.ebsi.eu`, below) is a second, separate allow-list that
+  is never merged with this one.
+- **Exact bytes and the Trusted Nodes List host**: `EbsiHttpClient.get_bytes(url)` returns a
+  response body verbatim as a `BytesResponse(body, etag)` (no JSON parse, no cache, no text
+  decoding), under the same host guard, redirects-off and retry rules as `get_json`. The
+  body is read raw against a hard cap on the wire size **and** on the decoded size of a
+  single `gzip` / `deflate` coding (any other coding is `HttpUnexpectedEncoding`); the body
+  of a non-200 response is never read; and an `etag` you pass is sent as `If-None-Match`
+  (a 304 comes back as `BytesResponse(None, etag)`, which means "re-use what you stored").
+  `for_tnl()` builds a client that allow-lists `tnl.ebsi.eu` **alone**, and
+  `get_tnl_files()` fetches the four signed Trusted Nodes List documents through it. **The
+  bytes are unauthenticated**: the helper verifies nothing, polls nothing, stores nothing
+  and never fetches the pinned key-list key; keep the bytes and the ETags yourself and
+  hand the bytes to a verifier ([ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)
+  D4).
+
+<!-- docs: no-run -->
+```python
+from openvc_ebsi.http import get_tnl_files
+
+files = get_tnl_files()                      # four GETs to https://tnl.ebsi.eu/, nothing verified
+# ... verify files["tnl.json"].body against files["tnl.json.sig"].body, keep them, then
+# on the next refresh ask only for what changed:
+etags = {name: r.etag for name, r in files.items() if r.etag}
+files = get_tnl_files(etags=etags)           # a 304 is BytesResponse(None, <the etag sent>)
+```
+
 - **Version drift, contained**: every EBSI API version specific lives behind
   one adapter in `openvc_ebsi.versioning`; the trust logic never sees wire
   formats. Conformance is pinned by recorded pilot fixtures, plus an opt-in

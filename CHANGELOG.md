@@ -4,6 +4,103 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.0] — unreleased
+
+### Added
+
+- **`EbsiHttpClient.get_bytes`, `for_tnl` and `get_tnl_files`: the fetch half of the
+  Trusted Nodes List work** ([#320](https://github.com/luisgf/openvc/issues/320),
+  [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md) D4). `get_json` cannot
+  carry the list: it parses to a `dict`, caches it, and refuses the two binary `.sig` files,
+  while `tnl.json.sig` covers exactly the bytes of `tnl.json`.
+  - **`get_bytes(url, *, max_bytes=None, etag=None, deadline_s=None) -> BytesResponse`** returns
+    the body verbatim (no text decoding, no `strip`, no cache) as `BytesResponse(body, etag)`;
+    `body` is `None` exactly on a 304. It runs under the same host guard, redirects off, retry
+    on 429 / 5xx / transport errors and `Retry-After` as `get_json`: both now call one private
+    request loop, so the #246 and #248 behaviours cannot drift between them, and `get_json`'s
+    observable behaviour is unchanged. It sends `Accept: */*` and `Accept-Encoding: identity`.
+    A 404 is `HttpNotFound`; an unsolicited 304, any other 3xx, a 204, a 206 and a 403 are
+    `HttpError` with `status`, not retried, and **the body of a non-200 response is never
+    read** (a 403 body can be a firewall page). `max_bytes` can only lower the client's
+    `max_response_bytes`. `deadline_s` is an overall budget across attempts and sleeps: a
+    `Retry-After` or backoff sleep is clamped to what remains, and a spent budget is a plain
+    `HttpError`.
+  - **The decoded size is bounded before it is allocated.** The body is read with
+    `iter_raw()`, so httpx decodes nothing; the wire size and a `Content-Length` over the cap
+    are refused before a chunk is appended; a single `gzip` or `deflate` coding is decoded
+    with `zlib.decompressobj`, asking for at most `remaining + 1` bytes per call, so a
+    decompression bomb is refused inside zlib. Measured with `tracemalloc` on a 260 935-byte
+    gzip body that inflates to 256 MiB: about 2 MiB peak on the bytes path, against 557 MiB on
+    `get_json` (see Not changed, below). Any other coding (`br`, `zstd`, `x-gzip`, a list such
+    as `gzip, gzip`) is the new `HttpUnexpectedEncoding(HttpError)`; a corrupt or truncated
+    stream, bytes after its end, or a raw-deflate body labelled `deflate` is
+    `MalformedRegistryResponse` (the zlib error as `__cause__`), not retried.
+  - **ETag in, ETag out, no state.** A supplied `etag` is opaque and sent verbatim as
+    `If-None-Match`; it is only checked as a header value (1 to 256 characters of visible
+    ASCII, not `*`), and one that fails, or is not a `str`, is `HttpError` before any I/O (a
+    non-ASCII value would otherwise escape as a bare `UnicodeEncodeError`). A 304 is accepted
+    only when an `etag` was sent and returns `BytesResponse(None, <the etag that was sent>)`:
+    it means "re-use the bytes you stored and verify them again with a fresh `now`", so
+    `expires` and rollback checks always run. A received `ETag` that fails the same check is
+    dropped (`etag=None`) and the body is still returned, because the signature authenticates
+    the body and the validator only saves bandwidth.
+  - **`for_tnl(**kwargs)`** builds a client whose allow-list is `{tnl.ebsi.eu}` alone, never
+    the node set a list names, so a poisoned list cannot widen where the list itself is
+    fetched (`allowed_hosts` cannot be passed: `TypeError`). It keeps no cookies, and its
+    `max_response_bytes` defaults to 64 KiB. `EbsiHttpClient` gains a read-only
+    `allowed_hosts` property (a `frozenset`).
+  - **`get_tnl_files(client=None, *, etags=None, deadline_s=30.0) -> dict[str, BytesResponse]`**
+    makes four sequential requests to `https://tnl.ebsi.eu/<name>` (`TNL_FILES`: `trusted-keys.json`,
+    `trusted-keys.json.sig`, `tnl.json`, `tnl.json.sig`) under one overall deadline, with a
+    per-file cap (`TNL_MAX_BYTES`: 64 KiB for the JSON files, 4 KiB for the signatures). It takes no
+    URL, refuses with `HttpForbiddenHost` before any request a `client` whose allow-list is
+    not exactly `{tnl.ebsi.eu}`, and is all-or-nothing: a failure propagates with its class
+    and a message that names the file, and nothing partial is returned. `etags` maps a file
+    name to the validator of the copy the caller holds; a key that is not a file name is
+    `HttpError` before any I/O, so a typo cannot silently disable conditional requests.
+  - **What it does not do:** verify anything (the bytes are unauthenticated until the
+    verifier of #319 checks them); poll (one round trip per file per call; the publisher's
+    hourly guidance is the consumer's schedule); persist (the consumer keeps the bytes and
+    the ETags); reconcile a mixed set (a new `tnl.json` beside a 304 for its signature); or
+    fetch the pinned key-list key (`keylist-key.asc`), which the publisher says never to
+    download at run time and which would turn the pin into trust-on-first-use of DNS and TLS.
+  - **One live measurement of `tnl.ebsi.eu`** (2026-10-16, 8 GETs, certificate verification
+    on, no redirects followed), recorded in `tests/fixtures/ebsi/tnl_response_headers.json`
+    and replayed through `MockTransport`: (1) `openvc-core/1.36.0` is served a 200 on all
+    four files; (2) `Accept-Encoding: identity` yields no `Content-Encoding`; (3) every file
+    carries a strong `ETag` (quoted, no `W/`); (4) `If-None-Match` with it yields a 304 with
+    no content on all four.
+  - **Defaults pending maintainer confirmation:** the per-file caps and the 30 s overall
+    deadline are proposals, not facts about the publisher (ADR-0001 D5's 10 s per-request
+    timeout stays); `for_tnl` defaults `max_response_bytes` to 64 KiB; the no-cookie policy
+    is installed by `for_tnl` only (a private `_refuse_cookies`), leaving `get_json`'s
+    behaviour untouched until #317 decides it for every client; a sleep is clamped to the
+    budget rather than failing early; an empty `Content-Encoding` is read as absent; a
+    `Content-Length` that is not a plain number is ignored (the streamed cap still applies).
+  - **Mocking note:** `get_bytes` reads the raw stream, so a test double must build its body
+    as a stream (`httpx.Response(200, stream=httpx.ByteStream(b"..."))`);
+    `httpx.Response(200, content=b"...")` is decoded eagerly by httpx and its stream marked
+    consumed.
+  - **Not changed:** `get_json` keeps its per-chunk inflation (`iter_bytes` yields an
+    already-decoded chunk, so its cap fires after the allocation), its uncapped
+    `resp.read()` drain of a non-200 body and its unbounded `Retry-After` sleep when no
+    budget is given. They are outside this change and are tracked separately.
+
+### Tests
+
+- `tests/test_ebsi_http_bytes.py` (bytes-only rows, built through the real constructors with
+  the transport injected, so `follow_redirects`, the default headers and the cookie policy
+  are the shipped ones; Hypothesis properties on the bytes handed to zlib, the
+  `Content-Encoding` and `ETag` values and the supplied validator), the `get_bytes` parity
+  rows in `tests/test_ebsi_http.py`, and the recorded `tnl.ebsi.eu` header sets.
+
+### Docs
+
+- `wiki/Trust.md` (EBSI section) documents `get_bytes`, `for_tnl` and `get_tnl_files` and says
+  the list host is a second, separate allow-list; `docs/audit/threat-model.md` §7 and
+  `docs/audit/assurance.md` §§1, 3 and 4 record the separate one-host client, the bounded
+  decode, the unread error body and the Hypothesis properties.
+
 ## [1.36.0] — 2026-10-16
 
 ### Added
