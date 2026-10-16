@@ -145,11 +145,11 @@ def test_unreadable_url_is_refused_typed_before_any_request(bad):
 def test_guard_refuses_non_ascii_before_urlparse(monkeypatch):
     # On CPython <= 3.12 urlparse NFKC-normalizes a non-ASCII netloc in quadratic time,
     # and nothing bounds a URL before the guard (a status-list URL via `extra_hosts`).
-    from openvc_ebsi import http as ebsi_http
+    from openvc_ebsi import _url
 
     def no_urlparse(url):
         raise AssertionError("urlparse reached")
-    monkeypatch.setattr(ebsi_http, "urlparse", no_urlparse)
+    monkeypatch.setattr(_url, "urlparse", no_urlparse)   # the one reader, shared with the pin
     c = _client(lambda req: httpx.Response(200, json={}), retry=FAST_RETRY)
     with pytest.raises(HttpForbiddenHost):
         c.get_json(f"https://{HOST}́/x")

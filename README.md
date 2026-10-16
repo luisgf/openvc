@@ -142,7 +142,8 @@ lists, remote HSM signing, EU Trusted Lists, EBSI — has a guide in the
   18013-5 `mso_mdoc` verifies the Annex D reference `DeviceResponse`; the
   OpenID4VCI key-proof verifier verifies the spec's own App. F.1 example against
   Issuer Metadata and Credential Offers recorded from the EU reference issuer;
-  the EBSI client is verified against recorded pilot responses. Golden fixtures
+  the EBSI client is verified against recorded legacy-pilot and Core API v1
+  (preprod) responses. Golden fixtures
   are the drift alarm. Beyond them, a test-only [VC-API shim](tests/tools/README.md)
   runs openvc through the official W3C suites (vc-data-model-2.0, vc-di-eddsa,
   vc-di-ecdsa, bitstring-status-list) for third-party conformance reports.

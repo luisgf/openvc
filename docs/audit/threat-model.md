@@ -212,16 +212,41 @@ finite input", with no explicit constant.
   trusting it** and enforce the anti-swap `sub == uri`. A **caller-injected**
   resolver opts out of the guard — documented, and the reason the secure path is
   the opt-in default (`src/openvc/resolvers.py:4-17`).
-- **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **host allow-list**
-  (`api-pilot`/`api-conformance`/`api.ebsi.eu`), redirects off, TLS-verify on,
-  5 MiB cap. Purpose is to block registry-supplied `href` pivots; it is a
-  host-name allow-list and does **not** IP-pin (R4). `did:web` must **never** be
+- **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **origin allow-list**
+  (`for_ebsi` seeds it from one named environment of `src/openvc_ebsi/environments.py`:
+  `legacy-pilot`, the default, and its alias `pilot` are `api-pilot.ebsi.eu`; `conformance` is
+  `api-conformance.ebsi.eu`; `production` is `api.ebsi.eu`; any other name is
+  `UnknownEbsiEnvironment`; port 443 only; a Core API v1 caller supplies the host of each node it
+  uses, R4), redirects off, TLS-verify on,
+  5 MiB cap, keeps no cookie jar (a `Set-Cookie` is dropped and nothing is sent back, so a
+  node's affinity cookie cannot pin a retry or cross to a sibling host; #317). Purpose is
+  to block registry-supplied `href` pivots; it matches the host and the port but does
+  **not** IP-pin (R4). `did:web` must **never** be
   resolved through it (its allow-list would reject every legitimate host).
-  Because the allow-list matches the host and not the port, the TIR v5 adapter pins
-  `links.next`, the HATEOAS `attributes` URL and every revision `href` to the
-  listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`; #172). An
-  absent https port is 443 (RFC 3986 §6.2.3), so `:443` and no port are one origin,
-  as they are to httpx; an explicit `:0` or another port stays off-origin (#253).
+  **The guard admits an origin** (#318, v1.37.0): `EbsiHttpClient._guard_host` reads the
+  URL through `openvc_ebsi._url.read_origin` and admits `https` on a listed host at port
+  443 only. An absent or empty port, `:443`, `:0443` and `:00443` are 443; every other
+  port, `:0` included (`port is None`, never truthiness), is `HttpForbiddenHost` before
+  the cache lookup and any I/O, as is a URL that carries userinfo (`carries_userinfo`: an
+  `@` in the authority, the empty forms included; httpx sends it as a Basic
+  `Authorization` header). `allowed_hosts` still holds host names, port 443 implied;
+  origin strings in it are 2.0 work (#74). Before #318 the guard matched the host name
+  alone and every other port of a listed host was fetched. Redirects stay off, and that is
+  what stops a `Location` to another port: the guard never sees it
+  (`test_a_redirect_is_a_failed_read_and_is_never_followed`).
+  The TIR adapters' pin (the legacy v5 and the Core API v1 `TirCoreV1`, which share one
+  attribute walk, #321) is a second check with its own job, keeping a walk on the node it
+  started on: it pins `links.next`, the HATEOAS `attributes` URL and every revision
+  `href` to the listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`;
+  #172), and stays port-agnostic because the adapters take any injected `Fetch`. On Core
+  API v1 that listing is the answering node's own origin, since every link in a response
+  names the node that served it, so a walk cannot move from one node to another. The
+  guard and the pin read a URL through the same function, and
+  `test_the_guard_admits_a_url_exactly_when_the_pin_says_it_is_on_the_origin` keeps them in
+  step (the two documented gaps: userinfo, which the pin ignores, and a URL over 8 KiB,
+  which only the pin caps). An absent https port is 443 (RFC 3986 §6.2.3), so `:443` and
+  no port are one origin, as they are to httpx; an explicit `:0` or another port stays
+  off-origin (#253).
   A URL with no origin to compare is treated as off-origin: a typed
   `MalformedRegistryResponse` on the `attributes` hop, skipped on `links.next` and
   `href`. That covers a port that does not parse (`:99999`, `:abc`) and a broken IPv6
@@ -233,7 +258,10 @@ finite input", with no explicit constant.
   unsigned token whose `iss` held a control character escaped `verify_ebsi_badge` as
   a bare `httpx.InvalidURL` (#246). A body httpx cannot decompress is a
   `MalformedRegistryResponse`; before v1.32.1 it escaped as a bare
-  `httpx.DecodingError` (#248). The allow-list says which host answers, not which path
+  `httpx.DecodingError` (#248). An error answer's body is read at most 16 KiB, within the
+  client's deadline, and the connection is dropped past either; before v1.37.0 it was
+  drained with no cap and no deadline (#321), and the Problem Details `type` it carries
+  is kept only from an `application/problem+json` body. The allow-list says which host answers, not which path
   or which document, and the rest of this paragraph is what stands behind it.
   **The exact-bytes path and the list host** (#320, v1.37.0): `get_bytes` returns a body
   verbatim, for the Trusted Nodes List documents, which are signed and two of them binary.
@@ -375,12 +403,20 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   bound. *Impact:* CPU/allocation pressure under a large but well-formed
   document; no wrong-accept. *Consider:* an explicit element-count and/or
   cumulative-size cap.
-- **R4 — EBSI client is a host-name allow-list, no IP-pin.**
+- **R4 — EBSI client is an origin allow-list (host and port 443), no IP-pin.**
   `src/openvc_ebsi/http.py` trusts DNS for allow-listed EBSI hosts and does not
-  pin to a validated IP (unlike `fetch.py`). DNS-rebinding of an allow-listed
+  pin to a validated IP (unlike `fetch.py`). Since #318 it admits port 443 only, so the
+  port half of the old host-name allow-list is closed; the address half is not (resolved
+  addresses and DNS rebinding are #322). DNS-rebinding of an allow-listed
   host is out of scope of this guard *by design* (its job is blocking
   registry-supplied `href` pivots), but a reviewer should confirm the threat
-  model accepts that.
+  model accepts that. Since the EBSI Core API v1 (`DidRegistryCoreV1` /
+  `TirCoreV1`, #321) the allow-listed hosts are **node operators' own domains**, not
+  only `*.ebsi.eu`: none of the 45 node hosts in the Trusted Nodes List read on
+  2026-10-16 is under `ebsi.eu`, and the 27 operator domains include second-level and
+  third-party zones ([ADR-0009](../adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)).
+  DNS for each of them is trusted, and a verified node list authenticates the
+  *operator*, not the content a node serves (ADR-0009 D7).
 - **R5 — `fetch.py` leans on stdlib `ipaddress` classification.** No explicit
   IPv4-mapped-IPv6 (`::ffff:a.b.c.d`) / NAT64 normalization beyond what
   `ipaddress` classifies on the target Python. Worth an auditor sanity-check
