@@ -47,7 +47,7 @@ All notable changes to **openvc** are documented here. The format follows
   (`type(exc) is ValueError`) must compare `UnknownEbsiEnvironment`, or catch `ValueError`.
   **One thing that used to succeed now raises:** a value that is not a `str` but hashes and
   compares equal to a name (`collections.UserString("pilot")`) was accepted by the old
-  dictionary lookup; it is refused after the `isinstance(str)` check. Pass `str(value)`. A
+  dictionary lookup; it is refused by the `str` type check. Pass `str(value)`. A
   `str` or a `str` subclass (a `(str, Enum)` member, say) that holds a name is unaffected.
 - **Defaults taken, pending maintainer confirmation.** #325 leaves three switches to the
   maintainer; Part 1 ships only the unconditional one and takes the non-breaking option on the
@@ -86,10 +86,11 @@ All notable changes to **openvc** are documented here. The format follows
   object whose `repr()` raises escaped from the very `raise` meant to refuse it; a long string
   was echoed in full (10 000 characters came back as a 10 028-character message, measured on
   v1.36.0). All of these are now `UnknownEbsiEnvironment` (an `EbsiError`, an `OpenvcError` and
-  a `ValueError`): the name is checked with `isinstance(str)`, a `str` subclass is read as the
-  characters it holds (so what is checked is what is looked up, the #266 rule), and the
-  message cuts the value through `safe_repr`. A `str` subclass that holds a known name, such
-  as a `(str, Enum)` member, still selects its environment.
+  a `ValueError`): the name is checked against the value's real type (`type(value)` is a
+  `str` subclass, so an object whose `__class__` claims `str` is refused too), a `str`
+  subclass is read as the characters it holds (so what is checked is what is looked up, the
+  #266 rule), and the message cuts the value through `safe_repr`. A `str` subclass that holds
+  a known name, such as a `(str, Enum)` member, still selects its environment.
 
 ### Docs
 

@@ -277,7 +277,7 @@ def for_ebsi(
     * ``"conformance"``: ``api-conformance.ebsi.eu``. A measurement on 2026-10-16 completed
       no connection in 12 s (ADR-0009).
     * ``"production"``: ``api.ebsi.eu``. The certificate that host presented on 2026-10-16
-      did not cover its name, so a client built from it cannot complete a request today
+      did not cover its name, so a client built from it is not known to complete a request
       (ADR-0009).
 
     ``extra_hosts`` lets you permit additional issuer status-list hosts if you
@@ -286,7 +286,9 @@ def for_ebsi(
     An environment that is not one of these names (another case, empty, not a string)
     raises :class:`~openvc_ebsi.errors.UnknownEbsiEnvironment`, which is also a ``ValueError``.
     """
-    name = str.__str__(environment) if isinstance(environment, str) else None
+    # `type(...)`, not `isinstance`: a value whose `__class__` claims `str` is not one, and
+    # `str.__str__` would raise a bare TypeError on it.
+    name = str.__str__(environment) if issubclass(type(environment), str) else None
     if name is None or name not in EBSI_HOSTS:
         raise UnknownEbsiEnvironment(
             f"unknown EBSI environment: {safe_repr(environment)} "

@@ -183,6 +183,23 @@ class _HostileStr(str):
     __str__ = __repr__
 
 
+class _ClaimsToBeStr:
+    """Not a ``str``, but its ``__class__`` says it is: ``isinstance(x, str)`` is true for it
+    and ``str.__str__(x)`` raises a bare ``TypeError``."""
+
+    @property
+    def __class__(self):
+        return str
+
+
+class _StrClaimingToBeInt(str):
+    """A real ``str`` whose ``__class__`` lies the other way."""
+
+    @property
+    def __class__(self):
+        return int
+
+
 # The seven inputs of the acceptance list, then more shapes of "not a name".
 SEVEN = [
     pytest.param("nope", id="unknown"),
@@ -206,9 +223,11 @@ MORE = [
     pytest.param(True, id="bool"),
     pytest.param(1.5, id="float"),
     # Not a `str`, yet it hashes and compares equal to a known name, so the dictionary lookup
-    # of v1.36.0 accepted it. The `isinstance(str)` check refuses it: a recorded behaviour
+    # of v1.36.0 accepted it. The `str` type check refuses it: a recorded behaviour
     # change (pass `str(value)`).
     pytest.param(collections.UserString("pilot"), id="user-string-holding-a-known-name"),
+    # `isinstance` honours `__class__`, so it would let this through to a bare TypeError.
+    pytest.param(_ClaimsToBeStr(), id="class-claims-str"),
 ]
 
 
@@ -277,6 +296,15 @@ def test_a_str_subclass_holding_a_known_name_is_that_name():
     # What is checked is what is used: the plain characters. Control for the case above.
     with for_ebsi(_HostileStr("pilot")) as http:
         assert http._allowed == {PILOT_HOST}
+
+
+def test_a_real_str_is_read_as_its_characters_whatever_its_class_property_says():
+    # Control for `class-claims-str`: the type is what counts, in both directions.
+    with for_ebsi(_StrClaimingToBeInt("legacy-pilot")) as http:
+        assert http._allowed == {PILOT_HOST}
+    with pytest.raises(UnknownEbsiEnvironment) as info:
+        for_ebsi(_StrClaimingToBeInt("nope"))
+    assert type(info.value) is UnknownEbsiEnvironment
 
 
 def test_a_str_enum_member_still_selects_its_environment():
