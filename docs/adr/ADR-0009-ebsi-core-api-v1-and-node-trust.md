@@ -28,7 +28,8 @@ What the investigation found, in order of weight:
    `DidRegistryV5` logic when fed from memory. What changed is the URL layout, a per-node
    host, the error `type`, and **where the host comes from**.
 2. **The TNL is fully specified, and verifiable with what is already installed.** Every
-   key and every signature in the chain is v4 OpenPGP ECDSA over NIST P-256 with SHA-256.
+   signing key and every signature in the chain is v4 OpenPGP ECDSA over NIST P-256 with
+   SHA-256 (the only other key type, an ECDH encryption subkey on one custodian, never signs).
    A throwaway verifier (about 180 uncompressed lines, standard library plus
    `cryptography`'s ECDSA) accepted the real chain in 8 ms and rejected every tampered
    variant. No PGP library is needed.
