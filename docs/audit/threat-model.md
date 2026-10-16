@@ -214,8 +214,10 @@ finite input", with no explicit constant.
   the opt-in default (`src/openvc/resolvers.py:4-17`).
 - **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **origin allow-list**
   (`api-pilot`/`api-conformance`/`api.ebsi.eu`, port 443), redirects off, TLS-verify on,
-  5 MiB cap. Purpose is to block registry-supplied `href` pivots; it matches the host
-  and the port but does **not** IP-pin (R4). `did:web` must **never** be
+  5 MiB cap, keeps no cookie jar (a `Set-Cookie` is dropped and nothing is sent back, so a
+  node's affinity cookie cannot pin a retry or cross to a sibling host; #317). Purpose is
+  to block registry-supplied `href` pivots; it matches the host and the port but does
+  **not** IP-pin (R4). `did:web` must **never** be
   resolved through it (its allow-list would reject every legitimate host).
   **The guard admits an origin** (#318, v1.37.0): `EbsiHttpClient._guard_host` reads the
   URL through `openvc_ebsi._url.read_origin` and admits `https` on a listed host at port
