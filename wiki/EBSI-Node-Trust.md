@@ -361,18 +361,22 @@ stops a node from posing as another environment.
 
 As of 2026-10-16:
 
-- **Recursive trust fails closed.** The prod and preprod RootTAO accreditations are signed
+- **Recursive trust needs an opt-in.** The prod and preprod RootTAO accreditations are signed
   `ES256K`. `VcJwtProofSuite.verify` on the preprod one raised `UnsupportedAlgorithm`, because
-  the JOSE allow-list rejects it, so `verify_ebsi_badge(..., trust_anchors=…)` cannot verify a
-  Core v1 root. The maintainer accepted an explicit opt-in on 2026-10-16 (ADR-0009, open question
-  3), tracked in [#323](https://github.com/luisgf/openvc/issues/323); it is not implemented.
-  Single-level trust reads the accreditation without verifying its signature, with the registry
-  as the anchor, and this does not block it: ADR-0009 fed recorded v1 bodies, offline, through
-  the unmodified v5 parsers and got a correct issuer record.
+  the default JOSE allow-list rejects it, so with a default suite `verify_ebsi_badge(...,
+  trust_anchors=…)` and `verify_trust_chain` cannot verify a Core v1 root. The maintainer accepted
+  an explicit opt-in on 2026-10-16 (ADR-0009, open question 3), and it is implemented
+  ([#323](https://github.com/luisgf/openvc/issues/323)): pass `VcJwtProofSuite(allow_es256k=True)`
+  as the `proof_suite`. It is verification only, VC-JWT only, and leaves the default list alone;
+  the recorded preprod RootTAO verifies with it ([Keys & HSM](Keys-and-HSM#es256k-ebsi-interop-opt-in)).
+  One suite serves the leaf badge and every hop, so an opted-in suite also accepts an
+  `ES256K`-signed leaf badge. Single-level trust reads the accreditation without verifying its
+  signature, with the registry as the anchor, and was never blocked by this: ADR-0009 fed recorded
+  v1 bodies, offline, through the unmodified v5 parsers and got a correct issuer record.
 - **Prod holds almost nothing.** One seeded issuer, `did:ebsi:z262SoSjWAqmXpaGmzqGnJoc`, whose
   DID document has an empty `verificationMethod`, so recursive trust could not succeed on prod
-  even with `ES256K`. Preprod holds 244 issuers with real keys. The content will change when
-  operators onboard.
+  even with the `ES256K` opt-in. Preprod holds 244 issuers with real keys. The content will
+  change when operators onboard.
 - **Hosts inside accreditations are in no environment.** `credentialSchema.id` names
   `api-prod.ebsi.eu` and `api-test.ebsi.eu`. `openvc_ebsi` does not follow them, and a future
   schema fetch must not add them to the node allow-list.

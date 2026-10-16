@@ -121,7 +121,9 @@ lists, remote HSM signing, EU Trusted Lists, EBSI — has a guide in the
   private key never enters the process. ES256 signatures are the correct raw
   JOSE `R‖S` form — the classic reason a locally-produced token fails elsewhere.
 - **Fail-closed by construction.** The `{ES256, ES384, EdDSA, Ed25519}` allow-list
-  runs *before* any crypto (`alg:none`, RS\*, HS\* never reach a verifier); a
+  runs *before* any crypto (`alg:none`, RS\*, HS\* never reach a verifier; `ES256K`
+  is verified only by the explicit, VC-JWT-only `VcJwtProofSuite(allow_es256k=True)`
+  opt-in that EBSI Core API v1 roots need); a
   declared credential status without a resolver rejects; an unparseable
   timestamp rejects; the JWT envelope is reconciled with the embedded credential.
 - **Post-quantum ready (experimental).** ML-DSA (RFC 9964, `ML-DSA-44/65/87`) signs and

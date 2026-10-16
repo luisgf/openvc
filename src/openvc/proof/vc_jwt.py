@@ -20,7 +20,15 @@ Security posture
   alg-confusion. (ES384 is the P-384 leg of the Data Integrity ecdsa-*-2019 suites;
   it does not change the EBSI/EUDI-preferred ES256 path. IANA deprecated the
   polymorphic "EdDSA" in RFC 9864, so "Ed25519" is accepted alongside it — see the
-  versioning guide for the migration.)
+  versioning guide for the migration.) Two explicit, per-suite opt-ins add names and
+  nothing else: ``allow_pq=True`` the experimental ML-DSA set, and
+  ``allow_es256k=True`` the single name ``ES256K`` (RFC 8812, ECDSA over secp256k1 with
+  SHA-256), which EBSI Core API v1 uses for its RootTAO accreditations. ``ES256K`` is
+  VERIFY-ONLY (this module never signs it) and never in :data:`ALLOWED_ALGS`; neither
+  opt-in implies the other. ``allow_es256k`` must be exactly ``True`` or ``False`` (a string
+  such as ``"false"`` from a configuration file is refused, not read as true), and an ES256K
+  JWK is held to RFC 8812 section 3.2: ``alg``, ``use`` and ``key_ops``, when present, must be
+  ``ES256K``, ``sig`` and an array including ``verify``.
 * The verification algorithm is taken from the token header ONLY after checking it
   against the allow-list, and is then pinned when calling the verifier.
 * peek_issuer never influences verification; it exists solely to select a key.
@@ -35,11 +43,13 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import jwt as pyjwt
+from cryptography.hazmat.primitives.asymmetric import ec
 from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
 # The proof error taxonomy lives in openvc.proof.errors; these are re-exported for
@@ -75,6 +85,14 @@ ALLOWED_ALGS: frozenset[str] = frozenset({"ES256", "ES384", "EdDSA", "Ed25519"})
 # defence is unchanged for everyone else: the allow-list check still runs before crypto,
 # and opting in adds ONLY these three names, never the classic weak algs.
 ALLOWED_ALGS_PQ: frozenset[str] = frozenset({"ML-DSA-44", "ML-DSA-65", "ML-DSA-87"})
+
+# ES256K (RFC 8812: ECDSA over secp256k1 with SHA-256). EBSI Core API v1 signs its RootTAO
+# accreditation JWTs with it (ADR-0009, open question 3). NEVER in the default allow-list and
+# never merged into ALLOWED_ALGS: merged into a suite's VERIFY set only when it is constructed
+# with allow_es256k=True. Verification only — sign() never offers it (see _sign_algs) — and
+# VC-JWT only: every other lane keeps refusing it, twice (its own allow-list, and
+# openvc.keys.verify_signature, which has no secp256k1 branch). Independent of allow_pq.
+ALLOWED_ALGS_ES256K: frozenset[str] = frozenset({"ES256K"})
 DEFAULT_LEEWAY_S = 60  # tolerance for clock skew on exp/nbf/iat
 
 # PyJWT (2.x) ships only the polymorphic "EdDSA"; teach a PRIVATE PyJWT instance the
@@ -198,17 +216,111 @@ def _reject_sd_jwt_payload(payload: dict[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# ES256K key loading (RFC 8812) — openvc's own pin, before PyJWT sees the key
+# --------------------------------------------------------------------------- #
+
+# A secp256k1 coordinate is 32 octets (RFC 7518 §6.2.1.2: the full size of a coordinate, so a
+# leading zero octet is kept), i.e. exactly 43 unpadded base64url characters.
+_ES256K_COORD = re.compile(r"[A-Za-z0-9_-]{43}")
+_SECP256K1_FIELD_PRIME = 2**256 - 2**32 - 977
+
+
+def _es256k_coordinate(jwk: dict[str, Any], member: str) -> int:
+    value = jwk.get(member)
+    if not isinstance(value, str) or _ES256K_COORD.fullmatch(value) is None:
+        raise ProofError(
+            f"ES256K key member {member!r} must be a 43-character unpadded base64url string "
+            f"(a 32-octet coordinate), got {safe_repr(value)}")
+    raw = base64.urlsafe_b64decode(value + "=")
+    if base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii") != value:
+        raise ProofError(f"ES256K key member {member!r} is not canonical base64url")
+    number = int.from_bytes(raw, "big")
+    if number >= _SECP256K1_FIELD_PRIME:
+        raise ProofError(f"ES256K key member {member!r} is not a field element")
+    return number
+
+
+def _es256k_check_members(jwk: dict[str, Any]) -> None:
+    """RFC 8812 section 3.2, for a JWK used to VERIFY ES256K: "if present", ``alg`` MUST be
+    ``ES256K``, ``key_ops`` MUST include ``verify`` and ``use`` MUST be ``sig``. Presence is
+    tested with ``in``, so a ``null`` member is present and fails. ``key_ops`` is an array of
+    strings (RFC 7517 section 4.3); a bare string such as ``"verify"`` is not that array, and
+    it would pass a substring test, so it is refused."""
+    if "alg" in jwk and jwk["alg"] != "ES256K":
+        raise ProofError(
+            f"ES256K key member 'alg' must be 'ES256K' when present, got {safe_repr(jwk['alg'])}")
+    if "use" in jwk and jwk["use"] != "sig":
+        raise ProofError(
+            f"ES256K key member 'use' must be 'sig' when present, got {safe_repr(jwk['use'])}")
+    if "key_ops" in jwk:
+        ops = jwk["key_ops"]
+        if (not isinstance(ops, list) or any(not isinstance(op, str) for op in ops)
+                or "verify" not in ops):
+            raise ProofError(
+                f"ES256K key member 'key_ops' must be an array of strings that includes "
+                f"'verify' when present, got {safe_repr(ops)}")
+
+
+def _es256k_public_key(jwk: Any) -> Any:
+    """The secp256k1 public key a JWK carries, or a plain :class:`ProofError`.
+
+    ``alg: ES256K`` verifies only with ``kty: EC`` / ``crv: secp256k1`` (RFC 8812), so a P-256,
+    P-384, OKP, AKP or RSA-shaped JWK is refused HERE, before PyJWT loads anything: PyJWT
+    would raise ``InvalidKeyError``, which :meth:`VcJwtProofSuite._decode` maps to
+    ``ClaimsInvalid``, the wrong family for a key/alg mismatch. RFC 8812 section 3.2 adds three
+    checks that apply "if present": ``alg`` must be ``ES256K``, ``use`` must be ``sig`` and
+    ``key_ops`` must include ``verify``; they are enforced here (a JSON ``null`` is present, so
+    it fails), and only for this algorithm: the classic branches ignore those members, as before.
+    ``x`` and ``y`` must be
+    canonical, full-width coordinates below the field prime and the point must be on the curve
+    (cofactor 1, so on-curve is sufficient). Only the public coordinates are read: a ``d`` member
+    is ignored, never loaded."""
+    if not isinstance(jwk, dict):
+        raise ProofError(f"ES256K requires a JWK object, got {type(jwk).__name__}")
+    if jwk.get("kty") != "EC" or jwk.get("crv") != "secp256k1":
+        raise ProofError(f"ES256K requires an EC secp256k1 key, got "
+                         f"kty={safe_repr(jwk.get('kty'))} crv={safe_repr(jwk.get('crv'))}")
+    _es256k_check_members(jwk)
+    x = _es256k_coordinate(jwk, "x")
+    y = _es256k_coordinate(jwk, "y")
+    try:
+        return ec.EllipticCurvePublicNumbers(x, y, ec.SECP256K1()).public_key()
+    except Exception as exc:        # ValueError (off the curve), or a build without the curve
+        raise ProofError(f"could not load ES256K key from JWK: {exc}") from exc
+
+
+# --------------------------------------------------------------------------- #
 # Proof suite
 # --------------------------------------------------------------------------- #
 
 class VcJwtProofSuite:
     """VC-JWT (JOSE-secured Verifiable Credential) proof suite."""
 
-    def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S, allow_pq: bool = False) -> None:
+    def __init__(
+        self, *, leeway_s: int = DEFAULT_LEEWAY_S, allow_pq: bool = False,
+        allow_es256k: bool = False,
+    ) -> None:
         self._leeway = leeway_seconds(leeway_s)       # fail closed, up front (0..MAX_LEEWAY_S)
+        # A flag that widens the allow-list is exactly True or exactly False. `if flag:` would
+        # read the strings "false" and "0" (a config or environment value) as True. type() is
+        # used, never isinstance(): a __class__ property fools isinstance (see _plain_int).
+        if type(allow_es256k) is not bool:
+            raise ProofError(
+                f"allow_es256k must be True or False, got {type(allow_es256k).__name__}")
         # allow_pq merges the EXPERIMENTAL ML-DSA algs into this suite's allow-list; the
         # default suite rejects ML-DSA at the allow-list, before any crypto (ADR-0004).
-        self._algs = ALLOWED_ALGS | ALLOWED_ALGS_PQ if allow_pq else ALLOWED_ALGS
+        # allow_es256k merges the single name ES256K (EBSI interop, ADR-0009), verification
+        # only. The two flags are independent: each adds its own names and nothing else.
+        algs = ALLOWED_ALGS
+        if allow_pq:
+            algs = algs | ALLOWED_ALGS_PQ
+        if allow_es256k:
+            algs = algs | ALLOWED_ALGS_ES256K
+        self._algs = algs
+        # What sign() may hand to sign_compact: the verify set minus ES256K, because openvc
+        # has no secp256k1 signing backend and must not become one by way of a third-party
+        # SigningKey whose alg happens to be "ES256K".
+        self._sign_algs = algs - ALLOWED_ALGS_ES256K
 
     # -- untrusted inspection --------------------------------------------- #
 
@@ -415,7 +527,8 @@ class VcJwtProofSuite:
         header = {"alg": signing_key.alg, "typ": "JWT", "kid": signing_key.kid}
 
         from ._jws import sign_compact          # local import breaks the _jws<->vc_jwt cycle
-        return sign_compact(header, payload, signing_key=signing_key, allowed_algs=self._algs)
+        return sign_compact(
+            header, payload, signing_key=signing_key, allowed_algs=self._sign_algs)
 
     # -- internals --------------------------------------------------------- #
 
@@ -477,6 +590,8 @@ class VcJwtProofSuite:
 
     @staticmethod
     def _jwk_to_key(jwk: dict[str, Any], alg: str) -> Any:
+        if alg == "ES256K":                  # its own loader: width, canonical form, on-curve
+            return _es256k_public_key(jwk)
         # openvc's OKP support is Ed25519-only: pin the curve BEFORE loading so
         # neither the RFC 9864 fully-specified "Ed25519" name (whose whole point is
         # that the curve is fixed) nor the polymorphic "EdDSA" can verify against a
@@ -549,6 +664,7 @@ class VcJwtProofSuite:
 
 __all__ = [
     "ALLOWED_ALGS",
+    "ALLOWED_ALGS_ES256K",
     "ALLOWED_ALGS_PQ",
     "ClaimsInvalid",
     "MalformedToken",

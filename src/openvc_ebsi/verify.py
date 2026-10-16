@@ -119,6 +119,10 @@ def verify_ebsi_badge(
     * ``trust_anchors`` **given** — the full recursive chain is walked and every
       accreditation's signature verified, up to a trusted RootTAO in that set.
 
+    ``proof_suite`` is ONE suite for the leaf badge and for every accreditation hop of the
+    chain, so ``VcJwtProofSuite(allow_es256k=True)`` (the opt-in a Core API v1 RootTAO needs)
+    also admits an ES256K-signed leaf badge; there is no separate suite for the hops.
+
     ``require_trust`` controls only whether an untrusted result raises (single
     level: :class:`IssuerNotTrusted`; recursive: a
     :class:`~openvc_ebsi.trust.TrustChainError`) or is returned with

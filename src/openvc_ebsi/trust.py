@@ -9,6 +9,15 @@ Trust is relative to the anchors YOU choose — the RootTAO DIDs you decide to
 trust. There is no implicit root: an empty anchor set trusts nobody. This keeps
 the library honest about where trust actually comes from.
 
+**Algorithms.** The *proof_suite* you pass decides which accreditation signatures can be
+verified, at every hop. EBSI Core API v1 signs its RootTAO accreditation JWTs ``ES256K``
+(RFC 8812), which the default allow-list refuses: with a default suite a walk that reaches such
+a root raises :class:`AccreditationInvalid` (its cause is ``UnsupportedAlgorithm``). Pass
+``VcJwtProofSuite(allow_es256k=True)`` to verify them; it is a verification-only opt-in and
+changes nothing else (ADR-0009, open question 3). One suite serves the leaf badge and the hops.
+The prod seed root has no verification method in its DID document, so a prod chain cannot close
+either way.
+
 What each hop checks (defence in depth):
 
   * **Delegation scoping.** The leaf must be accredited for (at least one of) the

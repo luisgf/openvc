@@ -3,7 +3,8 @@
 **Status:** Accepted in part (2026-10-16) — direction C (D2: a pure, stateless verifier on
 an ECDSA-only OpenPGP reader; it vendors an anchor, never the list) and the ES256K opt-in
 (open question 3) are accepted. Open question 1 is answered by the first. Open questions 2,
-4, 5, 6, 7 and 8 stay open. This ADR ships no code and changes nothing under `src/`.
+4, 5, 6, 7 and 8 stay open. This ADR ships no code and changes nothing under `src/`; the
+ES256K opt-in it accepted was implemented afterwards, as #323 (v1.37.0), see D8.
 **Date:** 2026-10-16 (revised the same day after review: D2, D3, D5 and the measured facts)
 **Context owner:** `openvc_ebsi.http`, `openvc_ebsi.versioning` (and a future
 `openvc_ebsi.nodes`)
@@ -43,8 +44,8 @@ What the investigation found, in order of weight:
    different ledger from the legacy pilot (`did:ebsi:zZeKyEJf…`, the DID every recorded
    fixture uses, answers 404 on them), and the RootTAO accreditations served by prod and
    preprod are signed `ES256K`, which the JOSE allow-list rejects, so **recursive trust
-   cannot verify a Core v1 root today**. The second is a maintainer decision, not an
-   ADR decision.
+   cannot verify a Core v1 root with a default suite**. The second was a maintainer
+   decision, not an ADR decision, and it is taken: an explicit opt-in (D8, #323).
 
 **Recommendation (details in D1–D8):** keep the explicit allow-list as the primitive
 (Option A); add a **pure, stateless TNL verifier** to `openvc_ebsi` built on a hand-rolled,
@@ -473,11 +474,19 @@ helper at most. The chain's real root is the single key-list key: with it, an at
 substitute `trusted-keys.json` (custodians and threshold) and then sign any list; the
 two-custodian threshold only protects against compromise of the custodians.
 
-**D8 — Do not decide ES256K here.** See open question 3. Until the maintainer decides,
-single-level trust (which reads the accreditation without verifying its signature, the
-registry being the trust anchor) works on Core v1 data; recursive trust (`trust_anchors=`) fails
-closed on an `ES256K` root, and on the prod seed it could not succeed anyway because the root's
-DID document carries no verification method.
+**D8 — ES256K is an explicit opt-in on `VcJwtProofSuite`** (open question 3, decided by the
+maintainer on 2026-10-16; implemented in #323, v1.37.0). The ADR did not decide it, and now
+records the answer: `VcJwtProofSuite(allow_es256k=True)` verifies `alg: ES256K` (RFC 8812), as
+`allow_pq=True` admits ML-DSA, and the default allow-list `{ES256, ES384, EdDSA, Ed25519}`
+is unchanged. The opt-in is verification only, VC-JWT only (every other lane keeps refusing the
+name), pinned to a secp256k1 key by openvc before PyJWT loads it, independent of `allow_pq`, and
+not labelled experimental, because a real vector exists (the recorded RootTAO). Without the
+keyword, single-level trust (which reads the accreditation without verifying its signature, the
+registry being the trust anchor) works on Core v1 data and recursive trust (`trust_anchors=`)
+fails closed on an `ES256K` root; with it, the preprod RootTAO verifies. On the prod seed a
+chain cannot close either way, because the root's DID document carries no verification method.
+One suite serves the leaf badge and the chain hops (no new parameter on `verify_ebsi_badge`),
+so an opted-in suite also accepts an `ES256K`-signed leaf badge.
 
 ### Security properties this gives, and does not
 
@@ -545,8 +554,8 @@ Names only; no code is proposed in this ADR.
    verifier and `_openpgp` with fuzzing and fixed-clock tests; the `legacy-pilot` name.
 3. **Stage 2.** Bytes-GET, the `tnl.ebsi.eu` helper, the node-based constructor and
    failover, the weekly workflow extended to the TNL and Core v1 preprod.
-4. **Stage 3 (decision-gated).** ES256K (open question 3); environment-table clean-up with the
-   2.0 window (#74).
+4. **Stage 3.** ES256K: decided as an explicit opt-in and shipped as #323 (see D8);
+   environment-table clean-up with the 2.0 window (#74), still decision-gated.
 5. **The v5 lane stays** until EBSI retires it. The migration guide gives no date and the
    legacy host still serves; the lane costs nothing to keep and the recorded fixtures remain
    its drift alarm. Re-check at each hub changelog entry.
@@ -601,7 +610,8 @@ Golden fixtures are the drift alarm (invariant 6); the data to record exists now
   publisher change to it is a code change here, signalled by the README.
 - The weekly smoke can no longer be "re-pointed": the legacy lane keeps its job and a second
   job (TNL + Core v1 preprod) is added, which needs a clock-aware verification step in CI.
-- Recursive trust remains unavailable on Core v1 roots until open question 3 is decided.
+- Recursive trust on a Core v1 root needs `VcJwtProofSuite(allow_es256k=True)` (open question 3,
+  decided: #323); with a default suite it fails closed on an `ES256K` root.
 - Dishonest-node risk is documented, not removed.
 
 ## What to watch
@@ -638,6 +648,7 @@ Golden fixtures are the drift alarm (invariant 6); the data to record exists now
    `VcJwtProofSuite`, as ML-DSA is; or keep it out and document that recursive trust is
    unavailable on Core v1. It is a `CLAUDE.md` invariant ("do not widen it casually"), `cryptography`
    supports secp256k1, and the DID documents sampled carry secp256k1 keys alongside P-256.
+   **Decided (2026-10-16): the explicit opt-in. Implemented in #323 (v1.37.0), see D8.**
 4. **Names and compatibility.** `for_ebsi("pilot")` means the legacy lane and the wiki documents
    it; `production` names a host that presents no certificate valid for its name. Alias and deprecate now, or leave until
    2.0 (#74)? Is a `ValueError` on `for_ebsi("production")` acceptable as a bug fix?
@@ -679,7 +690,8 @@ Titles with one line each; none have been filed.
   guarantees bare origins.
 - `security(ebsi): optional resolved-address guard for list-derived hosts` — reuse
   `openvc.fetch`'s address rules; threat-model R4.
-- `feat(jose): ES256K opt-in for EBSI accreditation chains` — decision-gated (open question 3).
+- `feat(jose): ES256K opt-in for EBSI accreditation chains` — decided (open question 3);
+  implemented in #323.
 - `ci(ebsi): weekly Core v1 preprod smoke and TNL expiry/version watch` — keeps the legacy
   v5 smoke; warns 14 days before `expires`.
 - `docs(audit): update threat model R4 wording when the adapters land` — the allow-list
