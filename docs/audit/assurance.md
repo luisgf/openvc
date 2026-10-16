@@ -321,6 +321,26 @@ Example-based, but broad. Representative anchors:
   attestation, and Issuer Metadata and Credential Offers recorded from the EU
   reference issuer
   (`test_openid4vci_vectors.py`, `tests/fixtures/openid4vci/README.md`).
+- **ES256K opt-in (`allow_es256k=True`, threat model I23)** — the default stays closed on
+  every lane: one sweep of fifteen cases (VC-JWT with and without `allow_pq`, SD-JWT VC
+  issuer JWT with and without `allow_pq`, VP-JWT, `verify_compact`, the status-list token,
+  the OpenID4VCI key proof with and without a widened `allowed_algs`, the WRPRC parse and
+  verify, the LoTE verifier, COSE
+  `-47`, `verify_credential` and its async twin) with a real ES256K token, the matching
+  secp256k1 JWK and a spy that fails if the algorithm reaches any signature primitive;
+  `verify_many` and its async twin isolating the item; the primitive and
+  `signing_key_from_jwk` without a secp256k1 branch (`test_es256k_default_refused.py`). On the
+  opted-in suite: near-miss names and non-string `alg`, P-256 / P-384 / OKP / AKP / RSA / `oct`
+  keys under an ES256K header, the classic algorithms under a secp256k1 key, a DID document
+  with both keys and the wrong `kid`, 35 hostile JWK shapes (including a real key written
+  without or with an extra leading zero octet, a non-canonical coordinate and a point written
+  modulo the field prime) asserted with PyJWT replaced by a function that fails the test,
+  signature shapes and claim handling as parity tables against ES256, the post-allow-list
+  gates, signing refused on all four suite configurations, low-`s` and high-`s`, and
+  Hypothesis properties (`test_es256k_opt_in.py`). Golden: the recorded preprod RootTAO
+  through the suite, `verify_trust_chain` and `verify_ebsi_badge`, plus a synthetic
+  ES256K-root chain (`test_es256k_ebsi_chain.py`). A differential of 4,346 token/lane/key
+  cases against `9de784e` showed no change for a default caller.
 
 ## 4. Adversarial-review history
 
@@ -338,6 +358,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `eb0adc5` — deterministic signature-tamper regressions in schema/aio
 
 **Typed-error / fail-closed boundary**
+- `#323` — *allow-list widening behind an explicit opt-in, no change for a default caller* — EBSI Core API v1 signs its RootTAO accreditations `ES256K`, which the JOSE allow-list refuses, so recursive trust failed closed on every Core v1 root. `VcJwtProofSuite(allow_es256k=True)` now verifies the name (VC-JWT lane, PyJWT path, verification only, never in `ALLOWED_ALGS`, independent of `allow_pq`), with an openvc-side secp256k1 key pin before PyJWT sees the key, a signing set that drops the name, and every other lane left refusing it (threat model I23). Measured while building it: a P-256 key under an `ES256K` header raises PyJWT's `InvalidKeyError`, which `_decode` maps to `ClaimsInvalid`, so the key-type pin had to be openvc's to give a `ProofError`. The hostile-JWK tests replace PyJWT's decode with a function that fails the test, so a refusal is proven to come from openvc's pin before PyJWT is reached, not from PyJWT's own curve check (which would answer `ClaimsInvalid`). Evidence: a differential of 4,346 cases byte-identical to `9de784e` for a default caller (48 rows differ with the opt-in on, all VC-JWT under header `ES256K`). Adversarial review of the PR: pending at the time of writing; its findings are recorded here before merge (v1.37.0; `test_es256k_default_refused.py`, `test_es256k_opt_in.py`, `test_es256k_ebsi_chain.py`)
 - `#321` — *resource bound, no wrong-accept* — `EbsiHttpClient.get_json` drained a non-200 body with `resp.read()`: no size cap and no wall-clock deadline, where the 200 branch has both, so a hostile or flaky allow-listed host could send an unbounded or dripping error body (measured on v1.36.0: a 10 MiB error body was pulled in full). It predates ADR-0009 and was found reading `get_json` to add the Problem Details `type`. The read is now bounded (`MAX_ERROR_BODY_BYTES`, 16 KiB, the client's deadline), the response is closed past either so the connection is dropped instead of drained (a body read to the end keeps its connection), and the new `HttpError.problem_type` is taken only from an `application/problem+json` body that passes the bounded loader and is a string of 1 to 256 visible ASCII characters, never from a `text/html` firewall page (v1.37.0; `test_ebsi_http_problem_type.py`)
 - `#321` — *untyped error, node-supplied input* — a TIR attribute whose `body` is not a string (a number, an array, an object, a boolean) reached the proof suite's `decode` and raised a bare `AttributeError` (`'int' object has no attribute 'isascii'`) out of `issuer_record` and `verify_ebsi_badge`, on both TIR lanes; found while writing the fuzz tests of the Core API v1 adapter. It is `MalformedRegistryResponse` now (v1.37.0; `test_ebsi_core_v1.py`)
 - `#321` — *fail-open on a malformed revision, conditional on a registry-side fault (one spelling of it)* — a TIR attribute response without an `attribute` object was read as an empty attribute, that is an accreditation with no type restriction, which single-level trust (`evaluate_issuer_trust`) accepts for any credential; measured on v1.36.0: `{"did": ...}` and `{"attribute": null}` both gave an accreditation for an arbitrary type. Recursive trust was unaffected (an accreditation with no token is refused). Both lanes now raise `MalformedRegistryResponse`; behaviour change for a registry that sent such a revision. This closes the missing-object spelling only: an `attribute` object with no `body`, an empty `body`, or a `body` whose claims name no `accreditedFor` is still an accreditation without a type restriction, which single-level trust accepts by design (that mode trusts the node's list) and recursive trust refuses unless a token that verifies backs it (v1.37.0; `test_ebsi_core_v1.py`)

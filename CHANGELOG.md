@@ -474,6 +474,103 @@ All notable changes to **openvc** are documented here. The format follows
   an **injected** `resolver=` that raises anything else (a `RuntimeError`, a `KeyError`)
   has its exception propagate unchanged and unretried, so a bug in a caller's resolver is
   not hidden behind the retry loop.
+- **`VcJwtProofSuite(allow_es256k=True)`: ES256K as an explicit, verification-only opt-in**
+  ([#323](https://github.com/luisgf/openvc/issues/323); decision: [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md),
+  open question 3, accepted 2026-10-16; refs [#113](https://github.com/luisgf/openvc/issues/113)).
+  **Opt-in: nothing changes for a caller who does not pass it.** EBSI Core API v1 signs its
+  RootTAO accreditation JWTs with `alg: ES256K` (RFC 8812: ECDSA over secp256k1 with SHA-256;
+  the prod and the preprod ones, recorded 2026-10-16), which the allow-list refuses
+  (`UnsupportedAlgorithm`), so recursive trust (`verify_trust_chain`,
+  `verify_ebsi_badge(trust_anchors=...)`) failed closed on every Core v1 root. With the keyword
+  the recorded preprod RootTAO verifies end to end; single-level trust, which reads the
+  accreditation with `peek_claims`, was never affected. It widens a `CLAUDE.md` invariant (the
+  allow-list is not widened casually), so it is a named, per-suite opt-in on the ADR-0004
+  model, not a change of the list.
+  - **The default list is untouched.** `ALLOWED_ALGS` is still `{ES256, ES384, EdDSA,
+    Ed25519}`. The new `ALLOWED_ALGS_ES256K = frozenset({"ES256K"})` is exported, disjoint
+    from `ALLOWED_ALGS` and `ALLOWED_ALGS_PQ`, and never merged into either. The suite's
+    verify set is composed of three explicit terms (the default, plus the ML-DSA names when
+    `allow_pq`, plus `ES256K` when `allow_es256k`), so the two flags are independent:
+    `allow_pq=True` does not imply the new keyword and the reverse. The allow-list check still
+    runs before `crit`, `typ`, the SD-JWT-marker gate and any crypto.
+  - **Verification only.** `sign()` hands `sign_compact` the verify set minus `ES256K`, so no
+    suite, opted in or not, signs with a third-party `SigningKey` whose `alg` is `ES256K`
+    (`UnsupportedAlgorithm`, before the backend is asked). No secp256k1 signing backend is
+    added; `signing_key_from_jwk` still refuses `crv: secp256k1`.
+  - **The key is pinned by openvc, before PyJWT loads it.** `ES256K` verifies only with a
+    `kty: EC`, `crv: secp256k1` JWK (exact strings; RFC 8812 says to check both) whose `x`
+    and `y` are 43-character, canonical, unpadded base64url strings (RFC 7518 section
+    6.2.1.2 asks for the full-width octet string: a coordinate written without its leading
+    zero octet, or with one extra, is refused), below the field prime, and on the curve. The
+    prime bound is load-bearing: measured on `cryptography` 49.0.0, `EllipticCurvePublicNumbers`
+    accepts a genuine point written as `x + p`, on secp256k1 and on P-256 alike (the existing
+    ES256/ES384 branches share that laxity; it is another spelling of the same key, not a
+    forgery, and is untouched here). Every
+    failure is a plain `ProofError`, never a `ValueError`/`KeyError`/`TypeError`, and never
+    `ClaimsInvalid`: PyJWT's own `InvalidKeyError` for a P-256 key under `ES256K` would have
+    been mapped to `ClaimsInvalid` by `_decode`, the wrong family for a key/alg mismatch. A
+    JWK that is not an object is a `ProofError` too (the classic algorithms' branches still
+    raise a bare `AttributeError` for `None` on the direct suite API, as before; untouched), and
+    a private `d` member is ignored, never loaded. The reverse direction was already pinned and is now tested: `ES256`, `ES384`,
+    `EdDSA` and `Ed25519` headers with a secp256k1 JWK are a `ProofError`. A DID document that
+    holds a secp256k1 and a P-256 key (the recorded preprod RootTAO's) fails the same way when
+    `kid` names the wrong one.
+  - **One PyJWT path, one claim gate.** Verification runs through the same `_JWT.decode` as
+    ES256, so `exp`/`nbf`/`aud`/`sub`/`jti`, the `iss` reconciliation, `crit`, `typ` and the
+    SD-JWT-marker gates behave exactly as for ES256 (a 33-case claim matrix and a 15-shape
+    signature table assert the same class for both algorithms). The signature is raw `R||S`,
+    64 octets, never DER. PyJWT floor: `pyproject.toml` floors `pyjwt>=2.13`, and the
+    environment these tests ran in resolves exactly `2.13.0`, the floor itself; its default
+    registry carries `ES256K` as SHA-256 on `SECP256K1` (a test pins that on the suite's
+    private instance, and openvc's own curve pin does not depend on PyJWT's `expected_curve`).
+    CI has no PyJWT floor leg of its own (only pyld and httpx do).
+  - **Every other lane keeps refusing the algorithm, twice.** SD-JWT VC (issuer JWT and
+    KB-JWT, with and without `allow_pq`), VP-JWT, `verify_compact`, the status-list token,
+    the OpenID4VCI key proof (also with `allowed_algs=ALLOWED_ALGS | {"ES256K"}`, which stops
+    at `_check_key_binds_to_alg`), the LoTE verifier, the WRPRC lane, COSE (`-47` has no
+    `COSE_ALG_TO_JOSE` entry) and `verify_credential`/`verify_many` and the `openvc.aio` twins
+    (which build `VcJwtProofSuite(leeway_s=...)` and never opt in) are unchanged, and
+    `openvc.keys.verify_signature` still has no secp256k1 branch (a widened `verify_compact`
+    allow-list stops there, as `SignatureInvalid`). `openvc_ebsi` has no code change:
+    `verify_trust_chain` and `verify_ebsi_badge` take the suite, so the opt-in rides on it;
+    only the `trust.py` docstring and the docs say that a Core v1 root needs the keyword.
+  - **Proof that a default caller sees no change.** A differential of 4,346 cases (4 signer
+    types x 18 header `alg` values x 6 key shapes through the VC-JWT, ML-DSA-opted VC-JWT,
+    `verify_compact`, SD-JWT VC (plain and `allow_pq`), VP-JWT, status-token, OpenID4VCI
+    key-proof (plain and widened) and `verify_credential`/`verify_many`/async lanes, plus the
+    `keys.verify_signature` primitive, `signing_key_from_jwk`, COSE, WRPRC and LoTE `alg`
+    checks) produced byte-identical class and message output on this branch and on `9de784e`
+    (SHA-256 of the two output files equal). As a sensitivity control, the same matrix with the
+    opt-in on differs in exactly 48 rows, all of them the VC-JWT lane under header `ES256K`.
+  - **Decisions taken** (recommended option of the issue; pending maintainer confirmation, see
+    the PR): (1) **lane: VC-JWT only, through the PyJWT path**, not an ML-DSA-style route
+    through `keys.verify_signature`, which would duplicate a claim gate that has drifted on
+    that lane before and would remove the second gate every other lane keeps. (2) **Low-s:
+    both forms verify.** RFC 8812 says nothing about the range of `s` (it does not mention
+    malleability), the ES256 path accepts the high-s twin today (tested), and a signer that does
+    not normalise `s` emits high-s about half the time, so a refusal would be an availability
+    failure on legitimate chains with no basis in the RFC. openvc keeps no state and keys
+    nothing on signature bytes. A test pins the choice for ES256K and ES256. (3) **One suite
+    for the leaf and the chain hops, no new parameter on `verify_ebsi_badge`.** A consequence:
+    an opted-in suite also lets the leaf badge itself be ES256K-signed (tested); the
+    alternative, a separate accreditation suite, is an API addition left to the maintainer.
+    (4) **Not labelled experimental**: a real vector exists (the recorded RootTAO).
+    (5) **No hint in the refusal message.** The issue lists a hint on `UnsupportedAlgorithm`
+    for exactly `ES256K` as optional; it is not added, because it would make the refusal
+    text differ for a default caller. The docs carry the pointer instead.
+  - **Evidence.** Golden: the preprod RootTAO accreditation recorded on 2026-10-16
+    (`tests/fixtures/ebsi/core-v1/preprod-grnet/attribute_0dc6a111.json`, unedited) verifies
+    against the recorded `secp256k1` method with the opt-in and is `UnsupportedAlgorithm`
+    without it, through the suite and `verify_ebsi_badge` (through `verify_trust_chain` it is
+    `AccreditationInvalid`, whose `__cause__` is that `UnsupportedAlgorithm`); the clock is
+    pinned (the token is valid 2026-09-21 to 2031-09-20). The recording holds the RootTAO
+    accrediting itself and no leaf under it, so the chain-level golden is the root hop through
+    the real path (the walk verifies it and then meets the self-accreditation cycle:
+    `TrustChainError`), and "reaches the anchor" is proved on a synthetic ES256K-root,
+    ES256-hops chain. The prod seed root's DID document has no verification method, so a prod
+    chain cannot close with or without this; the prod RootTAO accreditation also verifies
+    under the preprod key (the same `kid` fragment), recorded as evidence of a second real
+    ES256K signature, not as a trust path.
 
 ### Changed
 
@@ -729,6 +826,37 @@ All notable changes to **openvc** are documented here. The format follows
   the corrected wording and the threat-model list are not), and a second test fails if
   `wiki/Trust.md` loses the correction or if the new page is no longer linked from `Trust`, the
   Spanish walkthrough and the sidebar.
+- ES256K opt-in ([#323](https://github.com/luisgf/openvc/issues/323)), three feature-scoped
+  files, each building its tokens by hand with `cryptography` (never through a `SigningKey`),
+  negatives first, exact classes:
+  - `tests/test_es256k_default_refused.py` (29 tests): one parametrised sweep of fifteen
+    cases (every lane), each with a REAL ES256K token and the matching secp256k1 JWK, against a spy on
+    every signature primitive (`openvc.keys.verify_signature` wherever it is bound, PyJWT's
+    decode) that fails the test if `ES256K` ever reached one; the issuers resolve (`did:jwk`),
+    so no refusal is an earlier `KeyResolutionFailed`. Also the constants, the primitive's
+    `InvalidKey`, `signing_key_from_jwk`, COSE `-47`, the SD-JWT KB-JWT (also with `allow_pq`)
+    refused after a genuine ES256 issuer JWT, `verify_many` and its async twin isolating the item, and
+    `did:key` secp256k1 staying unsupported.
+  - `tests/test_es256k_opt_in.py` (170 tests): near-miss names and non-string `alg`; foreign
+    keys (P-256, P-384, OKP, AKP, RSA and `oct` shapes) and the reverse direction; a
+    mislabelled but genuine secp256k1 key refused on its labels; 35 hostile JWK shapes (a real
+    key with its leading zero octet stripped or padded, a non-canonical spelling, a
+    coordinate at or above the field prime, a point written modulo `p`, off-curve, `(0, 0)`)
+    asserted as `ProofError` with PyJWT replaced by a function that fails the test; signature
+    shapes and claim handling as parity tables over `{ES256, ES256K}`; the gates after the
+    allow-list; signing refused for all four suite configurations with `sign` never called;
+    the two flags' independence; low-s and high-s; and Hypothesis properties (arbitrary
+    signature segments, JWK members and JWK values never escape `OpenvcError`; any single
+    octet change to the header, payload or signature is rejected).
+  - `tests/test_es256k_ebsi_chain.py` (25 tests): the golden (recorded RootTAO refused without
+    and verified with the opt-in, clock pinned, a flipped octet refused, the P-256 method of
+    the same document refused on its type, the prod accreditation under the preprod key),
+    the golden through `verify_trust_chain` (with a spy) and `verify_ebsi_badge`, and a
+    synthetic ES256K-root chain: reaches the anchor with the opt-in, `AccreditationInvalid`
+    (cause `UnsupportedAlgorithm`) without it, high-s root signature, wrong key, a two-key
+    DID document in both directions, an ES256K leaf badge, and single-level trust unchanged.
+- `tests/test_ebsi_core_v1.py`: the two tests that pinned the recorded RootTAO as refused say
+  that they pin the DEFAULT suite and point to the opt-in tests (no assertion changed).
 
 ### Docs
 
@@ -813,6 +941,18 @@ All notable changes to **openvc** are documented here. The format follows
   for the commands to be run against the then-live list, but also forbade a network request, so
   the page publishes only the two commands ADR-0009's appendix gives and marks the rest *to be
   measured*.
+- ES256K opt-in ([#323](https://github.com/luisgf/openvc/issues/323)): `wiki/Keys-and-HSM.md`
+  gains an "ES256K (EBSI interop opt-in)" section next to the ML-DSA one and a sentence in
+  "The allow-list"; `wiki/Trust.md` and `wiki/EBSI-Node-Trust.md` say that a Core v1 root
+  needs `VcJwtProofSuite(allow_es256k=True)` for recursive trust, that single-level trust is
+  unaffected and that the prod seed root cannot close a chain; `wiki/VC-JWT.md` and
+  `wiki/Security-Model.md` carry one sentence each. Every statement of the default list is
+  still exactly `{ES256, ES384, EdDSA, Ed25519}`. `docs/audit/threat-model.md` (the
+  forged/tampered row, I1, I2, and a new invariant I23) and `docs/audit/assurance.md`
+  (sections 3 and 4) record the opt-in; ADR-0009 records open question 3 as decided, rewords
+  D8, the migration plan's Stage 3 and one consequence (its overall status is unchanged: other
+  questions remain open); `docs/ROADMAP.md` and the `vc_jwt.py` and `trust.py` docstrings say
+  the same.
 
 ## [1.36.0] — 2026-10-16
 

@@ -19,7 +19,8 @@ landed through its own pull request. Browse it by milestone:
   [ADR-0009](adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md) records how `openvc_ebsi`
   follows that, and the maintainer accepted part of it on 2026-10-16: a pure, stateless
   list verifier on an ECDSA-only OpenPGP reader (it vendors the anchor, never the list)
-  and an explicit ES256K opt-in; the other open questions stay open. The work is filed
+  and an explicit ES256K opt-in (`VcJwtProofSuite(allow_es256k=True)`, #323, implemented in
+  1.37.0); the other open questions stay open. The work is filed
   as [#321](https://github.com/luisgf/openvc/issues/321) (Core v1 adapters), [#319](https://github.com/luisgf/openvc/issues/319) (the verifier),
   [#324](https://github.com/luisgf/openvc/issues/324) (a node-based client), [#323](https://github.com/luisgf/openvc/issues/323) (the ES256K opt-in) and
   [#326](https://github.com/luisgf/openvc/issues/326) (the weekly smoke); [#316](https://github.com/luisgf/openvc/issues/316) is the node-trust recipe

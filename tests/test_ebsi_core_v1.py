@@ -1035,13 +1035,14 @@ def test_on_contract_address_refuses_every_spelling_of_another_instance(query):
 
 
 # --------------------------------------------------------------------------- #
-# ES256K: the recorded RootTAO is refused today (#323 flips this)
+# ES256K: the recorded RootTAO is refused by the DEFAULT suite (#323 added the opt-in)
 # --------------------------------------------------------------------------- #
 
 def test_the_recorded_root_tao_is_es256k_and_verification_refuses_it():
-    # THIS TEST PINS A LIMIT, NOT A GOAL. The preprod and prod RootTAO accreditation JWTs are
-    # signed ES256K, which the JOSE allow-list does not admit. When #323 adds an opt-in, the
-    # `raises` below becomes a positive verification of the recorded signature.
+    # The preprod and prod RootTAO accreditation JWTs are signed ES256K, which the DEFAULT
+    # JOSE allow-list does not admit and keeps refusing. #323 added `allow_es256k=True` on
+    # VcJwtProofSuite: the positive verification of this very signature, through the chain
+    # and badge verifiers, is tests/test_es256k_ebsi_chain.py. This test pins the default.
     token = _rec("preprod-grnet/attribute_0dc6a111.json")["attribute"]["body"]
     suite = VcJwtProofSuite()
     issuer, kid = suite.peek_issuer(token)
@@ -1065,9 +1066,10 @@ def test_the_recorded_root_tao_is_es256k_and_verification_refuses_it():
 
 
 def test_recursive_trust_fails_closed_on_the_recorded_es256k_root():
-    # The chain walk verifies the accreditation against the accreditor's resolved key, and the
-    # ES256K signature cannot be checked: AccreditationInvalid, not a trust grant. (A leaf that
-    # is itself an anchor is trusted without a walk, so the anchor here is another DID.)
+    # The chain walk verifies the accreditation against the accreditor's resolved key, and with
+    # the DEFAULT suite the ES256K signature cannot be checked: AccreditationInvalid, not a
+    # trust grant (the opted-in walk is in test_es256k_ebsi_chain.py). A leaf that is itself an
+    # anchor is trusted without a walk, so the anchor here is another DID.
     _, resolver = _served_core_walk()
     with pytest.raises(AccreditationInvalid, match="ES256K") as exc:
         verify_trust_chain(DID, ["VerifiableAuthorisationForTrustChain"], resolver=resolver,

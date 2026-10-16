@@ -142,7 +142,9 @@ Whatever the backend, the verifier accepts only `{ES256, ES384, EdDSA, Ed25519}`
 checked **before** any crypto runs. RS\*/HS\*/`alg: none` are rejected
 outright; see the [Security model](Security-Model) for why this is
 non-negotiable. An **experimental** opt-in widens this to post-quantum ML-DSA — see
-[Post-quantum](#post-quantum-ml-dsa-experimental) below; the default is unchanged.
+[Post-quantum](#post-quantum-ml-dsa-experimental) below. A second, verification-only
+opt-in admits `ES256K` for EBSI interop — see [ES256K](#es256k-ebsi-interop-opt-in)
+below. The default is unchanged by both.
 
 `Ed25519` is the [RFC 9864](https://www.rfc-editor.org/rfc/rfc9864)
 fully-specified name for EdDSA (which IANA has deprecated as polymorphic).
@@ -182,3 +184,47 @@ backend uses external-mu (`sign_mu`) so the message never reaches the device in 
 the same private-key-never-in-process posture as the EC/Ed backends. Signatures are large
 (ML-DSA-65 ≈ 3.3 KB) — a caveat for SD-JWT VC and QR transport, not a blocker. Data
 Integrity quantum-resistant cryptosuites stay out (W3C FPWD); ML-DSA here is JOSE-only.
+
+## ES256K (EBSI interop opt-in)
+
+`ES256K` ([RFC 8812](https://www.rfc-editor.org/rfc/rfc8812): ECDSA over secp256k1 with
+SHA-256) is **not** in the default allow-list. EBSI Core API v1 signs its RootTAO
+accreditation JWTs with it (recorded on the preprod and prod nodes on 2026-10-16), so
+recursive trust (`verify_trust_chain`, `verify_ebsi_badge(trust_anchors=...)`) cannot verify a
+Core v1 root unless the suite is told to accept it. Opt in per suite, as for ML-DSA:
+
+<!-- docs: no-run -->
+```python
+from openvc.proof.vc_jwt import VcJwtProofSuite
+from openvc_ebsi.trust import verify_trust_chain
+
+suite = VcJwtProofSuite(allow_es256k=True)       # verification only; the default list is unchanged
+chain = verify_trust_chain(issuer_did, credential_types, resolver=resolver,
+                           proof_suite=suite, anchors={root_tao_did})
+```
+
+What the opt-in is, and is not:
+
+- **Verification only.** openvc has no secp256k1 signing backend, and `sign()` refuses an
+  `ES256K` key on every suite (`UnsupportedAlgorithm`), opted in or not.
+- **VC-JWT only.** SD-JWT VC (issuer JWT and KB-JWT), VP-JWT, status-list tokens, OpenID4VCI
+  key proofs, LoTE, the WRPRC and COSE keep refusing it, whatever `allow_pq` or `allowed_algs`
+  say. `verify_credential` and `verify_many` build a default suite and never opt in.
+- **Never the default, and independent of `allow_pq`.** The check against the allow-list still
+  runs before any crypto, and `allow_pq=True` does not imply this keyword (nor the reverse).
+- **Pinned to its key type.** An `ES256K` header verifies only with an `EC` / `secp256k1` JWK
+  whose `x` and `y` are full-width (32-octet) coordinates on the curve, and a header naming any
+  other algorithm never verifies with a secp256k1 key; both are a plain `ProofError`, also in a
+  DID document that holds a secp256k1 and a P-256 key and a `kid` that names the wrong one. The
+  signature is raw `R‖S`, 64 octets, never DER.
+- **Same claim handling as ES256.** `exp`, `nbf`, `aud`, `crit`, `typ` and the SD-JWT-marker
+  gates are the VC-JWT ones, unchanged. Both the low-`s` and the high-`s` form of a signature
+  verify, as they already do for ES256 (RFC 8812 does not restrict `s`).
+- **One suite for the leaf and the hops.** `verify_ebsi_badge` passes its one `proof_suite` to
+  the leaf badge and to every accreditation in the chain, so an opted-in suite also accepts an
+  `ES256K`-signed leaf badge.
+- **Not experimental.** A real vector backs it: the recorded preprod RootTAO verifies against
+  its DID document's secp256k1 key (the golden in `tests/test_es256k_ebsi_chain.py`). The prod
+  seed root's DID document has no verification method, so a prod chain cannot close with or
+  without the keyword. Single-level trust never checks the accreditation's signature and is
+  unaffected.

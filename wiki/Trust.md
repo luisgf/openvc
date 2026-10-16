@@ -160,10 +160,14 @@ with for_ebsi("legacy-pilot") as http:
 
 `for_ebsi()` (the default `legacy-pilot`, and its alias `"pilot"`) is the **legacy pilot lane**
 (`api-pilot.ebsi.eu`, the per-service `v5` paths): the lane the recorded fixtures and the weekly live
-smoke test cover. On EBSI Core API v1 the recursive walk (`trust_anchors=`) fails closed, as of
-2026-10-16: the prod and preprod RootTAO accreditations are signed `ES256K`, which the JOSE
-allow-list rejects (`UnsupportedAlgorithm`), and the one seeded prod root has a DID document with no
-verification method. Where reads go on Core v1, and whom to believe, is on
+smoke test cover. On EBSI Core API v1 the recursive walk (`trust_anchors=`) needs one more
+argument, as of 2026-10-16: the prod and preprod RootTAO accreditations are signed `ES256K`, which
+the default JOSE allow-list rejects (`UnsupportedAlgorithm`), so the walk fails closed unless the
+suite is `VcJwtProofSuite(allow_es256k=True)` (a verification-only opt-in, see
+[Keys & HSM](Keys-and-HSM#es256k-ebsi-interop-opt-in); the preprod RootTAO verifies with it).
+Single-level trust (no `trust_anchors`) never checks that signature and is unaffected. The one seeded
+prod root has a DID document with no verification method, so a prod chain cannot close with or
+without the keyword. Where reads go on Core v1, and whom to believe, is on
 [EBSI node trust](EBSI-Node-Trust).
 
 On the Core API v1 the node is yours to choose (and to verify), so the lane is built
