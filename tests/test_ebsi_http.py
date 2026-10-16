@@ -8,6 +8,7 @@ loop's logic and the size-cap test here.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
@@ -180,3 +181,183 @@ def test_corrupt_compressed_body_is_typed_and_not_retried(status, encoding):
         c.get_json(URL)
     assert isinstance(exc_info.value.__cause__, httpx.DecodingError)
     assert calls["n"] == 1                        # terminal, not retried
+
+
+# --- the same rows against get_bytes (#320) --------------------------------------- #
+# `get_json` and `get_bytes` run one request loop (`_request`), so the guard, retry,
+# not-found and typed-error behaviour above holds for both, with the same EXACT classes.
+# A mocked 200 body is a stream, as a socket delivers it: `get_bytes` reads it raw, whereas
+# `httpx.Response(content=...)` has already decoded it and marked the stream consumed.
+# The bytes-only rows (decode bound, ETag, redirects, the tnl.ebsi.eu helper) are in
+# test_ebsi_http_bytes.py.
+
+READERS = ["get_json", "get_bytes"]
+
+
+def _resp(status, body=b"", headers=None):
+    return httpx.Response(status, headers=headers, stream=httpx.ByteStream(body))
+
+
+def _play(*steps):
+    """A handler that plays each step in turn (the last repeats) and counts the requests.
+    A step is an exception to raise or a function building the response."""
+    calls = {"n": 0}
+
+    def handler(request):
+        step = steps[min(calls["n"], len(steps) - 1)]
+        calls["n"] += 1
+        if isinstance(step, Exception):
+            raise step
+        return step(request)
+    return handler, calls
+
+
+def _read(client, method, url):
+    out = getattr(client, method)(url)
+    return out if method == "get_json" else json.loads(out.body)
+
+
+OK_BODY = json.dumps({"ok": 1}).encode()
+
+
+def _ok(request):
+    return _resp(200, OK_BODY)
+
+
+@pytest.mark.parametrize("method", READERS)
+@pytest.mark.parametrize("bad", UNREADABLE_URLS)
+def test_parity_unreadable_url_is_refused_typed_before_any_request(method, bad):
+    handler, calls = _play(_ok)
+    c = _client(handler, retry=FAST_RETRY)
+    with pytest.raises(HttpForbiddenHost) as exc_info:
+        getattr(c, method)(bad)
+    assert type(exc_info.value) is HttpForbiddenHost
+    assert not isinstance(exc_info.value.__cause__, httpx.InvalidURL)   # the guard, not httpx
+    assert calls["n"] == 0
+
+
+@pytest.mark.parametrize("method", READERS)
+@pytest.mark.parametrize("url", [
+    pytest.param("http://api-pilot.ebsi.eu/x", id="not-https"),
+    pytest.param("https://api.ebsi.iti.gr/x", id="other-host"),
+    pytest.param("https://api-pilot.ebsi.eu.example/x", id="suffix-lookalike"),
+    pytest.param("https://api-pilot.ebsi.eu@api.ebsi.iti.gr/x", id="userinfo-lookalike"),
+])
+def test_parity_a_url_off_the_allow_list_is_refused_before_any_request(method, url):
+    handler, calls = _play(_ok)
+    c = _client(handler, retry=FAST_RETRY)
+    with pytest.raises(HttpForbiddenHost) as exc_info:
+        getattr(c, method)(url)
+    assert type(exc_info.value) is HttpForbiddenHost
+    assert calls["n"] == 0
+
+
+@pytest.mark.parametrize("method", READERS)
+def test_parity_guard_refuses_non_ascii_before_urlparse(monkeypatch, method):
+    from openvc_ebsi import _url
+
+    def no_urlparse(url):
+        raise AssertionError("urlparse reached")
+    monkeypatch.setattr(_url, "urlparse", no_urlparse)   # the one reader, shared with the pin
+    c = _client(_play(_ok)[0], retry=FAST_RETRY)
+    with pytest.raises(HttpForbiddenHost):
+        getattr(c, method)(f"https://{HOST}́/x")
+
+
+@pytest.mark.parametrize("method", READERS)
+def test_parity_invalid_url_from_httpx_is_mapped_typed_and_not_retried(method):
+    handler, calls = _play(_ok)
+    c = _client(handler, retry=FAST_RETRY)
+    with pytest.raises(HttpForbiddenHost) as exc_info:
+        getattr(c, method)(f"https://{HOST}/" + "a" * 70_000)
+    assert type(exc_info.value) is HttpForbiddenHost
+    assert isinstance(exc_info.value.__cause__, httpx.InvalidURL)
+    assert calls["n"] == 0
+
+
+@pytest.mark.parametrize("method", READERS)
+def test_parity_retries_a_transient_500_then_succeeds(method):
+    handler, calls = _play(lambda r: _resp(500), _ok)
+    c = _client(handler, retry=FAST_RETRY)
+    assert _read(c, method, URL) == {"ok": 1}
+    assert calls["n"] == 2
+
+
+@pytest.mark.parametrize("method", READERS)
+def test_parity_a_transport_error_is_retried(method):
+    handler, calls = _play(httpx.ConnectError("boom"), _ok)
+    c = _client(handler, retry=FAST_RETRY)
+    assert _read(c, method, URL) == {"ok": 1}
+    assert calls["n"] == 2
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+@pytest.mark.parametrize("method", READERS)
+def test_parity_persistent_transient_status_exhausts_retries(method, status):
+    handler, calls = _play(lambda r: _resp(status))
+    c = _client(handler, retry=FAST_RETRY)
+    with pytest.raises(HttpTransientExhausted) as exc_info:
+        getattr(c, method)(URL)
+    assert type(exc_info.value) is HttpTransientExhausted
+    assert calls["n"] == FAST_RETRY.attempts
+
+
+@pytest.mark.parametrize("method", READERS)
+def test_parity_404_maps_to_not_found_without_retry(method):
+    handler, calls = _play(lambda r: _resp(404))
+    c = _client(handler, retry=FAST_RETRY)
+    with pytest.raises(HttpNotFound) as exc_info:
+        getattr(c, method)(URL)
+    assert type(exc_info.value) is HttpNotFound
+    assert calls["n"] == 1
+
+
+@pytest.mark.parametrize("status", [403, 304, 301, 204, 206])
+@pytest.mark.parametrize("method", READERS)
+def test_parity_unexpected_status_is_typed_http_error_and_not_retried(method, status):
+    handler, calls = _play(lambda r: _resp(status))
+    c = _client(handler, retry=FAST_RETRY)
+    with pytest.raises(HttpError) as exc_info:
+        getattr(c, method)(URL)
+    assert type(exc_info.value) is HttpError
+    assert exc_info.value.status == status
+    assert calls["n"] == 1
+
+
+@pytest.mark.parametrize("method", READERS)
+def test_parity_retry_after_header_is_honoured_on_transient(method):
+    handler, calls = _play(lambda r: _resp(429, headers={"Retry-After": "0"}), _ok)
+    c = _client(handler, retry=FAST_RETRY)
+    assert _read(c, method, URL) == {"ok": 1}
+    assert calls["n"] == 2
+
+
+@pytest.mark.parametrize("method", READERS)
+def test_parity_response_over_the_cap_fails_closed(method):
+    big = b'{"a":"' + b"0" * 10_000 + b'"}'
+    handler, calls = _play(lambda r: _resp(200, big))
+    c = _client(handler, max_response_bytes=1024, retry=FAST_RETRY)
+    with pytest.raises(HttpError) as exc_info:
+        getattr(c, method)(URL)
+    assert type(exc_info.value) is HttpError
+    assert exc_info.value.status == 200 and calls["n"] == 1
+
+
+@pytest.mark.parametrize("method", READERS)
+def test_parity_response_under_the_cap_is_returned(method):
+    handler, _ = _play(_ok)
+    c = _client(handler, max_response_bytes=1024)
+    assert _read(c, method, URL) == {"ok": 1}
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "deflate"])
+@pytest.mark.parametrize("method", READERS)
+def test_parity_corrupt_compressed_200_is_typed_and_not_retried(method, encoding):
+    handler, calls = _play(lambda r: _resp(
+        200, b"not compressed", headers={"Content-Encoding": encoding}))
+    c = _client(handler, retry=FAST_RETRY)
+    with pytest.raises(MalformedRegistryResponse) as exc_info:
+        getattr(c, method)(URL)
+    assert type(exc_info.value) is MalformedRegistryResponse
+    assert exc_info.value.__cause__ is not None
+    assert calls["n"] == 1

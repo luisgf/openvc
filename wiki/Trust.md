@@ -231,6 +231,8 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   Registry `/attributes` listing is paginated, and openvc walks every page (bounded, and
   immune to EBSI's self-referential `next` cursor) so an issuer with many accreditations is
   read in full.
+  The Trusted Nodes List host (`tnl.ebsi.eu`, below) is a second, separate allow-list that
+  is never merged with this one.
 - **Two lanes, selected together**: the legacy pilot (one API per service,
   `"v5"`, the default of `did_registry_adapter()` / `tir_adapter()`, host
   `api-pilot.ebsi.eu`) and the **EBSI Core API v1** (`"core-v1"`:
@@ -255,6 +257,35 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   expect a `urn:ebsi:problems:` slug on every error (the recorded 406 says
   `about:blank`). An error body is read at most 16 KiB; a larger one is dropped
   with its connection.
+- **Exact bytes and the Trusted Nodes List host**: `EbsiHttpClient.get_bytes(url)` returns a
+  response body verbatim as a `BytesResponse(body, etag)` (no JSON parse, no cache, no text
+  decoding), under the same host guard, redirects-off and retry rules as `get_json`. The
+  body is read raw against a hard cap on the wire size **and** on the decoded size of a
+  single `gzip` / `deflate` coding (any other coding is `HttpUnexpectedEncoding`); the body
+  of a non-200 response is never read; and an `etag` you pass is sent as `If-None-Match`
+  (a 304 comes back as `BytesResponse(None, etag)`, which means "re-use what you stored").
+  `deadline_s` (up to a day) is a budget over the attempts, the sleeps and the body read; it
+  is **not** a ceiling on the wait for one response's headers, which only `timeout_s` bounds,
+  per socket operation, so run the call under your own timeout if you need a hard limit. The
+  EBSI client is synchronous: there is no async twin.
+  `for_tnl()` builds a client that allow-lists `tnl.ebsi.eu` **alone**, and
+  `get_tnl_files()` fetches the four signed Trusted Nodes List documents through it. **The
+  bytes are unauthenticated**: the helper verifies nothing, polls nothing, stores nothing
+  and never fetches the pinned key-list key; keep the bytes and the ETags yourself and
+  hand the bytes to a verifier ([ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)
+  D4).
+
+<!-- docs: no-run -->
+```python
+from openvc_ebsi.http import get_tnl_files
+
+files = get_tnl_files()                      # four GETs to https://tnl.ebsi.eu/, nothing verified
+# ... verify files["tnl.json"].body against files["tnl.json.sig"].body, keep them, then
+# on the next refresh ask only for what changed:
+etags = {name: r.etag for name, r in files.items() if r.etag}
+files = get_tnl_files(etags=etags)           # a 304 is BytesResponse(None, <the etag sent>)
+```
+
 - **Version drift, contained**: every EBSI API version specific lives behind
   one adapter in `openvc_ebsi.versioning` and the two TIR lanes share one walk, so
   the origin pin and the caps are written once; the trust logic never sees wire

@@ -263,6 +263,36 @@ finite input", with no explicit constant.
   drained with no cap and no deadline (#321), and the Problem Details `type` it carries
   is kept only from an `application/problem+json` body. The allow-list says which host answers, not which path
   or which document, and the rest of this paragraph is what stands behind it.
+  **The exact-bytes path and the list host** (#320, v1.37.0): `get_bytes` returns a body
+  verbatim, for the Trusted Nodes List documents, which are signed and two of them binary.
+  It shares one request loop with `get_json` (host guard first, redirects off, the #246 and
+  #248 mappings, retry), and adds: a hard cap on the wire size **and** on the decoded size,
+  checked before a chunk is appended (the body is read with `iter_raw`, so httpx inflates
+  nothing, and a single `gzip` or `deflate` coding is decoded with `zlib` asked for at most
+  `remaining + 1` bytes, so a bomb is refused before the allocation; `br`, `zstd`, `x-gzip`
+  and lists of codings are `HttpUnexpectedEncoding`); no read of a non-200 body (a 403 can
+  be a firewall page, and an error body is never parsed or decoded); no cache (the ETag is
+  the cache, and a 304 is accepted only for an `If-None-Match` that was sent); and an
+  optional `deadline_s` (a number of seconds up to one day) over the attempts, the sleeps (a
+  `Retry-After` sleep is clamped to what remains) and the body read, which checks the clock
+  after every chunk. The list is fetched by a **separate**
+  client, `for_tnl()`, whose allow-list is the constant `{tnl.ebsi.eu}` and nothing else,
+  never a host taken from a list, so a poisoned node list cannot widen where the list itself
+  is fetched and R4's wording is unchanged; it keeps no cookies (that client: a hand-built
+  one with the same allow-list keeps what its jar accepts, until #317), sends
+  `Accept-Encoding: identity`, and `get_tnl_files` refuses a client whose allow-list is
+  anything else, before any request. The helper never fetches the pinned key-list key. **It authenticates
+  nothing**: its result is unauthenticated bytes for the verifier. **Residual, unchanged by
+  #320:** `get_json` still inflates per chunk before its cap (so a gzip body under the
+  5 MiB cap can allocate far more), drains a non-200 body with an uncapped `read()`, and
+  sleeps for an unbounded `Retry-After` when no budget is given (a bare `OverflowError` past
+  about 9.2e9 s). **Residual, shared by both paths:** neither `deadline_s` nor `timeout_s`
+  bounds the total time of one response's headers: `timeout_s` applies to each socket
+  operation, so a compromised allow-listed host that sends header bytes slowly enough can
+  hold the calling thread (measured: 8.1 s against `deadline_s=1.0`; the HTTP/1.1 stack's
+  header-size limit, 100 KiB in httpcore 1.0.9, is the only other bound and is not a time
+  bound). A late response is still refused at its first body chunk. A caller that needs a hard
+  wall-clock ceiling runs the call under its own timeout (a worker thread or process).
   **The DID is validated before it is put in a registry URL** (#266, v1.33.0):
   `DidEbsiResolver.resolve` and `.issuer_record` accept only `did:ebsi:z` plus 22 or 23
   base58btc characters (the legal-entity form of the EBSI DID method: a version byte and
