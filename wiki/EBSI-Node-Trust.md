@@ -18,7 +18,9 @@ This page ships no node list and no trust anchor, and ADR-0009 rejects vendoring
 the library: a list expires in at most 90 days. A pure list verifier for `openvc_ebsi` is the
 direction the maintainer accepted on 2026-10-16
 ([#319](https://github.com/luisgf/openvc/issues/319)); it does not exist yet, so until it
-does, verification is yours.
+does, verification is yours. What the library does ship is the fetch half:
+`openvc_ebsi.http.get_tnl_files()` returns the four signed documents as unauthenticated bytes
+through a client that allow-lists `tnl.ebsi.eu` alone (see [Trust anchors](Trust)).
 
 ## Where reads go today
 
@@ -26,7 +28,7 @@ There are two lanes, and `openvc_ebsi` reads one of them.
 
 **The legacy pilot lane.** `api-pilot.ebsi.eu`, with per-service `v5` paths. It is the only
 place the recorded fixtures and the weekly live smoke test are valid, and it is what
-`for_ebsi("pilot")` reaches. On 2026-10-16 it still answered 200 for
+`for_ebsi()` reaches (its default, `legacy-pilot`, which is also spelled `pilot`). On 2026-10-16 it still answered 200 for
 `did:ebsi:zZeKyEJfUTGwajhNyNX928z` on `/did-registry/v5/identifiers/…`. The hub lists
 the nine old APIs as legacy, "available on the Pilot environment only"; **no retirement
 date** appears in the migration guide, the API index or the changelog as of 2026-10-16.
@@ -56,10 +58,11 @@ sampled; the `self` and `links` URLs carry the *answering node's own host*. EBSI
 errors as RFC 9457 Problem Details with a `type` of the form `urn:ebsi:problems:<slug>`, and a
 limit of 20 requests per second per client IP.
 
-**`openvc_ebsi` builds the v5 layout only, until
-[#321](https://github.com/luisgf/openvc/issues/321) lands.** What a Core v1 node answers to a v5
-path was not measured: *to be measured*. Whether a `DidEbsiResolver` given a Core v1 node as
-its `base` works is therefore unknown, and nothing should rely on it.
+**`openvc_ebsi` reads both layouts, selected together.** The default adapters are the v5 ones.
+For a Core v1 node, pass the node's bare origin as `base` and the Core v1 adapters as `didr` and
+`tir`, over a client whose allow-list holds that node's host (`"core-v1"`: `DidRegistryCoreV1` and
+`TirCoreV1`; [Trust anchors](Trust) has the example). What a Core v1 node answers to a v5 path
+was not measured (*to be measured*), and nothing should rely on mixing the two.
 
 The TNL's `pilot` environment is **not** the legacy pilot. On 2026-10-16 the legacy DID
 `did:ebsi:zZeKyEJfUTGwajhNyNX928z` answered 404 (`urn:ebsi:problems:identifier-not-found`) on both
@@ -68,18 +71,20 @@ ledgers, so the recorded fixtures say nothing about them.
 
 ## The three names today
 
-`for_ebsi("pilot" | "conformance" | "production")` seeds the allow-list from one fixed host each.
-As of 2026-10-16:
+`for_ebsi(environment)` seeds the allow-list from one fixed host per name, `legacy-pilot` by
+default. As of 2026-10-16:
 
 | Name | Host | What it is |
 |---|---|---|
-| `pilot` | `api-pilot.ebsi.eu` | The **legacy pilot lane** above. Not the TNL's `pilot` environment. |
+| `legacy-pilot` | `api-pilot.ebsi.eu` | The **legacy pilot lane** above, and the default. |
+| `pilot` | `api-pilot.ebsi.eu` | The same host and lane as `legacy-pilot`, kept for compatibility. Not the TNL's `pilot` environment. |
 | `conformance` | `api-conformance.ebsi.eu` | The name resolves, but no TCP connection completed within 12 s (curl exit 28). It is outside the TNL's scope. |
 | `production` | `api.ebsi.eu` | **Not a node.** No HTTP response was obtained: of four addresses, two did not accept a connection in about 3 s and 6 s, and the one that answered presented a certificate for an Amazon Lightsail wildcard that does not cover `api.ebsi.eu`, so verification stops at the handshake (curl exit 60). Whether any address serves a certificate valid for the name is not established. |
 
 Production nodes are `api.ebsi.<operator domain>` hosts taken from the TNL: 10 of them in list
-version 4. The names stay as they are for now; whether to alias and deprecate them, or wait for
-the 2.0 window, is [#325](https://github.com/luisgf/openvc/issues/325)'s question, not this page's.
+version 4. The names stay as they are for now (an unknown name is `UnknownEbsiEnvironment`);
+whether to deprecate `pilot`, `conformance` and `production`, or wait for the 2.0 window, is
+[#325](https://github.com/luisgf/openvc/issues/325)'s open question, not this page's.
 
 ## Getting the nodes
 
@@ -199,16 +204,16 @@ from a list you have **already verified**, with these rules:
   to stop.
 - **Host names only**: strip the `https://`. Re-check that each URL is a bare `https://` origin,
   ASCII, once in the list, with its environment's prefix.
-- **Refuse a node URL with a port.** Today the guard matches the host name only (matching the
-  origin is [#318](https://github.com/luisgf/openvc/issues/318)), so a listed
-  `https://host:9200` or `https://user@host` would be admitted as `host`. The publisher's rules
-  forbid a port or credentials in a node URL, so a list that contains one fails the checklist
-  above.
+- **Refuse a node URL with a port.** The client's guard admits an origin: `https` on a listed
+  host at port 443 only, and no userinfo, so a request to `https://host:9200/…` or
+  `https://user@host/…` is `HttpForbiddenHost` before any I/O. The allow-list still holds host
+  *names*, so a listed `https://host:9200` stripped to `host` would silently become `host:443`.
+  The publisher's rules forbid a port or credentials in a node URL, so a list that contains one
+  fails the checklist above; refuse it rather than strip it.
 - **Rebuild before the list's `expires`.** A client built by hand has no expiry bound and the
   library offers no grace past it; re-verifying is entirely your job.
-- **Pass `DidEbsiResolver(..., base=…)` per node.** The default base is `api-pilot.ebsi.eu`, the
-  legacy lane. Until [#321](https://github.com/luisgf/openvc/issues/321) lands the adapters
-  cannot read Core v1 paths anyway.
+- **Pass `DidEbsiResolver(..., base=…, didr=DidRegistryCoreV1(), tir=TirCoreV1())` per node.** The
+  default base is `api-pilot.ebsi.eu`, the legacy lane, with the v5 adapters.
 
 The snippet runs offline, on a literal sample (the hosts are examples). Its negatives come
 first: a list it refuses never becomes a client, and a host outside the set, or another
@@ -332,7 +337,10 @@ The list authenticates the **operator**, not the **data**.
 - The chain's real root is the single key-list key. With it an attacker can substitute
   `trusted-keys.json` (the custodians and the threshold) and then sign any list; the two-custodian
   threshold only protects against compromise of the custodians.
-- DNS or certificate compromise of one listed host is not defended.
+- DNS or certificate compromise of one listed host is not defended. The opt-in
+  `address_guard=AddressGuard()` refuses a listed name that resolves to a non-public address and
+  connects to the validated address (off by default, refused behind an environment proxy); it
+  does not stop an attacker who holds a valid certificate for a public address.
 - A node that is revoked between two list versions stays trusted until you next refresh. The
   outside bound is the list's `expires` (at most 90 days after `issued`), but a hand-built
   allow-list does not stop at `expires` by itself: the bound is the rebuild interval you enforce.

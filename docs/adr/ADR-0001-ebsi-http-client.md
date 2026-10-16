@@ -75,6 +75,10 @@ The allow-list is application logic; no HTTP library provides it. The v5 flow
 follows `href`/`attributes` URLs taken from registry responses, so the guard
 remains necessary. https-only + host allow-list retained.
 
+*Amended 2026-10-16:* the guard now admits an origin, https on a listed host at port 443
+and no userinfo, and `allowed_hosts` stays a set of host names. See ADR-0009 D1 and
+issue #318.
+
 ### D9 — DID document parser must handle the bare form
 The DID Registry returns the DID document without a `didDocument` wrapper. The
 parser's `raw.get("didDocument", raw)` fallback already handles this — confirmed

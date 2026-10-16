@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   test:
-    name: test (py${{ matrix.python-version }}${{ matrix.pyld != 'latest' && format(', pyld {0}', matrix.pyld) || '' }})
+    name: test (py${{ matrix.python-version }}${{ matrix.pyld != 'latest' && format(', pyld {0}', matrix.pyld) || '' }}${{ matrix.httpx != 'latest' && format(', httpx {0}', matrix.httpx) || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # 3.10 is end-of-life (2026-10-01) and deprecated, not removed: it stays in the
@@ -30,6 +30,7 @@ jobs:
         python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
         pyld: ['latest']
         extras: ['all']
+        httpx: ['latest']
         include:
           # The [data-integrity] floor edge (#124): oldest supported pyld on the
           # oldest Python; every other job resolves the newest pyld (3.x). The
@@ -37,6 +38,14 @@ jobs:
           - python-version: '3.10'
             pyld: '2.0.4'
             extras: 'all'
+            httpx: 'latest'
+          # The [ebsi] floor edge (#322): the oldest httpx the extra declares
+          # (httpx>=0.27), where the resolved-address guard's pinned request
+          # (Client.stream with headers= and the sni_hostname extension) is exercised.
+          - python-version: '3.10'
+            pyld: 'latest'
+            extras: 'all'
+            httpx: '0.27.0'
 
     steps:
       - uses: actions/checkout@v7
@@ -55,6 +64,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[${{ matrix.extras }}]"
           if [ "${{ matrix.pyld }}" != "latest" ]; then pip install "pyld==${{ matrix.pyld }}"; fi
+          if [ "${{ matrix.httpx }}" != "latest" ]; then pip install "httpx==${{ matrix.httpx }}"; fi
 
       - name: Lint (flake8)
         run: flake8 src tests

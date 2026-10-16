@@ -58,7 +58,7 @@ relying-party registration, **no wrong-authorize**):
    residual risks **R2–R3** (**R1** was resolved in v1.20.1, **R10** in v1.33.1, its first
    sites in v1.32.3).
 5. **The SSRF surface** — `fetch.py` (IP-pin, forbidden ranges, redirect
-   refusal), the resolver opt-out boundary, and the EBSI host allow-list
+   refusal), the resolver opt-out boundary, and the EBSI origin allow-list
    (§7, R4–R5).
 6. **The XAdES / Trusted-List XML trust base** — DOCTYPE refusal, the
    XAdES-BASELINE-B profile, the XSW guard, and the `signxml`/`lxml` dependency

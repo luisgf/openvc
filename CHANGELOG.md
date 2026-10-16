@@ -6,8 +6,762 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.37.0] — unreleased
 
+### Security
+
+- **The EBSI client's allow-list matches an origin, not a host name**
+  ([#318](https://github.com/luisgf/openvc/issues/318), follow-up D1 of
+  [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)). Hardening; no
+  wrong-accept: it narrows the SSRF guard. `EbsiHttpClient._guard_host` admitted any URL
+  whose scheme was `https` and whose host name was in `allowed_hosts`, and never looked at
+  the port, so a URL on an allow-listed host reached the socket on whatever port it named
+  (measured on `main` at 1.36.0, CPython 3.14.8, httpx 0.28.1, `allowed_hosts={"api-pilot.ebsi.eu"}`:
+  `:0`, `:80`, `:8443`, `:9200`, `:65535` and the empty `https://host:/x` were all admitted).
+  The only thing that kept a registry walk off another port was the TIR v5 adapter's own
+  origin pin (`versioning._origin`, #172, #253), which covers three hops of one adapter and
+  nothing else: any other URL given to `get_json` (a status-list URL permitted through
+  `for_ebsi(extra_hosts=...)`, a hand-written fetch) got host-only checking.
+
+  The guard now admits **`https` on a listed host at port 443**, which is what the Trusted
+  Nodes List publishes (every node URL a bare `https://` origin: no path, port or
+  credentials; ADR-0009, "What the Trusted Nodes List is"). An absent port, an empty port
+  (`https://host:/x`) and `:443`, `:0443`, `:00443` are 443. Every other port is
+  `HttpForbiddenHost` (exact class), naming the port, before the cache lookup and before any
+  I/O: `:0` is refused with the rest (`port is None`, never truthiness, so it does not fold
+  into 443, the #253 trap). A URL that carries **userinfo** is `HttpForbiddenHost` too, the
+  empty forms `https://@host/` and `https://:@host/` included: userinfo is outside an origin,
+  the list publishes none, and httpx 0.28.1 sends `https://u:p@host/x` with
+  `Authorization: Basic dTpw`, a header the caller never set. An `@` in a path, query or
+  fragment is not userinfo and still passes. The userinfo refusal names the rule and carries
+  no credentials: its message does not echo them and its `.url` is `None`. Every other
+  refusal keeps `.url` as the URL given, a URL with userinfo included (an `http://` one, or
+  one on another port, say), and the non-https rule's message quotes it as before. Every
+  pre-existing refusal keeps its class and its message.
+
+  `allowed_hosts` is **unchanged**: a set of host names, port 443 implied. `for_ebsi`,
+  `EBSI_HOSTS` and `EBSI_BASE` keep their shape, so every existing caller that stays on 443
+  works unchanged. An entry that spells a scheme or a port (`"host:8443"`, `"https://host"`)
+  never matched and still does not.
+
+  The guard and the adapter pin now read a URL through **one reader**, the private leaf
+  module `openvc_ebsi._url` (`read_origin`, `carries_userinfo`), so a rule about scheme, host
+  or port is written once and `_origin` returns exactly the strings it returned. The pin
+  stays, with its own job: it keeps a walk on the node it started on once an allow-list holds
+  several nodes (ADR-0009 D5), and it stays port-agnostic on purpose (the adapters take any
+  injected `Fetch`). The 8 KiB cap stays in `_origin`; the guard still has none (httpx's own
+  64 KiB backstop stays). Redirects stay off, pinned by a test per status and `Location`
+  shape (same host on another port, relative, scheme-relative, a scheme downgrade, another
+  host): each is one request, `HttpError`, never followed.
+
+  Not changed: a resolved-address guard and DNS rebinding (the rest of threat-model R4, #322),
+  origin strings in `allowed_hosts` (2.0, #74), the cookie jar (#317).
+- **The EBSI client can now check where an allow-listed host name points**
+  ([#322](https://github.com/luisgf/openvc/issues/322); ADR-0009, "Where each design can be
+  attacked", row "DNS rebinding"). Low severity, defence in depth, **no wrong-accept**, and
+  **opt-in: nothing changes unless you pass `address_guard=`**. `EbsiHttpClient` matched a
+  host *name* and trusted DNS for it (threat model R4). That was accepted while the
+  allow-list was three `*.ebsi.eu` names run by one party; a client built from the
+  Trusted Nodes List allow-lists operator-run DNS names, so a listed name that resolves to
+  a private, loopback or link-local address (a rebinding resolver, a lapsed or shared zone,
+  a compromised operator zone) was connected to, and the client opened a TCP connection and
+  started a TLS handshake against an address of the attacker's choosing. The HTTP request
+  is only sent after the handshake verifies a certificate for the listed name, redirects are
+  off and the path is a fixed registry path, so the realistic gain was probing the client's
+  internal network (connect success, refusal and timing differ per address).
+
+  `EbsiHttpClient(..., address_guard=AddressGuard())` (and `for_ebsi(...,
+  address_guard=AddressGuard())`) resolves the host on every request that misses the cache
+  and **refuses the host if any address in the answer is not globally routable**, in either
+  order and however many public addresses sit beside the bad one (`HttpForbiddenAddress`, a
+  subclass of `HttpForbiddenHost`, so a handler for the name guard catches it; never
+  retried, never cached, no request sent). The rule is the one `openvc.fetch` applies to
+  `did:web` (private, loopback, link-local, reserved, multicast, unspecified, the
+  deprecated IPv6 site-local prefix `fec0::/10`, and anything that is not `is_global`,
+  CGNAT included). It then connects to **one validated address**
+  with the TLS server name, the certificate check and `Host` still the host **name**, so
+  there is no window between the check and the connect: the request goes to
+  `https://<validated literal>:<port>/path` with `Host: <name>` and the httpcore
+  `sni_hostname` request extension set to the name. The name check runs first and is
+  unchanged; the address check can only refuse, so the guard never admits a host the
+  allow-list refuses. An allow-listed IP-literal host is classified directly, with no DNS.
+  `did:web` still goes through `openvc.fetch` and never through this client.
+
+  What was measured (step 0 of the issue; macOS arm64, httpx 0.28.1, httpcore 1.0.9; the
+  address table on CPython 3.10.20, 3.11.15, 3.12.13, 3.13.16, 3.14.8 and 3.15.0rc3, the
+  rest on 3.14.8):
+
+  - **A pooled connection is keyed by the address, not the name.** Mechanism A (a
+    request-level pin: the validated literal in the URL, `Host` and the `sni_hostname`
+    extension carrying the name) completes TLS with SNI and the certificate checked against
+    the name, and a certificate for another name is refused. But with one `httpx.Client`, a
+    server whose certificate is valid for one name only and two allow-listed names that
+    resolve to the same address, the second request reused the connection verified for the
+    first name and was served with **no certificate check for its own name**. A guard that
+    pinned the address and kept keep-alive would have weakened the control it is meant to
+    add (any client with more than one host, which is the point of #322). Every pinned
+    request therefore carries `Connection: close`: h11 then closes the connection when the
+    response ends without it ever becoming idle, so there is no window in which a second
+    thread could take it. The cost is a TCP and TLS handshake per request that misses the
+    cache: 0.29 ms against 0.86 ms per request on loopback (what the handshake's round trips
+    cost on a real network is not measured). `httpx.Limits(max_keepalive_connections=0)`
+    closed the same hole in the sequential test but trims idle connections after the
+    response, so it was not used.
+  - Mechanism B (a validating `httpcore` network backend under a pool keyed by name) has no
+    pooling problem and resolves only on new connections, but needs the private
+    `HTTPTransport._pool`, a direct `httpcore` import (a transitive dependency, not
+    declared in the `ebsi` extra) and a seam that bypasses the existing `MockTransport`
+    tests; passing `transport=` also makes httpx ignore environment proxies silently.
+  - Under `HTTPS_PROXY`, A sends `CONNECT <ip>:<port>` and then fails the certificate check
+    against the IP (`IP address mismatch`); B ignores the proxy and connects directly.
+  - `getaddrinfo("api-pilot.ebsi.eu")`: 25 ms cold, about 1 ms warm, three addresses, against
+    a 10 s timeout. One read of the pilot DID document with the guard on completed (live,
+    by hand, not in CI).
+  - On macOS `getaddrinfo` reads `127.1`, `0x7f.1`, `2130706433`, `127.0.1`, `0x7f000001`
+    and `017700000001` as `127.0.0.1`, and `0177.0.0.1` as `177.0.0.1`; `ipaddress` rejects
+    all of them, so they reach the resolver and the guard sees the answer. glibc was not
+    measured. The connection goes to the validated literal, so the name is never read a
+    second time.
+  - **Not measured locally:** the declared httpx floor (0.27); only 0.28.1 is installed
+    and nothing was downloaded. The pinned request uses
+    `Client.stream(..., headers=, extensions=)` and nothing else of httpx. CI now has a
+    floor leg (`test (py3.10, httpx 0.27.0)`, in `.github/workflows/ci.yml`, built like
+    the pyld floor leg) that installs `httpx==0.27.0` over `[all]` on CPython 3.10 and runs
+    the whole suite, the loopback TLS tests included. Its first run was green with
+    `httpx-0.28.1` uninstalled and `httpx-0.27.0` installed: 17582 passed, 39 skipped, all
+    265 tests of `tests/test_ebsi_address_guard.py` among them.
+
+  The classifier agreed on every class of the first 57 rows of the table on all six
+  interpreters (private, loopback, link-local, cloud metadata, unique-local, unspecified,
+  multicast, CGNAT, benchmarking, documentation, IPv4-mapped and IPv4-compatible, NAT64,
+  6to4, Teredo); the two site-local rows added in the review round (below) were run on
+  CPython 3.13.16, 3.14.8 and 3.15.0rc3, and the CI matrix runs the whole table on 3.10 to
+  3.15. `is_global` alone is wrong for some of them (`224.0.0.1`, `ff0e::1`, `::808:808`,
+  `64:ff9b::808:808` and `fec0::1` report `is_global=True`; the multicast, reserved and
+  site-local flags catch them), which is why the union is kept. NAT64, 6to4, Teredo and
+  the IPv4-compatible forms are refused **as whole prefixes**, whatever IPv4 they embed.
+  Not pinned: `::ffff:8.8.8.8` (a
+  mapped public address; threat model R5 records that the mapped-form classification varies
+  across interpreter versions) and `192.88.99.1`, `192.0.0.9`, `192.0.0.10`, `2001:20::1`
+  (allowed on every interpreter measured).
+
+  **Defaults pending maintainer confirmation.** Each is the issue's recommendation and is
+  implemented; the other option is what would change.
+
+  - **D1 mechanism: A (request-level pin), with keep-alive off.** B would add `httpcore` as
+    a direct import and use a private attribute, in exchange for keep-alive and one
+    resolution per connection.
+  - **D2 default: off** for `EbsiHttpClient` and `for_ebsi`. On would break split-horizon
+    DNS and a private mirror of a node, and change public behaviour. Whether a client built
+    from a verified Trusted Nodes List turns it on is #324's call.
+  - **D3 environment proxy: refuse at construction** with `HttpAddressGuardUnavailable`
+    (an `HttpError`, hence an `EbsiError`), when `urllib.request.getproxies()` (the
+    variables, and on macOS and Windows the system settings) has an `https` or `all` proxy.
+    Ignoring the proxy would silently change how the process reaches the network;
+    documenting only would leave an opaque certificate error. **`NO_PROXY` is not an
+    exemption**: httpx matches it against the host of the request URL, which is the pinned
+    address, so with `HTTPS_PROXY` set and `NO_PROXY` naming the EBSI host the pinned
+    request was still sent to the proxy (`CONNECT <ip>:<port>`) and then failed the
+    certificate check against the IP (measured on a loopback proxy). A deployment that
+    needs a proxy for other traffic builds this client in a process or environment
+    without it, or without the guard.
+  - **D4 several addresses: rotate**, one validated address per attempt in resolver order
+    (the first this call has not used yet, so a resolver that reorders its answer cannot
+    make a retry repeat the address that just failed), bounded by `RetryPolicy`. Any
+    transport error (connect, TLS handshake, read or write timeout, protocol error), a 429
+    or a 5xx moves to the next address; a 404 or other 4xx is not retried.
+    First-address-only would turn one dead address of four into an outage. **The bound:**
+    one address per attempt means the address at position *k* of the answer is reached
+    only if the policy allows *k* attempts, so with the default `RetryPolicy` (3 attempts)
+    only the first three addresses are ever tried. Measured with an IPv6-broken client
+    (every IPv6 literal fails to connect) and a live IPv4 address after the dead ones:
+    two dead addresses first succeed, three dead first are `HttpTransientExhausted` (the
+    live one is never tried) and succeed with `RetryPolicy(attempts=4)`; four dead first
+    need 5. A deployment that expects dead addresses sets `attempts` to at least the
+    number of addresses it must be able to reach. A name-based connect does not have this
+    bound (`socket.create_connection`, which httpcore uses, tries every address of the
+    answer inside one attempt), so a host with three AAAA records on a client with no IPv6
+    route works unguarded and is an outage guarded under the default policy. *The other
+    option*, which is a maintainer decision and is not taken here: on a transport error try
+    the remaining validated addresses of the same resolution before consuming the attempt,
+    bounded by `attempts x addresses`, each under the per-socket connect timeout; it
+    removes the bound above at the cost of up to that many connection attempts per
+    `get_json`.
+  - **D5 exemptions: none**, and the classifier is fixed (`AddressGuard` takes a resolver,
+    never a rule). An operator who must reach an internal mirror builds a second client
+    without the guard.
+  - **Smaller choices of this change.** The pinned request carries no userinfo (a
+    `user:pw@` in the URL would otherwise become an `Authorization` header); an IPv6
+    address with a scope id is refused even when it is public; an answer that is not a
+    string or does not parse as an address refuses the host, it is not retried.
+  - **D6 (review round) `fec0::/10`: refused in the shared classifier.** The reviewer
+    found that `ip_is_forbidden("fec0::1")` was false: `ipaddress` reports the deprecated
+    IPv6 site-local prefix (RFC 3879) as `is_global=True` with no other flag, on the
+    interpreters checked (3.13.16, 3.14.8 and 3.15.0rc3), so the docs' "not globally
+    routable" was untrue for it and one internal-looking class was open, for `did:web` too.
+    The change adds `IPv6Address.is_site_local` to the flag union (IPv4 has no such
+    property). *The other option* is to leave the classifier alone and list `fec0::1`
+    under "Not pinned" with `192.88.99.1`; it would keep `did:web` accepting a host that
+    resolves to `fec0::/10`. See `### Changed`.
+
+  **What it does not do.** It does not stop an attacker who also holds a valid certificate
+  for a public address, a dishonest listed node, or anything about registry content; it is
+  not certificate pinning, DNSSEC or DoH, and `getaddrinfo` has no deadline with or without
+  the guard. The cache is consulted before the address check (a hit makes no connection),
+  so a `cache` shared with a guard-off client is the consumer's choice. Threat model R4 is
+  rewritten and keeps its id.
+
+  **Behaviour change: none with the guard off**, which is the default; the constructor
+  arguments of the pooled `httpx.Client` and every request are what they were. With the
+  guard on: the request targets the validated address, carries `Connection: close` and no
+  userinfo, and a host that resolves to a non-public address raises `HttpForbiddenAddress`
+  where it used to be connected to.
+
+### Added
+
+- **`legacy-pilot`, a name for the legacy EBSI pilot lane**
+  ([#325](https://github.com/luisgf/openvc/issues/325), Part 1 of 3; refs
+  [#113](https://github.com/luisgf/openvc/issues/113)). `for_ebsi("legacy-pilot")` seeds
+  exactly the allow-list `for_ebsi("pilot")` always did, `{"api-pilot.ebsi.eu"}`: the legacy
+  per-service lane (the v5 adapters), the only place the recorded fixtures and the weekly
+  smoke test are valid. `EBSI_HOSTS["legacy-pilot"]` and `EBSI_BASE["legacy-pilot"]` are a
+  fourth key in each dict (same `dict[str, str]` type; the first three keep their keys, values
+  and order). **Why a new name:** EBSI now also uses "pilot" for its Core API pilot, which
+  ADR-0009 measured to be a different ledger (the legacy DID answers 404 on its nodes), so
+  `pilot` no longer says which pilot is meant. `legacy-pilot` does.
+- **`openvc_ebsi.environments`**, a new module that imports no HTTP library (it works
+  without the `ebsi` extra, and `versioning.py` reads it). It holds the environment-name
+  table as data: a frozen `EbsiEnvironment(name, fixed_host)` (`fixed_host=None` means an
+  environment with no fixed host), the read-only `ENVIRONMENTS` mapping,
+  `fixed_hosts()` and `LEGACY_PILOT_HOST` / `LEGACY_PILOT_BASE`. `http.EBSI_HOSTS` is now its
+  fixed-host projection and `EBSI_BASE` derives from that, both still plain `dict`s under the
+  same names. The table is data, never a version ladder: API-version specifics stay behind
+  the adapters in `versioning.py`.
+- **`UnknownEbsiEnvironment(EbsiError, ValueError)`** in `openvc_ebsi.errors`, raised by
+  `for_ebsi` for a name the table does not hold: an unknown, wrong-case or empty string, or a
+  value that is not a `str` (`None`, a number, `[]`, `{}`, `bytes`). It is the smallest typed
+  form that keeps `except ValueError` working. The message names the accepted names and shows
+  the offending value through the bounded `safe_repr`.
+- **EBSI Core API v1 adapters: `DidRegistryCoreV1` and `TirCoreV1`**
+  ([#321](https://github.com/luisgf/openvc/issues/321); design:
+  [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)). `openvc_ebsi` could
+  not read a single Core v1 node: the DID Registry and the Issuers Registry moved to
+  `/v1/did-registry/identifiers/{did}` and `/v1/issuers-registry/issuers/{did}` on the
+  *answering node's own origin*, and every `self`, `links`, `attributes` and `href` in a
+  response names that node's host. Both adapters are registered as **`"core-v1"`**
+  (`did_registry_adapter("core-v1")`, `tir_adapter("core-v1")`), not `"v1"`, which would
+  collide with the older per-service `trusted-contracts-registry/v1` vocabulary. The
+  defaults stay `"v5"`, so does `DidEbsiResolver`'s default `base`, and `EBSI_HOSTS` /
+  `for_ebsi` are untouched: a Core v1 caller passes the node origin as `base`, and `didr`
+  and `tir`, together, over a client that allow-lists that node's host (a node-based
+  constructor is a later issue, #324 and #325). The `/v1` belongs to the adapter, and the
+  path never carries the registry key `core-v1`. The v5 lane (`DidRegistryV5`, `TirV4`,
+  `TirV5`) and its fixtures are unchanged.
+  - **One shared walk.** The v5 attribute walk (the page and item caps,
+    `_iter_attribute_items`, `parse_issuer`) moved, as code motion alone, into a private
+    base that `TirV5` and `TirCoreV1` both inherit, so the origin pin (host and port), the
+    caps and the typed errors are written once; `TirCoreV1` is not a subclass of `TirV5`.
+    `Accreditation.attribute_id` stays the list item's `id`: the recordings show that it is
+    not the attribute's `hash` (`0dc6a111...` against `a1c4d9e9...`), and the repo's own v5
+    recording shows the same.
+  - **`contract_address`** (keyword only, on both adapters, default `None`). Core v1 really
+    selects a registry instance by the address of its contract (`?contractAddress=`; the
+    pilot ignored it), and each registry has its own: the preprod node publishes different
+    ones on `/did-registry/details` and `/issuers-registry/details`. The value comes from
+    configuration only, never from a response, a link or a token; it must be 1 to 128 of
+    `A-Z a-z 0-9 . _ -`, checked with `fullmatch` on an exact `str` (`ValueError`
+    otherwise: empty, blank, control or non-ASCII characters, any of `/ ? # & = %` or a
+    space, over-long, not a `str`), so configuration cannot reshape the path or add a
+    parameter. It is the only query component, so two resolvers with different addresses on
+    one client never share a cached document.
+  - **A configured walk stays on one registry instance.** The recorded nodes do not echo
+    `contractAddress` in `self`, `links`, `attributes` or `href`, so a followed link names
+    none and a node would read it against its *default* instance. With an address
+    configured, `TirCoreV1` adds it as the last query parameter of the `attributes` link, of
+    every `href` and of `links.next` when they name none, leaves one that names the
+    configured address as `contractAddress`, and raises `MalformedRegistryResponse` for any
+    other link that names the instance. A query parameter counts as naming it when its
+    percent-decoded name, case-folded, *contains* `contractaddress`; only the exact name with
+    the configured value is kept. So these are refused: another case, a percent-encoded
+    name, a repeat, a bracket suffix (`contractAddress[]`, `contractAddress[0]`), a longer
+    name (`contractAddress.x`, a trailing space, `%00`). A raw `;` anywhere in the link's
+    query is refused whatever it names, because a server may read it as a separator. That
+    is the list of spellings covered, not a claim about every way a server may read a name;
+    the configured address is also on the issuer URL, and the node is the one registry the
+    walk is already pinned to. The recorded links carry neither form (`page[after]` and
+    `page[size]` only). The missing-`attributes` fallback is built from the path with the
+    query last. With no address configured, links are followed as written.
+- **`HttpError.problem_type`** (add-only, `None` by default). EBSI Core API v1 answers errors
+  as RFC 9457 Problem Details with a stable `type` (`urn:ebsi:problems:<slug>`; ADR-0001 D7
+  asked for it and `http.py` mapped by status alone). `get_json` now reads it from an error
+  answer and hands it over opaque: `http.py` does not know the `urn:ebsi:problems:`
+  vocabulary, and `title` and `detail` are neither read nor echoed. It is kept only when the
+  answer is **`application/problem+json`** (what the recorded 400, 404 and 406 answers
+  carry, so the gate is not widened), the body is a JSON object that passes the bounded
+  loader, and `type` is a string of 1 to 256 visible ASCII characters; otherwise `None`. A
+  node's firewall 403 is a 35 KB `text/html` page (ADR-0009) and is never read as Problem
+  Details. The parse never raises: a body that cannot be used leaves `None` and the status
+  error is raised as before. Messages and exception classes for every status are unchanged
+  (404 is `HttpNotFound`; 429 and 5xx still retry and end as `HttpTransientExhausted`, which
+  carries the last attempt's type; a corrupt gzip is still `MalformedRegistryResponse`,
+  #248). Not every Core v1 error has a slug: the recorded 406 says `about:blank`.
+- **Recorded Core API v1 vectors**, `tests/fixtures/ebsi/core-v1/` (24 recorded files, a
+  `MANIFEST.json` and a `README.md`): plain read-only GETs of 2026-10-16 with the client's
+  own `User-Agent` and `Accept`, vendored byte for byte, never edited. The preprod RootTAO
+  `did:ebsi:zmaEptEHQRAmkJnFV6ki3io` read from two nodes (`api-preprod.ebsi.grnet.gr`,
+  `api-preprod.ebsi.incm.pt`: the DID document with a `secp256k1` and a `P-256` key, the
+  issuer, the attribute list, the attribute and the first issuers page), the one-issuer
+  production seed (`api.ebsi.iti.gr`, shape only: its DID document has an empty
+  `verificationMethod`; to be replaced when real operators onboard), the
+  `application/did+json` negotiation variant, the 404 / 400 / 406 Problem Details bodies, and
+  one walk read with and without a valid `contractAddress`. The manifest records, per file,
+  the request URL, status, media type, node, retrieval time, headers sent and SHA-256. Not
+  recorded, and said so in the README: **405** (it needs a non-GET request to a read path)
+  and the OpenAPI contract (`gitlab.com` answered 503 to three attempts).
+- **Decisions taken by default, for the maintainer to confirm** (each was open in the issue
+  or the ADR; the other option is what a change would cost):
+  1. *`parentAttributeId` on the model* — Option 1: `Accreditation` is unchanged and the field
+     is only recorded in the fixtures (nothing reads it; the trust walks use `tao` and
+     `rootTao`). Option 2 would add a defaulted `parent_attribute_id: str | None = None` at
+     the end of the frozen dataclass.
+  2. *Names* (ADR open question 4) — `"core-v1"` only; `EBSI_HOSTS` and `for_ebsi` are not
+     touched (#325).
+  3. *404* (ADR open question 5) — stays `HttpNotFound` by status; `problem_type` only
+     describes it. Whether a 404 is authoritative for a node is #324's.
+  4. *`contract_address` format* — the issue's bounded token. The OpenAPI contract could not
+     be read, but every address the nodes publish is `0x` and 40 hexadecimal digits, which
+     fits. Tightening it to that form is a one-line change to the pattern; the cost is
+     rejecting any other form the contract may allow.
+  5. *A link that names no `contractAddress`* — gets the configured one (above). The other
+     option, following it bare, reads the node's default instance for every hop after the
+     first whenever the configured address differs from it. A link whose query holds a `;`
+     is refused even when it names no address, and a name that merely contains
+     `contractaddress` is refused: the other option is to compare the name exactly and
+     split on `&` alone, which lets `contractAddress[]` and a `;`-separated parameter
+     through with the configured address appended after them.
+  6. *Bounds on the error read* — 16 KiB for the body and 256 characters for `type`.
+  7. *`TirCoreV1` takes `contract_address` too* — on the strength of the recorded 200s for
+     the issuer, attribute list and attribute read with the Issuers Registry's own address
+     (the contract itself could not be read). The other option is the DID Registry only.
+  8. *The two walk-typing fixes reach the v5 lane* — a non-string attribute `body` and a
+     revision without an `attribute` object are `MalformedRegistryResponse` on `TirV5` as
+     well, although the issue left the v5 lane as it is: the walk is shared, so "v5
+     unchanged" and "one walk" cannot both hold. The other option is a hook so that only
+     `TirCoreV1` raises, which keeps a bare `AttributeError` and the read of a missing
+     `attribute` object as an empty attribute on the legacy lane.
+- **`EbsiHttpClient.get_bytes`, `for_tnl` and `get_tnl_files`: the fetch half of the
+  Trusted Nodes List work** ([#320](https://github.com/luisgf/openvc/issues/320),
+  [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md) D4). `get_json` cannot
+  carry the list: it parses to a `dict`, caches it, and refuses the two binary `.sig` files,
+  while `tnl.json.sig` covers exactly the bytes of `tnl.json`.
+  - **`get_bytes(url, *, max_bytes=None, etag=None, deadline_s=None) -> BytesResponse`** returns
+    the body verbatim (no text decoding, no `strip`, no cache) as `BytesResponse(body, etag)`;
+    `body` is `None` exactly on a 304. It runs under the same host guard, redirects off, retry
+    on 429 / 5xx / transport errors and `Retry-After` as `get_json`: both now call one private
+    request loop, so the #246 and #248 behaviours cannot drift between them, and `get_json`'s
+    observable behaviour is unchanged. It sends `Accept: */*` and `Accept-Encoding: identity`.
+    A 404 is `HttpNotFound`; an unsolicited 304, any other 3xx, a 204, a 206 and a 403 are
+    `HttpError` with `status`, not retried, and **the body of a non-200 response is never
+    read** (a 403 body can be a firewall page). `max_bytes` can only lower the client's
+    `max_response_bytes`. `deadline_s` (a number of seconds above 0 and at most 86 400, one
+    day; anything else, a 400-digit `int` and `1e300` included, is `HttpError` before any I/O)
+    is a budget over the attempts, the sleeps between them (a `Retry-After` or backoff sleep is
+    clamped to what remains) and the body read, which checks the clock after every chunk it
+    receives; a spent budget is a plain `HttpError`. **It is not a ceiling on the wait for one
+    response's headers**: the connect, the TLS handshake and each socket read are bounded only
+    by `timeout_s` each, so a server that sends its headers slowly enough to keep every read
+    under `timeout_s` is not cut off (measured: a 16-line header drip of 0.5 s per line held a
+    `deadline_s=1.0` call (`timeout_s=2.0`) for 8.1 s, then the late body was refused; the HTTP/1.1 stack's
+    header-size limit is the only other bound, 100 KiB in httpcore 1.0.9, which is not a time
+    bound). `get_json` has the same property. A caller that needs a hard wall-clock limit
+    enforces it outside the call.
+  - **The decoded size is bounded before it is allocated.** The body is read with
+    `iter_raw()`, so httpx decodes nothing; the wire size and a `Content-Length` over the cap
+    are refused before a chunk is appended; a single `gzip` or `deflate` coding is decoded
+    with `zlib.decompressobj`, asking for at most `remaining + 1` bytes per call, so a
+    decompression bomb is refused inside zlib. Measured with `tracemalloc` on a 260 935-byte
+    gzip body that inflates to 256 MiB: about 2 MiB peak on the bytes path, against 557 MiB on
+    `get_json` (see Not changed, below). Any other coding (`br`, `zstd`, `x-gzip`, a list such
+    as `gzip, gzip`) is the new `HttpUnexpectedEncoding(HttpError)`; a corrupt or truncated
+    stream, bytes after its end, or a raw-deflate body labelled `deflate` is
+    `MalformedRegistryResponse` (the zlib error as `__cause__`), not retried.
+  - **ETag in, ETag out, no state.** A supplied `etag` is opaque and sent verbatim as
+    `If-None-Match`; it is only checked as a header value (1 to 256 characters of visible
+    ASCII, not `*`), and one that fails, or is not a `str`, is `HttpError` before any I/O (a
+    non-ASCII value would otherwise escape as a bare `UnicodeEncodeError`). A 304 is accepted
+    only when an `etag` was sent and returns `BytesResponse(None, <the etag that was sent>)`:
+    it means "re-use the bytes you stored and verify them again with a fresh `now`", so
+    `expires` and rollback checks always run. A received `ETag` that fails the same check is
+    dropped (`etag=None`) and the body is still returned, because the signature authenticates
+    the body and the validator only saves bandwidth.
+  - **`for_tnl(**kwargs)`** builds a client whose allow-list is `{tnl.ebsi.eu}` alone, never
+    the node set a list names, so a poisoned list cannot widen where the list itself is
+    fetched (`allowed_hosts` cannot be passed: `TypeError`). It keeps no cookies (only this
+    client: `get_tnl_files` accepts any client whose allow-list is `{tnl.ebsi.eu}`, and one you
+    build yourself keeps whatever its cookie jar accepts until #317), and its
+    `max_response_bytes` defaults to 64 KiB. `EbsiHttpClient` gains a read-only
+    `allowed_hosts` property (a `frozenset`).
+  - **`get_tnl_files(client=None, *, etags=None, deadline_s=30.0) -> dict[str, BytesResponse]`**
+    makes four sequential requests to `https://tnl.ebsi.eu/<name>` (`TNL_FILES`: `trusted-keys.json`,
+    `trusted-keys.json.sig`, `tnl.json`, `tnl.json.sig`) sharing one `deadline_s` budget (what it
+    bounds is stated above: not the wait for one response's headers), with a
+    per-file cap (`TNL_MAX_BYTES`: 64 KiB for the JSON files, 4 KiB for the signatures). It takes no
+    URL, refuses with `HttpForbiddenHost` before any request a `client` whose allow-list is
+    not exactly `{tnl.ebsi.eu}`, and is all-or-nothing: a failure propagates with its class
+    and a message that names the file, and nothing partial is returned. `etags` maps a file
+    name to the validator of the copy the caller holds; a key that is not a file name is
+    `HttpError` before any I/O, so a typo cannot silently disable conditional requests.
+  - **What it does not do:** verify anything (the bytes are unauthenticated until the
+    verifier of #319 checks them); poll (one round trip per file per call; the publisher's
+    hourly guidance is the consumer's schedule); persist (the consumer keeps the bytes and
+    the ETags); reconcile a mixed set (a new `tnl.json` beside a 304 for its signature); or
+    fetch the pinned key-list key (`keylist-key.asc`), which the publisher says never to
+    download at run time and which would turn the pin into trust-on-first-use of DNS and TLS.
+  - **One live measurement of `tnl.ebsi.eu`** (2026-10-16, 8 GETs, certificate verification
+    on, no redirects followed), recorded in `tests/fixtures/ebsi/tnl_response_headers.json`
+    and replayed through `MockTransport`: (1) `openvc-core/1.36.0` is served a 200 on all
+    four files; (2) `Accept-Encoding: identity` yields no `Content-Encoding`; (3) every file
+    carries a strong `ETag` (quoted, no `W/`); (4) `If-None-Match` with it yields a 304 with
+    no content on all four.
+  - **Defaults pending maintainer confirmation** (none is a fact about EBSI; the PR body says
+    for each what the other option would change):
+    - the per-file caps and the 30 s `deadline_s` of `get_tnl_files` are proposals (ADR-0001
+      D5's 10 s per-request `timeout_s` stays);
+    - `deadline_s` is documented, not enforced, on the wait for one response's headers (the
+      alternative clamps each request's httpx timeout to the remaining budget, and bounding a
+      header drip needs a watchdog or a custom transport);
+    - `deadline_s` has a ceiling of one day (`_MAX_DEADLINE_S`, as `MAX_LEEWAY_S` does for the
+      leeway): without one, `deadline_s=1e300` reaches `time.sleep` through the clamp with a
+      hostile `Retry-After` and raises a bare `OverflowError`;
+    - a sleep is clamped to the budget and the call then fails, rather than failing at once;
+      a spent budget is a plain `HttpError`, not a `HttpTransientExhausted`;
+    - `for_tnl` defaults `max_response_bytes` to 64 KiB;
+    - the no-cookie policy is the constructor's (#317), so `for_tnl` and `get_bytes` inherit it;
+    - the argument checks (`etag`, `max_bytes`, `deadline_s`) run before the host guard, so a
+      call that gets both wrong reports `HttpError`, not `HttpForbiddenHost` (no I/O either
+      way);
+    - an empty `Content-Encoding` is read as absent; a `Content-Length` that is not a plain
+      number is ignored (the streamed cap still applies);
+    - the validator check is only "1 to 256 visible ASCII characters, not `*`", so an `etag`
+      with a comma is sent verbatim (a server may read it as a list);
+    - `max_bytes=0` is accepted (any non-empty body is then over the cap);
+    - `get_tnl_files` names the failing file by rewriting the exception message in place
+      (`"<file>: <message>"`), keeping the class, `status`, `url` and `__cause__`;
+    - a second gzip member is refused, not concatenated (bytes after the end of the first
+      stream are `MalformedRegistryResponse`).
+  - **Sync only:** the EBSI HTTP client has no async twin, so neither do `get_bytes`,
+    `for_tnl` and `get_tnl_files`.
+  - **Mocking note:** `get_bytes` reads the raw stream, so a test double must build its body
+    as a stream (`httpx.Response(200, stream=httpx.ByteStream(b"..."))`);
+    `httpx.Response(200, content=b"...")` is decoded eagerly by httpx and its stream marked
+    consumed.
+  - **Not changed:** `get_json` keeps its per-chunk inflation (`iter_bytes` yields an
+    already-decoded chunk, so its cap fires after the allocation), its uncapped
+    `resp.read()` drain of a non-200 body and its unbounded `Retry-After` sleep when no
+    budget is given, which is a bare `OverflowError` once the header is longer than
+    `time.sleep` takes (about 9.2e9 s, so any 11-digit value; measured; `get_bytes` without a
+    `deadline_s` has it too, and `get_tnl_files` always passes one). They are outside this
+    change and are tracked separately.
+- **`openvc.fetch.ip_is_forbidden(address)`**
+  ([#322](https://github.com/luisgf/openvc/issues/322)), the address rule `openvc.fetch`
+  applies to `did:web`, public and in `__all__` so a caller with its own HTTP client applies
+  the rule instead of a copy of it. `_ip_is_forbidden` is the same function object. Raises
+  `ValueError` for a string that is not an IP address.
+- **`openvc_ebsi.http.AddressGuard`**, `HttpForbiddenAddress`, `HttpAddressResolutionFailed`
+  and `HttpAddressGuardUnavailable`, and the `address_guard=` argument of `EbsiHttpClient`
+  and `for_ebsi`. `AddressGuard.addresses(host, port)` returns the validated addresses and
+  raises `HttpForbiddenAddress` or `HttpAddressResolutionFailed` (a resolver `OSError`,
+  `ValueError`, `TypeError` or an empty answer is handled like a connection failure:
+  retried, then `HttpTransientExhausted`). That is the contract for the default resolver;
+  an **injected** `resolver=` that raises anything else (a `RuntimeError`, a `KeyError`)
+  has its exception propagate unchanged and unretried, so a bug in a caller's resolver is
+  not hidden behind the retry loop.
+
+### Changed
+
+- **A URL on an allow-listed host with a port other than 443 is now `HttpForbiddenHost`**
+  (#318). It used to be fetched. Who is affected: a caller that gives `for_ebsi(extra_hosts=...)`
+  a status-list or other host and then fetches it on a non-default port (`:8443`), and a
+  `DidEbsiResolver` whose `base` names a port (`https://api-pilot.ebsi.eu:8443`) used with
+  the real `EbsiHttpClient`. Whether any consumer does either is not measurable from this
+  repository. What to do instead: serve it on 443 (an absent port is 443; `:443` also works),
+  or give the resolver or the status check a `Fetch` of your own for that host. There is no
+  opt-in for another port, on purpose (see the decisions below).
+- **A URL with userinfo is now `HttpForbiddenHost`** (#318), for example
+  `https://user:password@api-pilot.ebsi.eu/x`, which used to be fetched with a Basic
+  `Authorization` header. Drop the userinfo from the URL.
+
+  **Decisions taken, pending maintainer confirmation** (#318 lists them with the other option
+  of each):
+
+  - *Other ports*: refused with no opt-in (ADR-0009 D1: "host and port 443"). The alternative,
+    a per-entry `host:port` syntax, re-opens the hole.
+  - *Empty port* (`https://host:/x`): admitted, for parity with `_origin`, which already folds
+    it to 443, and because both parsers read it as no port. The alternative is to refuse it
+    as stricter than httpx.
+  - *Userinfo*: refused in the guard, since the list guarantees none. The alternative is to
+    leave it and file it separately.
+  - *Release placement*: a minor (1.37.0), the behaviour change stated here (precedent: #172,
+    #253). Holding it for 2.0 (#74) is the alternative.
+- **`EbsiHttpClient` keeps no cookie jar**
+  ([#317](https://github.com/luisgf/openvc/issues/317); ADR-0009, "Where each design can
+  be attacked", row "Cookie jar"). The pooled `httpx.Client` used httpx's default jar, so a
+  `Set-Cookie` from an allow-listed host was stored and sent back on later requests from
+  that client. The client has no use for that: `get_json` is a stateless GET reader whose
+  only state is the TTL cache (ADR-0001 D2), and before this change nothing in `src/` or
+  `tests/` read a cookie. The jar is now a bare `http.cookiejar.CookieJar` whose policy
+  refuses every cookie in both directions, so a `Set-Cookie` is dropped and nothing is
+  ever sent back: not on the next request, not on a retry after a 5xx that set one, not to
+  a sibling host that the cookie's `Domain` would have reached. **This is a behaviour
+  change:** a node's affinity cookie (the two `edelivery.lt` hosts of ADR-0009 set an
+  `SRV_ID`) is no longer returned, so consecutive reads of one registry walk (issuer
+  record, attribute pages, revisions) may reach different backends of one node. Nothing
+  in `openvc_ebsi` reads a cookie or assumes same-backend reads, and the trust model
+  already treats a node as one unauthenticated source; whether the backends behind one
+  node disagree has not been measured. No new public name, constructor option, error
+  class or dependency; every other `httpx.Client` argument, and every error class
+  `get_json` raises, is unchanged.
+  - **`set_ok` is the load-bearing method.** httpx copies the client's jar into a fresh
+    default-policy one when it builds a request, so `return_ok` and the other two methods
+    are never consulted on the send path (a policy that stored the cookie and refused only to
+    return it still sent it). They are kept as defence in depth and pinned directly.
+  - **The jar is a bare `CookieJar`, and must stay one.** httpx keeps only that as given; an
+    `httpx.Cookies`, a dict or a list is rebuilt with the default policy, which would lose
+    the refusal silently.
+  - **Measured** on httpx 0.28.1 and CPython 3.14.8 (`httpx.MockTransport`, a synthetic
+    `SRV_ID` cookie): the cookie came back on the next request, on the retry after a 503 that
+    set it, and, with `Domain=ebsi.edelivery.lt`, on a request to the sibling host; twelve
+    hostile `Set-Cookie` values (empty, `=`, bad `Expires` / `Max-Age`, a 5 000-digit
+    `Max-Age`, non-ASCII bytes, 20 000 attributes, a 1 MB value, an unbalanced quote,
+    `Domain=.`) neither raise nor warn and leave the jar empty. The floor `httpx>=0.27` was
+    read, not run: `Cookies.__init__` keeps a non-dict, non-list, non-`Cookies` argument as
+    the jar and `_merge_cookies` copies the client's jar into a new `Cookies` only when it is
+    non-empty, identically in the 0.27.0 wheel (`_models.py`, `_client.py`). CI has no httpx
+    floor leg.
+  - **Defaults pending maintainer confirmation** (#317, "Decisions to take"; the
+    recommended option was taken in each case): (1) *disable the jar* rather than leave it
+    and document it; documenting it would keep affinity as an ambient property of the
+    client. (2) *a cookie policy* rather than a null `CookieJar` subclass; the null jar never
+    parses `Set-Cookie` but depends on httpx calling two methods on that attribute, the
+    policy is the documented stdlib hook and leaves the jar an ordinary jar. (3) *no public
+    switch to re-enable cookies*; a deployment that wants affinity expresses it in a node
+    selection policy (#324), not in a client option.
+- **`for_ebsi()` now defaults to `"legacy-pilot"`** (it was `"pilot"`), with the identical
+  allow-list `{"api-pilot.ebsi.eu"}`: a bare `for_ebsi()` builds the same client as before and
+  warns nothing. It is not a default that changes a security decision (the versioning
+  policy's MAJOR case), so it ships in a MINOR. `DidEbsiResolver`'s default `base` now reads
+  the same table (`openvc_ebsi.environments.LEGACY_PILOT_BASE`) instead of repeating the
+  literal; the value, `https://api-pilot.ebsi.eu`, is unchanged. The opt-in weekly smoke
+  (`test_live_resolve`) now defaults `OPENVC_EBSI_ENV` to `legacy-pilot`.
+- **A name `for_ebsi` does not know is now `UnknownEbsiEnvironment`, which is a `ValueError`.**
+  `except ValueError` keeps catching it, as the versioning policy's rule for a more specific
+  subclass of the old class requires (MINOR). Code that compares the exact class
+  (`type(exc) is ValueError`) must compare `UnknownEbsiEnvironment`, or catch `ValueError`.
+  **One thing that used to succeed now raises:** a value that is not a `str` but hashes and
+  compares equal to a name (`collections.UserString("pilot")`) was accepted by the old
+  dictionary lookup; it is refused by the `str` type check. Pass `str(value)`. A
+  `str` or a `str` subclass (a `(str, Enum)` member, say) that holds a name is unaffected.
+- **Defaults taken, pending maintainer confirmation.** #325 leaves three switches to the
+  maintainer; Part 1 ships only the unconditional one and takes the non-breaking option on the
+  other two, so nothing is deprecated or removed here and each can still go either way:
+  1. *Switch 1, add `legacy-pilot`:* done, as above.
+  2. *Switch 2, `pilot`: 2a (taken)* leaves `pilot` silent and documents it as the same lane
+     as `legacy-pilot`. The alternative, 2b, would emit a `DeprecationWarning` naming
+     `legacy-pilot` from `for_ebsi("pilot")` (MINOR; the versioning policy's steps 1 to 3 would
+     apply: `### Deprecated` here with the earliest removal, removal only at a MAJOR).
+     A test pins that `pilot` is silent, so adding the warning later is a conscious edit.
+  3. *Switch 3, `production` and `conformance`: 3a (taken)* keeps both rows, with the same
+     allow-list rule, and documents them plainly (`wiki/Trust.md`, `for_ebsi`'s docstring,
+     `environments.py`). The alternatives: 3b, a `DeprecationWarning` from `for_ebsi` (there is
+     no replacement to name for either until the node-based client of #324, so the message
+     would have none); 3c, `for_ebsi` refuses, keeping the keys (a documented, pinned call that
+     built a client would raise, which the versioning policy reads as MAJOR unless the
+     CHANGELOG records a narrow decision, as 1.35.0 did for `did:key`); 3d, remove the keys
+     (MAJOR, and `test_for_ebsi_production_environment_is_registered` pins them). A test pins
+     that both are silent.
+
+  **Migration notes, whichever option is chosen later.** (i) In 1.x the Core API pilot that the
+  Trusted Nodes List calls `pilot` has no `for_ebsi` spelling, because `pilot` stays the legacy
+  lane until a MAJOR release. The node-based constructor planned in #324 takes the list's own
+  spelling, so `for_ebsi` need not carry it; a 1.x spelling would be a new name for the
+  maintainer to choose (ADR-0009's end state calls it `pilot`). (ii) At that MAJOR (the 2.0
+  window, [#74](https://github.com/luisgf/openvc/issues/74); not decided), `pilot` may change
+  meaning. A caller who ignored the warning (2b) or the documentation (2a) would then read a
+  different ledger, where ADR-0009 measured the legacy DID to be a 404. Use `legacy-pilot`
+  today to say which one you mean.
+- **A TIR attribute response without an `attribute` object is `MalformedRegistryResponse`**
+  (both lanes, `TirV5` and `TirCoreV1`). It used to be read as an empty attribute, which is
+  an accreditation with no type restriction, and single-level trust
+  (`evaluate_issuer_trust`) accepts such an accreditation for any credential. A registry
+  that answers `{"did": ...}` or `{"attribute": null}` for an `href` is malformed, not
+  unrestricted; there is nothing to pass instead, the walk now stops with a typed error.
+  Recursive trust was unaffected (an accreditation with no token is refused).
+  This is a shape check, not the end of the wildcard: an `attribute` object with no `body`,
+  an empty `body`, or a `body` whose claims name no `accreditedFor` is still an
+  accreditation with no type restriction, which single-level trust accepts for any
+  credential (its documented policy: that mode trusts the node's list). Recursive trust
+  refuses one that has no token (`AccreditationInvalid`) and otherwise needs a token that
+  verifies. Pinned by `test_an_attribute_object_with_no_usable_body_is_still_a_wildcard_by_design`
+  and its neighbour.
+- **`openvc.fetch` refuses the deprecated IPv6 site-local prefix `fec0::/10`**
+  ([#322](https://github.com/luisgf/openvc/issues/322), review round).
+  `ip_is_forbidden` (and so `did:web` and every fetch that resolves through
+  `_resolve_public_ips`) used to accept it: `ipaddress` reports `fec0::1` as
+  `is_global=True`, `is_private=False` and sets only `is_site_local` (measured on CPython
+  3.13.16, 3.14.8 and 3.15.0rc3), so nothing in the flag union caught it. RFC 3879
+  deprecated the prefix and it is not globally routable. A `did:web` (or status-list or
+  schema) host whose DNS answer includes a `fec0::/10` address now raises
+  `UnsafeUrlError` where it used to connect. There is nothing to pass instead: a publicly
+  reachable host does not resolve to this prefix; fix the DNS record. Only IPv6 has the
+  property, so IPv4 classification is unchanged.
+
+### Fixed
+
+- **`for_ebsi` no longer lets bare exceptions escape for a name it does not hold**
+  ([#325](https://github.com/luisgf/openvc/issues/325)). An unhashable name (`[]`, `{}`)
+  was a bare `TypeError`; a `str` subclass whose `__hash__` raises was that exception, and an
+  object whose `repr()` raises escaped from the very `raise` meant to refuse it; a long string
+  was echoed in full (10 000 characters came back as a 10 028-character message, measured on
+  v1.36.0). All of these are now `UnknownEbsiEnvironment` (an `EbsiError`, an `OpenvcError` and
+  a `ValueError`): the name is checked against the value's real type (`type(value)` is a
+  `str` subclass, so an object whose `__class__` claims `str` is refused too), a `str`
+  subclass is read as the characters it holds (so what is checked is what is looked up, the
+  #266 rule), and the message cuts the value through `safe_repr`. A `str` subclass that holds
+  a known name, such as a `(str, Enum)` member, still selects its environment.
+- **`EbsiHttpClient.get_json` no longer drains an error body unbounded**
+  ([#321](https://github.com/luisgf/openvc/issues/321); it predates ADR-0009). The non-200
+  branch called `resp.read()`: no size cap and no wall-clock deadline, where the 200 branch
+  has both (`_read_capped`), so a hostile or flaky allow-listed host could send an unbounded
+  or dripping error body. It is now a bounded read (`MAX_ERROR_BODY_BYTES`, 16 KiB, within
+  the client's existing deadline); past either, the response is closed and the connection
+  dropped instead of drained, and the status error is raised as before. A body small enough
+  is read to the end, so its connection is still reused.
+- **The TIR attribute walk no longer lets a node's wrong types escape the error family**
+  (both lanes, `TirV5` and `TirCoreV1`; found while writing the fuzz tests of the new
+  adapter, it predates it). An attribute whose `body` is a number, an array, an object or a
+  boolean reached the proof suite's `decode` and raised a bare `AttributeError` (`'int'
+  object has no attribute 'isascii'`) out of `issuer_record` and `verify_ebsi_badge`; it is
+  now `MalformedRegistryResponse`.
+
+### Tests
+
+- `tests/test_ebsi_guard_origin.py`: every port the issue lists (`:0`, `:00`, `:80`, `:444`,
+  `:4430`, `:8443`, `:9200`, `:65535`) on a lower-case, an upper-case and a mixed-case host,
+  with and without a path and query, through `get_json` and `_guard_host`, against a
+  transport that records every request (none); a cached body is not served for a refused
+  port; the userinfo forms (`.url` is `None` for each, and a recognisable credential is in
+  none of the message, `.url`, args, repr or cause); the admitted forms (`:443`, `:0443`, `:00443`, the empty port,
+  an upper-case scheme and host); the recorded pilot registry end to end through the real
+  client; a resolver `base` on another port refused at the first fetch; trailing dot,
+  IPv6 literals, an ASCII-only host policy (an `xn--` A-label listed and admitted, a
+  U-label never converted), a scheme downgrade, the redirect matrix; a parity table between
+  the guard and the pin; two Hypothesis properties (what the guard admits, httpx fetches from
+  the listed host on 443 with no userinfo; guard and pin agree except on userinfo); and the
+  reader's own contract. `test_guard_refuses_non_ascii_before_urlparse` and
+  `test_origin_refuses_non_ascii_before_urlparse` now patch `openvc_ebsi._url.urlparse`, the
+  one place the URL is parsed.
+- `tests/test_ebsi_http_cookies.py` (#317). The client is built through its real constructor
+  with the transport injected by patching `httpx.Client` for the constructor call, because
+  the existing EBSI suites assign `client._client = httpx.Client(...)`, which discards the
+  jar and would make a cookie test fail whatever the fix. It checks, through `get_json`,
+  that no `Cookie` header is sent after a 200, on the retry after a 503, to a sibling host
+  after a `Domain=` cookie, or after a 302 (not followed), that the jar stays empty, that
+  `HttpTransientExhausted`, `HttpNotFound`, `HttpError` (403 and 302) are unchanged with
+  and without the header, the hostile values above, a Hypothesis property over arbitrary
+  and cookie-shaped `Set-Cookie` bytes, the exact constructor arguments and request
+  headers, and the four policy methods. Controls show a plain `httpx.Client`, and the
+  constructor's own arguments minus `cookies`, do send the cookie, so the negatives cannot
+  pass vacuously. The real `SRV_ID` attributes were not recorded (two live GETs the
+  maintainer has not approved); the tests use a stand-in cookie.
+- `tests/test_ebsi_environments.py`: the baseline first (the three names and hosts, the
+  default and `pilot` allow-lists, `extra_hosts`, a foreign host refused before any I/O, the
+  bare `ValueError` / `TypeError` refusals, the resolver's default base, and the class a
+  first request through `for_ebsi("production")` raises when the connection fails,
+  `HttpTransientExhausted`, measured), written and green on v1.36.0; then the refusals
+  (`UnknownEbsiEnvironment`, exact class, for seven inputs and twelve more shapes, a
+  bounded message, a hostile `repr` and a hostile `str` subclass), the controls (`legacy-pilot`
+  seeds the same allow-list, the default is pinned by the signature, every known name is silent
+  under `warnings.simplefilter("error")`), the table (read-only, bare lower-case hosts, a row
+  with no fixed host is not projected) and an import of `environments`, `errors` and
+  `versioning` with `httpx` blocked.
+- **`tests/test_ebsi_core_v1.py`** (426 tests): the manifest hashes every recorded file; the
+  registry names and the defaults; the exact URLs; the `contract_address` bound (negatives
+  first, a `str` subclass included) and the cache; hostile DIDs on the Core v1 pair with zero
+  requests; wrong bodies; the origin pin per node (one node's issuer body read through
+  another node's resolver, one node's attribute list served at another's route); the
+  shared-walk guards (self-referential, off-origin and port-only `next` / `href` /
+  `attributes`, `:443` against no port, an unparseable URL, `total: true`, the page and item
+  caps, non-object listing items) run for **both** lanes by parametrisation; the
+  contract-address walk, with a link naming another instance in a bracket, dotted, padded or
+  `;` spelling refused; the attribute shapes that stay a wildcard under single-level trust
+  (no body, an empty body, a body naming no `accreditedFor`); the ES256K
+  RootTAO pinned as refused today (`UnsupportedAlgorithm`; `peek_claims`, the `IssuerRecord`
+  and single-level trust still work; recursive trust is `AccreditationInvalid`; #323 flips
+  it to a positive verification); the golden walk per recorded node, the cross-node
+  equality, the prod seed; Hypothesis fuzzing of the issuer, attribute list, attribute and
+  DID document responses.
+- **`tests/test_ebsi_http_problem_type.py`** (95 tests): the recorded 404 / 400 / 406 and a
+  synthetic 405 (labelled as such), the media-type gate, the bounds on `type`, unusable
+  bodies (invalid, truncated, over-deep, over the cap), a 10 MiB body read only up to the cap
+  with the response closed, the deadline, a compression bomb, a real local TLS server showing
+  that an oversized error body drops the connection and a small one keeps it, and Hypothesis
+  fuzzing of arbitrary bytes and content types.
+- `tests/test_ebsi_http_bytes.py` (bytes-only rows, built through the real constructors with
+  the transport injected, so `follow_redirects`, the default headers and the cookie policy
+  are the shipped ones; Hypothesis properties on the bytes handed to zlib, the
+  `Content-Encoding` and `ETag` values and the supplied validator), the `get_bytes` parity
+  rows in `tests/test_ebsi_http.py`, and the recorded `tnl.ebsi.eu` header sets. The fix round
+  adds rows for a `deadline_s` above a day or too large for a float, a client cap of `2**63`
+  or more with a `gzip` / `deflate` body, a response that arrives after the budget, and a
+  real loopback server that drips its headers past `deadline_s`.
+- `tests/test_ebsi_address_guard.py`: the address table (59 forbidden, 6 allowed) through
+  the classifier and through the guard, refusals with exact classes and zero requests, the
+  ordering against the name guard, rebinding, port and IPv6 shape, userinfo, resolution
+  failures, rotation and its bound under the default and a longer `RetryPolicy`, every
+  transport error rotating, an injected resolver's own exceptions, the proxy decision,
+  default-off parity, a Hypothesis property over arbitrary resolver answers, and a loopback
+  TLS server that shows the SNI, the certificate check against the name, and that a
+  connection is never reused across names. `tests/test_fetch.py::test_forbidden_ips`
+  gains `fec0::1`. CI gains the httpx 0.27.0 floor leg described above.
+- **`tests/test_docs_claims.py` pins the correction**
+  ([#316](https://github.com/luisgf/openvc/issues/316)). A scanner over the current docs flags a
+  *claim* that `api.ebsi.eu` is the production host or is "registered for" a launch, not the
+  bare string, which the code, its tests and the threat model's host list legitimately name. A
+  sample table proves it both ways (the stale `Trust.md` sentence and its variants are flagged;
+  the corrected wording and the threat-model list are not), and a second test fails if
+  `wiki/Trust.md` loses the correction or if the new page is no longer linked from `Trust`, the
+  Spanish walkthrough and the sidebar.
+
 ### Docs
 
+- `wiki/Trust.md` says what each environment name means, from what ADR-0009 measured on
+  2026-10-16, and no longer says `production` (`api.ebsi.eu`) is "registered for EBSI's Q4
+  2026 business launch": the certificate that host presented did not cover its name, and none
+  of the 45 node URLs in version 4 of the Trusted Nodes List is under `ebsi.eu`. A single
+  fresh `GET https://api-conformance.ebsi.eu/` on 2026-10-16 (one attempt, one vantage point)
+  again completed no TCP connection inside a 12-second limit (curl exit 28), so `conformance`
+  is documented as not known to complete a request, and possibly transient. No code changed
+  for either: both rows are kept (switch 3a above). `docs/audit/threat-model.md` lists the
+  names; `docs/audit/assurance.md` has the row for the typed error. The stale docstring and
+  heading in `tests/test_ebsi_verifier.py` that called the live smoke a "conformance" test,
+  and the weekly workflow's job name, now say it resolves a DID on the legacy pilot lane.
+  Recording the outcome of ADR-0009's open question 4 waits for the maintainer.
+- `wiki/Trust.md` (EBSI section), `README.md`, the `versioning.py` module docstring and its
+  closing "adding a new version" comment name both lanes and the Core v1 footgun (select
+  `base`, `didr` and `tir` together).
+- `docs/audit/assurance.md` (the EBSI TIR coverage bullet, and section 4 entries for the
+  unbounded error-body read and the two walk-typing findings) and
+  `docs/audit/threat-model.md` (the EBSI client paragraph now covers both adapters, and R4:
+  once Core v1 nodes are allow-listed their hosts are third-party operator domains, not only
+  `*.ebsi.eu`).
+- `docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md`: this issue is listed under
+  "Proposed follow-up issues" and the recorded 400 and 406 results (and the 405 gap) are in
+  the appendix. The Status line is left to the maintainer.
+- `wiki/Trust.md` (EBSI section) documents `get_bytes`, `for_tnl` and `get_tnl_files` and says
+  the list host is a second, separate allow-list; `docs/audit/threat-model.md` §7 and
+  `docs/audit/assurance.md` §§1, 3 and 4 record the separate one-host client, the bounded
+  decode, the unread error body and the Hypothesis properties.
+- Threat model R4 and the EBSI bullet of section 7, `docs/audit/assurance.md` (sections 3
+  and 4), `wiki/Trust.md`, `wiki/Security-Model.md`, and the "DNS rebinding" row of
+  ADR-0009.
 - **`wiki/EBSI-Node-Trust.md`: where EBSI reads go and whom to believe**
   ([#316](https://github.com/luisgf/openvc/issues/316), from
   [ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md); refs
@@ -28,14 +782,14 @@ All notable changes to **openvc** are documented here. The format follows
   `api.ebsi.eu` is described as it was observed (no HTTP response; the certificate it presents
   does not cover the name), not as self-signed.
 - **`wiki/Trust.md`** no longer says `production` (`api.ebsi.eu`) "is registered for EBSI's Q4
-  2026 business launch". It says that name is not a node, that `for_ebsi("pilot")` is the
-  legacy pilot lane, and that the recursive walk (`trust_anchors=`) fails closed on Core v1
+  2026 business launch". It says that name is not a node, that `for_ebsi()` (default `legacy-pilot`, also spelled
+  `pilot`) is the legacy pilot lane, and that the recursive walk (`trust_anchors=`) fails closed on Core v1
   today (the prod and preprod RootTAO accreditations are `ES256K`, which the JOSE allow-list
   rejects). `wiki/Spanish-University-Credential.md` points the same way from its `trust_anchors=`
   example.
-- **The comment above `"production"` in `src/openvc_ebsi/http.py`** (comment lines only) says
-  the same. `EBSI_HOSTS`, `EBSI_BASE`, `for_ebsi` and the three names are byte-identical; what
-  to do with the names is [#325](https://github.com/luisgf/openvc/issues/325)'s question.
+- **The note on the `production` row in `src/openvc_ebsi/environments.py`** (docstring only)
+  points at the page. No name, host or behaviour changed here; what to do with the names is
+  [#325](https://github.com/luisgf/openvc/issues/325)'s question.
 - **ADR-0009** is `Accepted in part (2026-10-16)`: direction C (the pure verifier on an
   ECDSA-only OpenPGP reader) and the ES256K opt-in. **ADR-0001** gains "Extended by ADR-0009"
   and a dated "Notes (2026-10-16)" block (its Evidence and Reproduce are the legacy lane; D1 and
@@ -59,17 +813,6 @@ All notable changes to **openvc** are documented here. The format follows
   for the commands to be run against the then-live list, but also forbade a network request, so
   the page publishes only the two commands ADR-0009's appendix gives and marks the rest *to be
   measured*.
-
-### Tests
-
-- **`tests/test_docs_claims.py` pins the correction**
-  ([#316](https://github.com/luisgf/openvc/issues/316)). A scanner over the current docs flags a
-  *claim* that `api.ebsi.eu` is the production host or is "registered for" a launch, not the
-  bare string, which the code, its tests and the threat model's host list legitimately name. A
-  sample table proves it both ways (the stale `Trust.md` sentence and its variants are flagged;
-  the corrected wording and the threat-model list are not), and a second test fails if
-  `wiki/Trust.md` loses the correction or if the new page is no longer linked from `Trust`, the
-  Spanish walkthrough and the sidebar.
 
 ## [1.36.0] — 2026-10-16
 

@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   live:
-    name: Resolve a real DID against pilot
+    name: Resolve a real DID against the legacy pilot lane
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
