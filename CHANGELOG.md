@@ -4,6 +4,69 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.0] — unreleased
+
+### Changed
+
+- **`EbsiHttpClient` keeps no cookie jar**
+  ([#317](https://github.com/luisgf/openvc/issues/317); ADR-0009, "Where each design can
+  be attacked", row "Cookie jar"). The pooled `httpx.Client` used httpx's default jar, so a
+  `Set-Cookie` from an allow-listed host was stored and sent back on later requests from
+  that client. The client has no use for that: `get_json` is a stateless GET reader whose
+  only state is the TTL cache (ADR-0001 D2), and nothing in `src/` or `tests/` reads a
+  cookie. The jar is now a bare `http.cookiejar.CookieJar` whose policy refuses every cookie
+  in both directions, so a `Set-Cookie` is dropped and nothing is ever sent back: not on the
+  next request, not on a retry after a 5xx that set one, not to a sibling host that the
+  cookie's `Domain` would have reached. **This is a behaviour change:** a node's affinity
+  cookie (the two `edelivery.lt` hosts of ADR-0009 set an `SRV_ID`) is no longer returned,
+  so consecutive reads of one registry walk (issuer record, attribute pages, revisions) may
+  reach different backends of one node. Nothing in `openvc_ebsi` reads a cookie or assumes
+  same-backend reads, and the trust model already treats a node as one unauthenticated
+  source; whether the backends behind one node disagree has not been measured. No new
+  public name, constructor option, error class or dependency; every other `httpx.Client`
+  argument, and every error class `get_json` raises, is unchanged.
+  - **`set_ok` is the load-bearing method.** httpx copies the client's jar into a fresh
+    default-policy one when it builds a request, so `return_ok` and the other two methods
+    are never consulted on the send path (a policy that stored the cookie and refused only to
+    return it still sent it). They are kept as defence in depth and pinned directly.
+  - **The jar is a bare `CookieJar`, and must stay one.** httpx keeps only that as given; an
+    `httpx.Cookies`, a dict or a list is rebuilt with the default policy, which would lose
+    the refusal silently.
+  - **Measured** on httpx 0.28.1 and CPython 3.14.8 (`httpx.MockTransport`, a synthetic
+    `SRV_ID` cookie): the cookie came back on the next request, on the retry after a 503 that
+    set it, and, with `Domain=ebsi.edelivery.lt`, on a request to the sibling host; twelve
+    hostile `Set-Cookie` values (empty, `=`, bad `Expires` / `Max-Age`, a 5 000-digit
+    `Max-Age`, non-ASCII bytes, 20 000 attributes, a 1 MB value, an unbalanced quote,
+    `Domain=.`) neither raise nor warn and leave the jar empty. The floor `httpx>=0.27` was
+    read, not run: `Cookies.__init__` keeps a non-dict, non-list, non-`Cookies` argument as
+    the jar and `_merge_cookies` copies the client's jar into a new `Cookies` only when it is
+    non-empty, identically in the 0.27.0 wheel (`_models.py`, `_client.py`). CI has no httpx
+    floor leg.
+  - **Defaults pending maintainer confirmation** (#317, "Decisions to take"; the
+    recommended option was taken in each case): (1) *disable the jar* rather than leave it
+    and document it; documenting it would keep affinity as an ambient property of the
+    client. (2) *a cookie policy* rather than a null `CookieJar` subclass; the null jar never
+    parses `Set-Cookie` but depends on httpx calling two methods on that attribute, the
+    policy is the documented stdlib hook and leaves the jar an ordinary jar. (3) *no public
+    switch to re-enable cookies*; a deployment that wants affinity expresses it in a node
+    selection policy (#324), not in a client option.
+
+### Tests
+
+- `tests/test_ebsi_http_cookies.py` (#317). The client is built through its real constructor
+  with the transport injected by patching `httpx.Client` for the constructor call, because
+  the existing EBSI suites assign `client._client = httpx.Client(...)`, which discards the
+  jar and would make a cookie test fail whatever the fix. It checks, through `get_json`,
+  that no `Cookie` header is sent after a 200, on the retry after a 503, to a sibling host
+  after a `Domain=` cookie, or after a 302 (not followed), that the jar stays empty, that
+  `HttpTransientExhausted`, `HttpNotFound`, `HttpError` (403 and 302) are unchanged with
+  and without the header, the hostile values above, a Hypothesis property over arbitrary
+  and cookie-shaped `Set-Cookie` bytes, the exact constructor arguments and request
+  headers, and the four policy methods. Controls show a plain `httpx.Client`, and the
+  constructor's own arguments minus `cookies`, do send the cookie, so the negatives cannot
+  pass vacuously. The real `SRV_ID` attributes were not recorded (two live GETs the
+  maintainer has not approved); the tests use a stand-in cookie.
+
 ## [1.36.0] — 2026-10-16
 
 ### Added

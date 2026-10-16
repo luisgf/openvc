@@ -214,7 +214,9 @@ finite input", with no explicit constant.
   the opt-in default (`src/openvc/resolvers.py:4-17`).
 - **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **host allow-list**
   (`api-pilot`/`api-conformance`/`api.ebsi.eu`), redirects off, TLS-verify on,
-  5 MiB cap. Purpose is to block registry-supplied `href` pivots; it is a
+  5 MiB cap, keeps no cookie jar (a `Set-Cookie` is dropped and nothing is sent back, so a
+  node's affinity cookie cannot pin a retry or cross to a sibling host; #317). Purpose is
+  to block registry-supplied `href` pivots; it is a
   host-name allow-list and does **not** IP-pin (R4). `did:web` must **never** be
   resolved through it (its allow-list would reject every legitimate host).
   Because the allow-list matches the host and not the port, the TIR v5 adapter pins

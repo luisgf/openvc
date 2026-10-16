@@ -168,6 +168,8 @@ with for_ebsi("pilot") as http:
   characters (a path, a `..`, a query, a fragment, a percent escape, another method) is a
   `DidResolutionError` from `resolve` / `issuer_record`, so an unsigned token's `iss`
   cannot choose the request path (`verify_ebsi_badge` reports `EbsiVerificationError`).
+  The client keeps no cookies: a `Set-Cookie` from a node is dropped and nothing is sent
+  back, so consecutive reads may reach different backends of one node.
   Never resolve `did:web` through it — `did:web` has its own guarded fetch
   (see [Resolving issuer keys](Resolving-Issuer-Keys)).
 - **The document must be for the DID asked**: `DidEbsiResolver.resolve(did)` raises

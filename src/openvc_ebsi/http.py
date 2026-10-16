@@ -15,6 +15,7 @@ It is deliberately small but covers the production concerns a verifier needs:
                       compromised/malicious registry response cannot pivot the
                       client to an internal address.
   * connection reuse: a single pooled httpx.Client; redirects disabled.
+                      No cookie jar: a `Set-Cookie` is dropped, nothing is sent back.
 
 Pass ``client.get_json`` wherever a ``Fetch`` is expected (e.g. into the resolver).
 """
@@ -26,8 +27,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from http.cookiejar import Cookie, CookieJar, CookiePolicy
 from typing import Any
 from urllib.parse import urlparse
+from urllib.request import Request
 
 import httpx
 
@@ -117,6 +120,36 @@ def _parse_retry_after(value: str | None) -> float | None:
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
+class _NoCookiePolicy(CookiePolicy):
+    """Refuse every cookie, in both directions.
+
+    The client is a stateless GET reader whose only state is the TTL cache (ADR-0001 D2):
+    a `Set-Cookie` (the load-balancer affinity cookie of a node, say) must neither be kept
+    nor sent back, or a retry stays pinned to the backend it is leaving and the jar becomes
+    hidden state that lives as long as the client (#317, ADR-0009).
+
+    ``set_ok`` is the load-bearing method. httpx copies the client's jar into a fresh
+    default-policy one when it builds a request, so a cookie that was stored would be sent
+    whatever ``return_ok`` says; the other three are defence in depth, not the guard.
+    """
+
+    netscape = True       # the jar reads these three attributes
+    rfc2965 = False
+    hide_cookie2 = False
+
+    def set_ok(self, cookie: Cookie, request: Request) -> bool:
+        return False
+
+    def return_ok(self, cookie: Cookie, request: Request) -> bool:
+        return False
+
+    def domain_return_ok(self, domain: str, request: Request) -> bool:
+        return False
+
+    def path_return_ok(self, path: str, request: Request) -> bool:
+        return False
+
+
 class EbsiHttpClient:
     def __init__(
         self,
@@ -149,6 +182,9 @@ class EbsiHttpClient:
                 "User-Agent": user_agent,
                 "Accept": "application/json, application/did+ld+json, */*;q=0.1",
             },
+            # No cookie jar (#317): a bare CookieJar is the only form httpx keeps as given
+            # (an httpx.Cookies, a dict or a list is rebuilt with the default policy).
+            cookies=CookieJar(policy=_NoCookiePolicy()),
         )
 
     # -- the Fetch capability --------------------------------------------- #
