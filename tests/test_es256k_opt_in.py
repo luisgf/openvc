@@ -517,7 +517,7 @@ def _raw(signing_input: bytes, signer: Signer) -> tuple[bytes, bytes]:
     return r.to_bytes(32, "big"), s.to_bytes(32, "big")
 
 
-SIGNATURES: dict[str, tuple[Callable[[bytes, Signer], str], str]] = {
+SIGNATURES: dict[str, tuple[Callable[[bytes, Signer], str], str | tuple[str, ...]]] = {
     # name: (builder of the signature SEGMENT, the class both algs end in)
     "empty": (lambda si, g: "", "SignatureInvalid"),
     "1 octet": (lambda si, g: b64(g.sign(si)[:1]), "SignatureInvalid"),
@@ -531,7 +531,10 @@ SIGNATURES: dict[str, tuple[Callable[[bytes, Signer], str], str]] = {
     "r = n": (lambda si, g: b64(g.n.to_bytes(32, "big") + _raw(si, g)[1]), "SignatureInvalid"),
     "s = n": (lambda si, g: b64(_raw(si, g)[0] + g.n.to_bytes(32, "big")), "SignatureInvalid"),
     "r = s = 2^256 - 1": (lambda si, g: b64(b"\xff" * 64), "SignatureInvalid"),
-    "bad characters": (lambda si, g: b64(g.sign(si))[:-2] + "!!", "SignatureInvalid"),
+    # PyJWT's own decoding of the segment: 2.13.0 (the floor) drops the invalid characters and
+    # fails the signature; 2.15.1 refuses the segment. Parity is pinned, the class is a set.
+    "bad characters": (lambda si, g: b64(g.sign(si))[:-2] + "!!",
+                       ("SignatureInvalid", "ClaimsInvalid")),
     "an inner space": (lambda si, g: b64(g.sign(si))[:10] + " " + b64(g.sign(si))[10:],
                        "ClaimsInvalid"),
     "non-ASCII": (lambda si, g: b64(g.sign(si)) + "é", "MalformedToken"),
@@ -542,19 +545,24 @@ SIGNATURES: dict[str, tuple[Callable[[bytes, Signer], str], str]] = {
 @pytest.mark.parametrize("name", sorted(SIGNATURES))
 def test_signature_shape_parity_between_es256_and_es256k(name):
     build, expected = SIGNATURES[name]
+    allowed = (expected,) if isinstance(expected, str) else expected
     got = {signer.alg: outcome(lambda s=signer: verify(s, token(s, sig=build)))
            for signer in (P256, K1)}
-    assert got == {"ES256": expected, "ES256K": expected}, (name, got)
+    assert got["ES256K"] == got["ES256"], (name, got)               # the property openvc owns
+    assert got["ES256K"] in allowed, (name, got)                    # and it is not "verified"
 
 
 def test_a_trailing_equals_on_the_signature_segment_is_what_es256_does_too():
-    # PyJWT tolerates `=` padding on the signature segment, for ES256 as for ES256K. Not
-    # widened by this change; pinned so a PyJWT that starts refusing it is noticed on both.
+    # `=` padding on the signature segment is PyJWT's to judge, and it changed between
+    # releases: 2.13.0 (the floor) tolerates it, 2.15.1 refuses it as ClaimsInvalid. Either
+    # way ES256K gets exactly what ES256 gets, and this change widens nothing.
     def padded(signing_input: bytes, signer: Signer) -> str:
         return b64(signer.sign(signing_input)) + "="
 
-    assert outcome(lambda: verify(P256, token(P256, sig=padded))) == "verified"
-    assert outcome(lambda: verify(K1, token(K1, sig=padded))) == "verified"
+    got = {signer.alg: outcome(lambda s=signer: verify(s, token(s, sig=padded)))
+           for signer in (P256, K1)}
+    assert got["ES256K"] == got["ES256"], got
+    assert got["ES256K"] in ("verified", "ClaimsInvalid"), got
 
 
 def test_a_signature_is_exactly_64_octets_of_r_then_s():
@@ -697,8 +705,9 @@ def test_an_expired_token_verifies_with_the_waiver_and_says_so_for_both_algs():
 
 
 def test_leeway_is_the_suite_leeway_for_both_algs():
+    now = int(time.time())              # read here, not at import: a full CI run takes minutes
     for signer in (P256, K1):
-        tok = token(signer, payload=_w(exp=NOW - 30))
+        tok = token(signer, payload=_w(exp=now - 30))
         assert verify(signer, tok).issuer == ISSUER                         # inside 60 s
         strict = VcJwtProofSuite(allow_es256k=True, leeway_s=0)
         with pytest.raises(ClaimsInvalid):

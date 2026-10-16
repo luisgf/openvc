@@ -523,7 +523,10 @@ All notable changes to **openvc** are documented here. The format follows
     environment these tests ran in resolves exactly `2.13.0`, the floor itself; its default
     registry carries `ES256K` as SHA-256 on `SECP256K1` (a test pins that on the suite's
     private instance, and openvc's own curve pin does not depend on PyJWT's `expected_curve`).
-    CI has no PyJWT floor leg of its own (only pyld and httpx do).
+    CI has no PyJWT floor leg of its own (only pyld and httpx do): it resolves the newest PyJWT
+    (2.15.1 on 2026-10-16), where the signature segment's encoding is judged more strictly than
+    on 2.13.0 (invalid characters and `=` padding are refused); the parity tests assert that
+    ES256K gets what ES256 gets on both.
   - **Every other lane keeps refusing the algorithm, twice.** SD-JWT VC (issuer JWT and
     KB-JWT, with and without `allow_pq`), VP-JWT, `verify_compact`, the status-list token,
     the OpenID4VCI key proof (also with `allowed_algs=ALLOWED_ALGS | {"ES256K"}`, which stops
