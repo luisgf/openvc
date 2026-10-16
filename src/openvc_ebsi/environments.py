@@ -18,7 +18,8 @@ What each name means, as measured and documented in
   no TCP connection within 12 s, so it may be transient; the row is kept as it was.
 * ``production`` — ``api.ebsi.eu``. The certificate that host presented did not cover its name
   when measured, and none of the Trusted Nodes List's node hosts is under ``ebsi.eu``, so a
-  client built from it is not known to complete a request. The row is kept as it was.
+  client built from it is not known to complete a request. The row is kept as it was; where
+  reads go instead is on the wiki page "EBSI node trust" (``wiki/EBSI-Node-Trust.md``).
 
 Only a fixed host is expressible here. An environment whose hosts come from a verified node
 list has no fixed host (``fixed_host`` is ``None``) and is not part of the projection that

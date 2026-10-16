@@ -333,3 +333,82 @@ def test_audit_docs_file_unreleased_advisories_under_the_unreleased_version() ->
             assert set(labels) <= {version}, f"{doc} files {ghsa} under {labels}"
             found += labels
         assert found, f"no audit doc says which version fixes {ghsa}"
+
+
+# --------------------------------------------------------------------------- #
+# EBSI: `api.ebsi.eu` is a registered host name, not a production API
+# --------------------------------------------------------------------------- #
+# `EBSI_HOSTS["production"]` is `api.ebsi.eu`, and the wiki said that name was
+# "registered for EBSI's Q4 2026 business launch". ADR-0009 measured otherwise on
+# 2026-10-16: EBSI Core API v1 has no fixed production host (a client picks a node
+# from the signed Trusted Nodes List), and `api.ebsi.eu` returned no HTTP response
+# (the certificate it presents does not cover the name). The code and its tests name
+# the host legitimately, and so does the threat model's list of registered hosts, so
+# this scans for the *claim* ("is the production host", "registered for ... launch"),
+# never for the bare string.
+_EBSI_HOST = r"api\.ebsi\.eu"
+_EBSI_HOST_CLAIMS = [
+    # "`production` (`api.ebsi.eu`) is registered for EBSI's Q4 2026 business launch"
+    re.compile(r"\bregistered\s+for\b[^.]{0,80}?\blaunch", re.IGNORECASE),
+    # "api.ebsi.eu is the production API host" / "... as the production environment"
+    re.compile(rf"{_EBSI_HOST}\)?\s+(?:is|as|=)\s+(?:the\s+|EBSI's\s+)?(?:unprefixed\s+)?"
+               r"production\b", re.IGNORECASE),
+    # "the production host is api.ebsi.eu"
+    re.compile(r"\bproduction\s+(?:API\s+|environment\s+)?(?:host(?:name)?|endpoint|base"
+               rf"(?:\s+URL)?)\s+(?:is|=|:)\s+{_EBSI_HOST}", re.IGNORECASE),
+    # "`production` (`api.ebsi.eu`) is ready" - any positive predicate, but not "is not a node"
+    re.compile(rf"\({_EBSI_HOST}\)\s+is\b(?!\s+not\b)", re.IGNORECASE),
+]
+
+
+def _ebsi_host_claims(text: str) -> list[str]:
+    plain = re.sub(r"\s+", " ", re.sub(r"[`*]", "", text))   # one line, no markdown
+    return [m.group(0) for claim in _EBSI_HOST_CLAIMS for m in claim.finditer(plain)]
+
+
+@pytest.mark.parametrize("sample, flagged", [
+    # the wiki sentence as it read before the correction, on one line and wrapped
+    ("`production` (`api.ebsi.eu`) is registered for EBSI's Q4 2026 business launch.", True),
+    ("the allow-list from the chosen EBSI environment — `production` (`api.ebsi.eu`) is\n"
+     "  registered for EBSI's Q4 2026 business launch. Pass `extra_hosts` to also", True),
+    ("`api.ebsi.eu` is registered for EBSI's Q4 2026 business launch.", True),
+    ("`api.ebsi.eu` is the production API host.", True),
+    ("EBSI's production environment is live: `api.ebsi.eu` as the production base.", True),
+    ("The production host is `api.ebsi.eu`.", True),
+    ("`production` (`api.ebsi.eu`) is ready at cutover.", True),
+    # the threat model lists the registered host names; that is a fact about the code
+    ("an https-only **host allow-list**\n  (`api-pilot`/`api-conformance`/`api.ebsi.eu`), "
+     "redirects off, TLS-verify on,", False),
+    # the corrected wording, and the statements the node-trust page makes about the name
+    ("`production` seeds `api.ebsi.eu`, which is not a node: as of 2026-10-16 no HTTP "
+     "response could be obtained from it.", False),
+    ("`production` (`api.ebsi.eu`) is not a node.", False),
+    ("`api.ebsi.eu` returned no HTTP response; the certificate does not cover the name.", False),
+    ("Do not match `api.ebsi.*`: none of the 45 node hosts is under `ebsi.eu`.", False),
+    ("`for_ebsi(\"production\")` still names `api.ebsi.eu`, kept for compatibility.", False),
+    ("the launch event on 2026-10-22 announces an event, not a production API", False),
+    ("what the relying party was registered for", False),
+])
+def test_ebsi_host_claim_scanner(sample: str, flagged: bool) -> None:
+    assert bool(_ebsi_host_claims(sample)) is flagged
+
+
+@pytest.mark.parametrize("page", _CURRENT_DOCS)
+def test_docs_do_not_call_api_ebsi_eu_the_production_api(page: str) -> None:
+    claims = _ebsi_host_claims(_doc_text(page))
+    assert not claims, (
+        f"{page} states that api.ebsi.eu is the production API or is registered for a "
+        f"launch; ADR-0009 measured (2026-10-16) that it is not a node: {claims}")
+
+
+def test_trust_page_carries_the_ebsi_node_trust_correction() -> None:
+    # The scanner above passes on a page that says nothing, so pin the correction too:
+    # removing it must fail, not just restoring the stale sentence.
+    trust = re.sub(r"\s+", " ", re.sub(r"[`*]", "", _doc_text("wiki/Trust.md")))
+    assert re.search(rf"{_EBSI_HOST}[^.]{{0,40}}\bis not a node\b", trust), (
+        "wiki/Trust.md no longer says that `api.ebsi.eu` is not a node")
+    assert "legacy pilot lane" in trust, (
+        "wiki/Trust.md no longer names for_ebsi('pilot') as the legacy pilot lane")
+    for page in ("wiki/Trust.md", "wiki/Spanish-University-Credential.md", "wiki/_Sidebar.md"):
+        assert "(EBSI-Node-Trust)" in _doc_text(page), f"{page} no longer links EBSI-Node-Trust"
+    assert (_ROOT / "wiki" / "EBSI-Node-Trust.md").exists()

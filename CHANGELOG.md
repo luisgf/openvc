@@ -721,6 +721,14 @@ All notable changes to **openvc** are documented here. The format follows
   TLS server that shows the SNI, the certificate check against the name, and that a
   connection is never reused across names. `tests/test_fetch.py::test_forbidden_ips`
   gains `fec0::1`. CI gains the httpx 0.27.0 floor leg described above.
+- **`tests/test_docs_claims.py` pins the correction**
+  ([#316](https://github.com/luisgf/openvc/issues/316)). A scanner over the current docs flags a
+  *claim* that `api.ebsi.eu` is the production host or is "registered for" a launch, not the
+  bare string, which the code, its tests and the threat model's host list legitimately name. A
+  sample table proves it both ways (the stale `Trust.md` sentence and its variants are flagged;
+  the corrected wording and the threat-model list are not), and a second test fails if
+  `wiki/Trust.md` loses the correction or if the new page is no longer linked from `Trust`, the
+  Spanish walkthrough and the sidebar.
 
 ### Docs
 
@@ -754,6 +762,57 @@ All notable changes to **openvc** are documented here. The format follows
 - Threat model R4 and the EBSI bullet of section 7, `docs/audit/assurance.md` (sections 3
   and 4), `wiki/Trust.md`, `wiki/Security-Model.md`, and the "DNS rebinding" row of
   ADR-0009.
+- **`wiki/EBSI-Node-Trust.md`: where EBSI reads go and whom to believe**
+  ([#316](https://github.com/luisgf/openvc/issues/316), from
+  [ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md); refs
+  [#113](https://github.com/luisgf/openvc/issues/113)). No library behaviour changes. EBSI Core
+  API v1 has no fixed production host: a client picks a node from the signed Trusted Nodes List
+  (TNL), and the repo still told integrators the answer was `api.ebsi.eu`. The new page
+  (sidebar entry under "Verifying in practice", and a row in the Guides table of
+  `wiki/Home.md`) covers the two lanes (the legacy pilot lane on
+  `api-pilot.ebsi.eu` with `v5` paths, and Core API v1 on per-node hosts), what the three
+  `for_ebsi` names mean today, the TNL chain and its five files, the publisher's verification
+  rules as a checklist, the `(version, sha256)` pair to persist for the list and for the key
+  list, how to build a one-environment explicit allow-list from a verified list (an offline
+  snippet that `tests/test_docs_blocks.py` runs, negatives first; every unexpected input,
+  a list of the wrong shape included, is a `ValueError`), what a signed list does not
+  authenticate (the operator, not the data), why `api.ebsi.*` must not be matched as a pattern,
+  the known limits on Core v1, and what to watch. Every dated statement is ADR-0009's, as of
+  2026-10-16; anything the ADR does not give reads *to be measured*. In particular
+  `api.ebsi.eu` is described as it was observed (no HTTP response; the certificate it presents
+  does not cover the name), not as self-signed.
+- **`wiki/Trust.md`** no longer says `production` (`api.ebsi.eu`) "is registered for EBSI's Q4
+  2026 business launch". It says that name is not a node, that `for_ebsi()` (default `legacy-pilot`, also spelled
+  `pilot`) is the legacy pilot lane, and that the recursive walk (`trust_anchors=`) fails closed on Core v1
+  today (the prod and preprod RootTAO accreditations are `ES256K`, which the JOSE allow-list
+  rejects). `wiki/Spanish-University-Credential.md` points the same way from its `trust_anchors=`
+  example.
+- **The note on the `production` row in `src/openvc_ebsi/environments.py`** (docstring only)
+  points at the page. No name, host or behaviour changed here; what to do with the names is
+  [#325](https://github.com/luisgf/openvc/issues/325)'s question.
+- **ADR-0009** is `Accepted in part (2026-10-16)`: direction C (the pure verifier on an
+  ECDSA-only OpenPGP reader) and the ES256K opt-in. **ADR-0001** gains "Extended by ADR-0009"
+  and a dated "Notes (2026-10-16)" block (its Evidence and Reproduce are the legacy lane; D1 and
+  D2 hold on Core v1 responses; D7, D8 and D10 as ADR-0009 found); its decisions are not
+  rewritten. `docs/ROADMAP.md` milestone 11 records what was accepted and links the follow-up
+  issues.
+- **`docs/audit/threat-model.md`**: one dated sentence on the EBSI client in section 7 (only
+  `api-pilot.ebsi.eu` of the three registered hosts serves a registry as of 2026-10-16), and a
+  new residual, **R12**: a signed node list authenticates the operator, not the registry's data
+  (ADR-0009 D7). R4's wording is unchanged (the ADR leaves it to when the adapters land).
+  `docs/audit/README.md` counts R1–R12. No `assurance.md` line: nothing in `src/` changed.
+- **Maintainer decisions taken as defaults** (recorded here and in the PR; each can be
+  reversed without touching the rest): the key-list key's fingerprint is quoted **as a dated
+  observation** with the caveat that all three channels that agree on it are Europeum's and
+  that a wiki page is not a channel to trust it from (the alternative is to omit the value and
+  point to the TNL repository); the `src/` comment edit stays in this change (the alternative
+  moves it to #325); the page describes what each environment name is today and prescribes
+  nothing about renaming, multi-node agreement or the qualified-seal switch (ADR-0009 open
+  questions 4, 5 and 7).
+- **Not done here:** the `gpg` command sequence for the two detached signatures. The issue asked
+  for the commands to be run against the then-live list, but also forbade a network request, so
+  the page publishes only the two commands ADR-0009's appendix gives and marks the rest *to be
+  measured*.
 
 ## [1.36.0] — 2026-10-16
 

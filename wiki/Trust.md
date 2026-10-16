@@ -138,9 +138,10 @@ and the real lists become golden fixtures when they go live.
 ## EBSI (read-only plugin)
 
 `openvc_ebsi` resolves `did:ebsi` and reads the **Trusted Issuers Registry**,
-then verifies the full accreditation chain — TI → TAO → RootTAO — recursively,
-with per-hop delegation scoping and revocation of the accreditations
-themselves:
+then checks that the issuer holds a non-revoked accreditation. Passing `trust_anchors=`
+verifies the full accreditation chain — TI → TAO → RootTAO — recursively instead, with
+per-hop delegation scoping and revocation of the accreditations themselves. This example
+is the single-level check:
 
 <!-- docs: no-run -->
 ```python
@@ -156,6 +157,14 @@ with for_ebsi("legacy-pilot") as http:
                                expected_types=["VerifiableAttestation"])
     print(result.trusted, result.issuer)
 ```
+
+`for_ebsi()` (the default `legacy-pilot`, and its alias `"pilot"`) is the **legacy pilot lane**
+(`api-pilot.ebsi.eu`, the per-service `v5` paths): the lane the recorded fixtures and the weekly live
+smoke test cover. On EBSI Core API v1 the recursive walk (`trust_anchors=`) fails closed, as of
+2026-10-16: the prod and preprod RootTAO accreditations are signed `ES256K`, which the JOSE
+allow-list rejects (`UnsupportedAlgorithm`), and the one seeded prod root has a DID document with no
+verification method. Where reads go on Core v1, and whom to believe, is on
+[EBSI node trust](EBSI-Node-Trust).
 
 On the Core API v1 the node is yours to choose (and to verify), so the lane is built
 explicitly:
@@ -243,7 +252,7 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
     from one place, so possibly transient) completed no TCP connection; the certificate the
     production host presented did not cover its name, and none of the 45 node URLs in version
     4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a client fails
-    closed.
+    closed. `api.ebsi.eu` is not a node: no HTTP response could be obtained from it.
   - Any other name (another case, an empty string, a value that is not a string) raises
     `UnknownEbsiEnvironment`, which is also a `ValueError`.
 
@@ -252,6 +261,8 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   Registry `/attributes` listing is paginated, and openvc walks every page (bounded, and
   immune to EBSI's self-referential `next` cursor) so an issuer with many accreditations is
   read in full.
+  EBSI Core API v1 has no fixed production host: a client picks a node from a signed list, as
+  [EBSI node trust](EBSI-Node-Trust) explains.
   The Trusted Nodes List host (`tnl.ebsi.eu`, below) is a second, separate allow-list that
   is never merged with this one.
 - **Two lanes, selected together**: the legacy pilot (one API per service,
@@ -264,8 +275,7 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   allow-list holds that node's host; nothing infers one from the others, and
   `for_ebsi(...)` still builds a client for the legacy hosts. The allow-list should come from a
   node list you have *verified* (the Trusted Nodes List is signed), not from
-  hostnames pasted off a web page: issue
-  [#316](https://github.com/luisgf/openvc/issues/316) has the recipe, and
+  hostnames pasted off a web page: [EBSI node trust](EBSI-Node-Trust) has the recipe, and
   [ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)
   the reasoning (a signed list authenticates the *operator*, not the content a node
   serves). `contract_address="0x..."` on either adapter selects a registry instance

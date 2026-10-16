@@ -18,6 +18,7 @@
 - [Credential schemas](Credential-Schemas)
 - [Status lists](Status-Lists)
 - [Trust anchors: EU TL & EBSI](Trust)
+- [EBSI node trust](EBSI-Node-Trust)
 - [Async verification](Async-Verification)
 
 **Issuing**

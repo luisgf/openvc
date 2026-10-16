@@ -225,6 +225,11 @@ finite input", with no explicit constant.
   host, refuses it if any address is not globally routable and connects to the validated
   address, with keep-alive off. `did:web` must **never** be
   resolved through it (its allow-list would reject every legitimate host).
+  As of 2026-10-16 only `api-pilot.ebsi.eu` of those three hosts serves a registry
+  (`api-conformance.ebsi.eu` accepted no connection and `api.ebsi.eu` returned no HTTP
+  response); production nodes are `api.ebsi.<operator domain>` hosts taken from the
+  signed Trusted Nodes List
+  ([ADR-0009](../adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)).
   **The guard admits an origin** (#318, v1.37.0): `EbsiHttpClient._guard_host` reads the
   URL through `openvc_ebsi._url.read_origin` and admits `https` on a listed host at port
   443 only. An absent or empty port, `:443`, `:0443` and `:00443` are 443; every other
@@ -696,6 +701,22 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
      reach this lane once a `~` is appended is held to it too. What stays invisible is an
      `aud` the issuer made disclosable and the holder withheld, the R7 limit
      (`test_sd_jwt_issuer_aud.py`).
+- **R12 — A signed EBSI node list authenticates the operator, not the registry's data.
+  Open, documented.** EBSI Core API v1 has no fixed production host: a client picks a node
+  from an OpenPGP-signed Trusted Nodes List
+  ([ADR-0009](../adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md), D7). Registry
+  responses (DID documents, issuer records, accreditations) are unsigned JSON from
+  whichever node answers, so a dishonest listed node can serve another key for a DID, or
+  forged accreditations, and `openvc_ebsi` verifies against them. The list narrows "any
+  host on the internet" to the listed nodes and no further. The mitigation is comparing
+  trust-critical reads across nodes: a consumer policy with a cost (twice the requests,
+  against EBSI's documented 20 requests per second per IP), which openvc does not provide. The chain's real root is the single key-list key
+  (a stopgap, per the list's own README): with it an attacker substitutes the custodians and
+  the threshold and signs any list, and the two-custodian threshold protects only against
+  compromise of the custodians. DNS or certificate compromise of one listed host is not
+  defended either (R4), and a hand-built allow-list has no expiry bound. Not a defect in
+  `src/`, which builds no node set from the list yet: a boundary the recipe states, in
+  [EBSI node trust](https://github.com/luisgf/openvc/wiki/EBSI-Node-Trust).
 
 ## 10. Out of scope
 

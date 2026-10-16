@@ -81,6 +81,9 @@ badge = verify_ebsi_badge(
     trust_anchors={"did:ebsi:zRootTAO…"})   # the recursive chain to a trusted RootTAO
 ```
 
+This example reads the legacy pilot lane. Where EBSI reads go on Core API v1, and why the
+recursive walk fails closed there today, is on [EBSI node trust](EBSI-Node-Trust).
+
 The two anchors are complementary: the **FNMT / Spanish trusted list** is the eIDAS/national
 route, and **EBSI TIR** is the DC4EU/ecosystem route. A verifier can require either or both.
 
