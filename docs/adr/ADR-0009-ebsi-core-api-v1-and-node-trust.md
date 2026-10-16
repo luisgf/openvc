@@ -2,7 +2,7 @@
 
 **Status:** Proposed — a design for the maintainer to decide. It ships no code and changes
 nothing under `src/`.
-**Date:** 2026-10-16
+**Date:** 2026-10-16 (revised the same day after review: D2, D3, D5 and the measured facts)
 **Context owner:** `openvc_ebsi.http`, `openvc_ebsi.versioning` (and a future
 `openvc_ebsi.nodes`)
 **Milestone:** [Conformance & production readiness](https://github.com/luisgf/openvc/milestone/11)
@@ -46,17 +46,18 @@ What the investigation found, in order of weight:
 
 **Recommendation (details in D1–D8):** keep the explicit allow-list as the primitive
 (Option A); add a **pure, stateless TNL verifier** to `openvc_ebsi` built on a hand-rolled,
-ECDSA-only OpenPGP reader (Option C), vendoring **only the Europeum anchor, never the
-list** (rejecting B); defer a PGP-library extra (D) and reject pattern allow-lists (E);
-leave fetch, refresh and persistence to the consumer, with an optional thin helper; add
+ECDSA-only OpenPGP reader (Option C), vendoring **only the Europeum anchor and two version
+floors, never the list** (rejecting B); defer a PGP-library extra (D) and reject pattern allow-lists (E);
+leave fetch, refresh and persistence to the consumer, with an optional thin helper, and bind a
+client built from a verified list to its `expires`; add
 `DidRegistryCoreV1` / `TirCoreV1` adapters and a distinct `legacy-pilot` environment, and keep
 the v5 lane until EBSI retires it. Eight open questions need the maintainer.
 
 ## Context
 
 Marking used below: **[doc]** = stated in EBSI's published documentation or specification
-file; **[measured]** = observed during this investigation on 2026-10-16; **[brief]** =
-reported in the task brief and not re-verified here; **[inference]** = a reading, not a fact.
+file; **[measured]** = observed on 2026-10-16, in the investigation or in the later re-check
+round (both are listed in the appendix); **[inference]** = a reading, not a fact.
 
 ### What changed at EBSI
 
@@ -108,18 +109,41 @@ reported in the task brief and not re-verified here; **[inference]** = a reading
 - **[doc] Environments** are `pilot`, `preprod`, `prod`. The nine old APIs are listed on the
   hub as legacy, "available on the Pilot environment only". No retirement date appears in
   the migration guide, the API index or the changelog.
-- **[brief] Not re-verified, no budget left for it:** `api.ebsi.eu` resolves to AWS and
-  presents a self-signed certificate; `api-conformance.ebsi.eu` times out; the ebsi.eu site
-  announces an "EBSI Ecosystem Roadshow & Business Launch" in Bucharest on 2026-10-22
-  (single source; a web search found no corroboration; treat it as unverified). No SLA,
-  pricing or onboarding document has been found. For the earlier state see #113's 2026-07
-  comments.
+- **[measured, re-check round] The other endpoints.** Three things first reported only in
+  the task brief were re-checked with ten more requests (appendix, "Re-check round").
+  - `api.ebsi.eu`, the `production` entry of `EBSI_HOSTS`, offers no endpoint a verifying
+    client can use today. The name resolves to four AWS addresses; two did not accept a
+    connection in about 3 s and 6 s, and the one that answered presented a certificate for a
+    `*.…eu-west-3.cs.amazonlightsail.com` wildcard that does not cover `api.ebsi.eu`, so
+    verification stops at the handshake (curl exit 60) and no HTTP response was obtained. The
+    brief's "self-signed" was **not** observed. A reviewer's separate run the same day saw a
+    different message (an unknown issuer) and a client-certificate request in the handshake,
+    which this run did not reproduce; the four addresses may not be identical backends
+    **[inference]**. Whether any address serves a certificate valid for the name is not
+    established.
+  - `api-conformance.ebsi.eu` resolves (0.05 s), but no TCP connection completed within 12 s
+    (curl exit 28).
+  - The ebsi.eu home page carries an announcement bar for the **EBSI Ecosystem Roadshow &
+    Business Launch** in Bucharest on 22 October 2026, linking to an events page on ebsi.eu.
+    It is the organiser's own page; the earlier web search found no second source, and it
+    announces an event, not that a production API goes live.
+
+  No SLA, pricing or onboarding document has been found. For the earlier state see #113's
+  2026-07 comments.
 
 ### What the Trusted Nodes List is
 
 Sources: the public repository <https://gitlab.com/europeum/public/trusted-nodes-list> (README,
-`public/`), the files served at <https://tnl.ebsi.eu>, and the hub's reference verifier
-`website/scripts/tnl.mjs` (JavaScript, uses the `openpgp` npm library; read, not copied).
+`public/`), the files served at <https://tnl.ebsi.eu>, and the hub's build-time loader
+`website/scripts/tnl.mjs` (JavaScript, `openpgp` npm library; read, not copied).
+
+**[measured] The loader is not a shape oracle.** As read on 2026-10-16 (its last commit is
+2026-10-01) it types each environment item as a plain URL string and calls
+`node.startsWith(prefix)`, whereas the README schema and the live version 4 list (built
+2026-10-06) use `{url, country, organisation}` objects. By its code, that script would reject
+the live list at the schema step. This ADR follows the README schema and the served bytes, and
+treats the loader as a cross-check of the *signature rules* only; the mismatch is a drift to
+watch (below).
 
 ```text
 Europeum key-list key  (pinned out of band; the only thing a verifier trusts up front)
@@ -137,7 +161,7 @@ a binary document; any invalid signature rejects the file; unknown signers are i
 signing twice counts once; at least `threshold` distinct custodians are needed. The list must
 validate against a published JSON Schema, `expires` must be in the future and at most 90 days
 after `issued`, `issued` may not be in the future (5 minutes of skew), `keysVersion` must not
-exceed the key list's `version`, `version` must exceed the last accepted one, and every node
+exceed the key list's `version`, `version` must exceed the last accepted one (equal only if the bytes are identical), and every node
 URL must be a bare `https://` origin (no path, port or credentials) that starts with its
 environment's prefix (`https://api-pilot.ebsi.`, `https://api-preprod.ebsi.`,
 `https://api.ebsi.`) and appears once. Fail closed; keep the last accepted list until its own
@@ -155,7 +179,7 @@ replaces it, at which point "only Steps 1 and 3 change".
 | custodian keys | v4, ECDSA over NIST P-256; created 2026-09-27 and 2026-09-30; primaries carry certify+sign; one block also has an ECDSA authentication subkey and an ECDH subkey (ignored); user IDs are named-person identities at a europeum.eu address (not reproduced here) |
 | `trusted-keys.json.sig` | one v4 binary signature, ECDSA / SHA-256, created 2026-09-30T09:21:20Z, by the key-list key |
 | `keylist-key.asc` | v4 ECDSA P-256, created 2026-09-30T09:13:54Z, fingerprint `ACCC82E5FC8902F114929481747CB65CFB7574F9`; the hub repo pins the same bytes and fingerprint |
-| Expiry and rotation signals | **none inside OpenPGP**: no key-expiration or signature-expiration subpacket on any key or signature. Rotation is visible only as a new `trusted-keys.json` `version`; a change of the key-list key is out of band |
+| Expiry and rotation signals | **none inside OpenPGP**: no key-expiration or signature-expiration subpacket on any key or signature (the hashed subpacket types present are 2, 11, 20, 21, 22, 23, 27, 30, 33 and 34; neither 3 nor 9 occurs, checked again in the fix round across every self-signature). Rotation is visible only as a new `trusted-keys.json` `version`; a change of the key-list key is out of band |
 | Headers on the TNL | `cache-control: public, max-age=300, must-revalidate`, `etag`, `vary: Origin`, `application/pgp-signature` for `.sig` |
 
 Every file served by `tnl.ebsi.eu` was byte-identical to the copy in the GitLab repository
@@ -199,7 +223,7 @@ lines, plus tests **[inference]**.
 
 ### What a probe of the live Core API showed
 
-25 GET requests, the whole budget; the complete list is in the appendix. TLS verification
+25 GET requests, the whole budget of the first round (a later ten-request re-check round is cited where it matters); the complete lists are in the appendix. TLS verification
 passed on all of them, no redirects were followed, no credentials were sent, nothing was
 written.
 
@@ -214,8 +238,8 @@ written.
 | Algorithm of the roots | Both the prod and the preprod RootTAO accreditation JWTs are `alg: ES256K`. `VcJwtProofSuite.verify` on the preprod one raised `UnsupportedAlgorithm: algorithm 'ES256K' is not permitted` |
 | Hosts inside accreditations | `credentialSchema.id` names `api-prod.ebsi.eu` (prod) and `api-test.ebsi.eu` (preprod): hosts in **no** TNL environment. openvc does not follow them today |
 | Cache validators | None on any node response (no `Cache-Control`, `ETag`, `Last-Modified`), so ADR-0001 D1 and D2 still hold. Only the TNL and the docs site send them |
-| Latency | Mostly 0.13 to 0.4 s; outliers of 6.5 s (the first request to one prod node) and 3.4 s (a prod issuer read). ADR-0001 D5's 10 s timeout stays right |
-| Failover hazards | `api.ebsi.stsisp.ro` answered 200 to the `openvc-core/1.35.1` User-Agent, while the brief reports a 403 from it to curl's default agent: **[inference]** a node can refuse a client on its User-Agent, so a 403 is a reason to fail over, not to abort. Two hosts under one operator (`edelivery.lt`, prod and preprod) set a `SRV_ID` cookie, i.e. a load balancer sits behind that host name |
+| Latency | Mostly 0.13 to 0.4 s; outliers of 6.5 s (the first request to one prod node) and 3.4 s (a prod issuer read). The 6.5 s case is not attributable to that node: a reviewer's re-run saw 6.4 to 6.5 s on first contact with three hosts (`tnl.ebsi.eu`, `hub.ebsi.eu`, `api.ebsi.edelivery.lt`) while DNS took 0.04 to 0.2 s, and the ten-request re-check round saw none (first contact 0.14 to 0.34 s, repeat requests on the open connection 0.04 to 0.07 s). A name with several addresses can also cost seconds when the first address does not answer (seen on `api.ebsi.eu`), so a first-connection effect of the measuring environment is as likely as a slow node. ADR-0001 D5's 10 s timeout stays right |
+| Failover hazards | `api.ebsi.stsisp.ro` answers curl's default User-Agent with a 403, for `Accept: application/json` and for `*/*` alike: an HTML page titled "Web Application Firewall" (35 059 bytes, `text/html`), not Problem Details. The same URL answers `openvc-core/1.35.1` with 200 JSON. **[measured]** A node's front can refuse a client on its User-Agent, so a 403 is a reason to fail over, not to abort, and its body must not be parsed as `urn:ebsi:problems:*`. (`EbsiHttpClient` sends `openvc-core/<version>` by default; the hazard reaches a consumer that overrides `user_agent`.) Two hosts under one operator (`edelivery.lt`, prod and preprod) set a `SRV_ID` cookie, i.e. a load balancer sits behind that host name |
 
 ## Decision drivers
 
@@ -260,7 +284,7 @@ helper that turns a list of origins into a client.
   the plugin fail closed for every user who has not upgraded, and lax expiry reintroduces the
   stale-list attack. Nodes join and leave; a pinned snapshot is wrong the day after release.
 - *Verdict:* **rejected.** The only parts worth vendoring are things that do not expire (the
-  anchor, a version floor; D3).
+  anchor, version floors; D3).
 
 ### C — Runtime fetch of the list with signature verification, hand-rolled minimal OpenPGP
 
@@ -344,33 +368,71 @@ match the origin (host and port 443), because the TNL guarantees bare `https://h
 result out, no I/O. By ADR-0007's rule the verification of attacker-influenced bytes is
 openvc's; fetching, refreshing and persisting are the consumer's. The inputs are the four
 byte strings, the pinned anchor, an injected `now`, the environment wanted, and **required
-keyword arguments for what must persist**: the last accepted list version and the last
-accepted key-list version (each `None` meaning "first run: a replay of an older list is
-possible once", stated in the docstring). The output carries the version, `issued`,
-`expires`, and the nodes of the requested environment as validated origins. It lives in
-`openvc_ebsi` because only EBSI uses it and the dependency rule forbids core importing
-upward; it adds no dependency. It enforces the publisher's rules exactly as listed in the
-context, and additionally:
+keyword arguments for what must persist**: `last_accepted_list` and `last_accepted_keys`,
+each an `Accepted(version, sha256)` pair or `None`. A pair rather than a bare integer,
+because the publisher's rule is "`version` higher than the last accepted, equal only if the
+file is byte-identical": higher passes; equal with the same SHA-256 passes (an hourly
+re-verify of the list already held); equal with different bytes, and lower, raise a rollback
+error. `None` means "first run: nothing to compare", and a caller can always pass it, so the
+signature makes the choice visible but cannot make it honest (open question 6). What bounds a
+stateless caller is the two shipped floors (D3) and two optional parameters: `max_age`
+(reject a list whose `issued` is older than `now - max_age`; **off by default**, because the
+publisher's reissue cadence is not published: versions 3 and 4 were built a day apart, yet a
+list is valid for 90 days, so a short `max_age` can reject a legitimate list) and
+`min_threshold` (reject a key list below it; the live value is 2, the README's own example
+uses 1, so its default is a maintainer decision). The output carries the version, `issued`,
+`expires`, and the nodes of the **one** requested environment as validated origins. A node set
+and every client built from it are bound to that environment, never a union: the three
+environments are different ledgers (Context), and a pilot host answering a prod resolution is
+the mix-up the publisher's prefix rule exists to stop. It lives in `openvc_ebsi` because only
+EBSI uses it and the dependency rule forbids core importing upward; it adds no dependency. It
+enforces the publisher's rules exactly as listed in the context, and additionally:
 
+- authenticates before it parses: a signature file is read under a size cap, the key list is
+  parsed only after the pinned key has verified it, and `tnl.json` only after the threshold
+  is met;
+- validates the published JSON Schema **by hand**, without the `jsonschema` extra (a bounded
+  explicit check, not a library): exactly the five top-level keys; `environments` with one to
+  three of `pilot`/`preprod`/`prod` and nothing else; each environment a non-empty list of
+  nodes with exactly `url`, `country` and `organisation`; `version` and `keysVersion`
+  integers of at least 1 (a JSON boolean is not an integer); `issued` and `expires` matching
+  the `Z` timestamp pattern and parsing as such; `url` matching `^https://[a-z0-9.-]+$`;
+  `country` matching `^[A-Z]{2}$`; `organisation` 1 to 200 characters with no leading or
+  trailing whitespace. Two Python traps for the implementer: match with `fullmatch` and ASCII
+  classes (`$` accepts a trailing newline, `\d` accepts other scripts' digits). The README
+  prints the schema, so a publisher change to it is visible there, and the real list is a
+  fixture;
 - refuses duplicate or non-ASCII hosts, and any URL that is not a bare origin (consistent
   with the ASCII-only host policy, v1.31.2);
-- applies rollback protection to the **key list as well as the node list**: `trusted-keys.json`
-  carries no expiry, so a stale, validly signed key list from before a custodian rotation could
-  otherwise be replayed with an old, compromised custodian key **[inference; the README rolls
-  back only `tnl.json`]**;
+- applies rollback protection to the **key list as well as the node list**, with the same
+  pair rule against `trusted-keys.json`'s own `version`. `trusted-keys.json` carries no
+  expiry (no expiration subpacket anywhere in its chain), so a stale, validly signed key list
+  from before a custodian rotation could otherwise be replayed together with an old,
+  compromised custodian key. The check reads the key list's own `version`, which the key-list
+  key signs, never the node list's `keysVersion`, which the custodians sign and a holder of
+  retired custodian keys can set freely **[inference; the README rolls back only
+  `tnl.json`]**;
 - treats a custodian key block containing a revocation signature or a key-expiration
   subpacket as invalid (Option C, last bullet);
 - raises typed errors under `EbsiError` (signature, threshold, expiry, not-yet-valid, rollback,
   malformed, environment-missing) and never returns a partially verified list.
 
-**D3 — Vendor the anchor and a version floor, never the list.** The wheel carries the
+**D3 — Vendor the anchor and two version floors, never the list.** The wheel carries the
 key-list key's public point and its v4 fingerprint (pinning the *key material*, not only the
-SHA-1 fingerprint) and, optionally, an integer **floor** for the list version, raised at each
-release. A floor gives a stateless caller a rollback bound without any list to expire, and
-it can only reject, never admit (so it must never exceed a version EBSI has really
-published). The anchor must be overridable by the consumer: the README
-announces a change of the root (a qualified seal) and it is out of band. The ceremony that
-makes the shipped pin trustworthy is a maintainer decision (open question 2).
+SHA-1 fingerprint) and, optionally, two integer **floors**, raised at each release: the
+minimum node-list `version` and the minimum key-list `version`. They do different jobs. The
+list floor bounds replay of an old `tnl.json` that current custodians signed. The key-list
+floor is the only bound on replay of an old `trusted-keys.json`, with its retired custodian
+set, for a first-run or stateless caller, because neither the key list nor its signature
+expires. It is checked against `trusted-keys.json`'s own `version` (authenticated by the
+key-list key), never against `tnl.json`'s `keysVersion`, which the attacker would be signing.
+Only key-list version 1 exists today, so that floor is 1 and its protection is latent until
+the first rotation; the field exists so the first rotation can raise it. A floor gives a
+stateless caller a rollback bound without any list to expire, and it can only reject, never
+admit (so it must never exceed a version EBSI has really published). The anchor must be
+overridable by the consumer: the README announces a change of the root (a qualified seal) and
+it is out of band. The ceremony that makes the shipped pin trustworthy is a maintainer
+decision (open question 2).
 
 **D4 — Fetching and refreshing: a thin, optional helper; persistence stays with the consumer.**
 Two additions to `openvc_ebsi.http`: a bytes-returning GET (the signature files are binary;
@@ -380,12 +442,22 @@ never the node set, so a poisoned node list cannot widen where the list itself i
 It honours `ETag`/`If-None-Match` and the publisher's hourly guidance; it keeps nothing. A
 deployment that wants a daemon, a database or a sidecar writes it.
 
-**D5 — From verified nodes to a client, with single-node walks.** A constructor takes the
-verified result and returns clients or resolvers per node; node choice is an injected policy
-(default: random among nodes that answer `/v1/alive`), failover happens **between** resolves
-and never inside a registry walk. The existing `_origin` pin already refuses a walk that
-tries to leave its node; failover must restart the walk on the next node. Treat
-transport errors, 429, 5xx and 403 as node failures to fail over from; treat a 404 as
+**D5 — From verified nodes to a client bound to the list's lifetime, with single-node
+walks.** A constructor takes the verified result and returns clients or resolvers per node,
+for that result's one environment. **The result's `expires` travels into every client it
+returns, with an injected `clock` (a required callable, as `now` is for the verifier): a
+request at or after `expires` raises a typed `EbsiError` subclass (`NodeListExpired`) before
+any socket is opened.** Without this the verifier's expiry check is a one-time gate, and a
+long-lived service that verifies once and keeps its client would trust that node set
+indefinitely. `EbsiHttpClient` today has a static, lower-cased host set and no clock
+(`_guard_host` is the only gate), so the guard gains an optional `valid_until` and `clock`
+pair, both or neither. A client built by hand from an explicit allow-list (D1) has no such
+bound, and re-verifying is then entirely the consumer's job; the library offers no grace past
+`expires`. Node choice is an injected policy (default: random among nodes that answer
+`/v1/alive`), and failover happens **between** resolves and never inside a registry walk. The
+existing `_origin` pin already refuses a walk that tries to leave its node; failover must
+restart the walk on the next node. Treat transport errors, 429, 5xx and 403 as node failures
+to fail over from (a 403 body may be a firewall page, not Problem Details); treat a 404 as
 authoritative for that node only (open question 5).
 
 **D6 — Core v1 adapters and an honest environment table** (names only; next section).
@@ -410,8 +482,8 @@ DID document carries no verification method.
 | Gives | Does not give |
 |---|---|
 | The node set comes from a list signed by a threshold of known custodians under a pinned anchor | Honesty of a listed node; authenticity of registry content |
-| Fail-closed on any malformed, expired, not-yet-valid, rolled-back or under-signed list | Revocation of a node between list versions (bounded by the refresh interval and the 90-day maximum) |
-| Replay bounded by a persisted version and a shipped floor; key-list replay too | Protection on the first run of a stateless caller beyond the floor |
+| Fail-closed on any malformed, expired, not-yet-valid, rolled-back or under-signed list; a client built from a verified result stops at its `expires` (D5) | Revocation of a node between list versions (bounded by the refresh interval and the 90-day maximum, for clients built by D5; a hand-built allow-list has no bound but its integrator's) |
+| Replay of the list and of the key list bounded by persisted `(version, sha256)` pairs, or by the two shipped floors when nothing is persisted | Protection for a stateless caller beyond the floors (and the optional `max_age`); an honest `last_accepted_*` value (a caller can always pass `None`) |
 | Hosts constrained to ASCII bare origins, one per row, with the environment prefix as a sanity check | Defence against DNS or certificate compromise of one listed host name |
 | Offline and deterministic: `now` is injected, nothing is fetched by the verifier | A defence if the key-list key is compromised or the pin is wrong |
 | Zero new dependencies; the only bytes parsed before authentication are two small signature files | Anything about EBSI operators' availability or SLA (none published) |
@@ -420,17 +492,19 @@ DID document carries no verification method.
 
 | Mechanism | Attack | Outcome | Mitigation in this proposal |
 |---|---|---|---|
-| Allow-list built from the list (C) | Forged list pointing at attacker hosts | Needs the key-list key or, today, both custodian keys; an attacker holding only retired custodian keys must also replay an old `trusted-keys.json` | Signature chain; rollback protection on both versions |
-| Same | Stale list replayed to a stateless client | Old nodes trusted until that list's `expires` (at most 90 days) | Persisted version, shipped floor, strict `expires` |
+| Allow-list built from the list (C) | Forged list pointing at attacker hosts | Needs the key-list key or, today, both custodian keys; an attacker holding only retired custodian keys must also replay an old `trusted-keys.json` | Signature chain; rollback protection on both versions (persisted pairs, or the two floors) |
+| Same | Stale list replayed to a stateless client | Old nodes trusted until that list's `expires` (at most 90 days) | Persisted pair, shipped list floor, optional `max_age`, strict `expires` |
+| Same | Old `trusted-keys.json` replayed after a custodian rotation | Retired custodian keys (threshold many of them) sign a fresh `tnl.json` with a version above the list floor and a `keysVersion` of their choosing; a stateless caller accepts it. Latent today: only key-list version 1 exists | Key-list floor and persisted key-list pair (D3, D2); `min_threshold` covers only a replayed list with a lower threshold; nothing else bounds it, since neither the key list nor its signature expires |
 | Same | Compromise of the key-list key | Total: substitute the custodians and threshold, then sign anything | Out of scope for openvc; keep the pin overridable; watch the qualified-seal switch |
 | Same | Custodian threshold of 2 of 2 | One lost custodian key blocks publication; no verifier risk | Publisher problem; noted for the maintainer |
 | Pattern allow-list (E) | Any registrable domain shaped `api.ebsi.<x>` | Fully attacker-controlled "node" | Rejected |
+| Node set across environments | A pilot or preprod host in a prod allow-list, or the reverse | A host that is not a prod node answers prod resolutions; the environments are different ledgers | One environment per result and per client (D2, D5); the list's prefix check stops a node posing as another environment *inside* the list |
 | Redirects | A node 30x-ing to another host | Followed only if the client follows; it does not | `follow_redirects=False` stays; a 3xx is a node failure |
 | DNS rebinding | A listed host name re-pointed at a private address | The guard is host-name only, no address check (threat model R4); the registry paths are fixed and DID-validated, so reach is a fixed GET, but it is still a GET from inside a network | Optional resolved-address guard reusing `openvc.fetch`'s rules (follow-up); it cannot stop an attacker who can also obtain a valid certificate |
 | Dishonest node | Substitutes a DID document or accreditation | Verification proceeds on forged data | D7: cross-node comparison as consumer policy; not solvable by the list |
 | Port on an allowed host | `https://listed-host:9200/…` | Host-only guard admits it | `_origin` pins links today; D1 follow-up to guard on origin |
 | Node selection | Always the first listed node | Load concentration, one point of failure | Random among healthy; policy injected |
-| 90-day expiry | Publisher stops reissuing | Every strict client fails closed at the expiry instant | Surfacing a typed error and a watch job; a documented grace policy is the consumer's |
+| 90-day expiry | Publisher stops reissuing | Every client built from the list (D5) fails closed at the expiry instant; a hand-built allow-list keeps trusting its nodes | Typed `NodeListExpired` and a watch job; no grace in the library, so the consumer re-verifies or accepts the risk of a hand-built allow-list |
 | Node consistency | A lagging node 404s a new DID or serves an older key | A just-rotated key may be accepted briefly | Existing short TTL (ADR-0001 D2); 404 not treated as global |
 | Cookie jar | `SRV_ID` sticky-routing cookie on the pooled `httpx.Client` | Harmless state; makes consecutive reads sticky to a backend | Note only; follow-up to disable the jar |
 | Links inside accreditations | `credentialSchema.id` on `api-prod.ebsi.eu` / `api-test.ebsi.eu` | A future schema fetch must not assume node hosts | Keep schema fetching out of the node allow-list |
@@ -455,10 +529,11 @@ Names only; no code is proposed in this ADR.
 - **Environment table** (the `EBSI_HOSTS` successor): `legacy-pilot` (`api-pilot.ebsi.eu`,
   fixed host, the only place the recorded fixtures and the weekly smoke are valid),
   and `pilot`, `preprod`, `prod` as **node-derived** environments with no fixed host. The
-  existing `conformance` is outside the TNL's scope. The existing `pilot` key and
+  existing `conformance` is outside the TNL's scope (its host accepted no connection in the re-check). The existing `pilot` key and
   `production -> api.ebsi.eu` are the compatibility question: `pilot` today means the legacy
-  lane under a name EBSI has since reused, and `production` names a host that, per the brief,
-  serves no API. Open question 4.
+  lane under a name EBSI has since reused, and `production` names a host where a verifying
+  client cannot connect today (the certificate served does not cover the name; Context).
+  Open question 4.
 
 ## Migration plan
 
@@ -483,6 +558,11 @@ Golden fixtures are the drift alarm (invariant 6); the data to record exists now
   derived negative vectors (tampered, single signature, wrong key, duplicate signer, appended
   byte). **Trap:** this list expires 2027-01-04; every test must inject a fixed clock inside its
   window or the suite goes red that day.
+- **Shape and synthetic chain.** Nodes are `{url, country, organisation}` objects; the served
+  list, not the hub loader's string-typed expectation, is the fixture. Rollback, floors,
+  `max_age`, `min_threshold` and the expiry-bound client need a **synthetic chain**, with
+  throwaway keys the test builds using `cryptography`, because the real chain has exactly one
+  version of each document.
 - **Core v1, preprod is the verifying fixture.** Record, from two nodes (for example
   `api-preprod.ebsi.grnet.gr` and `api-preprod.ebsi.incm.pt`, to prove cross-node identity):
   the issuers page, `did:ebsi:zmaEptEHQRAmkJnFV6ki3io` (DID document with `secp256k1` and
@@ -504,10 +584,19 @@ Golden fixtures are the drift alarm (invariant 6); the data to record exists now
 - A small hand-written OpenPGP reader is new security-relevant code in the repository. It
   is bounded, fuzzable and fails closed, but it is ours to maintain; the alternative is a
   heavy dependency for three signatures.
-- A release can carry stale knowledge in only two places, the anchor and the floor, neither
-  of which expires.
-- Consumers who ignore the persistence arguments get replay protection only up to the floor;
-  the signature makes that visible, but it cannot make them pass the right value.
+- A release carries stale knowledge in only two places, the anchor and the two floors. None
+  runs on a clock, but each can go stale: the TNL README announces that the key-list key is to
+  be replaced by Europeum's qualified electronic seal (it says only its Steps 1 and 3
+  change), and from then on a shipped anchor cannot verify a new `trusted-keys.json`, so every
+  strict client fails closed until it upgrades or the consumer overrides the anchor (D3, open
+  question 7). A floor that falls behind only weakens a stateless caller's replay bound; one
+  set above a version EBSI really published is an outage.
+- Consumers who ignore the persistence arguments get replay protection only up to the floors
+  (and `max_age`, if set); the signature makes that choice visible, but cannot make them pass
+  the right value, since `None` is always available.
+- A client built from a verified result stops at that result's `expires`, so a long-lived
+  service must re-verify at least that often. The schema is validated by hand, so a
+  publisher change to it is a code change here, signalled by the README.
 - The weekly smoke can no longer be "re-pointed": the legacy lane keeps its job and a second
   job (TNL + Core v1 preprod) is added, which needs a clock-aware verification step in CI.
 - Recursive trust remains unavailable on Core v1 roots until open question 3 is decided.
@@ -515,16 +604,22 @@ Golden fixtures are the drift alarm (invariant 6); the data to record exists now
 
 ## What to watch
 
-- **2026-10-22:** the reported EBSI Ecosystem Roadshow & Business Launch in Bucharest
-  (single source, unverified here). Look for SLA, pricing, onboarding and access terms for
-  automated readers, and for a prod announcement that changes the 20 requests/second limit.
+- **2026-10-22:** the EBSI Ecosystem Roadshow & Business Launch in Bucharest, announced on the
+  ebsi.eu home page (the organiser's own page; no second source; it names an event, not a
+  production-API go-live). Look for SLA, pricing, onboarding and access terms for automated
+  readers, a prod announcement that changes the 20 requests/second limit, and a working
+  certificate for `api.ebsi.eu` (open question 4).
 - **2027-01-04:** the current `tnl.json` expires. Expect a new version before then; if none
   appears, every strict client fails closed. A CI job should warn at 14 days.
 - **hub.ebsi.eu changelog** (<https://hub.ebsi.eu/api/changelog>) for Core API v1 amendments, a
   legacy retirement date, and anything touching DID Registry content negotiation.
-- **TNL repository and `trusted-keys.json`:** a new `version`, a change of threshold or
-  custodians, and the switch from the key-list key to a qualified seal (the README says only
-  its Steps 1 and 3 change).
+- **TNL repository and `trusted-keys.json`:** a new `version` (raise the key-list floor at each
+  rotation), a change of threshold or custodians, and the switch from the key-list key to a
+  qualified seal (the README says only its Steps 1 and 3 change).
+- **The hub's `website/scripts/tnl.mjs`:** it types environment items as strings while the
+  README and the live list use objects (last commits 2026-10-01 against 2026-10-06). One of
+  them will change; the verifier follows the README schema and the served bytes, and the
+  fixture is the served list. Re-read the script and the README at each TNL version.
 - **Prod content:** the single seeded issuer and its empty DID document; `ES256K` in the roots.
 - **Wider EU context:** the EUDI timeline already tracked in the ROADMAP.
 
@@ -542,12 +637,19 @@ Golden fixtures are the drift alarm (invariant 6); the data to record exists now
    unavailable on Core v1. It is a `CLAUDE.md` invariant ("do not widen it casually"), `cryptography`
    supports secp256k1, and the DID documents sampled carry secp256k1 keys alongside P-256.
 4. **Names and compatibility.** `for_ebsi("pilot")` means the legacy lane and the wiki documents
-   it; `production` names a host that serves no API. Alias and deprecate now, or leave until
+   it; `production` names a host that presents no certificate valid for its name. Alias and deprecate now, or leave until
    2.0 (#74)? Is a `ValueError` on `for_ebsi("production")` acceptable as a bug fix?
 5. **Multi-node agreement.** A documented consumer pattern, a helper in the plugin, or nothing?
    And is a 404 on one node authoritative?
-6. **The shape of persistence.** Required `last_accepted_*` keyword arguments (the proposal), or
-   an injected store callable in the style of the OID4VCI nonce store?
+6. **The shape of persistence, and the stateless defaults.** Required `last_accepted_list` /
+   `last_accepted_keys` keyword arguments holding an `Accepted(version, sha256)` pair or `None`
+   (the proposal), or an injected store callable in the style of the OID4VCI nonce store?
+   Neither can force an honest value: `None`, or an empty store, is always passable, so the
+   type signature makes the obligation visible, not binding. A store callable would at least
+   let the library own the order "verify, accept, then persist". What bounds a caller that
+   passes `None` is the two shipped floors (D3) and the optional `max_age` and `min_threshold`
+   (D2). Decide also whether `min_threshold` defaults to the live value 2 (a legitimate
+   threshold of 1 then fails closed until the caller lowers it) or stays unset.
 7. **The qualified-seal switch.** Stay out until Europeum publishes the signature format, or
    design the anchor interface now so it can take a second kind of root?
 8. **Scope of the live smoke.** Add Core v1 preprod and TNL verification to the weekly workflow
@@ -563,11 +665,11 @@ Titles with one line each; none have been filed.
 - `feat(ebsi): DidRegistryCoreV1 and TirCoreV1 adapters with golden fixtures` — URL layout,
   `parentAttributeId`, Problem Details `type`; preprod two-node vectors.
 - `feat(ebsi): pure Trusted Nodes List verifier with a minimal ECDSA-only OpenPGP reader` —
-  rollback inputs, fixed-clock tests, fuzzing, the narrow profile, key-block rejection rules.
+  `(version, sha256)` rollback pairs for the list and the key list, the two floors, `max_age` and `min_threshold`, by-hand schema validation, fixed-clock tests, fuzzing, the narrow profile, key-block rejection rules.
 - `feat(ebsi): bytes GET and a tnl.ebsi.eu fetch helper` — separate one-host allow-list,
   `ETag`, size and deadline caps.
 - `feat(ebsi): node-based client constructor with health check and single-node failover` —
-  injected selection policy; walks never mix nodes.
+  injected selection policy; walks never mix nodes; clients carry the list's `expires` and an injected clock; one environment per client.
 - `fix(ebsi): environment table — legacy-pilot, node-derived pilot/preprod/prod` — resolves
   open question 4.
 - `security(ebsi): allow-list on origin (host and port 443), not host name` — the TNL
@@ -584,14 +686,16 @@ Titles with one line each; none have been filed.
 
 ## Appendix — what was called, and how to reproduce
 
-Network use for this ADR, 2026-10-16: **25 GET requests to EBSI hosts** (the cap), all over https
-with certificate verification on, no redirects followed, no credentials, no writes. The first
-five used curl's default User-Agent; the other twenty sent `openvc-core/1.35.1`, with
-`Accept: application/json, application/did+ld+json, */*;q=0.1` on all but the last (`text/html`).
-Responses were treated as data
-and parsed, never executed. Specification and documentation were read from the public GitLab API
-(`gitlab.com`, not an EBSI host), library metadata from the PyPI JSON API, and one web search
-found no corroboration of the launch event.
+Network use for this ADR, 2026-10-16, in two rounds: **25 GET requests to EBSI hosts** in the
+investigation (the cap of that round, first table) and **10** in a later re-check round (second
+table), all over https with certificate verification on and never bypassed, no redirects
+followed, no credentials, no writes. In the first table, requests 1 to 5 used curl's default
+User-Agent; the other twenty sent `openvc-core/1.35.1`, with
+`Accept: application/json, application/did+ld+json, */*;q=0.1` on all but the last
+(`text/html`). Responses were treated as data and parsed, never executed. Specification and
+documentation were read from the public GitLab API (`gitlab.com`, not an EBSI host, so not
+counted), library metadata from the PyPI JSON API, and one web search found no corroboration
+of the launch event (the event was later read on the ebsi.eu home page, R1).
 
 | # | Host and path | Status |
 |---|---|---|
@@ -617,6 +721,19 @@ found no corroboration of the launch event.
 | 24 | `api.ebsi.iti.gr/v1/alive` | 200 |
 | 25 | `hub.ebsi.eu/api/migration-guide` | 200 |
 
+Re-check round (a fix round on this ADR, the same day; curl with TLS verification on):
+
+| # | Host and path | User-Agent / `Accept` | Result |
+|---|---|---|---|
+| R1 | `ebsi.eu/` | curl default | 200 HTML; announcement bar read |
+| R2 | `api.ebsi.stsisp.ro/v1/issuers-registry/issuers?page[size]=1` | curl default / `application/json` | 403, `text/html`, 35 059 bytes, "Web Application Firewall" |
+| R3 | same | curl default / curl default | 403, same page |
+| R4 | same | `openvc-core/1.35.1` / `application/json` | 200 JSON |
+| R5 | `api.ebsi.eu/v1/alive` | curl default | no HTTP response: certificate does not cover the name (curl exit 60) |
+| R6 | `api-conformance.ebsi.eu/` | curl default | no connection in 12 s (curl exit 28) |
+| R7-R8 | `tnl.ebsi.eu/tnl.json.sig`, then `/trusted-keys.json.sig`, on one connection | curl default | 200, 200 |
+| R9-R10 | `api.ebsi.edelivery.lt/v1/alive` twice, on one connection | curl default | 200, 200 |
+
 Download the chain (the same URLs, no authentication):
 
 ```bash
@@ -631,3 +748,8 @@ Re-run the structural probe by parsing the packet framing (RFC 4880 section 4.2)
 `cryptography.hazmat.primitives.asymmetric.ec` on the SEC1 point; expect two custodian
 signatures at `threshold` 2. The probe scripts were scratch files and are deliberately not
 committed.
+
+The expiry-signal claim (no key-expiration or signature-expiration subpacket) can be re-run
+with the same framing parser: list the hashed subpacket types of every signature packet,
+including each key block's self-signatures and binding signatures. The hashed types present are 2, 11,
+20, 21, 22, 23, 27, 30, 33 and 34; types 3 and 9 do not occur.
