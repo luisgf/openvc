@@ -150,24 +150,49 @@ from openvc_ebsi.versioning import DidEbsiResolver
 from openvc_ebsi.verify import verify_ebsi_badge
 
 suite = VcJwtProofSuite()
-with for_ebsi("pilot") as http:
+with for_ebsi("legacy-pilot") as http:
     resolver = DidEbsiResolver(http.get_json, decode_jwt=suite.peek_claims)
     result = verify_ebsi_badge(token, resolver=resolver, proof_suite=suite,
                                expected_types=["VerifiableAttestation"])
     print(result.trusted, result.issuer)
 ```
 
+On the Core API v1 the node is yours to choose (and to verify), so the lane is built
+explicitly:
+
+<!-- docs: no-run -->
+```python
+from openvc.proof.vc_jwt import VcJwtProofSuite
+from openvc_ebsi.http import EbsiHttpClient, HttpError
+from openvc_ebsi.versioning import DidEbsiResolver, DidRegistryCoreV1, TirCoreV1
+
+suite = VcJwtProofSuite()
+# `node_origin` is one verified node's bare origin ("https://<host>"), `node_host` its host
+with EbsiHttpClient(allowed_hosts={node_host}) as http:
+    resolver = DidEbsiResolver(
+        http.get_json, decode_jwt=suite.peek_claims, base=node_origin,
+        didr=DidRegistryCoreV1(), tir=TirCoreV1())
+    try:
+        record = resolver.issuer_record(issuer_did)
+    except HttpError as exc:
+        print(exc.status, exc.problem_type)   # e.g. 404 and an opaque `type`, or None
+```
+
 - **Read-only by design**: resolve DIDs, read the registries. Onboarding /
   writing (JSON-RPC + OID4VP) is out of scope.
-- **SSRF-guarded**: the EBSI HTTP client is https-only with a host
-  allow-list, short client-side TTL caching, and bounded retries
+- **SSRF-guarded**: the EBSI HTTP client is https-only with an origin
+  allow-list (a listed host **and port 443**), short client-side TTL caching, and bounded retries
   ([ADR-0001](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0001-ebsi-http-client.md)).
-  A URL that is not visible ASCII, or that does not parse (port included), is
-  refused as `HttpForbiddenHost` before any request. The DID itself is checked before
-  it is put in a registry URL: anything but `did:ebsi:z` plus 22 or 23 base58btc
+  A listed host on any other port (`:80`, `:8443`, `:0`), a URL that carries userinfo
+  (`https://user@host/`), a URL that is not visible ASCII, and one that does not parse (port
+  included) are refused as `HttpForbiddenHost` before any request. An absent or empty port,
+  `:443` and `:0443` are 443. `allowed_hosts` still holds host names, so a caller on 443
+  changes nothing. The DID itself is checked before it is put in a registry URL: anything but `did:ebsi:z` plus 22 or 23 base58btc
   characters (a path, a `..`, a query, a fragment, a percent escape, another method) is a
   `DidResolutionError` from `resolve` / `issuer_record`, so an unsigned token's `iss`
   cannot choose the request path (`verify_ebsi_badge` reports `EbsiVerificationError`).
+  The client keeps no cookies: a `Set-Cookie` from a node is dropped and nothing is sent
+  back, so consecutive reads may reach different backends of one node.
   Never resolve `did:web` through it — `did:web` has its own guarded fetch
   (see [Resolving issuer keys](Resolving-Issuer-Keys)).
 - **Optional resolved-address guard** (v1.37.0): the allow-list matches a *name* and, by
@@ -200,13 +225,93 @@ with for_ebsi("pilot") as http:
   every API version), before any `attributes` page or revision is fetched, so
   `IssuerRecord.did` is the DID the registry answered for. The `attributes` / `href` path
   is still pinned to the registry's origin, not to the issuer.
-- **Environment-aware**: `for_ebsi("pilot" | "conformance" | "production")` seeds
-  the allow-list from the chosen EBSI environment — `production` (`api.ebsi.eu`) is
-  registered for EBSI's Q4 2026 business launch. Pass `extra_hosts` to also permit an
-  issuer's status-list origin. The v5 Trusted Issuers Registry `/attributes` listing
-  is paginated, and openvc walks every page (bounded, and immune to EBSI's
-  self-referential `next` cursor) so an issuer with many accreditations is read in full.
+- **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
+  named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
+  recorded on 2026-10-16
+  ([ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)):
+  - `legacy-pilot` is `api-pilot.ebsi.eu`, the legacy per-service lane (the v5 adapters), and
+    the only place the recorded fixtures and the weekly smoke test are valid.
+  - `pilot` is the same host and the same lane, kept as it was and not deprecated. EBSI now
+    also uses "pilot" for its Core API pilot, which is a different ledger that this name does
+    not reach; `legacy-pilot` says which one you mean. ADR-0009's planned end state gives
+    `pilot` the Core API meaning, at the earliest in the 2.0 window
+    ([#74](https://github.com/luisgf/openvc/issues/74); not decided yet), so prefer
+    `legacy-pilot` in code that will outlive a major upgrade.
+  - `conformance` (`api-conformance.ebsi.eu`) and `production` (`api.ebsi.eu`) are kept as
+    they were, with the same allow-list rule, but a client built from either is not known to
+    complete a request today. One 12-second probe of the conformance host (a single attempt
+    from one place, so possibly transient) completed no TCP connection; the certificate the
+    production host presented did not cover its name, and none of the 45 node URLs in version
+    4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a client fails
+    closed.
+  - Any other name (another case, an empty string, a value that is not a string) raises
+    `UnknownEbsiEnvironment`, which is also a `ValueError`.
+
+  Pass `extra_hosts` (host names, port 443 only) to also permit an issuer's status-list host; a
+  status list on another port is refused. The v5 Trusted Issuers
+  Registry `/attributes` listing is paginated, and openvc walks every page (bounded, and
+  immune to EBSI's self-referential `next` cursor) so an issuer with many accreditations is
+  read in full.
+  The Trusted Nodes List host (`tnl.ebsi.eu`, below) is a second, separate allow-list that
+  is never merged with this one.
+- **Two lanes, selected together**: the legacy pilot (one API per service,
+  `"v5"`, the default of `did_registry_adapter()` / `tir_adapter()`, host
+  `api-pilot.ebsi.eu`) and the **EBSI Core API v1** (`"core-v1"`:
+  `DidRegistryCoreV1` and `TirCoreV1`, paths `/v1/did-registry/...` and
+  `/v1/issuers-registry/...` on the answering *node's own origin*, so every
+  `self`, `links` and `href` names that node). A Core v1 caller passes the node's
+  bare origin as `base` and `didr` and `tir` **together**, over a client whose
+  allow-list holds that node's host; nothing infers one from the others, and
+  `for_ebsi(...)` still builds a client for the legacy hosts. The allow-list should come from a
+  node list you have *verified* (the Trusted Nodes List is signed), not from
+  hostnames pasted off a web page: issue
+  [#316](https://github.com/luisgf/openvc/issues/316) has the recipe, and
+  [ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)
+  the reasoning (a signed list authenticates the *operator*, not the content a node
+  serves). `contract_address="0x..."` on either adapter selects a registry instance
+  (each registry has its own address, published on its `/details`); a walk
+  configured with one stays on it.
+- **Core v1 error types**: an error answer of `application/problem+json` (RFC 9457)
+  puts its `type` on `HttpError.problem_type` (`None` for any other answer, a
+  `text/html` firewall page included, and for a `type` that is not 1 to 256 visible
+  ASCII characters). It is opaque: match on it, never on a message, and do not
+  expect a `urn:ebsi:problems:` slug on every error (the recorded 406 says
+  `about:blank`). An error body is read at most 16 KiB; a larger one is dropped
+  with its connection.
+- **Exact bytes and the Trusted Nodes List host**: `EbsiHttpClient.get_bytes(url)` returns a
+  response body verbatim as a `BytesResponse(body, etag)` (no JSON parse, no cache, no text
+  decoding), under the same host guard, redirects-off and retry rules as `get_json`. The
+  body is read raw against a hard cap on the wire size **and** on the decoded size of a
+  single `gzip` / `deflate` coding (any other coding is `HttpUnexpectedEncoding`); the body
+  of a non-200 response is never read; and an `etag` you pass is sent as `If-None-Match`
+  (a 304 comes back as `BytesResponse(None, etag)`, which means "re-use what you stored").
+  `deadline_s` (up to a day) is a budget over the attempts, the sleeps and the body read; it
+  is **not** a ceiling on the wait for one response's headers, which only `timeout_s` bounds,
+  per socket operation, so run the call under your own timeout if you need a hard limit. The
+  EBSI client is synchronous: there is no async twin.
+  `for_tnl()` builds a client that allow-lists `tnl.ebsi.eu` **alone**, and
+  `get_tnl_files()` fetches the four signed Trusted Nodes List documents through it. **The
+  bytes are unauthenticated**: the helper verifies nothing, polls nothing, stores nothing
+  and never fetches the pinned key-list key; keep the bytes and the ETags yourself and
+  hand the bytes to a verifier ([ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)
+  D4).
+
+<!-- docs: no-run -->
+```python
+from openvc_ebsi.http import get_tnl_files
+
+files = get_tnl_files()                      # four GETs to https://tnl.ebsi.eu/, nothing verified
+# ... verify files["tnl.json"].body against files["tnl.json.sig"].body, keep them, then
+# on the next refresh ask only for what changed:
+etags = {name: r.etag for name, r in files.items() if r.etag}
+files = get_tnl_files(etags=etags)           # a 304 is BytesResponse(None, <the etag sent>)
+```
+
 - **Version drift, contained**: every EBSI API version specific lives behind
-  one adapter in `openvc_ebsi.versioning`; the trust logic never sees wire
-  formats. Conformance is pinned by recorded pilot fixtures, plus an opt-in
-  live smoke test (`OPENVC_EBSI_LIVE=1 pytest`).
+  one adapter in `openvc_ebsi.versioning` and the two TIR lanes share one walk, so
+  the origin pin and the caps are written once; the trust logic never sees wire
+  formats. Conformance is pinned by recorded fixtures for both lanes: the pilot
+  (`tests/fixtures/ebsi/`) and the Core API v1 (`tests/fixtures/ebsi/core-v1/`, two
+  preprod nodes and the one-issuer production seed, with a hash manifest), plus an
+  opt-in live smoke test (`OPENVC_EBSI_LIVE=1 pytest`, today against the legacy
+  pilot host).

@@ -19,6 +19,19 @@ trust-chain logic depend only on the domain model, never on EBSI's wire format.
 Consequence: supporting a new version = write one new adapter class and register
 it. No change to the domain model, the resolver, or anything downstream.
 
+Two lanes
+---------
+* The legacy pilot, one API per service: ``DidRegistryV5``, ``TirV4``, ``TirV5``
+  (``"v5"`` and ``"v4"``). Fixtures: ``tests/fixtures/ebsi/*.json``.
+* The EBSI Core API v1: ``DidRegistryCoreV1`` and ``TirCoreV1`` (``"core-v1"``), at
+  ``/v1/...`` on the *answering node's own origin*. Fixtures:
+  ``tests/fixtures/ebsi/core-v1/``.
+
+Both TIR lanes share one attribute walk (``_TirAttributeWalk``), so the origin pin and the
+caps are written once. The defaults of ``did_registry_adapter()`` and ``tir_adapter()`` stay
+``"v5"``. A Core v1 caller selects the node (``base``, a bare origin, on its HTTP client's
+allow-list), ``didr`` and ``tir`` together: nothing infers one from the others.
+
 Principles baked in below
 -------------------------
 1. Anti-corruption boundary: raw EBSI JSON never escapes an adapter.
@@ -43,11 +56,13 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Iterator
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from openvc.did.base import DidDocument, DidResolutionError, parse_did_document
 from openvc.observability import logger
 from openvc.proof._verify_common import safe_repr
+from ._url import UrlDoesNotParse, UrlNotVisibleAscii, read_origin
+from .environments import LEGACY_PILOT_BASE
 from .errors import MalformedRegistryResponse
 from .models import Accreditation, IssuerRecord
 
@@ -58,9 +73,6 @@ DecodeJwt = Callable[[str], dict[str, Any]]      # VC-JWT body -> claims (proof 
 # EBSI's registry URLs run to a few hundred characters; this is far below httpx's own
 # 64 KiB URL limit, so the origin pin never passes a URL the client then rejects.
 _MAX_URL_LENGTH = 8192
-# The port an absent one stands for. Only https: the HTTP client refuses anything else, so
-# an http URL keeps an empty port and can never match an https listing anyway.
-_DEFAULT_PORTS = {"https": 443}
 
 # The ``did:ebsi`` identifier of a Legal Entity: ``z`` (multibase base58btc) followed by the
 # base58btc encoding of 17 bytes, a version byte (``1``) and 16 random bytes. EBSI DevHub,
@@ -79,10 +91,13 @@ _DID_EBSI = re.compile(r"did:ebsi:z[1-9A-HJ-NP-Za-km-z]{22,23}")
 
 def _origin(url: str) -> str:
     """``scheme://host:port`` (lowercased) — used to keep pagination on the listing's
-    own origin. A belt-and-suspenders check on top of the HTTP client's SSRF allow-list:
-    a ``links.next`` cursor may only advance within the same web origin as the listing —
-    the port is part of that origin, so a ``next`` that only changes the port is refused
-    (the SSRF host allow-list matches host but not port).
+    own origin. A second check behind the HTTP client's SSRF allow-list, which admits only
+    https on port 443 of a listed host (#318): this one keeps a walk on the node it started
+    on. A ``links.next`` cursor may only advance within the same web origin as the listing —
+    the port is part of that origin, so a ``next`` that only changes the port is refused.
+    It is port-agnostic on purpose (the adapters take any injected ``Fetch``): the 443 rule
+    belongs to the client, not here. The URL is read by ``openvc_ebsi._url.read_origin``,
+    the reader the client's guard uses too.
 
     A URL with no origin to compare — an out-of-range or non-numeric port, a broken IPv6
     literal — raises a typed :class:`MalformedRegistryResponse`, never a bare
@@ -98,17 +113,13 @@ def _origin(url: str) -> str:
     connect ``:0`` to 443, so refusing it is stricter than the client, and fails closed."""
     if len(url) > _MAX_URL_LENGTH:
         raise MalformedRegistryResponse("registry URL is too long")
-    if not (url.isascii() and url.isprintable()) or " " in url:
-        raise MalformedRegistryResponse("registry URL is not visible ASCII")
     try:
-        p = urlparse(url)                 # raises on a broken IPv6 literal
-        port = p.port                     # raises on a bad port
-    except ValueError as exc:
-        raise MalformedRegistryResponse("registry URL does not parse") from exc
-    scheme = p.scheme.lower()
-    if port is None:                      # `is None`: port 0 is falsy, not absent
-        port = _DEFAULT_PORTS.get(scheme)
-    return f"{scheme}://{(p.hostname or '').lower()}:{'' if port is None else port}"
+        scheme, host, port = read_origin(url)
+    except UrlNotVisibleAscii:
+        raise MalformedRegistryResponse("registry URL is not visible ASCII") from None
+    except UrlDoesNotParse as exc:
+        raise MalformedRegistryResponse("registry URL does not parse") from exc.__cause__
+    return f"{scheme}://{host}:{'' if port is None else port}"
 
 
 def _on_origin(url: str, origin: str) -> bool:
@@ -160,6 +171,72 @@ def _require_did_ebsi(did: object) -> str:
     return exact
 
 
+# The query parameter that selects a registry instance on a Core API v1 read.
+_CONTRACT_ADDRESS_PARAM = "contractAddress"
+# What a configured contract address may be: ASCII letters, digits, ``.``, ``_`` and ``-``,
+# 1 to 128 of them. Wide on purpose: the OpenAPI contract that defines the format could not
+# be read (gitlab.com answered 503), and every value the nodes publish on ``/<registry>/details``
+# is ``0x`` and 40 hexadecimal digits, which fits. What matters here is the negative: none of
+# ``/ ? # & = %`` or a space can reach the URL, so configuration cannot reshape the path or
+# add a parameter. ``fullmatch``, never ``match`` + ``$`` (``$`` accepts a trailing newline).
+_CONTRACT_ADDRESS = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def _require_contract_address(value: object) -> str:
+    """*value*, if it can be a ``contractAddress``; else :class:`ValueError`, as for an
+    unknown adapter version. Configuration, not a registry response, so a bad value is a
+    programming error and not a typed registry failure. An exact ``str`` is returned
+    (``str.__str__``, as in :func:`_require_did_ebsi`): the text checked is the text put in
+    the URL, whatever a ``str`` subclass overrides."""
+    if not isinstance(value, str):
+        raise ValueError(f"contract_address must be a str, not {type(value).__name__}")
+    exact = str.__str__(value)
+    if not _CONTRACT_ADDRESS.fullmatch(exact):
+        raise ValueError(
+            "contract_address must be 1 to 128 ASCII letters, digits, '.', '_' or '-': "
+            f"{safe_repr(exact)}")
+    return exact
+
+
+def _on_contract_address(url: str, address: str) -> str:
+    """*url*, a link the registry handed out, bound to the configured registry instance.
+
+    The nodes do not echo ``contractAddress`` in ``self``, ``links``, ``attributes`` or
+    ``href`` (recorded, ``tests/fixtures/ebsi/core-v1/contract-address/``), so a followed
+    link names none and a node would read it against its *default* instance: a walk
+    configured for another one would mix two. A link that names none therefore gets the
+    configured address as its last query parameter; one that names the configured address,
+    spelled exactly ``contractAddress``, is left as it is; one that names another is
+    :class:`MalformedRegistryResponse`. A query parameter counts as naming the instance
+    when its percent-decoded name, case-folded, *contains* ``contractaddress``, so these are
+    all refused rather than read as some other parameter: another case, a percent-encoded
+    name, a repeat, a bracket suffix (``contractAddress[]``, ``contractAddress[0]``) and a
+    prefix or suffix on the name (``contractAddress.x``, a trailing space, ``%00``). A ``;``
+    anywhere in the query is refused too, whatever the query names: a server that reads it as
+    a separator would see a parameter this function does not. That is the list of spellings
+    covered, not a claim about every way a server may read a name; the configured address is
+    also on the issuer URL, and the node is the one registry the walk is already pinned to.
+    The query is otherwise kept exactly as the node wrote it. Called only on a URL that
+    :func:`_origin` has already accepted, so it is visible ASCII, short and parseable."""
+    parts = urlsplit(url)
+    if ";" in parts.query:
+        raise MalformedRegistryResponse(
+            "registry link query uses ';', so a contract address in it cannot be told apart")
+    needle = _CONTRACT_ADDRESS_PARAM.casefold()
+    named = [(name, value) for name, value in parse_qsl(parts.query, keep_blank_values=True)
+             if needle in name.casefold()]
+    if not named:
+        query = f"{parts.query}&" if parts.query else ""
+        return urlunsplit(parts._replace(query=f"{query}{_CONTRACT_ADDRESS_PARAM}={address}"))
+    for name, value in named:
+        if name != _CONTRACT_ADDRESS_PARAM or value != address:
+            raise MalformedRegistryResponse(
+                f"registry link names contract address {safe_repr(value)} as "
+                f"{safe_repr(name)}, not the configured {safe_repr(address)} as "
+                f"{_CONTRACT_ADDRESS_PARAM}")
+    return url
+
+
 def _flatten_accredited_for(accredited_for: Any) -> tuple[str, ...]:
     """The credential types an accreditation authorises.
 
@@ -202,6 +279,34 @@ class DidRegistryV5(DidRegistryAdapter):
 
     def identifiers_url(self, base: str, did: str) -> str:
         return f"{base}/did-registry/{self.version}/identifiers/{did}"
+
+    def parse_did_document(self, raw: dict[str, Any]) -> DidDocument:
+        return parse_did_document(raw)              # shared W3C parser (core)
+
+
+class DidRegistryCoreV1(DidRegistryAdapter):
+    """The EBSI Core API v1 DID Registry. The path is ``/v1/did-registry/identifiers/{did}``
+    on the *answering node's own origin*, so ``base`` is a bare node origin and the ``/v1``
+    belongs to this adapter. The registered name is ``"core-v1"``, the path segment is
+    ``v1``: unlike its siblings this adapter never interpolates ``self.version``.
+
+    ``contract_address`` selects a registry instance (``?contractAddress=``); omitted, the
+    node's environment default is read. It comes from configuration only, never from a
+    response, a link or a token; see :func:`_require_contract_address` for what it may be.
+    Two adapters with different addresses build different URLs, so a client's URL-keyed
+    cache never serves one's document to the other. The registry's own address is the one
+    its ``/did-registry/details`` publishes (the Trusted Issuers Registry has another)."""
+    version = "core-v1"
+
+    def __init__(self, *, contract_address: str | None = None) -> None:
+        self._contract_address = (
+            None if contract_address is None else _require_contract_address(contract_address))
+
+    def identifiers_url(self, base: str, did: str) -> str:
+        url = f"{base}/v1/did-registry/identifiers/{did}"
+        if self._contract_address is None:
+            return url
+        return f"{url}?{_CONTRACT_ADDRESS_PARAM}={self._contract_address}"
 
     def parse_did_document(self, raw: dict[str, Any]) -> DidDocument:
         return parse_did_document(raw)              # shared W3C parser (core)
@@ -282,10 +387,13 @@ class TirV4(TirAdapter):
         return _flatten_accredited_for(subject.get("accreditedFor"))
 
 
-class TirV5(TirAdapter):
-    """v5: issuer carries `hasAttributes`; attributes come as {id, href} and the
-    body lives one fetch deeper, in a revision. Two+ calls, different shape."""
-    version = "v5"
+class _TirAttributeWalk(TirAdapter):
+    """The multi-hop attribute walk of the issuer response shape ``{did, hasAttributes,
+    attributes}`` -> a paginated ``{items: [{id, href}]}`` listing -> one attribute per
+    ``href``. A version's adapter inherits it and supplies only ``version`` and
+    ``issuer_url``; the origin pin, the caps and the typed errors are written once, here.
+    Private on purpose: callers select an adapter by version (``tir_adapter``), never by
+    this class."""
 
     # A registry with many accreditations paginates `/attributes`; these bound the walk
     # so a registry that keeps handing out a `next` cursor — or one giant page — can
@@ -293,8 +401,16 @@ class TirV5(TirAdapter):
     _MAX_ATTRIBUTE_PAGES = 50
     _MAX_ATTRIBUTE_ITEMS = 1000
 
-    def issuer_url(self, base: str, did: str) -> str:
-        return f"{base}/trusted-issuers-registry/{self.version}/issuers/{did}"
+    def _default_attributes_url(self, base: str, did: str) -> str:
+        """The attributes listing of *did*, for an issuer response that names none."""
+        return self.issuer_url(base, did) + "/attributes"
+
+    def _follow(self, url: str) -> str:
+        """The URL to fetch for a link the registry handed out (``attributes``, an item
+        ``href``, ``links.next``). Called only on a URL already pinned to the listing's
+        origin, so it is visible ASCII and parses. The identity here; a version whose links
+        must stay on one configured registry instance overrides it."""
+        return url
 
     def _iter_attribute_items(self, attributes_url: str, fetch: Fetch) -> Iterator[dict[str, Any]]:
         """Yield every attribute-listing item across EBSI's paginated `/attributes`.
@@ -341,7 +457,8 @@ class TirV5(TirAdapter):
                 break
             links = page.get("links")
             nxt = links.get("next") if isinstance(links, dict) else None
-            url = nxt if isinstance(nxt, str) and nxt and _on_origin(nxt, origin) else None
+            url = (self._follow(nxt)
+                   if isinstance(nxt, str) and nxt and _on_origin(nxt, origin) else None)
 
     def parse_issuer(self, raw: Any, *, base: str, did: str, fetch: Any,
                      decode: Any) -> IssuerRecord:
@@ -351,35 +468,49 @@ class TirV5(TirAdapter):
         if has_attrs:
             # ADR-0001 D6: the v5 issuer response carries the attributes URL in its
             # body (HATEOAS); follow it rather than reconstructing the path.
-            # The HTTP client allow-list is hostname-only; `links.next` is already
-            # pinned to scheme://host:port. The same pin must apply to `attributes`
-            # and each `href` or a compromised body can pivot to another port on
-            # an allow-listed EBSI host (#172). An `attributes` URL that does not
+            # The HTTP client allow-list admits only port 443 of a listed host (#318),
+            # but a walk must also stay on the node it started on, so `links.next` is
+            # pinned to scheme://host:port. The same pin applies to `attributes`
+            # and each `href` or a compromised body can pivot to another node of
+            # an allow-list (#172). An `attributes` URL that does not
             # parse raises from `_origin`; an `href` or `next` that does not parse is
             # off-origin, so it is skipped (#243).
             listing_origin = _origin(self.issuer_url(base, did))
             raw_attrs = raw.get("attributes")
             if not raw_attrs:
-                attributes_url = self.issuer_url(base, did) + "/attributes"
+                attributes_url = self._default_attributes_url(base, did)
             elif isinstance(raw_attrs, str) and _origin(raw_attrs) == listing_origin:
                 attributes_url = raw_attrs
             else:
                 raise MalformedRegistryResponse(
                     "TIR attributes URL is off the listing origin")
-            for item in self._iter_attribute_items(attributes_url, fetch):
+            for item in self._iter_attribute_items(self._follow(attributes_url), fetch):
                 href = item.get("href")
                 if not isinstance(href, str) or not href:
                     continue
                 if not _on_origin(href, listing_origin):
                     continue
-                revision = _require_object(fetch(href), "TIR attribute revision")  # v5 hop
+                revision = _require_object(                      # v5 hop
+                    fetch(self._follow(href)), "TIR attribute revision")
                 # v5 nests the accreditation under `attribute`: the signed VC-JWT
                 # is `attribute.body`, and issuerType/tao/rootTao sit on the
                 # `attribute` object itself — NOT in the VC credentialSubject
                 # (whose `accreditedFor` carries the authorised types).
                 attribute = revision.get("attribute")
-                attribute = attribute if isinstance(attribute, dict) else {}
+                if not isinstance(attribute, dict):
+                    # a shape check: a revision with no attribute object is malformed, not an
+                    # empty attribute. It does not remove the wildcard: an attribute object with
+                    # no body, or a body whose claims name no `accreditedFor`, is still an
+                    # accreditation with no type restriction, which single-level trust accepts
+                    # for any credential (its documented policy, `evaluate_issuer_trust`);
+                    # recursive trust refuses it unless a verifiable token backs it
+                    raise MalformedRegistryResponse(
+                        "TIR attribute revision has no attribute object")
                 body = attribute.get("body")
+                if body is not None and not isinstance(body, str):
+                    # the proof suite's `decode` takes a token; a number or an array would
+                    # leave it as a bare AttributeError
+                    raise MalformedRegistryResponse("TIR attribute body is not a string")
                 claims = decode(body) if body else {}
                 vc = claims.get("vc") if isinstance(claims, dict) else None
                 subject = vc.get("credentialSubject") if isinstance(vc, dict) else None
@@ -395,12 +526,67 @@ class TirV5(TirAdapter):
         return IssuerRecord(did=did, has_attributes=has_attrs, accreditations=tuple(accs))
 
 
+class TirV5(_TirAttributeWalk):
+    """v5: issuer carries `hasAttributes`; attributes come as {id, href} and the
+    body lives one fetch deeper, in a revision. Two+ calls, different shape."""
+    version = "v5"
+
+    def issuer_url(self, base: str, did: str) -> str:
+        return f"{base}/trusted-issuers-registry/{self.version}/issuers/{did}"
+
+
+class TirCoreV1(_TirAttributeWalk):
+    """The EBSI Core API v1 Issuers Registry: the v5 read shapes at
+    ``/v1/issuers-registry/issuers/{did}`` on the answering node's own origin. The issuer
+    response, the paginated ``attributes`` listing and each ``href`` keep the v5 shape (one
+    new field on the attribute, ``parentAttributeId``, which nothing reads), so the walk, its
+    origin pin and its caps are the shared ones; ``self``, ``links``, ``attributes`` and
+    ``href`` name the host of the node that answered, which is why the pin is to the
+    listing's own origin and never to a fixed host. ``Accreditation.attribute_id`` is the
+    list item's ``id``, which is not the attribute's ``hash``.
+
+    ``contract_address`` is this registry's own address (its ``/issuers-registry/details``),
+    not the DID Registry's. Configured, it is on the issuer URL and on every link the walk
+    follows, and a link that names another is refused, so a walk never mixes registry
+    instances."""
+    version = "core-v1"
+
+    def __init__(self, *, contract_address: str | None = None) -> None:
+        self._contract_address = (
+            None if contract_address is None else _require_contract_address(contract_address))
+
+    def _issuer_path(self, base: str, did: str) -> str:
+        return f"{base}/v1/issuers-registry/issuers/{did}"
+
+    def _with_query(self, url: str) -> str:
+        # `url` is built here from a path with no query, so the query is appended last
+        if self._contract_address is None:
+            return url
+        return f"{url}?{_CONTRACT_ADDRESS_PARAM}={self._contract_address}"
+
+    def issuer_url(self, base: str, did: str) -> str:
+        return self._with_query(self._issuer_path(base, did))
+
+    def _default_attributes_url(self, base: str, did: str) -> str:
+        # the suffix goes on the path, then the query: `issuer_url(...) + "/attributes"`
+        # would put it after the query
+        return self._with_query(self._issuer_path(base, did) + "/attributes")
+
+    def _follow(self, url: str) -> str:
+        if self._contract_address is None:
+            return url
+        return _on_contract_address(url, self._contract_address)
+
+
 # --------------------------------------------------------------------------- #
 # Version selection — the only place a version string maps to an adapter
 # --------------------------------------------------------------------------- #
 
-DID_REGISTRY_ADAPTERS: dict[str, type[DidRegistryAdapter]] = {"v5": DidRegistryV5}
-TIR_ADAPTERS: dict[str, type[TirAdapter]] = {"v4": TirV4, "v5": TirV5}
+# "core-v1", not "v1": the Core API's name must not collide with the older per-service
+# vocabulary ("trusted-contracts-registry/v1"). The defaults below stay "v5", the legacy lane.
+DID_REGISTRY_ADAPTERS: dict[str, type[DidRegistryAdapter]] = {
+    "v5": DidRegistryV5, "core-v1": DidRegistryCoreV1}
+TIR_ADAPTERS: dict[str, type[TirAdapter]] = {"v4": TirV4, "v5": TirV5, "core-v1": TirCoreV1}
 
 
 def did_registry_adapter(version: str = "v5") -> DidRegistryAdapter:
@@ -429,7 +615,7 @@ class DidEbsiResolver:
         http_get: Fetch,
         decode_jwt: DecodeJwt,
         *,
-        base: str = "https://api-pilot.ebsi.eu",
+        base: str = LEGACY_PILOT_BASE,
         didr: DidRegistryAdapter | None = None,
         tir: TirAdapter | None = None,
     ) -> None:
@@ -511,13 +697,13 @@ class DidEbsiResolver:
 # --------------------------------------------------------------------------- #
 # Adding a new version later, in full:
 #
-#   class TirV6(TirAdapter):
-#       version = "v6"
+#   class TirV6(_TirAttributeWalk):          # the shared walk, if the shapes still fit;
+#       version = "v6"                       # else subclass TirAdapter and write parse_issuer
 #       def issuer_url(self, base, did): ...
-#       def parse_issuer(self, raw, *, base, did, fetch, decode): ...
 #       # def response_did(self, raw): ...   # only if the response's own DID moves
 #
-#   TIR_ADAPTERS["v6"] = TirV6
+#   TIR_ADAPTERS["v6"] = TirV6               # a name that collides with no other lane
+#                                            # ("core-v1", not "v1")
 #
-# ...plus a golden fixture test. Nothing else in openvc changes.
+# ...plus a golden fixture test, recorded from the real service. Nothing else in openvc changes.
 # --------------------------------------------------------------------------- #
