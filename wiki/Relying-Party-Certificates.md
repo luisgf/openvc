@@ -133,14 +133,18 @@ Two known spec defects are absorbed rather than inherited: `intermediary` is spe
 
 ### `crit`: the one lane that understands two extensions
 
-Every other JOSE lane in openvc processes no extension header parameter and refuses any
-JWS `crit` (RFC 7515 §4.1.11). The WRPRC lane has to be the exception, because the
-registrars that issue WRPRCs today follow JAdES V1.1.1, which required every
-non-registered header parameter to be listed there: the Hopae registrar’s tokens carry
-`"crit": ["sigT", "b64"]`. (As issue #134 reads TS 119 182-1, V1.2.1 dropped that
-requirement and forbids `sigT` in favour of the header `iat`; accepting it is
-interoperability with what producers actually emit, not an endorsement.) So this lane
-understands **exactly two names, under narrow rules, and refuses everything else**:
+openvc's other JOSE lanes split in two. The shared check (VC-JWT, SD-JWT VC, KB-JWT,
+VP-JWT, the status-list token, OID4VCI key proofs) processes no extension header parameter
+and refuses any JWS `crit` (RFC 7515 §4.1.11). The two JAdES lanes, the LoTE verifier and
+this one, allow-list the JAdES set `alg`, `typ`, `x5c`, `iat` and refuse the rest. The WRPRC
+lane alone goes further, because the registrars that issue WRPRCs today follow JAdES
+V1.1.1, which required every non-registered header parameter to be listed there: the Hopae
+registrar’s tokens carry `"crit": ["sigT", "b64"]`. (That is issue #134’s reading of
+TS 119 182-1: V1.1.1 required the listing, and V1.2.1 dropped that requirement and forbids
+`sigT` in favour of the header `iat`. Accepting it is interoperability with what
+producers actually emit, not an endorsement.) So this lane
+understands **exactly two names beyond that set, under narrow rules, and refuses
+everything else**:
 
 | rule | what is enforced |
 |---|---|
@@ -153,10 +157,12 @@ understands **exactly two names, under narrow rules, and refuses everything else
 `sigT` is surfaced as `reg.claimed_signing_time` and is **never used for a validity
 decision**: it is the registrar’s own claim of when it signed, with no timestamp token
 behind it. Validity comes from the payload’s `iat` / `exp` / `nbf` and the certificate
-chain, as before. The shared `reject_unknown_crit` (VC-JWT, SD-JWT VC, KB-JWT, status-list
-token, VP-JWT, OID4VCI key proofs) and the LoTE verifier are unchanged and still refuse
-both names; `tests/test_jws_crit.py` pins that the exception is this one lane. The COSE
-(CWT) form is untouched.
+chain, as before. The shared check and the LoTE verifier are unchanged in behaviour and
+still refuse both names; `tests/test_jws_crit.py` pins that the exception is this one lane.
+
+All of this is the **JWT form**. The COSE (CWT) form is untouched: a text-labelled `sigT`,
+`b64` or `crit` entry in a CWT’s protected header is not interpreted or value-checked
+(a critical COSE label still fails closed), and `claimed_signing_time` is `None` for a CWT.
 
 ### What the first real tokens settled, and what they did not
 

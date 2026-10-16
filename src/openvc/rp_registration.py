@@ -47,20 +47,28 @@ that JAdES clause 5.1.11 mandates a *header* ``iat`` for signatures made after
 the header ``iat`` is surfaced but **not** required — the security-bearing timestamps
 are the payload's.
 
-**``crit`` — the one lane that understands two extensions.** Every other JOSE lane in
-this library processes no extension header parameter and refuses any ``crit``
-(:func:`openvc.proof._verify_common.reject_unknown_crit`). This lane cannot, because
-the registrars that emit WRPRCs today follow JAdES V1.1.1, which required every
-non-registered header parameter to be listed there: the two Hopae-registrar tokens in
-``tests/fixtures/rp_registration`` carry ``"crit": ["sigT", "b64"]``. So this lane
-understands exactly two names beyond ``alg``/``typ``/``x5c``/``iat``, each under a
-narrow rule, and nothing else: ``b64`` only as the JSON boolean ``true`` (RFC 7797 —
-``false`` is an *unencoded* payload, a different signing input, and is refused) and
-``sigT`` only as an RFC 3339 UTC time, which is surfaced as
-:attr:`RelyingPartyRegistrationCertificate.claimed_signing_time` and never used for a
-validity decision. The list must be a non-empty array of unique strings, each name in
-it must be present in the header, and a ``b64`` or ``sigT`` value is checked whether or
-not ``crit`` names it. Any other critical name fails closed. The decision and its
+**``crit`` — the one lane that understands two extensions.** The library's other JOSE
+lanes split in two. The shared check
+(:func:`openvc.proof._verify_common.reject_unknown_crit`, behind VC-JWT, SD-JWT VC,
+KB-JWT, VP-JWT, the status-list token and the OID4VCI key proofs) processes no
+extension header parameter and refuses any ``crit``. The two JAdES lanes — this one and
+the LoTE verifier (:mod:`openvc.trustlist.lote`) — allow-list the JAdES set
+``alg``/``typ``/``x5c``/``iat`` and refuse the rest. Only this lane goes further,
+because the registrars that emit WRPRCs today follow JAdES V1.1.1 (as issue #134 reads
+TS 119 182-1), which required every non-registered header parameter to be listed
+there: the two Hopae-registrar tokens in ``tests/fixtures/rp_registration`` carry
+``"crit": ["sigT", "b64"]``. So this lane understands exactly two names beyond
+``alg``/``typ``/``x5c``/``iat``, each under a narrow rule, and nothing else: ``b64``
+only as the JSON boolean ``true`` (RFC 7797 — ``false`` is an *unencoded* payload, a
+different signing input, and is refused) and ``sigT`` only as an RFC 3339 UTC time,
+which is surfaced as :attr:`RelyingPartyRegistrationCertificate.claimed_signing_time`
+and never used for a validity decision. The list must be a non-empty array of unique
+strings, each name in it must be present in the header, and a ``b64`` or ``sigT`` value
+is checked whether or not ``crit`` names it. Any other critical name fails closed.
+All of this is the **JWT form** only: a CWT's COSE protected header is read for ``alg``,
+``typ`` and ``x5chain`` and a critical COSE label fails closed (:mod:`openvc.cose`), but
+a text-labelled ``sigT`` / ``b64`` / ``crit`` entry in it is neither interpreted nor
+value-checked, and ``claimed_signing_time`` is ``None`` for a CWT. The decision and its
 limits are recorded in the CHANGELOG (v1.36.0).
 
 Two entry points, mirroring the library's trusted/untrusted split (and
@@ -143,8 +151,9 @@ _BMI_TYP = "rc-rp+jwt"
 # The registrars' real tokens also list `sigT` (JAdES V1.1.1 claimed signing time) and
 # `b64` (RFC 7797) there (issue #134). Those two are understood, under the narrow value
 # rules of `_UNDERSTOOD_PARAMS` below, by THIS LANE ONLY: the shared
-# `reject_unknown_crit` and the LoTE verifier keep their own sets, and a test pins that
-# both still refuse them.
+# `reject_unknown_crit` (which refuses any `crit`) and the LoTE verifier (which
+# allow-lists the JAdES set above, as this lane did before #134) keep their own rules,
+# and a test pins that both still refuse `sigT` and `b64`.
 _JADES_CRIT = frozenset({"alg", "typ", "x5c", "iat"})
 
 # RFC 3339 `date-time` restricted to UTC `Z`, the JAdES V1.1.1 `sigT` form. ASCII digits
@@ -242,10 +251,15 @@ class RelyingPartyRegistrationCertificate:
         registrar's key does vouch for it, but it is a self-asserted time with no
         timestamp token behind it: nothing in this module bases a validity decision on
         it (the security-bearing timestamps are the payload's ``iat`` / ``exp`` / ``nbf``
-        and the signing certificate's own validity). JWT form only — a CWT carries none.
+        and the signing certificate's own validity). JWT form only: ``sigT`` is a JAdES
+        JOSE header parameter with no COSE meaning, so a CWT yields ``None`` whatever its
+        protected header holds (a text-labelled entry there is not interpreted or
+        value-checked at all).
 
         The value was checked when the token was read; a header built by hand with a
         malformed ``sigT`` yields ``None`` here rather than raising."""
+        if self.form != "jwt":
+            return None
         value = self.header.get("sigT")
         try:
             return _parse_sig_t(value) if value is not None else None
@@ -509,10 +523,11 @@ def _reject_unknown_crit(header: Mapping[str, Any]) -> None:
     extension it does not process.
 
     The plain-JWS lanes (:func:`openvc.proof._verify_common.reject_unknown_crit`)
-    process no extensions at all and so reject ``crit`` outright. This lane cannot: a
-    JAdES V1.1.1-era producer listed its non-registered header parameters there, so the
-    check allow-lists exactly the parameters this verifier *understands*
-    (:data:`_KNOWN_CRIT`) and fails closed on the rest. ``crit`` must be a non-empty
+    process no extensions at all and so reject ``crit`` outright. The JAdES lanes cannot
+    (this one and the LoTE verifier): a JAdES V1.1.1-era producer listed its
+    non-registered header parameters there, so the check allow-lists exactly the
+    parameters this verifier *understands* (:data:`_KNOWN_CRIT`, which adds ``sigT`` and
+    ``b64`` to the LoTE set) and fails closed on the rest. ``crit`` must be a non-empty
     array of **unique** strings, and every name in it must be present in the header."""
     from .proof._verify_common import safe_repr
 
@@ -601,7 +616,9 @@ def _cwt_envelope(data: bytes) -> tuple[dict[str, Any], dict[str, Any], Any]:
 
     The COSE lane's own hardening applies: ``alg`` is read from the **protected** header
     only (never from the unsigned one), and an unhandled critical label fails closed
-    (:mod:`openvc.cose`)."""
+    (:mod:`openvc.cose`). The JOSE-only checks of :func:`_jwt_envelope` — the JWS ``crit``
+    allow-list and the ``sigT`` / ``b64`` value rules — do not apply: a text-labelled
+    entry in the COSE protected header is carried through to ``header`` unread."""
     from . import cbor, cose
 
     try:

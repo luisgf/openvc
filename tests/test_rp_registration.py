@@ -437,6 +437,8 @@ def test_b64_true_is_fine_without_being_listed(registrar):
 @pytest.mark.parametrize("sigt", [
     "", "yesterday", "2026-05-31", "2026-05-31T23:00:00", "2026-05-31T23:00:00+00:00",
     "2026-05-31T23:00:00-00:00", "2026-05-31t23:00:00z", "2026-05-31 23:00:00Z",
+    # each letter's case on its own: both lower-case above, then only `z`, then only `t`
+    "2026-05-31T23:00:00z", "2026-05-31t23:00:00Z",
     "2026-05-31T23:00:00Z ", " 2026-05-31T23:00:00Z", "2026-05-31T23:00:00Z\n",
     "2026-02-29T23:00:00Z", "2026-05-31T23:60:00Z", "2026-05-31T23:00:60Z",
     "2026-05-31T24:00:00Z", "2026-00-10T00:00:00Z", "0000-05-31T23:00:00Z",
@@ -486,6 +488,24 @@ def test_claimed_signing_time_is_none_without_sigt_and_for_the_cwt_form(registra
     assert _verified(registrar, None).claimed_signing_time is None
     assert parse_rp_registration_certificate(cwt_wrprc(claims(), chain, key)
                                              ).claimed_signing_time is None
+
+
+@pytest.mark.parametrize("sigt", [_SIG_T, "garbage", 5, None])
+def test_a_cwt_has_no_claimed_signing_time_whatever_its_protected_header_holds(
+        registrar, sigt):
+    # `sigT` is a JOSE/JAdES header parameter with no COSE meaning: the CWT envelope does
+    # not read or value-check it, and the property is gated on the form, not on the
+    # header. The raw entry is still carried through in `header`, so a None here is the
+    # gate at work and not an absent key.
+    root, chain, key = registrar
+    token = cwt_wrprc(claims(), chain, key, protected={"sigT": sigt})
+    reg = parse_rp_registration_certificate(token)
+    assert reg.form == "cwt"
+    assert reg.header["sigT"] == sigt
+    assert reg.claimed_signing_time is None
+    verified = verify_rp_registration_certificate(token, trust_anchors=[root], now=_AT)
+    assert verified.header["sigT"] == sigt
+    assert verified.claimed_signing_time is None
 
 
 def test_claimed_signing_time_never_raises_on_a_hand_built_header(registrar):

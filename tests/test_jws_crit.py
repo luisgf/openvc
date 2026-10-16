@@ -10,7 +10,10 @@ paths already took this stance; these tests pin the JWS lanes to it.
 (``openvc.rp_registration``) understands exactly ``sigT`` and ``b64: true`` in ``crit``,
 because the real registrars' tokens list them. The last section pins that the exception
 is *only* that lane: every other lane still refuses a ``crit`` naming ``sigT`` or ``b64``,
-with a header that is otherwise perfectly valid for the WRPRC lane.
+with a header that is otherwise perfectly valid for the WRPRC lane. (The LoTE verifier is
+the other JAdES lane: it allow-lists ``alg`` / ``typ`` / ``x5c`` / ``iat`` in ``crit``
+rather than refusing any ``crit``, and so accepts a ``crit`` naming those; it is pinned
+here for ``sigT`` and ``b64`` only.)
 """
 import base64
 import json
