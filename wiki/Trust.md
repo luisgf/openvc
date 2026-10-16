@@ -157,6 +157,27 @@ with for_ebsi("pilot") as http:
     print(result.trusted, result.issuer)
 ```
 
+On the Core API v1 the node is yours to choose (and to verify), so the lane is built
+explicitly:
+
+<!-- docs: no-run -->
+```python
+from openvc.proof.vc_jwt import VcJwtProofSuite
+from openvc_ebsi.http import EbsiHttpClient, HttpError
+from openvc_ebsi.versioning import DidEbsiResolver, DidRegistryCoreV1, TirCoreV1
+
+suite = VcJwtProofSuite()
+# `node_origin` is one verified node's bare origin ("https://<host>"), `node_host` its host
+with EbsiHttpClient(allowed_hosts={node_host}) as http:
+    resolver = DidEbsiResolver(
+        http.get_json, decode_jwt=suite.peek_claims, base=node_origin,
+        didr=DidRegistryCoreV1(), tir=TirCoreV1())
+    try:
+        record = resolver.issuer_record(issuer_did)
+    except HttpError as exc:
+        print(exc.status, exc.problem_type)   # e.g. 404 and an opaque `type`, or None
+```
+
 - **Read-only by design**: resolve DIDs, read the registries. Onboarding /
   writing (JSON-RPC + OID4VP) is out of scope.
 - **SSRF-guarded**: the EBSI HTTP client is https-only with a host
@@ -185,7 +206,35 @@ with for_ebsi("pilot") as http:
   issuer's status-list origin. The v5 Trusted Issuers Registry `/attributes` listing
   is paginated, and openvc walks every page (bounded, and immune to EBSI's
   self-referential `next` cursor) so an issuer with many accreditations is read in full.
+- **Two lanes, selected together**: the legacy pilot (one API per service,
+  `"v5"`, the default of `did_registry_adapter()` / `tir_adapter()`, host
+  `api-pilot.ebsi.eu`) and the **EBSI Core API v1** (`"core-v1"`:
+  `DidRegistryCoreV1` and `TirCoreV1`, paths `/v1/did-registry/...` and
+  `/v1/issuers-registry/...` on the answering *node's own origin*, so every
+  `self`, `links` and `href` names that node). A Core v1 caller passes the node's
+  bare origin as `base` and `didr` and `tir` **together**, over a client whose
+  allow-list holds that node's host; nothing infers one from the others, and
+  `for_ebsi(...)` still builds a client for the legacy hosts. The allow-list should come from a
+  node list you have *verified* (the Trusted Nodes List is signed), not from
+  hostnames pasted off a web page: issue
+  [#316](https://github.com/luisgf/openvc/issues/316) has the recipe, and
+  [ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)
+  the reasoning (a signed list authenticates the *operator*, not the content a node
+  serves). `contract_address="0x..."` on either adapter selects a registry instance
+  (each registry has its own address, published on its `/details`); a walk
+  configured with one stays on it.
+- **Core v1 error types**: an error answer of `application/problem+json` (RFC 9457)
+  puts its `type` on `HttpError.problem_type` (`None` for any other answer, a
+  `text/html` firewall page included, and for a `type` that is not 1 to 256 visible
+  ASCII characters). It is opaque: match on it, never on a message, and do not
+  expect a `urn:ebsi:problems:` slug on every error (the recorded 406 says
+  `about:blank`). An error body is read at most 16 KiB; a larger one is dropped
+  with its connection.
 - **Version drift, contained**: every EBSI API version specific lives behind
-  one adapter in `openvc_ebsi.versioning`; the trust logic never sees wire
-  formats. Conformance is pinned by recorded pilot fixtures, plus an opt-in
-  live smoke test (`OPENVC_EBSI_LIVE=1 pytest`).
+  one adapter in `openvc_ebsi.versioning` and the two TIR lanes share one walk, so
+  the origin pin and the caps are written once; the trust logic never sees wire
+  formats. Conformance is pinned by recorded fixtures for both lanes: the pilot
+  (`tests/fixtures/ebsi/`) and the Core API v1 (`tests/fixtures/ebsi/core-v1/`, two
+  preprod nodes and the one-issuer production seed, with a hash manifest), plus an
+  opt-in live smoke test (`OPENVC_EBSI_LIVE=1 pytest`, today against the legacy
+  pilot host).

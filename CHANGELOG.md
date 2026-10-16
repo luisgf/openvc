@@ -4,6 +4,169 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.0] — unreleased
+
+### Added
+
+- **EBSI Core API v1 adapters: `DidRegistryCoreV1` and `TirCoreV1`**
+  ([#321](https://github.com/luisgf/openvc/issues/321); design:
+  [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)). `openvc_ebsi` could
+  not read a single Core v1 node: the DID Registry and the Issuers Registry moved to
+  `/v1/did-registry/identifiers/{did}` and `/v1/issuers-registry/issuers/{did}` on the
+  *answering node's own origin*, and every `self`, `links`, `attributes` and `href` in a
+  response names that node's host. Both adapters are registered as **`"core-v1"`**
+  (`did_registry_adapter("core-v1")`, `tir_adapter("core-v1")`), not `"v1"`, which would
+  collide with the older per-service `trusted-contracts-registry/v1` vocabulary. The
+  defaults stay `"v5"`, so does `DidEbsiResolver`'s default `base`, and `EBSI_HOSTS` /
+  `for_ebsi` are untouched: a Core v1 caller passes the node origin as `base`, and `didr`
+  and `tir`, together, over a client that allow-lists that node's host (a node-based
+  constructor is a later issue, #324 and #325). The `/v1` belongs to the adapter, and the
+  path never carries the registry key `core-v1`. The v5 lane (`DidRegistryV5`, `TirV4`,
+  `TirV5`) and its fixtures are unchanged.
+  - **One shared walk.** The v5 attribute walk (the page and item caps,
+    `_iter_attribute_items`, `parse_issuer`) moved, as code motion alone, into a private
+    base that `TirV5` and `TirCoreV1` both inherit, so the origin pin (host and port), the
+    caps and the typed errors are written once; `TirCoreV1` is not a subclass of `TirV5`.
+    `Accreditation.attribute_id` stays the list item's `id`: the recordings show that it is
+    not the attribute's `hash` (`0dc6a111...` against `a1c4d9e9...`), and the repo's own v5
+    recording shows the same.
+  - **`contract_address`** (keyword only, on both adapters, default `None`). Core v1 really
+    selects a registry instance by the address of its contract (`?contractAddress=`; the
+    pilot ignored it), and each registry has its own: the preprod node publishes different
+    ones on `/did-registry/details` and `/issuers-registry/details`. The value comes from
+    configuration only, never from a response, a link or a token; it must be 1 to 128 of
+    `A-Z a-z 0-9 . _ -`, checked with `fullmatch` on an exact `str` (`ValueError`
+    otherwise: empty, blank, control or non-ASCII characters, any of `/ ? # & = %` or a
+    space, over-long, not a `str`), so configuration cannot reshape the path or add a
+    parameter. It is the only query component, so two resolvers with different addresses on
+    one client never share a cached document.
+  - **A configured walk stays on one registry instance.** The recorded nodes do not echo
+    `contractAddress` in `self`, `links`, `attributes` or `href`, so a followed link names
+    none and a node would read it against its *default* instance. With an address
+    configured, `TirCoreV1` adds it as the last query parameter of the `attributes` link, of
+    every `href` and of `links.next` when they name none, leaves one that names the
+    configured address, and raises `MalformedRegistryResponse` for one that names another,
+    however the parameter is spelled (case, percent-encoding, repeated). The
+    missing-`attributes` fallback is built from the path with the query last. With no
+    address configured, links are followed as written.
+- **`HttpError.problem_type`** (add-only, `None` by default). EBSI Core API v1 answers errors
+  as RFC 9457 Problem Details with a stable `type` (`urn:ebsi:problems:<slug>`; ADR-0001 D7
+  asked for it and `http.py` mapped by status alone). `get_json` now reads it from an error
+  answer and hands it over opaque: `http.py` does not know the `urn:ebsi:problems:`
+  vocabulary, and `title` and `detail` are neither read nor echoed. It is kept only when the
+  answer is **`application/problem+json`** (what the recorded 400, 404 and 406 answers
+  carry, so the gate is not widened), the body is a JSON object that passes the bounded
+  loader, and `type` is a string of 1 to 256 visible ASCII characters; otherwise `None`. A
+  node's firewall 403 is a 35 KB `text/html` page (ADR-0009) and is never read as Problem
+  Details. The parse never raises: a body that cannot be used leaves `None` and the status
+  error is raised as before. Messages and exception classes for every status are unchanged
+  (404 is `HttpNotFound`; 429 and 5xx still retry and end as `HttpTransientExhausted`, which
+  carries the last attempt's type; a corrupt gzip is still `MalformedRegistryResponse`,
+  #248). Not every Core v1 error has a slug: the recorded 406 says `about:blank`.
+- **Recorded Core API v1 vectors**, `tests/fixtures/ebsi/core-v1/` (24 recorded files, a
+  `MANIFEST.json` and a `README.md`): plain read-only GETs of 2026-10-16 with the client's
+  own `User-Agent` and `Accept`, vendored byte for byte, never edited. The preprod RootTAO
+  `did:ebsi:zmaEptEHQRAmkJnFV6ki3io` read from two nodes (`api-preprod.ebsi.grnet.gr`,
+  `api-preprod.ebsi.incm.pt`: the DID document with a `secp256k1` and a `P-256` key, the
+  issuer, the attribute list, the attribute and the first issuers page), the one-issuer
+  production seed (`api.ebsi.iti.gr`, shape only: its DID document has an empty
+  `verificationMethod`; to be replaced when real operators onboard), the
+  `application/did+json` negotiation variant, the 404 / 400 / 406 Problem Details bodies, and
+  one walk read with and without a valid `contractAddress`. The manifest records, per file,
+  the request URL, status, media type, node, retrieval time, headers sent and SHA-256. Not
+  recorded, and said so in the README: **405** (it needs a non-GET request to a read path)
+  and the OpenAPI contract (`gitlab.com` answered 503 to three attempts).
+- **Decisions taken by default, for the maintainer to confirm** (each was open in the issue
+  or the ADR; the other option is what a change would cost):
+  1. *`parentAttributeId` on the model* — Option 1: `Accreditation` is unchanged and the field
+     is only recorded in the fixtures (nothing reads it; the trust walks use `tao` and
+     `rootTao`). Option 2 would add a defaulted `parent_attribute_id: str | None = None` at
+     the end of the frozen dataclass.
+  2. *Names* (ADR open question 4) — `"core-v1"` only; `EBSI_HOSTS` and `for_ebsi` are not
+     touched (#325).
+  3. *404* (ADR open question 5) — stays `HttpNotFound` by status; `problem_type` only
+     describes it. Whether a 404 is authoritative for a node is #324's.
+  4. *`contract_address` format* — the issue's bounded token. The OpenAPI contract could not
+     be read, but every address the nodes publish is `0x` and 40 hexadecimal digits, which
+     fits. Tightening it to that form is a one-line change to the pattern; the cost is
+     rejecting any other form the contract may allow.
+  5. *A link that names no `contractAddress`* — gets the configured one (above). The other
+     option, following it bare, reads the node's default instance for every hop after the
+     first whenever the configured address differs from it.
+  6. *Bounds on the error read* — 16 KiB for the body and 256 characters for `type`.
+  7. *`TirCoreV1` takes `contract_address` too* — on the strength of the recorded 200s for
+     the issuer, attribute list and attribute read with the Issuers Registry's own address
+     (the contract itself could not be read). The other option is the DID Registry only.
+  8. *The two walk-typing fixes reach the v5 lane* — a non-string attribute `body` and a
+     revision without an `attribute` object are `MalformedRegistryResponse` on `TirV5` as
+     well, although the issue left the v5 lane as it is: the walk is shared, so "v5
+     unchanged" and "one walk" cannot both hold. The other option is a hook so that only
+     `TirCoreV1` raises, which keeps a bare `AttributeError` and an unrestricted accreditation
+     on the legacy lane.
+
+### Fixed
+
+- **`EbsiHttpClient.get_json` no longer drains an error body unbounded**
+  ([#321](https://github.com/luisgf/openvc/issues/321); it predates ADR-0009). The non-200
+  branch called `resp.read()`: no size cap and no wall-clock deadline, where the 200 branch
+  has both (`_read_capped`), so a hostile or flaky allow-listed host could send an unbounded
+  or dripping error body. It is now a bounded read (`MAX_ERROR_BODY_BYTES`, 16 KiB, within
+  the client's existing deadline); past either, the response is closed and the connection
+  dropped instead of drained, and the status error is raised as before. A body small enough
+  is read to the end, so its connection is still reused.
+- **The TIR attribute walk no longer lets a node's wrong types escape the error family**
+  (both lanes, `TirV5` and `TirCoreV1`; found while writing the fuzz tests of the new
+  adapter, it predates it). An attribute whose `body` is a number, an array, an object or a
+  boolean reached the proof suite's `decode` and raised a bare `AttributeError` (`'int'
+  object has no attribute 'isascii'`) out of `issuer_record` and `verify_ebsi_badge`; it is
+  now `MalformedRegistryResponse`.
+
+### Changed
+
+- **A TIR attribute response without an `attribute` object is `MalformedRegistryResponse`**
+  (both lanes, `TirV5` and `TirCoreV1`). It used to be read as an empty attribute, which is
+  an accreditation with no type restriction, and single-level trust
+  (`evaluate_issuer_trust`) accepts such an accreditation for any credential. A registry
+  that answers `{"did": ...}` or `{"attribute": null}` for an `href` is malformed, not
+  unrestricted; there is nothing to pass instead, the walk now stops with a typed error.
+  Recursive trust was unaffected (an accreditation with no token is refused).
+
+### Docs
+
+- `wiki/Trust.md` (EBSI section), `README.md`, the `versioning.py` module docstring and its
+  closing "adding a new version" comment name both lanes and the Core v1 footgun (select
+  `base`, `didr` and `tir` together).
+- `docs/audit/assurance.md` (the EBSI TIR coverage bullet, and section 4 entries for the
+  unbounded error-body read and the two walk-typing findings) and
+  `docs/audit/threat-model.md` (the EBSI client paragraph now covers both adapters, and R4:
+  once Core v1 nodes are allow-listed their hosts are third-party operator domains, not only
+  `*.ebsi.eu`).
+- `docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md`: this issue is listed under
+  "Proposed follow-up issues" and the recorded 400 and 406 results (and the 405 gap) are in
+  the appendix. The Status line is left to the maintainer.
+
+### Tests
+
+- **`tests/test_ebsi_core_v1.py`** (377 tests): the manifest hashes every recorded file; the
+  registry names and the defaults; the exact URLs; the `contract_address` bound (negatives
+  first, a `str` subclass included) and the cache; hostile DIDs on the Core v1 pair with zero
+  requests; wrong bodies; the origin pin per node (one node's issuer body read through
+  another node's resolver, one node's attribute list served at another's route); the
+  shared-walk guards (self-referential, off-origin and port-only `next` / `href` /
+  `attributes`, `:443` against no port, an unparseable URL, `total: true`, the page and item
+  caps) run for **both** lanes by parametrisation; the contract-address walk; the ES256K
+  RootTAO pinned as refused today (`UnsupportedAlgorithm`; `peek_claims`, the `IssuerRecord`
+  and single-level trust still work; recursive trust is `AccreditationInvalid`; #323 flips
+  it to a positive verification); the golden walk per recorded node, the cross-node
+  equality, the prod seed; Hypothesis fuzzing of the issuer, attribute list, attribute and
+  DID document responses.
+- **`tests/test_ebsi_http_problem_type.py`** (95 tests): the recorded 404 / 400 / 406 and a
+  synthetic 405 (labelled as such), the media-type gate, the bounds on `type`, unusable
+  bodies (invalid, truncated, over-deep, over the cap), a 10 MiB body read only up to the cap
+  with the response closed, the deadline, a compression bomb, a real local TLS server showing
+  that an oversized error body drops the connection and a small one keeps it, and Hypothesis
+  fuzzing of arbitrary bytes and content types.
+
 ## [1.36.0] — 2026-10-16
 
 ### Added

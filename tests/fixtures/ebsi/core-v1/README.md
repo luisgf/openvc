@@ -27,9 +27,9 @@ suite. The only two files not listed in the manifest are the manifest itself and
 - **Bodies are written exactly as received** (after HTTP transfer decoding), with no
   pretty-printing and no trailing newline added. The recorder was a scratch script that is not
   part of the repository, as the ADR's probe scripts are not.
-- **24 requests to EBSI hosts in total.** Two further attempts to read the OpenAPI contract
-  (`website/api/core/openapi.yaml`, `gitlab.com`, not an EBSI host) were answered `503` and were
-  not repeated; see "Not recorded".
+- **24 requests to EBSI hosts in total.** Three attempts to read the OpenAPI contract
+  (`website/api/core/openapi.yaml`, `gitlab.com`, not an EBSI host: the raw file, then the GitLab
+  API twice) were all answered `503` and were not tried again; see "Not recorded".
 
 ## What is in each directory
 
