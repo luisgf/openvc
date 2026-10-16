@@ -252,7 +252,7 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
     from one place, so possibly transient) completed no TCP connection; the certificate the
     production host presented did not cover its name, and none of the 45 node URLs in version
     4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a client fails
-    closed.
+    closed. `api.ebsi.eu` is not a node: no HTTP response could be obtained from it.
   - Any other name (another case, an empty string, a value that is not a string) raises
     `UnknownEbsiEnvironment`, which is also a `ValueError`.
 
