@@ -282,19 +282,19 @@ class TirV4(TirAdapter):
         return _flatten_accredited_for(subject.get("accreditedFor"))
 
 
-class TirV5(TirAdapter):
-    """v5: issuer carries `hasAttributes`; attributes come as {id, href} and the
-    body lives one fetch deeper, in a revision. Two+ calls, different shape."""
-    version = "v5"
+class _TirAttributeWalk(TirAdapter):
+    """The multi-hop attribute walk of the issuer response shape ``{did, hasAttributes,
+    attributes}`` -> a paginated ``{items: [{id, href}]}`` listing -> one attribute per
+    ``href``. A version's adapter inherits it and supplies only ``version`` and
+    ``issuer_url``; the origin pin, the caps and the typed errors are written once, here.
+    Private on purpose: callers select an adapter by version (``tir_adapter``), never by
+    this class."""
 
     # A registry with many accreditations paginates `/attributes`; these bound the walk
     # so a registry that keeps handing out a `next` cursor — or one giant page — can
     # never spin forever nor fan one verify out into unbounded revision fetches.
     _MAX_ATTRIBUTE_PAGES = 50
     _MAX_ATTRIBUTE_ITEMS = 1000
-
-    def issuer_url(self, base: str, did: str) -> str:
-        return f"{base}/trusted-issuers-registry/{self.version}/issuers/{did}"
 
     def _iter_attribute_items(self, attributes_url: str, fetch: Fetch) -> Iterator[dict[str, Any]]:
         """Yield every attribute-listing item across EBSI's paginated `/attributes`.
@@ -393,6 +393,15 @@ class TirV5(TirAdapter):
                     credential_jwt=body,
                 ))
         return IssuerRecord(did=did, has_attributes=has_attrs, accreditations=tuple(accs))
+
+
+class TirV5(_TirAttributeWalk):
+    """v5: issuer carries `hasAttributes`; attributes come as {id, href} and the
+    body lives one fetch deeper, in a revision. Two+ calls, different shape."""
+    version = "v5"
+
+    def issuer_url(self, base: str, did: str) -> str:
+        return f"{base}/trusted-issuers-registry/{self.version}/issuers/{did}"
 
 
 # --------------------------------------------------------------------------- #
