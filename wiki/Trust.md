@@ -138,9 +138,10 @@ and the real lists become golden fixtures when they go live.
 ## EBSI (read-only plugin)
 
 `openvc_ebsi` resolves `did:ebsi` and reads the **Trusted Issuers Registry**,
-then verifies the full accreditation chain — TI → TAO → RootTAO — recursively,
-with per-hop delegation scoping and revocation of the accreditations
-themselves:
+then checks that the issuer holds a non-revoked accreditation. Passing `trust_anchors=`
+verifies the full accreditation chain — TI → TAO → RootTAO — recursively instead, with
+per-hop delegation scoping and revocation of the accreditations themselves. This example
+is the single-level check:
 
 <!-- docs: no-run -->
 ```python
@@ -156,6 +157,14 @@ with for_ebsi("pilot") as http:
                                expected_types=["VerifiableAttestation"])
     print(result.trusted, result.issuer)
 ```
+
+`for_ebsi("pilot")` is the **legacy pilot lane** (`api-pilot.ebsi.eu`, the per-service
+`v5` paths): the lane the recorded fixtures and the weekly live smoke test cover. On EBSI
+Core API v1 the recursive walk (`trust_anchors=`) fails closed, as of 2026-10-16: the prod and
+preprod RootTAO accreditations are signed `ES256K`, which the JOSE allow-list rejects
+(`UnsupportedAlgorithm`), and the one seeded prod root has a DID document with no
+verification method. Where reads go on Core v1, and whom to believe, is on
+[EBSI node trust](EBSI-Node-Trust).
 
 - **Read-only by design**: resolve DIDs, read the registries. Onboarding /
   writing (JSON-RPC + OID4VP) is out of scope.
@@ -180,8 +189,11 @@ with for_ebsi("pilot") as http:
   `IssuerRecord.did` is the DID the registry answered for. The `attributes` / `href` path
   is still pinned to the registry's origin, not to the issuer.
 - **Environment-aware**: `for_ebsi("pilot" | "conformance" | "production")` seeds
-  the allow-list from the chosen EBSI environment — `production` (`api.ebsi.eu`) is
-  registered for EBSI's Q4 2026 business launch. Pass `extra_hosts` to also permit an
+  the allow-list from one fixed host per name. As of 2026-10-16 only `pilot` serves a
+  registry: `conformance` accepted no connection, and `production` names `api.ebsi.eu`,
+  which is not a node (no HTTP response could be obtained from it). EBSI Core API v1 has no
+  fixed production host: a client picks a node from a signed list, as
+  [EBSI node trust](EBSI-Node-Trust) explains. Pass `extra_hosts` to also permit an
   issuer's status-list origin. The v5 Trusted Issuers Registry `/attributes` listing
   is paginated, and openvc walks every page (bounded, and immune to EBSI's
   self-referential `next` cursor) so an issuer with many accreditations is read in full.

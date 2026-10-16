@@ -1,7 +1,9 @@
 # ADR-0009 — EBSI Core API v1, and how `openvc_ebsi` trusts a production node
 
-**Status:** Proposed — a design for the maintainer to decide. It ships no code and changes
-nothing under `src/`.
+**Status:** Accepted in part (2026-10-16) — direction C (D2: a pure, stateless verifier on
+an ECDSA-only OpenPGP reader; it vendors an anchor, never the list) and the ES256K opt-in
+(open question 3) are accepted. Open question 1 is answered by the first. Open questions 2,
+4, 5, 6, 7 and 8 stay open. This ADR ships no code and changes nothing under `src/`.
 **Date:** 2026-10-16 (revised the same day after review: D2, D3, D5 and the measured facts)
 **Context owner:** `openvc_ebsi.http`, `openvc_ebsi.versioning` (and a future
 `openvc_ebsi.nodes`)

@@ -46,11 +46,14 @@ MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 EBSI_HOSTS: dict[str, str] = {
     "pilot": "api-pilot.ebsi.eu",
     "conformance": "api-conformance.ebsi.eu",
-    # EBSI's business/production environment (EUROPEUM-EDIC-governed, ebsi.eu family)
-    # launches Q4 2026 on the unprefixed production host, following the established
-    # api-<env>.ebsi.eu naming. Registered so `for_ebsi("production")`, `EBSI_BASE`, and
-    # the SSRF allow-list are ready at cutover; any additional issuer host a deployment
-    # needs (e.g. a status-list origin) is still permitted explicitly via `extra_hosts`.
+    # NOT a node. As of 2026-10-16 `api.ebsi.eu` returned no HTTP response: the certificate
+    # it presents does not cover the name (ADR-0009). EBSI Core API v1 has no fixed
+    # production host; a client picks a node from the signed Trusted Nodes List, and the
+    # production nodes are `api.ebsi.<operator domain>` hosts taken from it (see
+    # wiki/EBSI-Node-Trust.md). The name stays registered so `for_ebsi("production")` and
+    # `EBSI_BASE` keep working until the environment table is revisited (#325); any
+    # additional issuer host a deployment needs (e.g. a status-list origin) is still
+    # permitted explicitly via `extra_hosts`.
     "production": "api.ebsi.eu",
 }
 EBSI_BASE: dict[str, str] = {env: f"https://{host}" for env, host in EBSI_HOSTS.items()}

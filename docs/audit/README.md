@@ -64,14 +64,15 @@ relying-party registration, **no wrong-authorize**):
    XAdES-BASELINE-B profile, the XSW guard, and the `signxml`/`lxml` dependency
    (I13, R6).
 
-The residual-risk register (R1–R11) is deliberately the reviewer's shortcut to
+The residual-risk register (R1–R12) is deliberately the reviewer's shortcut to
 the soft spots we already know about; **R1** (SD-JWT unbounded recursion →
 batch-abort DoS) was resolved in v1.20.1 ([#117](https://github.com/luisgf/openvc/issues/117)),
 **R9** (the RDF Data Integrity wrong-accept) in v1.30.2 and **R10** (untyped
 exits at the verification boundary, reachable from attacker-controlled input) in v1.33.1, its
 first sites in v1.32.3, leaving the typed-error-hygiene items **R2–R3** at the top of the
 harden-next list. **R11** records one open, documented caveat at the seam between the SD-JWT
-and VC-JWT lanes (a second, the issuer JWT's `aud`, closed in v1.35.0).
+and VC-JWT lanes (a second, the issuer JWT's `aud`, closed in v1.35.0). **R12** records that
+a signed EBSI node list authenticates the operator and not the registry's data.
 
 ## 4. How to reproduce the evidence
 
