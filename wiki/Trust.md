@@ -175,12 +175,16 @@ with for_ebsi("pilot") as http:
   `for_ebsi` and every request that misses the cache resolves the host, refuses it with
   `HttpForbiddenAddress` if **any** address is not globally routable (the rules
   `openvc.fetch` applies to `did:web`: private, loopback, link-local, cloud metadata,
-  multicast, CGNAT, NAT64, 6to4, Teredo and the rest), and connects to one validated
+  multicast, CGNAT, site-local `fec0::/10`, NAT64, 6to4, Teredo and the rest), and
+  connects to one validated
   address while the TLS name, the certificate check and `Host` stay the host name. It is
   **off by default** (a deployment with split-horizon DNS or a private mirror would
   break), it sends `Connection: close` (no keep-alive: a reused connection would answer
   for a second name with no certificate check for it), it rotates through the validated
-  addresses on a retry, and it refuses to be built behind an environment proxy
+  addresses on a retry (one address per attempt, so under the default `RetryPolicy` only
+  the first three addresses of an answer are ever tried; set `RetryPolicy(attempts=...)`
+  to at least the number of addresses you must reach), and it refuses to be built behind an
+  environment proxy
   (`HttpAddressGuardUnavailable`) because the proxy would resolve and connect by itself.
   It does not stop an attacker who also holds a valid certificate for a public address, a
   dishonest listed node, or anything about registry content. There are no exemptions: to

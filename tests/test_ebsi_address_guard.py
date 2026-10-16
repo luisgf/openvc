@@ -208,6 +208,9 @@ FORBIDDEN = [
     ("6to4 metadata", "2002:a9fe:a9fe::"), ("6to4 PUBLIC embedded", "2002:808:808::1"),
     ("6to4", "2002::1"),
     ("Teredo", "2001:0:4136:e378:8000:63bf:3fff:fdd2"), ("Teredo", "2001::1"),
+    # fec0::/10 (RFC 3879, deprecated site-local): is_global=True and no other flag, only
+    # is_site_local catches it (both ends of the prefix).
+    ("site-local", "fec0::1"), ("site-local", "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
 ]
 
 ALLOWED = [PUBLIC, PUBLIC_B, "8.8.8.8", PUBLIC_V6, "2001:4860:4860::8888", "2a00:1450:4001::1"]
@@ -435,6 +438,7 @@ def test_the_pinned_request_keeps_the_path_and_the_query_verbatim():
     request = wire.requests[0]
     assert request.url.raw_path == b"/did-registry/v5/identifiers/did:ebsi:zX?a=1&b=%2F"
     assert request.url.scheme == "https"
+    assert request.url.host == PUBLIC                  # rebuilt around the validated address
 
 
 def test_an_explicit_port_is_kept_in_the_pinned_url_and_in_host():
@@ -590,6 +594,23 @@ def test_addresses_raises_only_typed_errors_for_a_failing_resolver():
         AddressGuard(resolver=Resolver([])).addresses(HOST, 443)
 
 
+@pytest.mark.parametrize("failure", [
+    RuntimeError("resolver bug"), KeyError("k"), AttributeError("a"), StopIteration(),
+    ZeroDivisionError("z"),
+])
+def test_an_injected_resolvers_own_exceptions_propagate_unchanged_and_are_not_retried(failure):
+    # The docstring of AddressGuard.addresses: only OSError / ValueError / TypeError are
+    # a resolution failure. Anything else is a bug in the caller's resolver, and is not
+    # hidden behind the retry loop.
+    resolver, wire = Resolver(failure), Wire()
+    with pytest.raises(type(failure)) as info:
+        _guarded(wire, resolver).get_json(URL)
+    assert info.value is failure
+    assert len(resolver.calls) == 1 and wire.requests == []
+    with pytest.raises(type(failure)):
+        AddressGuard(resolver=Resolver(failure)).addresses(HOST, 443)
+
+
 # --- rotation (D4) --------------------------------------------------------------------------
 
 def test_a_connect_failure_rotates_to_the_next_validated_address():
@@ -606,6 +627,66 @@ def test_rotation_wraps_around_and_is_bounded_by_the_retry_policy():
     with pytest.raises(HttpTransientExhausted):
         _guarded(wire, resolver).get_json(URL)
     assert [r.url.host for r in wire.requests] == [PUBLIC, PUBLIC_B, PUBLIC]   # 3 attempts
+
+
+DEAD_V6 = ["2606:2800:220:1::1", "2001:4860:4860::8888", "2a00:1450:4001::1",
+           "2a00:1450:4001::2"]
+
+
+def _v6_dead(request: httpx.Request) -> httpx.Response:
+    """An IPv6-broken client: every IPv6 literal fails to connect, IPv4 answers."""
+    if ":" in request.url.host:
+        raise httpx.ConnectError("no route to host")
+    return httpx.Response(200, json={"ok": True})
+
+
+@pytest.mark.parametrize("dead, attempts, reached", [
+    (2, 3, True),      # the address at position 3 is reached by the default policy
+    (3, 3, False),     # position 4 is not: the bound is the policy's, not the address count
+    (3, 4, True),      # RetryPolicy(attempts=len(answer)) reaches it
+    (4, 4, False),
+    (4, 5, True),
+])
+def test_rotation_reaches_the_address_at_position_k_only_if_the_policy_allows_k_attempts(
+        dead, attempts, reached):
+    # The AddressGuard docstring and the CHANGELOG state this bound.
+    answer = DEAD_V6[:dead] + [PUBLIC]
+    wire = Wire(_v6_dead)
+    client = _guarded(wire, Resolver(answer),
+                      retry=RetryPolicy(attempts=attempts, backoff_base_s=0.0, backoff_max_s=0.0))
+    if reached:
+        assert client.get_json(URL) == {"ok": True}
+        assert [r.url.host for r in wire.requests] == answer
+    else:
+        with pytest.raises(HttpTransientExhausted) as info:
+            client.get_json(URL)
+        assert type(info.value) is HttpTransientExhausted
+        assert [r.url.host for r in wire.requests] == answer[:attempts]       # PUBLIC never tried
+
+
+def test_the_default_policy_tries_three_addresses_and_no_more(monkeypatch):
+    answer = DEAD_V6[:3] + [PUBLIC]
+    wire = Wire(_v6_dead)
+    client = EbsiHttpClient(allowed_hosts={HOST}, address_guard=AddressGuard(
+        resolver=Resolver(answer)))
+    client._client = httpx.Client(transport=httpx.MockTransport(wire))
+    assert client._retry == RetryPolicy() and client._retry.attempts == 3
+    monkeypatch.setattr(client, "_sleep_before_retry", lambda *args, **kwargs: None)
+    with pytest.raises(HttpTransientExhausted):
+        client.get_json(URL)
+    assert [r.url.host for r in wire.requests] == DEAD_V6[:3]
+
+
+@pytest.mark.parametrize("failure", [
+    httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
+    httpx.ConnectTimeout("connect timed out"), httpx.ReadTimeout("read timed out"),
+    httpx.WriteError("write failed"), httpx.RemoteProtocolError("server disconnected"),
+], ids=lambda failure: type(failure).__name__)
+def test_any_transport_error_rotates_to_the_next_address(failure):
+    resolver = Resolver([PUBLIC, PUBLIC_B])
+    wire = Wire(failure, httpx.Response(200, json={"ok": True}))
+    assert _guarded(wire, resolver).get_json(URL) == {"ok": True}
+    assert [r.url.host for r in wire.requests] == [PUBLIC, PUBLIC_B]
 
 
 def test_rotation_survives_a_resolver_that_reorders_its_answer():

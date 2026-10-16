@@ -365,8 +365,12 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   resolver, so a guarded client refuses to be built behind an environment proxy
   (`HttpAddressGuardUnavailable`); NAT64 and IPv4-mapped classification inherit **R5**
   (NAT64, 6to4, Teredo and the IPv4-compatible forms are refused as whole prefixes);
-  `getaddrinfo` has no deadline, with or without the guard. `did:web` still never goes
-  through this client.
+  `getaddrinfo` has no deadline, with or without the guard. A host with several
+  addresses is tried one address per attempt, so with the default `RetryPolicy` only the
+  first three addresses of an answer are ever tried (a name-based connect tries them all
+  in one attempt): three dead addresses before a live one is an outage for a guarded
+  client, which then needs `RetryPolicy(attempts=...)` at least the number of addresses
+  it must reach. `did:web` still never goes through this client.
 - **R5 — `fetch.py` leans on stdlib `ipaddress` classification.** No explicit
   IPv4-mapped-IPv6 (`::ffff:a.b.c.d`) / NAT64 normalization beyond what
   `ipaddress` classifies on the target Python. Worth an auditor sanity-check
@@ -374,12 +378,16 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   the IPv4-mapped private and CGNAT forms on every CI interpreter; the mapped-form
   classification still varies across `ipaddress` versions. Since v1.37.0 (#322) the
   rule is public as `openvc.fetch.ip_is_forbidden` and
-  `tests/test_ebsi_address_guard.py` pins 57 forbidden and 6 allowed addresses (every
+  `tests/test_ebsi_address_guard.py` pins 59 forbidden and 6 allowed addresses (every
   class: private, loopback, link-local, cloud metadata, unique-local, multicast, CGNAT,
-  benchmarking, documentation, IPv4-mapped and -compatible, NAT64, 6to4, Teredo); the
-  table was measured with no difference on CPython 3.10.20, 3.11.15, 3.12.13, 3.13.16,
-  3.14.8 and 3.15.0rc3. `is_global` alone is not enough (`224.0.0.1`, `ff0e::1`,
-  `::808:808` and `64:ff9b::808:808` report it true), which is why the flag union stays.
+  benchmarking, documentation, IPv4-mapped and -compatible, NAT64, 6to4, Teredo, and the
+  deprecated IPv6 site-local prefix `fec0::/10`); the first 57 were measured with no
+  difference on CPython 3.10.20, 3.11.15, 3.12.13, 3.13.16, 3.14.8 and 3.15.0rc3, the two
+  site-local rows on 3.13.16, 3.14.8 and 3.15.0rc3 (the CI matrix runs the table on 3.10
+  to 3.15). `is_global` alone is not enough (`224.0.0.1`, `ff0e::1`, `::808:808`,
+  `64:ff9b::808:808` and `fec0::1` report it true), which is why the flag union stays;
+  `fec0::/10` is caught by `is_site_local`, which only IPv6 has (a review-round finding:
+  before it, `did:web` accepted a host that resolved there).
 - **R6 — XAdES primary verify relies on `signxml`/`lxml` DTD-forbidding.**
   openvc sets `resolve_entities=False, no_network=True, load_dtd=False`
   explicitly only on its defence-in-depth whole-document reparse

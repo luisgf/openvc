@@ -28,8 +28,9 @@ All notable changes to **openvc** are documented here. The format follows
   order and however many public addresses sit beside the bad one (`HttpForbiddenAddress`, a
   subclass of `HttpForbiddenHost`, so a handler for the name guard catches it; never
   retried, never cached, no request sent). The rule is the one `openvc.fetch` applies to
-  `did:web` (private, loopback, link-local, reserved, multicast, unspecified, and anything
-  that is not `is_global`, CGNAT included). It then connects to **one validated address**
+  `did:web` (private, loopback, link-local, reserved, multicast, unspecified, the
+  deprecated IPv6 site-local prefix `fec0::/10`, and anything that is not `is_global`,
+  CGNAT included). It then connects to **one validated address**
   with the TLS server name, the certificate check and `Host` still the host **name**, so
   there is no window between the check and the connect: the request goes to
   `https://<validated literal>:<port>/path` with `Host: <name>` and the httpcore
@@ -73,17 +74,23 @@ All notable changes to **openvc** are documented here. The format follows
     all of them, so they reach the resolver and the guard sees the answer. glibc was not
     measured. The connection goes to the validated literal, so the name is never read a
     second time.
-  - **Not measured:** the declared httpx floor (0.27); only 0.28.1 is installed and nothing
-    was downloaded. The pinned request uses `Client.stream(..., headers=, extensions=)`
-    and nothing else of httpx.
+  - **Not measured locally:** the declared httpx floor (0.27); only 0.28.1 is installed
+    and nothing was downloaded. The pinned request uses
+    `Client.stream(..., headers=, extensions=)` and nothing else of httpx. CI now has a
+    floor leg (`test (py3.10, httpx 0.27.0)`, in `.github/workflows/ci.yml`, built like
+    the pyld floor leg) that installs `httpx==0.27.0` over `[all]` on CPython 3.10 and runs
+    the whole suite, the loopback TLS tests included.
 
-  The classifier agrees on every class in the table on all six interpreters (private,
-  loopback, link-local, cloud metadata, unique-local, unspecified, multicast, CGNAT,
-  benchmarking, documentation, IPv4-mapped and IPv4-compatible, NAT64, 6to4, Teredo).
-  `is_global` alone is wrong for some of them (`224.0.0.1`, `ff0e::1`, `::808:808` and
-  `64:ff9b::808:808` report `is_global=True`; the multicast and reserved flags catch them),
-  which is why the union is kept. NAT64, 6to4, Teredo and the IPv4-compatible forms are
-  refused **as whole prefixes**, whatever IPv4 they embed. Not pinned: `::ffff:8.8.8.8` (a
+  The classifier agreed on every class of the first 57 rows of the table on all six
+  interpreters (private, loopback, link-local, cloud metadata, unique-local, unspecified,
+  multicast, CGNAT, benchmarking, documentation, IPv4-mapped and IPv4-compatible, NAT64,
+  6to4, Teredo); the two site-local rows added in the review round (below) were run on
+  CPython 3.13.16, 3.14.8 and 3.15.0rc3, and the CI matrix runs the whole table on 3.10 to
+  3.15. `is_global` alone is wrong for some of them (`224.0.0.1`, `ff0e::1`, `::808:808`,
+  `64:ff9b::808:808` and `fec0::1` report `is_global=True`; the multicast, reserved and
+  site-local flags catch them), which is why the union is kept. NAT64, 6to4, Teredo and
+  the IPv4-compatible forms are refused **as whole prefixes**, whatever IPv4 they embed.
+  Not pinned: `::ffff:8.8.8.8` (a
   mapped public address; threat model R5 records that the mapped-form classification varies
   across interpreter versions) and `192.88.99.1`, `192.0.0.9`, `192.0.0.10`, `2001:20::1`
   (allowed on every interpreter measured).
@@ -110,9 +117,26 @@ All notable changes to **openvc** are documented here. The format follows
     without it, or without the guard.
   - **D4 several addresses: rotate**, one validated address per attempt in resolver order
     (the first this call has not used yet, so a resolver that reorders its answer cannot
-    make a retry repeat the address that just failed), bounded by `RetryPolicy`. A
-    connection failure, a 429 or a 5xx moves to the next address; a 404 or other 4xx is
-    not retried. First-address-only would turn one dead address of four into an outage.
+    make a retry repeat the address that just failed), bounded by `RetryPolicy`. Any
+    transport error (connect, TLS handshake, read or write timeout, protocol error), a 429
+    or a 5xx moves to the next address; a 404 or other 4xx is not retried.
+    First-address-only would turn one dead address of four into an outage. **The bound:**
+    one address per attempt means the address at position *k* of the answer is reached
+    only if the policy allows *k* attempts, so with the default `RetryPolicy` (3 attempts)
+    only the first three addresses are ever tried. Measured with an IPv6-broken client
+    (every IPv6 literal fails to connect) and a live IPv4 address after the dead ones:
+    two dead addresses first succeed, three dead first are `HttpTransientExhausted` (the
+    live one is never tried) and succeed with `RetryPolicy(attempts=4)`; four dead first
+    need 5. A deployment that expects dead addresses sets `attempts` to at least the
+    number of addresses it must be able to reach. A name-based connect does not have this
+    bound (`socket.create_connection`, which httpcore uses, tries every address of the
+    answer inside one attempt), so a host with three AAAA records on a client with no IPv6
+    route works unguarded and is an outage guarded under the default policy. *The other
+    option*, which is a maintainer decision and is not taken here: on a transport error try
+    the remaining validated addresses of the same resolution before consuming the attempt,
+    bounded by `attempts x addresses`, each under the per-socket connect timeout; it
+    removes the bound above at the cost of up to that many connection attempts per
+    `get_json`.
   - **D5 exemptions: none**, and the classifier is fixed (`AddressGuard` takes a resolver,
     never a rule). An operator who must reach an internal mirror builds a second client
     without the guard.
@@ -120,6 +144,15 @@ All notable changes to **openvc** are documented here. The format follows
     `user:pw@` in the URL would otherwise become an `Authorization` header); an IPv6
     address with a scope id is refused even when it is public; an answer that is not a
     string or does not parse as an address refuses the host, it is not retried.
+  - **D6 (review round) `fec0::/10`: refused in the shared classifier.** The reviewer
+    found that `ip_is_forbidden("fec0::1")` was false: `ipaddress` reports the deprecated
+    IPv6 site-local prefix (RFC 3879) as `is_global=True` with no other flag, on the
+    interpreters checked (3.13.16, 3.14.8 and 3.15.0rc3), so the docs' "not globally
+    routable" was untrue for it and one internal-looking class was open, for `did:web` too.
+    The change adds `IPv6Address.is_site_local` to the flag union (IPv4 has no such
+    property). *The other option* is to leave the classifier alone and list `fec0::1`
+    under "Not pinned" with `192.88.99.1`; it would keep `did:web` accepting a host that
+    resolves to `fec0::/10`. See `### Changed`.
 
   **What it does not do.** It does not stop an attacker who also holds a valid certificate
   for a public address, a dishonest listed node, or anything about registry content; it is
@@ -144,18 +177,38 @@ All notable changes to **openvc** are documented here. The format follows
 - **`openvc_ebsi.http.AddressGuard`**, `HttpForbiddenAddress`, `HttpAddressResolutionFailed`
   and `HttpAddressGuardUnavailable`, and the `address_guard=` argument of `EbsiHttpClient`
   and `for_ebsi`. `AddressGuard.addresses(host, port)` returns the validated addresses and
-  raises only `HttpForbiddenAddress` or `HttpAddressResolutionFailed` (a resolver error,
-  `ValueError` or an empty answer is handled like a connection failure: retried, then
-  `HttpTransientExhausted`).
+  raises `HttpForbiddenAddress` or `HttpAddressResolutionFailed` (a resolver `OSError`,
+  `ValueError`, `TypeError` or an empty answer is handled like a connection failure:
+  retried, then `HttpTransientExhausted`). That is the contract for the default resolver;
+  an **injected** `resolver=` that raises anything else (a `RuntimeError`, a `KeyError`)
+  has its exception propagate unchanged and unretried, so a bug in a caller's resolver is
+  not hidden behind the retry loop.
+
+### Changed
+
+- **`openvc.fetch` refuses the deprecated IPv6 site-local prefix `fec0::/10`**
+  ([#322](https://github.com/luisgf/openvc/issues/322), review round).
+  `ip_is_forbidden` (and so `did:web` and every fetch that resolves through
+  `_resolve_public_ips`) used to accept it: `ipaddress` reports `fec0::1` as
+  `is_global=True`, `is_private=False` and sets only `is_site_local` (measured on CPython
+  3.13.16, 3.14.8 and 3.15.0rc3), so nothing in the flag union caught it. RFC 3879
+  deprecated the prefix and it is not globally routable. A `did:web` (or status-list or
+  schema) host whose DNS answer includes a `fec0::/10` address now raises
+  `UnsafeUrlError` where it used to connect. There is nothing to pass instead: a publicly
+  reachable host does not resolve to this prefix; fix the DNS record. Only IPv6 has the
+  property, so IPv4 classification is unchanged.
 
 ### Tests
 
-- `tests/test_ebsi_address_guard.py`: the address table (57 forbidden, 6 allowed) through
+- `tests/test_ebsi_address_guard.py`: the address table (59 forbidden, 6 allowed) through
   the classifier and through the guard, refusals with exact classes and zero requests, the
   ordering against the name guard, rebinding, port and IPv6 shape, userinfo, resolution
-  failures, rotation, the proxy decision, default-off parity, a Hypothesis property over
-  arbitrary resolver answers, and a loopback TLS server that shows the SNI, the certificate
-  check against the name, and that a connection is never reused across names.
+  failures, rotation and its bound under the default and a longer `RetryPolicy`, every
+  transport error rotating, an injected resolver's own exceptions, the proxy decision,
+  default-off parity, a Hypothesis property over arbitrary resolver answers, and a loopback
+  TLS server that shows the SNI, the certificate check against the name, and that a
+  connection is never reused across names. `tests/test_fetch.py::test_forbidden_ips`
+  gains `fec0::1`. CI gains the httpx 0.27.0 floor leg described above.
 
 ### Docs
 

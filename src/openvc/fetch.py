@@ -55,8 +55,9 @@ def ip_is_forbidden(ip_str: str) -> bool:
     multicast / unspecified. ``not is_global`` additionally closes RFC 6598
     shared space (``100.64.0.0/10``, CGNAT), which ``is_private`` does not
     set — multicast stays in the union because some multicast addresses
-    report ``is_global=True``. IPv4-mapped forms inherit the same
-    classification (``::ffff:100.64.0.1``).
+    report ``is_global=True``, and so does the deprecated IPv6 site-local
+    prefix ``fec0::/10`` (RFC 3879), which ``is_site_local`` catches.
+    IPv4-mapped forms inherit the same classification (``::ffff:100.64.0.1``).
 
     Public so a caller that brings its own HTTP client applies the same rule instead of
     a copy of it (the ``_ip_is_forbidden`` name is kept as the same function). Raises
@@ -68,6 +69,8 @@ def ip_is_forbidden(ip_str: str) -> bool:
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_multicast or ip.is_unspecified
         or not ip.is_global
+        # fec0::/10 reports is_global=True and no other flag; only IPv6 has the property.
+        or (isinstance(ip, ipaddress.IPv6Address) and ip.is_site_local)
     )
 
 

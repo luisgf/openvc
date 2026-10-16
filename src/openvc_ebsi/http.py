@@ -188,9 +188,18 @@ class AddressGuard:
     with no DNS.
 
     **Several addresses.** The addresses are used in the order the resolver gave them, one
-    per attempt, so a retry (bounded by :class:`RetryPolicy`) reaches the next address
-    instead of the one that just failed: a host with four addresses of which two do not
-    answer, or an AAAA record with no local IPv6 route, is slow, not down.
+    per attempt, so a retry reaches the next address instead of the one that just failed.
+    The bound is :class:`RetryPolicy`'s: the address at position *k* of the answer is
+    reached only if the policy allows *k* attempts, so with the default policy (3) only
+    the first three addresses are ever tried. A host with four addresses of which two do
+    not answer is slow, not down; a host whose first three addresses do not answer (an AAAA
+    record with three addresses, on a client with no IPv6 route) is down for this client
+    even though the fourth would answer. A name-based connect tries every address of the
+    answer within one attempt (``socket.create_connection``); this does not. A deployment
+    that expects dead addresses sets ``RetryPolicy(attempts=...)`` to at least the number
+    of addresses it needs to be able to reach. Any transport error (connect, TLS
+    handshake, read or write timeout, protocol error), a 429 or a 5xx moves to the next
+    address; a 404 or another 4xx does not.
 
     **No keep-alive.** A pinned request is sent with ``Connection: close``. httpx pools by
     the address in the URL, not by the name the certificate was checked for, so a reused
@@ -219,7 +228,10 @@ class AddressGuard:
 
         Raises :class:`HttpForbiddenAddress` if any address is not globally routable (or is
         not an address at all), and :class:`HttpAddressResolutionFailed` if the resolver
-        failed or answered with nothing. Nothing else escapes."""
+        failed or answered with nothing. That holds for the default resolver; the
+        exceptions of an injected ``resolver`` other than ``OSError``, ``ValueError`` and
+        ``TypeError`` propagate unchanged (a caller's bug is not hidden behind the retry
+        loop)."""
         if _is_ip_literal(host):
             answers: list[object] = [host]
         else:
@@ -338,7 +350,7 @@ class EbsiHttpClient:
                     if status == 200:
                         body = self._read_capped(resp, url)
                     else:
-                        resp.read()                  # drain the small error body, reuse the conn
+                        resp.read()                  # drain the error body; reused unless pinned
             except httpx.InvalidURL as exc:          # not a TransportError: never retried
                 # Backstop for any other urlparse/httpx disagreement (#246).
                 raise HttpForbiddenHost("URL rejected by the HTTP client", url=url) from exc

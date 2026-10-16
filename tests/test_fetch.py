@@ -26,6 +26,7 @@ from openvc.fetch import UnsafeUrlError, https_json_fetch
     "100.64.0.1", "100.127.255.255",               # RFC 6598 CGNAT (#156)
     "::ffff:100.64.0.1",                           # IPv4-mapped CGNAT
     "::ffff:10.0.0.1",                             # IPv4-mapped private
+    "fec0::1",                                     # deprecated IPv6 site-local (RFC 3879)
 ])
 def test_forbidden_ips(ip):
     assert fetch._ip_is_forbidden(ip) is True
