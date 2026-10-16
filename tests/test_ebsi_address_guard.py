@@ -441,6 +441,33 @@ def test_the_pinned_request_keeps_the_path_and_the_query_verbatim():
     assert request.url.host == PUBLIC                  # rebuilt around the validated address
 
 
+def test_the_bytes_path_keeps_its_headers_on_the_pinned_request():
+    # get_bytes asks for the identity coding and sends a validator; the pinned request must
+    # carry both (and the pinned Host) and the body must come back verbatim.
+    resolver = Resolver([PUBLIC])
+    body = b"\x00\xff exact \r\n"
+    wire = Wire(httpx.Response(200, headers={"etag": '"v2"'}, stream=httpx.ByteStream(body)))
+    client = _guarded(wire, resolver)
+    reply = client.get_bytes(f"https://{HOST}/tnl.json", etag='"v1"')
+    request = wire.requests[0]
+    assert request.url.host == PUBLIC
+    assert request.headers["host"] == HOST
+    assert request.headers["connection"] == "close"
+    assert request.headers["accept-encoding"] == "identity"
+    assert request.headers["if-none-match"] == '"v1"'
+    assert request.headers["accept"] == "*/*"
+    assert reply.body == body and reply.etag == '"v2"'
+    assert resolver.calls == [(HOST, 443)]
+
+
+def test_a_forbidden_answer_is_refused_on_the_bytes_path_without_a_request():
+    resolver, wire = Resolver(["127.0.0.1"]), Wire()
+    client = _guarded(wire, resolver)
+    with pytest.raises(HttpForbiddenAddress):
+        client.get_bytes(f"https://{HOST}/tnl.json")
+    assert wire.requests == []
+
+
 def test_an_explicit_port_is_kept_in_the_pinned_url_and_in_host():
     resolver, wire = Resolver([PUBLIC]), Wire()
     client = _guarded(wire, resolver, any_port=True)
