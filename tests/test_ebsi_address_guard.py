@@ -827,7 +827,10 @@ def test_the_guard_changes_no_constructor_argument_of_the_http_client(monkeypatc
     monkeypatch.setattr(httpx, "Client", record)
     EbsiHttpClient(allowed_hosts={HOST}).close()
     EbsiHttpClient(allowed_hosts={HOST}, address_guard=AddressGuard()).close()
-    assert len(seen) == 2 and seen[0] == seen[1]               # one pooled client, same config
+    assert len(seen) == 2
+    jars = [kwargs.pop("cookies") for kwargs in seen]          # a fresh jar per client (#317)
+    assert seen[0] == seen[1]                                  # one pooled client, same config
+    assert type(jars[0].policy) is type(jars[1].policy)        # and the same no-cookie policy
 
 
 def test_the_default_guard_uses_the_system_resolver_for_tcp(monkeypatch):
