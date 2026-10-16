@@ -245,16 +245,26 @@ finite input", with no explicit constant.
   and lists of codings are `HttpUnexpectedEncoding`); no read of a non-200 body (a 403 can
   be a firewall page, and an error body is never parsed or decoded); no cache (the ETag is
   the cache, and a 304 is accepted only for an `If-None-Match` that was sent); and an
-  overall `deadline_s` that clamps `Retry-After` sleeps. The list is fetched by a **separate**
+  optional `deadline_s` (a number of seconds up to one day) over the attempts, the sleeps (a
+  `Retry-After` sleep is clamped to what remains) and the body read, which checks the clock
+  after every chunk. The list is fetched by a **separate**
   client, `for_tnl()`, whose allow-list is the constant `{tnl.ebsi.eu}` and nothing else,
   never a host taken from a list, so a poisoned node list cannot widen where the list itself
-  is fetched and R4's wording is unchanged; it keeps no cookies, sends `Accept-Encoding:
-  identity`, and `get_tnl_files` refuses a client whose allow-list is anything else, before
-  any request. The helper never fetches the pinned key-list key. **It authenticates
+  is fetched and R4's wording is unchanged; it keeps no cookies (that client: a hand-built
+  one with the same allow-list keeps what its jar accepts, until #317), sends
+  `Accept-Encoding: identity`, and `get_tnl_files` refuses a client whose allow-list is
+  anything else, before any request. The helper never fetches the pinned key-list key. **It authenticates
   nothing**: its result is unauthenticated bytes for the verifier. **Residual, unchanged by
   #320:** `get_json` still inflates per chunk before its cap (so a gzip body under the
   5 MiB cap can allocate far more), drains a non-200 body with an uncapped `read()`, and
-  sleeps for an unbounded `Retry-After` when no budget is given.
+  sleeps for an unbounded `Retry-After` when no budget is given (a bare `OverflowError` past
+  about 9.2e9 s). **Residual, shared by both paths:** neither `deadline_s` nor `timeout_s`
+  bounds the total time of one response's headers: `timeout_s` applies to each socket
+  operation, so a compromised allow-listed host that sends header bytes slowly enough can
+  hold the calling thread (measured: 8.1 s against `deadline_s=1.0`; the HTTP/1.1 stack's
+  header-size limit, 100 KiB in httpcore 1.0.9, is the only other bound and is not a time
+  bound). A late response is still refused at its first body chunk. A caller that needs a hard
+  wall-clock ceiling runs the call under its own timeout (a worker thread or process).
   **The DID is validated before it is put in a registry URL** (#266, v1.33.0):
   `DidEbsiResolver.resolve` and `.issuer_record` accept only `did:ebsi:z` plus 22 or 23
   base58btc characters (the legal-entity form of the EBSI DID method: a version byte and

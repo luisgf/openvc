@@ -25,9 +25,9 @@ Pass ``client.get_json`` wherever a ``Fetch`` is expected (e.g. into the resolve
 
 from __future__ import annotations
 
-import math
 import random
 import re
+import sys
 import time
 import zlib
 from collections.abc import Callable, Mapping
@@ -231,9 +231,18 @@ class EbsiHttpClient:
         asked for with ``Accept-Encoding: identity``; a single ``gzip`` or ``deflate``
         coding is decoded anyway if the server applies one, under the same cap on the
         DECODED size, and any other coding is :class:`HttpUnexpectedEncoding`.
-        ``max_bytes`` can only lower the client's ``max_response_bytes``. ``deadline_s`` is
-        an overall budget across attempts and sleeps (a ``Retry-After`` sleep is clamped to
-        what remains).
+        ``max_bytes`` can only lower the client's ``max_response_bytes``.
+
+        ``deadline_s`` (a positive number of seconds, at most one day) is a budget over the
+        attempts, the sleeps between them (a ``Retry-After`` or backoff sleep is clamped to
+        what remains) and the body read, which checks the clock after every chunk it
+        receives. **It is not a ceiling on the wait for one response's headers**: the
+        connect, the TLS handshake and each socket read are bounded only by ``timeout_s``
+        each, so a server that sends its headers slowly enough to keep every read under
+        ``timeout_s`` is not cut off (the stack's header-size limit is the only other
+        bound). A response that arrives after the budget is spent is refused as soon as a
+        body chunk is read. A caller that needs a hard wall-clock limit has to enforce it
+        outside this call.
 
         ``etag`` (an opaque validator from an earlier response) is sent verbatim as
         ``If-None-Match``; a 304 is then ``BytesResponse(None, etag)``. A 304 that was not
@@ -369,11 +378,13 @@ class EbsiHttpClient:
                     f"response has bytes after the end of its compressed stream: {safe_repr(url)}")
             room = cap - len(body)
             try:
-                # max_length is positive (room + 1 >= 1; 0 would mean unlimited). A call that
-                # returns at most `room` bytes consumed its whole input (or hit the end of
-                # the stream), so nothing is pending in `unconsumed_tail`; one that returns
-                # room + 1 is over the cap, which is the refusal below.
-                piece = decoder.decompress(chunk, room + 1)
+                # max_length is positive (room + 1 >= 1; 0 would mean unlimited) and at most
+                # sys.maxsize, the largest C ssize_t zlib takes (a client cap past it would
+                # raise OverflowError otherwise). A call that returns at most `room` bytes
+                # consumed its whole input (or hit the end of the stream), so nothing is
+                # pending in `unconsumed_tail`; one that returns room + 1 is over the cap,
+                # which is the refusal below.
+                piece = decoder.decompress(chunk, min(room + 1, sys.maxsize))
             except zlib.error as exc:
                 raise MalformedRegistryResponse(
                     f"response body does not decode: {safe_repr(url)}") from exc
@@ -472,10 +483,20 @@ def _checked_cap(value: object) -> int:
     return int(value)
 
 
+# The longest budget `deadline_s` takes: one day, like `MAX_LEEWAY_S`. With it a sleep clamped to
+# the remaining budget is always one `time.sleep` accepts (it raises OverflowError past about
+# 9.2e9 seconds, which a `Retry-After` of any length would otherwise reach through `min(...)`).
+_MAX_DEADLINE_S = 24 * 3600
+
+
 def _checked_deadline(value: object) -> float:
+    # Compared, never converted first: `float(10**400)` and `math.isfinite(10**400)` raise
+    # OverflowError. NaN fails `0 < value` and infinity fails `value <= _MAX_DEADLINE_S`.
     if (not isinstance(value, (int, float)) or isinstance(value, bool)
-            or not math.isfinite(value) or value <= 0):
-        raise HttpError(f"deadline_s must be a positive finite number, not {safe_repr(value)}")
+            or not 0 < value <= _MAX_DEADLINE_S):
+        raise HttpError(
+            f"deadline_s must be a number of seconds above 0 and at most {_MAX_DEADLINE_S}, "
+            f"not {safe_repr(value)}")
     return float(value)
 
 
@@ -562,18 +583,22 @@ def get_tnl_files(
 
     **Returns unauthenticated bytes; verify them before use.** This function verifies
     nothing, polls nothing, persists nothing and never fetches the pinned key-list key.
-    It makes one request per file, in the order of :data:`TNL_FILES`, under one overall
-    ``deadline_s``, and is all-or-nothing: if one request fails, the exception propagates
+    It makes one request per file, in the order of :data:`TNL_FILES`, sharing one
+    ``deadline_s`` (see :meth:`EbsiHttpClient.get_bytes` for what that bounds: the attempts,
+    the sleeps and the body reads, **not** the wait for one response's headers), and is
+    all-or-nothing: if one request fails, the exception propagates
     (its message names the file) and no partial result is returned. A mixed set (a new
     ``tnl.json`` beside a 304 for its signature, or a publish that lands between two
     requests) is handed over as it is; the verifier fails closed on a signature mismatch.
 
     *client* must allow-list ``tnl.ebsi.eu`` and nothing else, or this raises
     :class:`HttpForbiddenHost` before any request; ``None`` builds (and closes) a
-    :func:`for_tnl` client. *etags* maps a file name to the validator of the copy the
-    caller holds (HTTP cache state only; a key that is not a file name is an
-    :class:`HttpError`): a 304 is then ``BytesResponse(None, <that etag>)``, which means
-    "re-use the bytes you stored and verify them again with a fresh ``now``".
+    :func:`for_tnl` client. Only that client is built to keep no cookie: one you build
+    yourself keeps whatever its cookie jar accepts, until the client policy of #317.
+    *etags* maps a file name to the validator of the copy the caller holds (HTTP cache
+    state only; a key that is not a file name is an :class:`HttpError`): a 304 is then
+    ``BytesResponse(None, <that etag>)``, which means "re-use the bytes you stored and
+    verify them again with a fresh ``now``".
     """
     if client is None:
         with for_tnl() as own:

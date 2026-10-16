@@ -194,6 +194,10 @@ with for_ebsi("pilot") as http:
   single `gzip` / `deflate` coding (any other coding is `HttpUnexpectedEncoding`); the body
   of a non-200 response is never read; and an `etag` you pass is sent as `If-None-Match`
   (a 304 comes back as `BytesResponse(None, etag)`, which means "re-use what you stored").
+  `deadline_s` (up to a day) is a budget over the attempts, the sleeps and the body read; it
+  is **not** a ceiling on the wait for one response's headers, which only `timeout_s` bounds,
+  per socket operation, so run the call under your own timeout if you need a hard limit. The
+  EBSI client is synchronous: there is no async twin.
   `for_tnl()` builds a client that allow-lists `tnl.ebsi.eu` **alone**, and
   `get_tnl_files()` fetches the four signed Trusted Nodes List documents through it. **The
   bytes are unauthenticated**: the helper verifies nothing, polls nothing, stores nothing

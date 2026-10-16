@@ -27,6 +27,9 @@ import gzip
 import hashlib
 import json
 import re
+import socket
+import threading
+import time
 import tracemalloc
 import zlib
 from pathlib import Path
@@ -499,6 +502,28 @@ def test_a_compressed_body_split_into_tiny_chunks_decodes_identically(build, kin
     assert got == NASTY * 3
 
 
+@pytest.mark.parametrize("kind", ["gzip", "deflate"])
+@pytest.mark.parametrize("cap", [2**62, 2**63 - 1, 2**63, 2**64, 2**70, 10**30])
+def test_a_client_cap_past_a_c_ssize_t_still_decodes_and_is_never_a_bare_overflow(
+        build, kind, cap):
+    # zlib takes `max_length` as a C ssize_t: handing it `room + 1` for a cap of 2**63 or more
+    # raised OverflowError, outside the typed errors (the cap is operator config, not attacker
+    # input, but nothing validates it at construction).
+    wire = _encoded(kind, NASTY)
+    script = Script(lambda req: R(200, headers={"Content-Encoding": kind},
+                                  stream=Chunks([wire[:5], wire[5:]])))
+    got = build(script, retry=ONCE, max_response_bytes=cap).get_bytes(NODE_URL).body
+    assert got == NASTY
+
+
+def test_max_bytes_past_a_c_ssize_t_cannot_raise_the_client_cap(build):
+    wire = gzip.compress(b"x" * 100)
+    script = Script(lambda req: R(200, headers={"Content-Encoding": "gzip"}, content=wire))
+    exc = expect(H.HttpError, build(script, retry=ONCE, max_response_bytes=50).get_bytes,
+                 NODE_URL, max_bytes=2**70)
+    assert "once decoded" in str(exc)
+
+
 # --------------------------------------------------------------------------- #
 # 5. Deadlines
 # --------------------------------------------------------------------------- #
@@ -567,6 +592,92 @@ def test_deadline_s_that_is_not_a_positive_finite_number_is_an_error_before_any_
     script = Script(reply(200, b"x"))
     expect(H.HttpError, build(script).get_bytes, NODE_URL, deadline_s=bad)
     assert script.n == 0
+
+
+@pytest.mark.parametrize("bad", [10**400, 10**30, 86401, 86400.5, 1e300, 1e308])
+def test_deadline_s_above_a_day_or_too_large_to_be_a_float_is_an_http_error_not_an_overflow(
+        build, bad):
+    # `math.isfinite(10**400)` and `float(10**400)` raise OverflowError; a value that does
+    # convert (1e300) would reach `time.sleep` through the clamp and overflow there.
+    script = Script(reply(200, b"x"))
+    exc = expect(H.HttpError, build(script).get_bytes, NODE_URL, deadline_s=bad)
+    assert "deadline_s" in str(exc) and "86400" in str(exc)
+    assert script.n == 0
+
+
+@pytest.mark.parametrize("ok", [1, 0.001, 86400, 86400.0])
+def test_deadline_s_up_to_a_day_is_taken(build, ok):
+    assert build(Script(reply(200, b"x"))).get_bytes(NODE_URL, deadline_s=ok).body == b"x"
+
+
+def test_a_day_long_budget_clamps_even_an_infinite_retry_after_to_a_sleepable_time(
+        build, monkeypatch):
+    # The reason for the ceiling: with the longest budget a sleep is still clamped to a value
+    # `time.sleep` takes, whatever the server asks for (a 400-digit Retry-After parses to inf).
+    fake = FakeTime()
+    monkeypatch.setattr(H, "time", fake)
+    script = Script(reply(503, headers={"Retry-After": "9" * 400}))
+    expect(H.HttpError, build(script, retry=FAST).get_bytes, NODE_URL, deadline_s=86400)
+    assert fake.sleeps and max(fake.sleeps) <= 86400.0
+
+
+def test_a_response_that_arrives_after_the_budget_is_refused_at_its_first_body_chunk(
+        build, monkeypatch):
+    # `deadline_s` does not interrupt the wait for the headers (see the real-socket row
+    # below); what it guarantees is that nothing is accepted once the budget is spent.
+    fake = FakeTime()
+    monkeypatch.setattr(H, "time", fake)
+
+    def late(request):
+        fake.now += 5.0                               # inside timeout_s=10, past deadline_s=1
+        return R(200, b"ab")
+    script = Script(late)
+    exc = expect(H.HttpError, build(script, retry=FAST).get_bytes, NODE_URL, deadline_s=1)
+    assert "deadline" in str(exc) and script.n == 1
+
+
+def test_slow_response_headers_are_not_cut_by_deadline_s_but_the_late_body_is_refused():
+    """The limit stated in the docs, pinned over a real loopback socket: the server sends the
+    status line and then one header line every 0.1 s (each socket read is far inside
+    ``timeout_s``), so ``deadline_s=0.2`` does not end the wait for the headers; the body read
+    then refuses the late response. The wait is therefore at least the whole drip."""
+    drip, lines = 0.1, 6
+    srv = socket.create_server(("127.0.0.1", 0))
+    srv.settimeout(15)
+    port = srv.getsockname()[1]
+    served = []
+
+    def serve():
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(15)
+            conn.recv(65536)
+            served.append("request")
+            conn.sendall(b"HTTP/1.1 200 OK\r\n")
+            for i in range(lines):
+                time.sleep(drip)
+                conn.sendall(b"X-Pad-%d: y\r\n" % i)
+            conn.sendall(b"Content-Length: 2\r\n\r\nab")
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    client = H.EbsiHttpClient(allowed_hosts={"127.0.0.1"}, timeout_s=5.0, retry=ONCE)
+    client._guard_host = lambda url: None             # https-only guard: this is plain loopback
+    started = time.perf_counter()
+    try:
+        exc = expect(H.HttpError, client.get_bytes, f"http://127.0.0.1:{port}/x",
+                     deadline_s=0.2)
+        elapsed = time.perf_counter() - started
+    finally:
+        client.close()
+        srv.close()
+        thread.join(5)
+    assert "read exceeded its deadline" in str(exc)
+    assert served == ["request"]
+    assert elapsed >= drip * lines * 0.9               # the headers were waited for, not cut
 
 
 # --------------------------------------------------------------------------- #
@@ -966,8 +1077,9 @@ def test_a_slow_503_storm_cannot_outlast_the_helpers_deadline(build, monkeypatch
     assert fake.sleeps and sum(fake.sleeps) <= 5.0
 
 
-@pytest.mark.parametrize("bad", [0, -3, float("nan"), float("inf"), True, "30"])
-def test_the_helpers_deadline_must_be_positive_and_finite(build, bad):
+@pytest.mark.parametrize(
+    "bad", [0, -3, float("nan"), float("inf"), True, "30", 10**400, 86401, 1e300])
+def test_the_helpers_deadline_must_be_positive_finite_and_at_most_a_day(build, bad):
     script = Script(_list_body)
     expect(H.HttpError, H.get_tnl_files, tnl_client(build, script), deadline_s=bad)
     assert script.n == 0

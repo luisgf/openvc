@@ -22,9 +22,18 @@ All notable changes to **openvc** are documented here. The format follows
     A 404 is `HttpNotFound`; an unsolicited 304, any other 3xx, a 204, a 206 and a 403 are
     `HttpError` with `status`, not retried, and **the body of a non-200 response is never
     read** (a 403 body can be a firewall page). `max_bytes` can only lower the client's
-    `max_response_bytes`. `deadline_s` is an overall budget across attempts and sleeps: a
-    `Retry-After` or backoff sleep is clamped to what remains, and a spent budget is a plain
-    `HttpError`.
+    `max_response_bytes`. `deadline_s` (a number of seconds above 0 and at most 86 400, one
+    day; anything else, a 400-digit `int` and `1e300` included, is `HttpError` before any I/O)
+    is a budget over the attempts, the sleeps between them (a `Retry-After` or backoff sleep is
+    clamped to what remains) and the body read, which checks the clock after every chunk it
+    receives; a spent budget is a plain `HttpError`. **It is not a ceiling on the wait for one
+    response's headers**: the connect, the TLS handshake and each socket read are bounded only
+    by `timeout_s` each, so a server that sends its headers slowly enough to keep every read
+    under `timeout_s` is not cut off (measured: a 16-line header drip of 0.5 s per line held a
+    `deadline_s=1.0` call (`timeout_s=2.0`) for 8.1 s, then the late body was refused; the HTTP/1.1 stack's
+    header-size limit is the only other bound, 100 KiB in httpcore 1.0.9, which is not a time
+    bound). `get_json` has the same property. A caller that needs a hard wall-clock limit
+    enforces it outside the call.
   - **The decoded size is bounded before it is allocated.** The body is read with
     `iter_raw()`, so httpx decodes nothing; the wire size and a `Content-Length` over the cap
     are refused before a chunk is appended; a single `gzip` or `deflate` coding is decoded
@@ -46,12 +55,15 @@ All notable changes to **openvc** are documented here. The format follows
     the body and the validator only saves bandwidth.
   - **`for_tnl(**kwargs)`** builds a client whose allow-list is `{tnl.ebsi.eu}` alone, never
     the node set a list names, so a poisoned list cannot widen where the list itself is
-    fetched (`allowed_hosts` cannot be passed: `TypeError`). It keeps no cookies, and its
+    fetched (`allowed_hosts` cannot be passed: `TypeError`). It keeps no cookies (only this
+    client: `get_tnl_files` accepts any client whose allow-list is `{tnl.ebsi.eu}`, and one you
+    build yourself keeps whatever its cookie jar accepts until #317), and its
     `max_response_bytes` defaults to 64 KiB. `EbsiHttpClient` gains a read-only
     `allowed_hosts` property (a `frozenset`).
   - **`get_tnl_files(client=None, *, etags=None, deadline_s=30.0) -> dict[str, BytesResponse]`**
     makes four sequential requests to `https://tnl.ebsi.eu/<name>` (`TNL_FILES`: `trusted-keys.json`,
-    `trusted-keys.json.sig`, `tnl.json`, `tnl.json.sig`) under one overall deadline, with a
+    `trusted-keys.json.sig`, `tnl.json`, `tnl.json.sig`) sharing one `deadline_s` budget (what it
+    bounds is stated above: not the wait for one response's headers), with a
     per-file cap (`TNL_MAX_BYTES`: 64 KiB for the JSON files, 4 KiB for the signatures). It takes no
     URL, refuses with `HttpForbiddenHost` before any request a `client` whose allow-list is
     not exactly `{tnl.ebsi.eu}`, and is all-or-nothing: a failure propagates with its class
@@ -70,13 +82,35 @@ All notable changes to **openvc** are documented here. The format follows
     four files; (2) `Accept-Encoding: identity` yields no `Content-Encoding`; (3) every file
     carries a strong `ETag` (quoted, no `W/`); (4) `If-None-Match` with it yields a 304 with
     no content on all four.
-  - **Defaults pending maintainer confirmation:** the per-file caps and the 30 s overall
-    deadline are proposals, not facts about the publisher (ADR-0001 D5's 10 s per-request
-    timeout stays); `for_tnl` defaults `max_response_bytes` to 64 KiB; the no-cookie policy
-    is installed by `for_tnl` only (a private `_refuse_cookies`), leaving `get_json`'s
-    behaviour untouched until #317 decides it for every client; a sleep is clamped to the
-    budget rather than failing early; an empty `Content-Encoding` is read as absent; a
-    `Content-Length` that is not a plain number is ignored (the streamed cap still applies).
+  - **Defaults pending maintainer confirmation** (none is a fact about EBSI; the PR body says
+    for each what the other option would change):
+    - the per-file caps and the 30 s `deadline_s` of `get_tnl_files` are proposals (ADR-0001
+      D5's 10 s per-request `timeout_s` stays);
+    - `deadline_s` is documented, not enforced, on the wait for one response's headers (the
+      alternative clamps each request's httpx timeout to the remaining budget, and bounding a
+      header drip needs a watchdog or a custom transport);
+    - `deadline_s` has a ceiling of one day (`_MAX_DEADLINE_S`, as `MAX_LEEWAY_S` does for the
+      leeway): without one, `deadline_s=1e300` reaches `time.sleep` through the clamp with a
+      hostile `Retry-After` and raises a bare `OverflowError`;
+    - a sleep is clamped to the budget and the call then fails, rather than failing at once;
+      a spent budget is a plain `HttpError`, not a `HttpTransientExhausted`;
+    - `for_tnl` defaults `max_response_bytes` to 64 KiB;
+    - the no-cookie policy is installed by `for_tnl` only (a private `_refuse_cookies`),
+      leaving `get_json`'s behaviour untouched until #317 decides it for every client;
+    - the argument checks (`etag`, `max_bytes`, `deadline_s`) run before the host guard, so a
+      call that gets both wrong reports `HttpError`, not `HttpForbiddenHost` (no I/O either
+      way);
+    - an empty `Content-Encoding` is read as absent; a `Content-Length` that is not a plain
+      number is ignored (the streamed cap still applies);
+    - the validator check is only "1 to 256 visible ASCII characters, not `*`", so an `etag`
+      with a comma is sent verbatim (a server may read it as a list);
+    - `max_bytes=0` is accepted (any non-empty body is then over the cap);
+    - `get_tnl_files` names the failing file by rewriting the exception message in place
+      (`"<file>: <message>"`), keeping the class, `status`, `url` and `__cause__`;
+    - a second gzip member is refused, not concatenated (bytes after the end of the first
+      stream are `MalformedRegistryResponse`).
+  - **Sync only:** the EBSI HTTP client has no async twin, so neither do `get_bytes`,
+    `for_tnl` and `get_tnl_files`.
   - **Mocking note:** `get_bytes` reads the raw stream, so a test double must build its body
     as a stream (`httpx.Response(200, stream=httpx.ByteStream(b"..."))`);
     `httpx.Response(200, content=b"...")` is decoded eagerly by httpx and its stream marked
@@ -84,7 +118,10 @@ All notable changes to **openvc** are documented here. The format follows
   - **Not changed:** `get_json` keeps its per-chunk inflation (`iter_bytes` yields an
     already-decoded chunk, so its cap fires after the allocation), its uncapped
     `resp.read()` drain of a non-200 body and its unbounded `Retry-After` sleep when no
-    budget is given. They are outside this change and are tracked separately.
+    budget is given, which is a bare `OverflowError` once the header is longer than
+    `time.sleep` takes (about 9.2e9 s, so any 11-digit value; measured; `get_bytes` without a
+    `deadline_s` has it too, and `get_tnl_files` always passes one). They are outside this
+    change and are tracked separately.
 
 ### Tests
 
@@ -92,7 +129,10 @@ All notable changes to **openvc** are documented here. The format follows
   the transport injected, so `follow_redirects`, the default headers and the cookie policy
   are the shipped ones; Hypothesis properties on the bytes handed to zlib, the
   `Content-Encoding` and `ETag` values and the supplied validator), the `get_bytes` parity
-  rows in `tests/test_ebsi_http.py`, and the recorded `tnl.ebsi.eu` header sets.
+  rows in `tests/test_ebsi_http.py`, and the recorded `tnl.ebsi.eu` header sets. The fix round
+  adds rows for a `deadline_s` above a day or too large for a float, a client cap of `2**63`
+  or more with a `gzip` / `deflate` body, a response that arrives after the budget, and a
+  real loopback server that drips its headers past `deadline_s`.
 
 ### Docs
 
