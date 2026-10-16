@@ -63,14 +63,38 @@ def nesting_exceeds(value: Any, limit: int = MAX_DEPTH) -> bool:
     return False
 
 
-def loads(data: str | bytes | bytearray) -> Any:
+def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook`` that refuses a repeated member name (``json`` keeps the last
+    one, so the same bytes would read as two different documents in two parsers)."""
+    seen: dict[str, Any] = {}
+    for name, member in pairs:
+        if name in seen:
+            raise ValueError("JSON object has a duplicate member name")
+        seen[name] = member
+    return seen
+
+
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"JSON constant {name} is not allowed")
+
+
+def loads(data: str | bytes | bytearray, *, reject_ambiguous: bool = False) -> Any:
     """``json.loads`` for untrusted input.
 
     Raises ``ValueError`` on malformed JSON (a ``JSONDecodeError`` stays one), on
     nesting too deep for the interpreter to parse, and on nesting deeper than
-    :data:`MAX_DEPTH`."""
+    :data:`MAX_DEPTH`.
+
+    With *reject_ambiguous* it also refuses what RFC 8259 leaves to the implementation
+    and parsers settle differently: a repeated object member name (``json`` keeps the
+    last) and the non-JSON constants ``NaN`` / ``Infinity`` / ``-Infinity``. It is for
+    signed documents whose exact bytes more than one reader will interpret."""
     try:
-        value = json.loads(data)
+        if reject_ambiguous:
+            value = json.loads(data, object_pairs_hook=_reject_duplicate_members,
+                               parse_constant=_reject_constant)
+        else:
+            value = json.loads(data)
     except RecursionError as exc:              # deeper than the interpreter can parse
         raise ValueError("JSON is nested too deeply to parse") from exc
     if nesting_exceeds(value):

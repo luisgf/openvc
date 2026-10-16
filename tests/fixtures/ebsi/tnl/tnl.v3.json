@@ -1,0 +1,198 @@
+{
+  "version": 3,
+  "keysVersion": 1,
+  "issued": "2026-10-05T13:16:59Z",
+  "expires": "2026-12-15T13:16:59Z",
+  "environments": {
+    "pilot": [
+      {
+        "url": "https://api-pilot.ebsi.grnet.gr",
+        "country": "GR"
+      },
+      {
+        "url": "https://api-pilot.ebsi.dmrid.gov.cy",
+        "country": "CY"
+      },
+      {
+        "url": "https://api-pilot.ebsi.digital.gob.es",
+        "country": "ES"
+      },
+      {
+        "url": "https://api-pilot.ebsi.rediris.es",
+        "country": "ES"
+      },
+      {
+        "url": "https://api-pilot.ebsi.gov.mt",
+        "country": "MT"
+      },
+      {
+        "url": "https://api-pilot.ebsi.iti.gr",
+        "country": "GR"
+      },
+      {
+        "url": "https://api-pilot.ebsi.fnmt.es",
+        "country": "ES"
+      },
+      {
+        "url": "https://api-pilot.ebsi.nic.cz",
+        "country": "CZ"
+      },
+      {
+        "url": "https://api-pilot.ebsi.uefiscdi.ro",
+        "country": "RO"
+      },
+      {
+        "url": "https://api-pilot.ebsi.veloxoft.com",
+        "country": "BG"
+      },
+      {
+        "url": "https://api-pilot.ebsi.blockchaincc.com",
+        "country": "HU"
+      },
+      {
+        "url": "https://api-pilot.ebsi.rinis.nl",
+        "country": "NL"
+      },
+      {
+        "url": "https://api-pilot.ebsi.node1.nask.pl",
+        "country": "PL"
+      },
+      {
+        "url": "https://api-pilot.ebsi.vik.bme.hu",
+        "country": "HU"
+      },
+      {
+        "url": "https://api-pilot.ebsi.stsisp.ro",
+        "country": "RO"
+      },
+      {
+        "url": "https://api-pilot.ebsi.fit.vutbr.cz",
+        "country": "CZ"
+      },
+      {
+        "url": "https://api-pilot.ebsi.incm.pt",
+        "country": "PT"
+      },
+      {
+        "url": "https://api-pilot.ebsi.blockchaineum.hu",
+        "country": "HU"
+      },
+      {
+        "url": "https://api-pilot.ebsi.exaion.fr",
+        "country": "FR"
+      },
+      {
+        "url": "https://api-pilot.ebsi.belastingdienst.trafficmanager.net",
+        "country": "NL"
+      },
+      {
+        "url": "https://api-pilot.ebsi.web3connect.nl",
+        "country": "NL"
+      },
+      {
+        "url": "https://api-pilot.ebsi.upt.ro",
+        "country": "RO"
+      },
+      {
+        "url": "https://api-pilot.ebsi.howest.be",
+        "country": "BE"
+      }
+    ],
+    "preprod": [
+      {
+        "url": "https://api-preprod.ebsi.bosa.belnet.be",
+        "country": "BE"
+      },
+      {
+        "url": "https://api-preprod.ebsi.grnet.gr",
+        "country": "GR"
+      },
+      {
+        "url": "https://api-preprod.ebsi.dmrid.gov.cy",
+        "country": "CY"
+      },
+      {
+        "url": "https://api-preprod.ebsi.digital.gob.es",
+        "country": "ES"
+      },
+      {
+        "url": "https://api-preprod.ebsi.iti.gr",
+        "country": "GR"
+      },
+      {
+        "url": "https://api-preprod.ebsi.edelivery.lt",
+        "country": "LT"
+      },
+      {
+        "url": "https://api-preprod.ebsi.fnmt.es",
+        "country": "ES"
+      },
+      {
+        "url": "https://api-preprod.ebsi.node0.veloxoft.com",
+        "country": "BG"
+      },
+      {
+        "url": "https://api-preprod.ebsi.node1.veloxoft.com",
+        "country": "BG"
+      },
+      {
+        "url": "https://api-preprod.ebsi.node1.nask.pl",
+        "country": "PL"
+      },
+      {
+        "url": "https://api-preprod.ebsi.incm.pt",
+        "country": "PT"
+      },
+      {
+        "url": "https://api-preprod.ebsi.upt.ro",
+        "country": "RO"
+      },
+      {
+        "url": "https://api-preprod.ebsi.howest.be",
+        "country": "BE"
+      }
+    ],
+    "prod": [
+      {
+        "url": "https://api.ebsi.edelivery.lt",
+        "country": "LT"
+      },
+      {
+        "url": "https://api.ebsi.uefiscdi.ro",
+        "country": "RO"
+      },
+      {
+        "url": "https://api.ebsi.uefiscdi.gov.ro",
+        "country": "RO"
+      },
+      {
+        "url": "https://api.ebsi.node0.veloxoft.com",
+        "country": "BG"
+      },
+      {
+        "url": "https://api.ebsi.node1.veloxoft.com",
+        "country": "BG"
+      },
+      {
+        "url": "https://api.ebsi.node1.nask.pl",
+        "country": "PL"
+      },
+      {
+        "url": "https://api.ebsi.stsisp.ro",
+        "country": "RO"
+      },
+      {
+        "url": "https://api.ebsi.incm.pt",
+        "country": "PT"
+      },
+      {
+        "url": "https://api.ebsi.upt.ro",
+        "country": "RO"
+      },
+      {
+        "url": "https://api.ebsi.iti.gr",
+        "country": "GR"
+      }
+    ]
+  }
+}

@@ -1,0 +1,239 @@
+{
+  "version": 4,
+  "keysVersion": 1,
+  "issued": "2026-10-06T13:33:18Z",
+  "expires": "2027-01-04T13:33:18Z",
+  "environments": {
+    "pilot": [
+      {
+        "url": "https://api-pilot.ebsi.grnet.gr",
+        "country": "GR",
+        "organisation": "Ministry of Digital Governance / GRNET"
+      },
+      {
+        "url": "https://api-pilot.ebsi.dmrid.gov.cy",
+        "country": "CY",
+        "organisation": "Red Mullet Tech Ltd"
+      },
+      {
+        "url": "https://api-pilot.ebsi.digital.gob.es",
+        "country": "ES",
+        "organisation": "General Secretary for Digital Administration (SGAD)"
+      },
+      {
+        "url": "https://api-pilot.ebsi.rediris.es",
+        "country": "ES",
+        "organisation": "RedIRIS"
+      },
+      {
+        "url": "https://api-pilot.ebsi.gov.mt",
+        "country": "MT",
+        "organisation": "Malta Information Technology Agency / Malta Digital Innovation Authority"
+      },
+      {
+        "url": "https://api-pilot.ebsi.iti.gr",
+        "country": "GR",
+        "organisation": "Centre of Research & Technology - Hellas (CERTH)"
+      },
+      {
+        "url": "https://api-pilot.ebsi.fnmt.es",
+        "country": "ES",
+        "organisation": "National Mint / FNMT"
+      },
+      {
+        "url": "https://api-pilot.ebsi.nic.cz",
+        "country": "CZ",
+        "organisation": "CZ.NIC, z. s. p. o."
+      },
+      {
+        "url": "https://api-pilot.ebsi.uefiscdi.ro",
+        "country": "RO",
+        "organisation": "Executive Agency for Higher Education (Uefiscdi)"
+      },
+      {
+        "url": "https://api-pilot.ebsi.veloxoft.com",
+        "country": "BG",
+        "organisation": "Veloxoft Ltd"
+      },
+      {
+        "url": "https://api-pilot.ebsi.blockchaincc.com",
+        "country": "HU",
+        "organisation": "BLOCKCHAIN COMPETENCE CENTER KFT"
+      },
+      {
+        "url": "https://api-pilot.ebsi.rinis.nl",
+        "country": "NL",
+        "organisation": "Stichting RINIS"
+      },
+      {
+        "url": "https://api-pilot.ebsi.node1.nask.pl",
+        "country": "PL",
+        "organisation": "Research and Academic Computer Network (NASK)"
+      },
+      {
+        "url": "https://api-pilot.ebsi.vik.bme.hu",
+        "country": "HU",
+        "organisation": "Budapest University of Technology and Economics"
+      },
+      {
+        "url": "https://api-pilot.ebsi.stsisp.ro",
+        "country": "RO",
+        "organisation": "The Special Telecommunications Service"
+      },
+      {
+        "url": "https://api-pilot.ebsi.fit.vutbr.cz",
+        "country": "CZ",
+        "organisation": "Brno University of Technology"
+      },
+      {
+        "url": "https://api-pilot.ebsi.incm.pt",
+        "country": "PT",
+        "organisation": "Imprensa Nacional - Casa da Moeda (INCM)"
+      },
+      {
+        "url": "https://api-pilot.ebsi.blockchaineum.hu",
+        "country": "HU",
+        "organisation": "Blockchaineum Group Kft"
+      },
+      {
+        "url": "https://api-pilot.ebsi.exaion.fr",
+        "country": "FR",
+        "organisation": "Exaion"
+      },
+      {
+        "url": "https://api-pilot.ebsi.belastingdienst.trafficmanager.net",
+        "country": "NL",
+        "organisation": "Dutch Tax and Customs Administration"
+      },
+      {
+        "url": "https://api-pilot.ebsi.web3connect.nl",
+        "country": "NL",
+        "organisation": "SURF Utrecht (EBSI4NL.EU)"
+      },
+      {
+        "url": "https://api-pilot.ebsi.upt.ro",
+        "country": "RO",
+        "organisation": "Politehnica University of Timisoara"
+      },
+      {
+        "url": "https://api-pilot.ebsi.howest.be",
+        "country": "BE",
+        "organisation": "Howest University"
+      }
+    ],
+    "preprod": [
+      {
+        "url": "https://api-preprod.ebsi.grnet.gr",
+        "country": "GR",
+        "organisation": "Ministry of Digital Governance / GRNET"
+      },
+      {
+        "url": "https://api-preprod.ebsi.dmrid.gov.cy",
+        "country": "CY",
+        "organisation": "Red Mullet Tech Ltd"
+      },
+      {
+        "url": "https://api-preprod.ebsi.digital.gob.es",
+        "country": "ES",
+        "organisation": "General Secretary for Digital Administration (SGAD)"
+      },
+      {
+        "url": "https://api-preprod.ebsi.iti.gr",
+        "country": "GR",
+        "organisation": "Centre of Research & Technology - Hellas (CERTH)"
+      },
+      {
+        "url": "https://api-preprod.ebsi.edelivery.lt",
+        "country": "LT",
+        "organisation": "eDelivery LT"
+      },
+      {
+        "url": "https://api-preprod.ebsi.fnmt.es",
+        "country": "ES",
+        "organisation": "National Mint / FNMT"
+      },
+      {
+        "url": "https://api-preprod.ebsi.node0.veloxoft.com",
+        "country": "BG",
+        "organisation": "Veloxoft Ltd"
+      },
+      {
+        "url": "https://api-preprod.ebsi.node1.veloxoft.com",
+        "country": "BG",
+        "organisation": "Veloxoft Ltd"
+      },
+      {
+        "url": "https://api-preprod.ebsi.node1.nask.pl",
+        "country": "PL",
+        "organisation": "Research and Academic Computer Network (NASK)"
+      },
+      {
+        "url": "https://api-preprod.ebsi.incm.pt",
+        "country": "PT",
+        "organisation": "Imprensa Nacional - Casa da Moeda (INCM)"
+      },
+      {
+        "url": "https://api-preprod.ebsi.upt.ro",
+        "country": "RO",
+        "organisation": "Politehnica University of Timisoara"
+      },
+      {
+        "url": "https://api-preprod.ebsi.howest.be",
+        "country": "BE",
+        "organisation": "Howest University"
+      }
+    ],
+    "prod": [
+      {
+        "url": "https://api.ebsi.edelivery.lt",
+        "country": "LT",
+        "organisation": "eDelivery LT"
+      },
+      {
+        "url": "https://api.ebsi.uefiscdi.ro",
+        "country": "RO",
+        "organisation": "Executive Agency for Higher Education (Uefiscdi)"
+      },
+      {
+        "url": "https://api.ebsi.uefiscdi.gov.ro",
+        "country": "RO",
+        "organisation": "Executive Agency for Higher Education (Uefiscdi)"
+      },
+      {
+        "url": "https://api.ebsi.node0.veloxoft.com",
+        "country": "BG",
+        "organisation": "Veloxoft Ltd"
+      },
+      {
+        "url": "https://api.ebsi.node1.veloxoft.com",
+        "country": "BG",
+        "organisation": "Veloxoft Ltd"
+      },
+      {
+        "url": "https://api.ebsi.node1.nask.pl",
+        "country": "PL",
+        "organisation": "Research and Academic Computer Network (NASK)"
+      },
+      {
+        "url": "https://api.ebsi.stsisp.ro",
+        "country": "RO",
+        "organisation": "The Special Telecommunications Service"
+      },
+      {
+        "url": "https://api.ebsi.incm.pt",
+        "country": "PT",
+        "organisation": "Imprensa Nacional - Casa da Moeda (INCM)"
+      },
+      {
+        "url": "https://api.ebsi.upt.ro",
+        "country": "RO",
+        "organisation": "Politehnica University of Timisoara"
+      },
+      {
+        "url": "https://api.ebsi.iti.gr",
+        "country": "GR",
+        "organisation": "Centre of Research & Technology - Hellas (CERTH)"
+      }
+    ]
+  }
+}

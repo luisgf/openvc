@@ -32,6 +32,9 @@ harness directly on the shared CBOR decoder.
 | LEB128 varint | `read_varint` | `test_fuzz_codecs.py:86-92` |
 | bitstring status (MSB-first) | `encode_bitstring`/`decode_bitstring` | `test_fuzz_codecs.py:95-114` |
 | token status list (LSB-first) | `encode_status_list`/`decode_status_list` | `test_fuzz_codecs.py:101-152` |
+| OpenPGP signature files, packets, subpackets, MPIs (EBSI TNL reader) | `read_signatures`, `_packets`, `_subpackets`, `_mpi` on arbitrary bytes; every prefix and structure-aware flips, inserts, deletes and truncations of the real `.sig` files (an accepted mutation must give the identical result) | `test_ebsi_tnl_synthetic.py` (`test_fuzz_signature_reader_on_arbitrary_bytes`, `test_fuzz_the_low_level_readers`, `test_fuzz_mutated_signature_files_give_the_same_answer_or_a_typed_error`, `test_every_prefix_of_a_key_block_and_a_signature_file_is_typed`) |
+| OpenPGP armor and key blocks | `dearmor`, `read_public_key_block` on arbitrary text; mutations of the real blocks (the same fingerprint must mean the same key) | `test_ebsi_tnl_synthetic.py` (`test_fuzz_dearmor_and_key_block_reader_on_arbitrary_text`, `test_fuzz_mutated_key_blocks_give_the_same_key_or_a_typed_error`) |
+| TNL verifier and schema | `verify_node_list` on arbitrary bytes; `_parse_list` / `_parse_key_list` on generated and near-valid JSON (an accepted document must honour every rule) | `test_ebsi_tnl_synthetic.py` (`test_fuzz_the_verifier_on_arbitrary_bytes`, `test_fuzz_the_schema_validators_on_generated_json`, `test_fuzz_near_valid_node_lists_are_accepted_well_formed_or_typed`) |
 
 Plus two inline **MUST-REJECT corpora** (`test_fuzz_codecs.py:117-152`) —
 regression cases the fuzzers found (bad-UTF8 CBOR, map-as-key, truncated
@@ -59,6 +62,7 @@ facing parser is currently guarded by **example-based negative tests only**.
 | `jwe` | ❌ | ✅ rich (`test_jwe.py:167-294`) | **Gap** |
 | `trustlist/parse` (XML) | ❌ | ✅ XXE/entity-bomb/oversize (`test_trustlist.py:104-144`) | **Gap** |
 | `trustlist/xades` (XML) | ❌ | ✅ DTD/tamper/forged (`test_trustlist_xades.py:123-229`) | **Gap** |
+| `openvc_ebsi/_openpgp` + `nodes` (EBSI Trusted Nodes List) | ✅ (derandomized Hypothesis, `test_ebsi_tnl_synthetic.py`) | ✅ the real chain and every tamper the ADR measured (`test_ebsi_tnl_golden.py`); a profile table, framing lies, MPIs, armor and 99 schema cases against chains the test writer signs; 51-mutant check | Strong |
 
 **Highest-value property-fuzz targets:** `cose`, `mdoc`, `jwe`, and the two XML
 parsers — they consume the most complex attacker-controlled structure and
@@ -256,6 +260,35 @@ theme, most recent first: entries up to 2026-07-29 are keyed by short commit has
 later ones by issue number or advisory id, with their failure class. The 2026-07-10
 waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 (v1.25.0–v1.31.2) are filed by theme below.
+
+**EBSI Trusted Nodes List verifier (ADR-0009)**
+- `#319` — *a new trust root and a new hand-written parser of attacker bytes* —
+  `openvc_ebsi.nodes.verify_node_list` over a minimal OpenPGP reader. Built to the order
+  "a stage never reads bytes the previous one authenticated": only the two `.sig` files (4 KiB)
+  are parsed before a signature is checked. Checked three ways before review. (1) The real
+  chain verifies, and every tamper the ADR measured is rejected with its exact class
+  (changed host, flipped bit in either document or in `r`, `s` past the digest prefix, the
+  prefix and the hashed area, an appended byte, wrong anchor, wrong file, below threshold,
+  rollback, each time boundary). (2) A 51-mutant check of the new code, each mutant killed
+  by at least one test: the issue's list (the unhashed issuer, packets counted for signers, a
+  subkey as signer, a skipped invalid signature, the digest trailer, the 16-bit prefix,
+  `>` for `>=` at the threshold and at `expires`, the 90-day cap, the key-list floor against
+  `keysVersion`, `match` for `fullmatch`, `bool` as an integer, the equal-hash rule, a floor,
+  the fingerprint recompute, parsing before authenticating, the revocation, expiry and
+  critical-subpacket rules) plus a canonical-`s` rule that real signatures violate. (3) GnuPG
+  2.5.24 as an independent implementation: it accepts the real chain and a chain the test
+  writer produced (valid detached signatures and keys), and rejects the tampered variants the
+  reader rejects; it counts one good signature where the verifier's threshold rejects (a
+  policy difference, not a fact difference), and accepts a high-`s` malleation as the reader
+  does. What the mutation run found: a parser differential, not a code bug, that no test
+  covered. A new-format header whose tag bits read as tag 2 (`0xC8`) or tag 6 (`0xD8`) in the
+  old format was refused for the wrong reason by the cases first written (their tag bits read
+  as 0 or 1, not 2 or 6), so removing the bit-6 check survived; both are now cases that only the explicit
+  check refuses. Findings of the adversarial review pass over this PR are added below.
+- Not covered, by design (ADR-0009 Option C): self-signature and binding checks, user IDs,
+  subkeys, trust models, key expiry and revocation beyond refusing them, text signatures,
+  v5/v6, new-format headers, armored `.sig` files, SHA-384/512 and other curves. Each is a
+  typed `OpenPgpError` and a table entry plus a vector away from supported.
 
 **July 2026 hardening waves (milestones #9–#10)**
 - `90404f9` — depth wave: mdoc DS/IACA profile, status-issuer binding, XAdES &

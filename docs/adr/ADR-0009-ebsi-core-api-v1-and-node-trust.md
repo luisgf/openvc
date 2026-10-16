@@ -1,7 +1,15 @@
 # ADR-0009 — EBSI Core API v1, and how `openvc_ebsi` trusts a production node
 
-**Status:** Proposed — a design for the maintainer to decide. It ships no code and changes
-nothing under `src/`.
+**Status:** Proposed — a design for the maintainer to decide. As written it shipped no code
+and changed nothing under `src/`.
+**Implemented so far** ([#319](https://github.com/luisgf/openvc/issues/319), unreleased; the
+maintainer words this line): D2, the pure verifier `openvc_ebsi.nodes.verify_node_list` over
+a minimal ECDSA-only OpenPGP reader, and D3's anchor and two version floors (the list itself is
+not vendored). The issue's decisions 1 to 4 were taken as its stated defaults (P-256 and
+SHA-256 only; the pin justified by consistency across Europeum's channels only; required
+`last_accepted_*` pairs; `min_threshold` default 2; the extra reject rules), each listed
+under "Defaults pending maintainer confirmation" in the CHANGELOG. D1 and D4 to D8 are not
+implemented.
 **Date:** 2026-10-16 (revised the same day after review: D2, D3, D5 and the measured facts)
 **Context owner:** `openvc_ebsi.http`, `openvc_ebsi.versioning` (and a future
 `openvc_ebsi.nodes`)
