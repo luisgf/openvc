@@ -195,6 +195,27 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   back, so consecutive reads may reach different backends of one node.
   Never resolve `did:web` through it — `did:web` has its own guarded fetch
   (see [Resolving issuer keys](Resolving-Issuer-Keys)).
+- **Optional resolved-address guard** (v1.37.0): the allow-list matches a *name* and, by
+  default, trusts DNS for it. Pass `address_guard=AddressGuard()` to `EbsiHttpClient` or
+  `for_ebsi` and every request that misses the cache resolves the host, refuses it with
+  `HttpForbiddenAddress` if **any** address is not globally routable (the rules
+  `openvc.fetch` applies to `did:web`: private, loopback, link-local, cloud metadata,
+  multicast, CGNAT, site-local `fec0::/10`, NAT64, 6to4, Teredo and the rest), and
+  connects to one validated
+  address while the TLS name, the certificate check and `Host` stay the host name. It is
+  **off by default** (a deployment with split-horizon DNS or a private mirror would
+  break), it sends `Connection: close` (no keep-alive: a reused connection would answer
+  for a second name with no certificate check for it), it rotates through the validated
+  addresses on a retry (one address per attempt, so under the default `RetryPolicy` only
+  the first three addresses of an answer are ever tried; set `RetryPolicy(attempts=...)`
+  to at least the number of addresses you must reach), and it refuses to be built behind an
+  environment proxy
+  (`HttpAddressGuardUnavailable`) because the proxy would resolve and connect by itself.
+  It does not stop an attacker who also holds a valid certificate for a public address, a
+  dishonest listed node, or anything about registry content. There are no exemptions: to
+  reach an internal mirror, build a second client without the guard. Use it as
+  `for_ebsi("pilot", address_guard=AddressGuard())`, with `AddressGuard` from
+  `openvc_ebsi.http`.
 - **The document must be for the DID asked**: `DidEbsiResolver.resolve(did)` raises
   `DidResolutionError` unless the registry document's `id` is exactly `did`, as `did:web`
   does (a missing, empty, non-string or differently-cased `id`, and a DID URL such as

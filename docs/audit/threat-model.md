@@ -220,8 +220,10 @@ finite input", with no explicit constant.
   uses, R4), redirects off, TLS-verify on,
   5 MiB cap, keeps no cookie jar (a `Set-Cookie` is dropped and nothing is sent back, so a
   node's affinity cookie cannot pin a retry or cross to a sibling host; #317). Purpose is
-  to block registry-supplied `href` pivots; it matches the host and the port but does
-  **not** IP-pin (R4). `did:web` must **never** be
+  to block registry-supplied `href` pivots; it matches the host and the port but by default does
+  **not** IP-pin (R4); the opt-in `address_guard=AddressGuard()` (v1.37.0, #322) resolves the
+  host, refuses it if any address is not globally routable and connects to the validated
+  address, with keep-alive off. `did:web` must **never** be
   resolved through it (its allow-list would reject every legitimate host).
   **The guard admits an origin** (#318, v1.37.0): `EbsiHttpClient._guard_host` reads the
   URL through `openvc_ebsi._url.read_origin` and admits `https` on a listed host at port
@@ -403,26 +405,54 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   bound. *Impact:* CPU/allocation pressure under a large but well-formed
   document; no wrong-accept. *Consider:* an explicit element-count and/or
   cumulative-size cap.
-- **R4 — EBSI client is an origin allow-list (host and port 443), no IP-pin.**
-  `src/openvc_ebsi/http.py` trusts DNS for allow-listed EBSI hosts and does not
-  pin to a validated IP (unlike `fetch.py`). Since #318 it admits port 443 only, so the
-  port half of the old host-name allow-list is closed; the address half is not (resolved
-  addresses and DNS rebinding are #322). DNS-rebinding of an allow-listed
-  host is out of scope of this guard *by design* (its job is blocking
-  registry-supplied `href` pivots), but a reviewer should confirm the threat
-  model accepts that. Since the EBSI Core API v1 (`DidRegistryCoreV1` /
-  `TirCoreV1`, #321) the allow-listed hosts are **node operators' own domains**, not
-  only `*.ebsi.eu`: none of the 45 node hosts in the Trusted Nodes List read on
-  2026-10-16 is under `ebsi.eu`, and the 27 operator domains include second-level and
-  third-party zones ([ADR-0009](../adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)).
-  DNS for each of them is trusted, and a verified node list authenticates the
-  *operator*, not the content a node serves (ADR-0009 D7).
+- **R4 — EBSI client is an origin allow-list (host and port 443); the resolved-address guard is
+  opt-in.** By default `src/openvc_ebsi/http.py` trusts DNS for allow-listed EBSI hosts and does not
+  pin to a validated IP (unlike `fetch.py`). Since #318 it admits port 443 only, so the port half of
+  the old host-name allow-list is closed. The allow-list's job is blocking registry-supplied `href`
+  pivots, and while it held three `*.ebsi.eu` names run by one party that was accepted. Since the
+  EBSI Core API v1 (`DidRegistryCoreV1` / `TirCoreV1`, #321) the allow-listed hosts are **node
+  operators' own domains**, not only `*.ebsi.eu`: none of the 45 node hosts in the Trusted Nodes
+  List read on 2026-10-16 is under `ebsi.eu`, and the 27 operator domains include second-level and
+  third-party zones ([ADR-0009](../adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)). DNS for each
+  of them is trusted, and a verified node list authenticates the *operator*, not the content a node
+  serves (ADR-0009 D7).
+  With `address_guard=AddressGuard()` (v1.37.0, #322) each request
+  that misses the cache resolves the host, refuses it if **any** address is not globally
+  routable (the `openvc.fetch` rules, `ip_is_forbidden`), and connects to the validated
+  address with the TLS server name, the certificate check and `Host` still the host name
+  (no window between the check and the connect; `Connection: close` on every pinned
+  request, because httpx pools by address and a reused connection would answer for a
+  second name with no certificate check for it). Clients built from a verified node list
+  (#324) are expected to enable it; that is #324's decision. *Residual:* off for a
+  hand-built allow-list (DNS rebinding of a listed host is out of scope of the default by
+  design, and a reviewer should confirm the threat model accepts that); no defence against an attacker who also holds a valid
+  certificate for a public address, or a dishonest listed node; it needs the local
+  resolver, so a guarded client refuses to be built behind an environment proxy
+  (`HttpAddressGuardUnavailable`); NAT64 and IPv4-mapped classification inherit **R5**
+  (NAT64, 6to4, Teredo and the IPv4-compatible forms are refused as whole prefixes);
+  `getaddrinfo` has no deadline, with or without the guard. A host with several
+  addresses is tried one address per attempt, so with the default `RetryPolicy` only the
+  first three addresses of an answer are ever tried (a name-based connect tries them all
+  in one attempt): three dead addresses before a live one is an outage for a guarded
+  client, which then needs `RetryPolicy(attempts=...)` at least the number of addresses
+  it must reach. `did:web` still never goes through this client.
 - **R5 — `fetch.py` leans on stdlib `ipaddress` classification.** No explicit
   IPv4-mapped-IPv6 (`::ffff:a.b.c.d`) / NAT64 normalization beyond what
   `ipaddress` classifies on the target Python. Worth an auditor sanity-check
   across the supported interpreter range. Since v1.25.0 `test_forbidden_ips` pins
   the IPv4-mapped private and CGNAT forms on every CI interpreter; the mapped-form
-  classification still varies across `ipaddress` versions.
+  classification still varies across `ipaddress` versions. Since v1.37.0 (#322) the
+  rule is public as `openvc.fetch.ip_is_forbidden` and
+  `tests/test_ebsi_address_guard.py` pins 59 forbidden and 6 allowed addresses (every
+  class: private, loopback, link-local, cloud metadata, unique-local, multicast, CGNAT,
+  benchmarking, documentation, IPv4-mapped and -compatible, NAT64, 6to4, Teredo, and the
+  deprecated IPv6 site-local prefix `fec0::/10`); the first 57 were measured with no
+  difference on CPython 3.10.20, 3.11.15, 3.12.13, 3.13.16, 3.14.8 and 3.15.0rc3, the two
+  site-local rows on 3.13.16, 3.14.8 and 3.15.0rc3 (the CI matrix runs the table on 3.10
+  to 3.15). `is_global` alone is not enough (`224.0.0.1`, `ff0e::1`, `::808:808`,
+  `64:ff9b::808:808` and `fec0::1` report it true), which is why the flag union stays;
+  `fec0::/10` is caught by `is_site_local`, which only IPv6 has (a review-round finding:
+  before it, `did:web` accepted a host that resolved there).
 - **R6 — XAdES primary verify relies on `signxml`/`lxml` DTD-forbidding.**
   openvc sets `resolve_entities=False, no_network=True, load_dtd=False`
   explicitly only on its defence-in-depth whole-document reparse

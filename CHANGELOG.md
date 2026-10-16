@@ -54,6 +54,166 @@ All notable changes to **openvc** are documented here. The format follows
 
   Not changed: a resolved-address guard and DNS rebinding (the rest of threat-model R4, #322),
   origin strings in `allowed_hosts` (2.0, #74), the cookie jar (#317).
+- **The EBSI client can now check where an allow-listed host name points**
+  ([#322](https://github.com/luisgf/openvc/issues/322); ADR-0009, "Where each design can be
+  attacked", row "DNS rebinding"). Low severity, defence in depth, **no wrong-accept**, and
+  **opt-in: nothing changes unless you pass `address_guard=`**. `EbsiHttpClient` matched a
+  host *name* and trusted DNS for it (threat model R4). That was accepted while the
+  allow-list was three `*.ebsi.eu` names run by one party; a client built from the
+  Trusted Nodes List allow-lists operator-run DNS names, so a listed name that resolves to
+  a private, loopback or link-local address (a rebinding resolver, a lapsed or shared zone,
+  a compromised operator zone) was connected to, and the client opened a TCP connection and
+  started a TLS handshake against an address of the attacker's choosing. The HTTP request
+  is only sent after the handshake verifies a certificate for the listed name, redirects are
+  off and the path is a fixed registry path, so the realistic gain was probing the client's
+  internal network (connect success, refusal and timing differ per address).
+
+  `EbsiHttpClient(..., address_guard=AddressGuard())` (and `for_ebsi(...,
+  address_guard=AddressGuard())`) resolves the host on every request that misses the cache
+  and **refuses the host if any address in the answer is not globally routable**, in either
+  order and however many public addresses sit beside the bad one (`HttpForbiddenAddress`, a
+  subclass of `HttpForbiddenHost`, so a handler for the name guard catches it; never
+  retried, never cached, no request sent). The rule is the one `openvc.fetch` applies to
+  `did:web` (private, loopback, link-local, reserved, multicast, unspecified, the
+  deprecated IPv6 site-local prefix `fec0::/10`, and anything that is not `is_global`,
+  CGNAT included). It then connects to **one validated address**
+  with the TLS server name, the certificate check and `Host` still the host **name**, so
+  there is no window between the check and the connect: the request goes to
+  `https://<validated literal>:<port>/path` with `Host: <name>` and the httpcore
+  `sni_hostname` request extension set to the name. The name check runs first and is
+  unchanged; the address check can only refuse, so the guard never admits a host the
+  allow-list refuses. An allow-listed IP-literal host is classified directly, with no DNS.
+  `did:web` still goes through `openvc.fetch` and never through this client.
+
+  What was measured (step 0 of the issue; macOS arm64, httpx 0.28.1, httpcore 1.0.9; the
+  address table on CPython 3.10.20, 3.11.15, 3.12.13, 3.13.16, 3.14.8 and 3.15.0rc3, the
+  rest on 3.14.8):
+
+  - **A pooled connection is keyed by the address, not the name.** Mechanism A (a
+    request-level pin: the validated literal in the URL, `Host` and the `sni_hostname`
+    extension carrying the name) completes TLS with SNI and the certificate checked against
+    the name, and a certificate for another name is refused. But with one `httpx.Client`, a
+    server whose certificate is valid for one name only and two allow-listed names that
+    resolve to the same address, the second request reused the connection verified for the
+    first name and was served with **no certificate check for its own name**. A guard that
+    pinned the address and kept keep-alive would have weakened the control it is meant to
+    add (any client with more than one host, which is the point of #322). Every pinned
+    request therefore carries `Connection: close`: h11 then closes the connection when the
+    response ends without it ever becoming idle, so there is no window in which a second
+    thread could take it. The cost is a TCP and TLS handshake per request that misses the
+    cache: 0.29 ms against 0.86 ms per request on loopback (what the handshake's round trips
+    cost on a real network is not measured). `httpx.Limits(max_keepalive_connections=0)`
+    closed the same hole in the sequential test but trims idle connections after the
+    response, so it was not used.
+  - Mechanism B (a validating `httpcore` network backend under a pool keyed by name) has no
+    pooling problem and resolves only on new connections, but needs the private
+    `HTTPTransport._pool`, a direct `httpcore` import (a transitive dependency, not
+    declared in the `ebsi` extra) and a seam that bypasses the existing `MockTransport`
+    tests; passing `transport=` also makes httpx ignore environment proxies silently.
+  - Under `HTTPS_PROXY`, A sends `CONNECT <ip>:<port>` and then fails the certificate check
+    against the IP (`IP address mismatch`); B ignores the proxy and connects directly.
+  - `getaddrinfo("api-pilot.ebsi.eu")`: 25 ms cold, about 1 ms warm, three addresses, against
+    a 10 s timeout. One read of the pilot DID document with the guard on completed (live,
+    by hand, not in CI).
+  - On macOS `getaddrinfo` reads `127.1`, `0x7f.1`, `2130706433`, `127.0.1`, `0x7f000001`
+    and `017700000001` as `127.0.0.1`, and `0177.0.0.1` as `177.0.0.1`; `ipaddress` rejects
+    all of them, so they reach the resolver and the guard sees the answer. glibc was not
+    measured. The connection goes to the validated literal, so the name is never read a
+    second time.
+  - **Not measured locally:** the declared httpx floor (0.27); only 0.28.1 is installed
+    and nothing was downloaded. The pinned request uses
+    `Client.stream(..., headers=, extensions=)` and nothing else of httpx. CI now has a
+    floor leg (`test (py3.10, httpx 0.27.0)`, in `.github/workflows/ci.yml`, built like
+    the pyld floor leg) that installs `httpx==0.27.0` over `[all]` on CPython 3.10 and runs
+    the whole suite, the loopback TLS tests included. Its first run was green with
+    `httpx-0.28.1` uninstalled and `httpx-0.27.0` installed: 17582 passed, 39 skipped, all
+    265 tests of `tests/test_ebsi_address_guard.py` among them.
+
+  The classifier agreed on every class of the first 57 rows of the table on all six
+  interpreters (private, loopback, link-local, cloud metadata, unique-local, unspecified,
+  multicast, CGNAT, benchmarking, documentation, IPv4-mapped and IPv4-compatible, NAT64,
+  6to4, Teredo); the two site-local rows added in the review round (below) were run on
+  CPython 3.13.16, 3.14.8 and 3.15.0rc3, and the CI matrix runs the whole table on 3.10 to
+  3.15. `is_global` alone is wrong for some of them (`224.0.0.1`, `ff0e::1`, `::808:808`,
+  `64:ff9b::808:808` and `fec0::1` report `is_global=True`; the multicast, reserved and
+  site-local flags catch them), which is why the union is kept. NAT64, 6to4, Teredo and
+  the IPv4-compatible forms are refused **as whole prefixes**, whatever IPv4 they embed.
+  Not pinned: `::ffff:8.8.8.8` (a
+  mapped public address; threat model R5 records that the mapped-form classification varies
+  across interpreter versions) and `192.88.99.1`, `192.0.0.9`, `192.0.0.10`, `2001:20::1`
+  (allowed on every interpreter measured).
+
+  **Defaults pending maintainer confirmation.** Each is the issue's recommendation and is
+  implemented; the other option is what would change.
+
+  - **D1 mechanism: A (request-level pin), with keep-alive off.** B would add `httpcore` as
+    a direct import and use a private attribute, in exchange for keep-alive and one
+    resolution per connection.
+  - **D2 default: off** for `EbsiHttpClient` and `for_ebsi`. On would break split-horizon
+    DNS and a private mirror of a node, and change public behaviour. Whether a client built
+    from a verified Trusted Nodes List turns it on is #324's call.
+  - **D3 environment proxy: refuse at construction** with `HttpAddressGuardUnavailable`
+    (an `HttpError`, hence an `EbsiError`), when `urllib.request.getproxies()` (the
+    variables, and on macOS and Windows the system settings) has an `https` or `all` proxy.
+    Ignoring the proxy would silently change how the process reaches the network;
+    documenting only would leave an opaque certificate error. **`NO_PROXY` is not an
+    exemption**: httpx matches it against the host of the request URL, which is the pinned
+    address, so with `HTTPS_PROXY` set and `NO_PROXY` naming the EBSI host the pinned
+    request was still sent to the proxy (`CONNECT <ip>:<port>`) and then failed the
+    certificate check against the IP (measured on a loopback proxy). A deployment that
+    needs a proxy for other traffic builds this client in a process or environment
+    without it, or without the guard.
+  - **D4 several addresses: rotate**, one validated address per attempt in resolver order
+    (the first this call has not used yet, so a resolver that reorders its answer cannot
+    make a retry repeat the address that just failed), bounded by `RetryPolicy`. Any
+    transport error (connect, TLS handshake, read or write timeout, protocol error), a 429
+    or a 5xx moves to the next address; a 404 or other 4xx is not retried.
+    First-address-only would turn one dead address of four into an outage. **The bound:**
+    one address per attempt means the address at position *k* of the answer is reached
+    only if the policy allows *k* attempts, so with the default `RetryPolicy` (3 attempts)
+    only the first three addresses are ever tried. Measured with an IPv6-broken client
+    (every IPv6 literal fails to connect) and a live IPv4 address after the dead ones:
+    two dead addresses first succeed, three dead first are `HttpTransientExhausted` (the
+    live one is never tried) and succeed with `RetryPolicy(attempts=4)`; four dead first
+    need 5. A deployment that expects dead addresses sets `attempts` to at least the
+    number of addresses it must be able to reach. A name-based connect does not have this
+    bound (`socket.create_connection`, which httpcore uses, tries every address of the
+    answer inside one attempt), so a host with three AAAA records on a client with no IPv6
+    route works unguarded and is an outage guarded under the default policy. *The other
+    option*, which is a maintainer decision and is not taken here: on a transport error try
+    the remaining validated addresses of the same resolution before consuming the attempt,
+    bounded by `attempts x addresses`, each under the per-socket connect timeout; it
+    removes the bound above at the cost of up to that many connection attempts per
+    `get_json`.
+  - **D5 exemptions: none**, and the classifier is fixed (`AddressGuard` takes a resolver,
+    never a rule). An operator who must reach an internal mirror builds a second client
+    without the guard.
+  - **Smaller choices of this change.** The pinned request carries no userinfo (a
+    `user:pw@` in the URL would otherwise become an `Authorization` header); an IPv6
+    address with a scope id is refused even when it is public; an answer that is not a
+    string or does not parse as an address refuses the host, it is not retried.
+  - **D6 (review round) `fec0::/10`: refused in the shared classifier.** The reviewer
+    found that `ip_is_forbidden("fec0::1")` was false: `ipaddress` reports the deprecated
+    IPv6 site-local prefix (RFC 3879) as `is_global=True` with no other flag, on the
+    interpreters checked (3.13.16, 3.14.8 and 3.15.0rc3), so the docs' "not globally
+    routable" was untrue for it and one internal-looking class was open, for `did:web` too.
+    The change adds `IPv6Address.is_site_local` to the flag union (IPv4 has no such
+    property). *The other option* is to leave the classifier alone and list `fec0::1`
+    under "Not pinned" with `192.88.99.1`; it would keep `did:web` accepting a host that
+    resolves to `fec0::/10`. See `### Changed`.
+
+  **What it does not do.** It does not stop an attacker who also holds a valid certificate
+  for a public address, a dishonest listed node, or anything about registry content; it is
+  not certificate pinning, DNSSEC or DoH, and `getaddrinfo` has no deadline with or without
+  the guard. The cache is consulted before the address check (a hit makes no connection),
+  so a `cache` shared with a guard-off client is the consumer's choice. Threat model R4 is
+  rewritten and keeps its id.
+
+  **Behaviour change: none with the guard off**, which is the default; the constructor
+  arguments of the pooled `httpx.Client` and every request are what they were. With the
+  guard on: the request targets the validated address, carries `Connection: close` and no
+  userinfo, and a host that resolves to a non-public address raises `HttpForbiddenAddress`
+  where it used to be connected to.
 
 ### Added
 
@@ -300,6 +460,20 @@ All notable changes to **openvc** are documented here. The format follows
     `time.sleep` takes (about 9.2e9 s, so any 11-digit value; measured; `get_bytes` without a
     `deadline_s` has it too, and `get_tnl_files` always passes one). They are outside this
     change and are tracked separately.
+- **`openvc.fetch.ip_is_forbidden(address)`**
+  ([#322](https://github.com/luisgf/openvc/issues/322)), the address rule `openvc.fetch`
+  applies to `did:web`, public and in `__all__` so a caller with its own HTTP client applies
+  the rule instead of a copy of it. `_ip_is_forbidden` is the same function object. Raises
+  `ValueError` for a string that is not an IP address.
+- **`openvc_ebsi.http.AddressGuard`**, `HttpForbiddenAddress`, `HttpAddressResolutionFailed`
+  and `HttpAddressGuardUnavailable`, and the `address_guard=` argument of `EbsiHttpClient`
+  and `for_ebsi`. `AddressGuard.addresses(host, port)` returns the validated addresses and
+  raises `HttpForbiddenAddress` or `HttpAddressResolutionFailed` (a resolver `OSError`,
+  `ValueError`, `TypeError` or an empty answer is handled like a connection failure:
+  retried, then `HttpTransientExhausted`). That is the contract for the default resolver;
+  an **injected** `resolver=` that raises anything else (a `RuntimeError`, a `KeyError`)
+  has its exception propagate unchanged and unretried, so a bug in a caller's resolver is
+  not hidden behind the retry loop.
 
 ### Changed
 
@@ -427,6 +601,17 @@ All notable changes to **openvc** are documented here. The format follows
   refuses one that has no token (`AccreditationInvalid`) and otherwise needs a token that
   verifies. Pinned by `test_an_attribute_object_with_no_usable_body_is_still_a_wildcard_by_design`
   and its neighbour.
+- **`openvc.fetch` refuses the deprecated IPv6 site-local prefix `fec0::/10`**
+  ([#322](https://github.com/luisgf/openvc/issues/322), review round).
+  `ip_is_forbidden` (and so `did:web` and every fetch that resolves through
+  `_resolve_public_ips`) used to accept it: `ipaddress` reports `fec0::1` as
+  `is_global=True`, `is_private=False` and sets only `is_site_local` (measured on CPython
+  3.13.16, 3.14.8 and 3.15.0rc3), so nothing in the flag union caught it. RFC 3879
+  deprecated the prefix and it is not globally routable. A `did:web` (or status-list or
+  schema) host whose DNS answer includes a `fec0::/10` address now raises
+  `UnsafeUrlError` where it used to connect. There is nothing to pass instead: a publicly
+  reachable host does not resolve to this prefix; fix the DNS record. Only IPv6 has the
+  property, so IPv4 classification is unchanged.
 
 ### Fixed
 
@@ -527,6 +712,15 @@ All notable changes to **openvc** are documented here. The format follows
   adds rows for a `deadline_s` above a day or too large for a float, a client cap of `2**63`
   or more with a `gzip` / `deflate` body, a response that arrives after the budget, and a
   real loopback server that drips its headers past `deadline_s`.
+- `tests/test_ebsi_address_guard.py`: the address table (59 forbidden, 6 allowed) through
+  the classifier and through the guard, refusals with exact classes and zero requests, the
+  ordering against the name guard, rebinding, port and IPv6 shape, userinfo, resolution
+  failures, rotation and its bound under the default and a longer `RetryPolicy`, every
+  transport error rotating, an injected resolver's own exceptions, the proxy decision,
+  default-off parity, a Hypothesis property over arbitrary resolver answers, and a loopback
+  TLS server that shows the SNI, the certificate check against the name, and that a
+  connection is never reused across names. `tests/test_fetch.py::test_forbidden_ips`
+  gains `fec0::1`. CI gains the httpx 0.27.0 floor leg described above.
 
 ### Docs
 
@@ -557,6 +751,9 @@ All notable changes to **openvc** are documented here. The format follows
   the list host is a second, separate allow-list; `docs/audit/threat-model.md` §7 and
   `docs/audit/assurance.md` §§1, 3 and 4 record the separate one-host client, the bounded
   decode, the unread error body and the Hypothesis properties.
+- Threat model R4 and the EBSI bullet of section 7, `docs/audit/assurance.md` (sections 3
+  and 4), `wiki/Trust.md`, `wiki/Security-Model.md`, and the "DNS rebinding" row of
+  ADR-0009.
 
 ## [1.36.0] — 2026-10-16
 

@@ -22,24 +22,38 @@ It is deliberately small but covers the production concerns a verifier needs:
                       decoding), with a hard cap on the wire size and on the DECODED size.
                       ``get_tnl_files`` uses it to fetch the Trusted Nodes List from a
                       client that allow-lists ``tnl.ebsi.eu`` alone (ADR-0009 D4).
+  * address guard   : OPT-IN (``address_guard=AddressGuard()``, off by default). The host
+                      allow-list matches a NAME and trusts DNS for it. With the guard on,
+                      every request resolves the name, refuses the host if ANY answer is not
+                      a globally routable address (the rules ``openvc.fetch`` applies to
+                      did:web), and connects to one validated address while the TLS server
+                      name, the certificate check and ``Host`` stay the host name. It does
+                      not stop an attacker who holds a valid certificate for a public
+                      address, and it needs the local resolver, so it refuses to be built
+                      behind an environment proxy. See :class:`AddressGuard`.
 
 Pass ``client.get_json`` wherever a ``Fetch`` is expected (e.g. into the resolver).
 """
 
 from __future__ import annotations
 
+import ipaddress
 import random
 import re
+import socket
 import sys
 import time
+import urllib.request
 import zlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from http.cookiejar import Cookie, CookieJar, CookiePolicy
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlparse
 from urllib.request import Request
 
 import httpx
@@ -47,6 +61,7 @@ import httpx
 from openvc import _json
 from openvc import __version__
 from openvc.cache import TtlCache
+from openvc.fetch import ip_is_forbidden
 from openvc.proof._verify_common import safe_repr
 
 from ._url import HTTPS_PORT, UrlDoesNotParse, UrlNotVisibleAscii, carries_userinfo, read_origin
@@ -100,6 +115,24 @@ class HttpTransientExhausted(HttpError): ...  # retries used up
 class HttpUnexpectedEncoding(HttpError): ...  # Content-Encoding the bytes path does not decode
 
 
+class HttpForbiddenAddress(HttpForbiddenHost):
+    """The address guard refused an allow-listed host: it resolves to (or is) an address
+    that is not globally routable. A subclass of :class:`HttpForbiddenHost`, so a caller
+    that already handles the name guard handles this too. Never retried, never cached."""
+
+
+class HttpAddressResolutionFailed(HttpError):
+    """The address guard's resolver returned no usable answer (a resolution error or an
+    empty list). Handled like a connection failure: retried, then
+    :class:`HttpTransientExhausted`."""
+
+
+class HttpAddressGuardUnavailable(HttpError):
+    """An :class:`AddressGuard` was requested but cannot be honest in this process: an
+    environment proxy would resolve and connect on its own. Raised when the client is
+    built, before any request."""
+
+
 # The thread-safe, bounded TtlCache now lives in core (openvc.cache) so the whole
 # library — DID/status/schema resolution — shares one caching primitive; EBSI consumes
 # it downward and keeps its short-TTL default (ADR-0001 D2: EBSI sends no cache headers).
@@ -144,6 +177,143 @@ class RetryPolicy:
         # exponential with equal jitter: half fixed, half random.
         ceiling = min(self.backoff_base_s * (2 ** attempt), self.backoff_max_s)
         return ceiling / 2 + random.uniform(0, ceiling / 2)
+
+
+# --------------------------------------------------------------------------- #
+# Resolved-address guard (opt-in)
+# --------------------------------------------------------------------------- #
+
+Resolver = Callable[[str, int], Sequence[str]]
+
+
+def _system_resolver(host: str, port: int) -> list[str]:
+    """The default resolver: ``socket.getaddrinfo`` for TCP, the addresses as strings in the
+    order the system returned them (IPv4 and IPv6)."""
+    infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    return [str(info[4][0]) for info in infos]
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _checked_address(host: str, answer: object) -> str:
+    """*answer* as the canonical text of an address that is safe to connect to, or
+    :class:`HttpForbiddenAddress`. Anything that is not exactly a globally routable IP
+    address fails closed: a non-string, a string that does not parse (`ipaddress` rejects
+    non-ASCII digits, whitespace and over-long text), and an IPv6 address carrying a scope
+    id (a public address has none; one would only ever be pasted into the pinned URL)."""
+    if isinstance(answer, str):
+        text = str.__str__(answer)           # a subclass's own methods are never consulted
+        try:
+            ip = ipaddress.ip_address(text)
+        except ValueError:
+            ip = None
+        if ip is not None and getattr(ip, "scope_id", None) is None \
+                and not ip_is_forbidden(text):
+            return str(ip)
+    raise HttpForbiddenAddress(
+        f"host {safe_repr(host)} resolves to blocked address {safe_repr(answer)}")
+
+
+@dataclass(frozen=True)
+class AddressGuard:
+    """Opt-in guard on *where* an allow-listed EBSI host name points.
+
+    The client's host allow-list matches a name and trusts DNS for it. That was enough for
+    three names run by one party; a client whose hosts are operator-run DNS names also needs
+    to know the name has not been pointed at a private, loopback or link-local address
+    (a rebinding resolver, a lapsed or shared zone, a compromised operator zone). Pass
+    ``address_guard=AddressGuard()`` to :class:`EbsiHttpClient` (or :func:`for_ebsi`):
+    on every request that misses the cache it resolves the host, **refuses the host if any
+    address in the answer is not globally routable** (the rule ``openvc.fetch`` applies to
+    did:web, :func:`openvc.fetch.ip_is_forbidden`, in either order and however many
+    public addresses sit beside the bad one), and connects to one validated address while
+    the TLS server name, the certificate check and ``Host`` stay the host name. The
+    validated address is the one connected to, so there is no window between the check and
+    the connect. An allow-listed host that is itself an IP literal is classified directly,
+    with no DNS.
+
+    **Several addresses.** The addresses are used in the order the resolver gave them, one
+    per attempt, so a retry reaches the next address instead of the one that just failed.
+    The bound is :class:`RetryPolicy`'s: the address at position *k* of the answer is
+    reached only if the policy allows *k* attempts, so with the default policy (3) only
+    the first three addresses are ever tried. A host with four addresses of which two do
+    not answer is slow, not down; a host whose first three addresses do not answer (an AAAA
+    record with three addresses, on a client with no IPv6 route) is down for this client
+    even though the fourth would answer. A name-based connect tries every address of the
+    answer within one attempt (``socket.create_connection``); this does not. A deployment
+    that expects dead addresses sets ``RetryPolicy(attempts=...)`` to at least the number
+    of addresses it needs to be able to reach. Any transport error (connect, TLS
+    handshake, read or write timeout, protocol error), a 429 or a 5xx moves to the next
+    address; a 404 or another 4xx does not.
+
+    **No keep-alive.** A pinned request is sent with ``Connection: close``. httpx pools by
+    the address in the URL, not by the name the certificate was checked for, so a reused
+    connection would answer for a second name that resolves to the same address with no
+    certificate check for that name. A fresh connection per request is verified against the
+    name it serves.
+
+    **What it does not do.** It does not stop an attacker who also holds a valid
+    certificate for a public address, a dishonest listed node, or anything about registry
+    content; it is not certificate pinning, DNSSEC or DoH. It needs the local resolver, so
+    a client with a guard refuses to be built behind an environment proxy
+    (:class:`HttpAddressGuardUnavailable`). Addresses are classified by the standard
+    library's :mod:`ipaddress` (see the threat model, R5): NAT64, 6to4, Teredo and the
+    IPv4-compatible forms are refused as whole prefixes, whatever IPv4 they embed. The
+    classifier is fixed, with no exemptions; an operator who must reach an internal mirror
+    builds a second client without the guard.
+
+    ``resolver`` is ``(host, port) -> addresses as strings`` and exists so a test or a
+    caller with its own resolver can supply the answers; it cannot change what is allowed.
+    """
+
+    resolver: Resolver = _system_resolver
+
+    def addresses(self, host: str, port: int) -> list[str]:
+        """The validated addresses for *host*, in resolver order, without duplicates.
+
+        Raises :class:`HttpForbiddenAddress` if any address is not globally routable (or is
+        not an address at all), and :class:`HttpAddressResolutionFailed` if the resolver
+        failed or answered with nothing. That holds for the default resolver; the
+        exceptions of an injected ``resolver`` other than ``OSError``, ``ValueError`` and
+        ``TypeError`` propagate unchanged (a caller's bug is not hidden behind the retry
+        loop)."""
+        if _is_ip_literal(host):
+            answers: list[object] = [host]
+        else:
+            try:
+                answers = list(self.resolver(host, port))
+            except (OSError, ValueError, TypeError) as exc:      # socket.gaierror is an OSError
+                raise HttpAddressResolutionFailed(
+                    f"cannot resolve {safe_repr(host)}: {type(exc).__name__}") from exc
+            if not answers:
+                raise HttpAddressResolutionFailed(f"{safe_repr(host)} did not resolve")
+        return list(dict.fromkeys(_checked_address(host, answer) for answer in answers))
+
+
+def _refuse_environment_proxy() -> None:
+    """Refuse to build a guarded client where httpx would use an environment proxy. A proxy
+    resolves the name and opens the connection itself, so the guard could not validate the
+    address that is actually used; and the pinned request names an IP literal, which a proxy
+    tunnel checks the certificate against (a mismatch, after the proxy has been told the
+    address). ``NO_PROXY`` cannot make it work: httpx matches it against the host of the
+    request URL, which is the pinned literal, so a request for a host that ``NO_PROXY``
+    names is still sent to the proxy (measured). ``urllib.request.getproxies`` is what
+    httpx reads: the ``*_PROXY`` variables, and on macOS and Windows the system settings."""
+    proxies = urllib.request.getproxies()
+    if proxies.get("https") or proxies.get("all"):
+        raise HttpAddressGuardUnavailable(
+            "address_guard cannot be used behind an environment proxy (HTTPS_PROXY / "
+            "ALL_PROXY, or the system proxy settings on macOS and Windows; NO_PROXY does "
+            "not help, because the pinned request names an address, not the host): the "
+            "proxy resolves and connects on its own, so the guard could not validate the "
+            "address that is used. Unset the proxy for this process, or build the client "
+            "without address_guard")
 
 
 # --------------------------------------------------------------------------- #
@@ -243,10 +413,16 @@ class EbsiHttpClient:
         verify_tls: bool = True,
         user_agent: str = f"openvc-core/{__version__}",
         max_response_bytes: int = MAX_RESPONSE_BYTES,
+        address_guard: AddressGuard | None = None,
     ) -> None:
         self._allowed = {h.lower() for h in allowed_hosts}
         self._timeout_s = timeout_s
         self._max_bytes = max_response_bytes
+        # Opt-in (see AddressGuard). Refused before the pooled client is built, so a
+        # refusal leaves nothing to close.
+        if address_guard is not None:
+            _refuse_environment_proxy()
+        self._address_guard = address_guard
         # ADR-0001 D2: EBSI sends no Cache-Control/ETag, so freshness is OUR call.
         # With no revalidation path and DID docs that change on key rotation, keep
         # the TTL short (minutes) and configurable per deployment.
@@ -373,13 +549,17 @@ class EbsiHttpClient:
         self._guard_host(url)
 
         last_exc: Exception | None = None
+        tried: list[str] = []          # validated addresses already used by this call
         for attempt in range(self._retry.attempts):
             if until is not None and until - time.monotonic() <= 0:
                 raise HttpError("deadline exceeded", url=url)
             body: bytes = b""
             problem_type: str | None = None
             try:
-                with self._client.stream("GET", url, headers=headers) as resp:
+                # Stream so the body is read against a size cap AND a total wall-clock
+                # deadline (not just the per-socket timeout) — a compromised/flaky allow-listed
+                # host cannot exhaust memory with a huge body nor pin the client with a slow drip.
+                with self._open_stream(url, tried, headers) as resp:
                     status = resp.status_code
                     if status == 200:
                         body = read_body(resp)
@@ -395,6 +575,11 @@ class EbsiHttpClient:
                 raise MalformedRegistryResponse(
                     f"registry returned a body that does not decode: {url}") from exc
             except httpx.TransportError as exc:      # network error / timeout
+                last_exc = exc
+                self._sleep_before_retry(attempt, until=until)
+                continue
+            except HttpAddressResolutionFailed as exc:   # the address guard found nothing usable
+                # (HttpForbiddenAddress is deliberately not caught: it is never retried)
                 last_exc = exc
                 self._sleep_before_retry(attempt, until=until)
                 continue
@@ -430,6 +615,53 @@ class EbsiHttpClient:
                 raise HttpError(
                     f"response exceeds {self._max_bytes} bytes", status=200, url=url)
         return bytes(body)
+
+    def _open_stream(
+        self, url: str, tried: list[str], headers: Mapping[str, str] | None = None
+    ) -> AbstractContextManager[httpx.Response]:
+        """Open the GET for one attempt. Without an address guard that is exactly
+        ``client.stream("GET", url, headers=headers)``. With one, the host (already checked
+        against the allow-list by `_guard_host`) is resolved and validated now, one validated
+        address is picked (the first one this call has not used yet, so a retry rotates), and the
+        request goes to that address with the host NAME kept for the TLS server name (and so
+        the certificate check) and for ``Host``. The URL is rebuilt from its parts rather than
+        edited: the connect target is the validated literal and nothing in the original
+        authority (userinfo included) can change it."""
+        guard = self._address_guard
+        if guard is None:
+            return self._client.stream("GET", url, headers=headers)
+        try:
+            parsed = urlparse(url)
+            host, port = parsed.hostname, parsed.port
+        except ValueError as exc:
+            raise HttpForbiddenHost("URL rejected: does not parse", url=url) from exc
+        authority_start = url.find("//") + 2
+        if (host is None or authority_start < 2
+                or url[authority_start:authority_start + len(parsed.netloc)] != parsed.netloc):
+            raise HttpForbiddenHost("URL rejected: no readable authority", url=url)
+        if port is None:
+            port = 443
+        try:
+            addresses = guard.addresses(host, port)
+        except HttpError as exc:
+            exc.url = url
+            raise
+        fresh = [a for a in addresses if a not in tried]
+        if not fresh:                           # every validated address has had its turn
+            tried.clear()
+            fresh = addresses
+        address = fresh[0]
+        tried.append(address)
+        literal = f"[{address}]" if ":" in address else address
+        name = f"[{host}]" if ":" in host else host            # an allow-listed IP literal
+        return self._client.stream(
+            "GET",
+            f"https://{literal}:{port}{url[authority_start + len(parsed.netloc):]}",
+            # the caller's headers first: the pinned request's own Host / Connection win
+            headers={**(headers or {}),
+                     "Host": name if port == 443 else f"{name}:{port}", "Connection": "close"},
+            extensions={"sni_hostname": host},
+        )
 
     def _read_verbatim(
         self, resp: httpx.Response, url: str, cap: int, until: float | None
@@ -761,6 +993,15 @@ def for_ebsi(
 
     An environment that is not one of these names (another case, empty, not a string)
     raises :class:`~openvc_ebsi.errors.UnknownEbsiEnvironment`, which is also a ``ValueError``.
+
+    Every other keyword argument is passed to :class:`EbsiHttpClient`. In particular
+    ``address_guard=AddressGuard()`` turns on the opt-in resolved-address guard: the host
+    allow-list still matches names only, and the guard additionally refuses a host that
+    resolves to an address that is not globally routable and connects to the validated
+    address. It is **off** by default (a deployment with split-horizon DNS or a private
+    mirror of a node would break), it is refused behind an environment proxy, and it does
+    not stop an attacker who holds a certificate for a public address; see
+    :class:`AddressGuard`.
     """
     # `type(...)`, not `isinstance`: a value whose `__class__` claims `str` is not one, and
     # `str.__str__` would raise a bare TypeError on it.
