@@ -103,8 +103,11 @@ def test_vendored_file_is_byte_identical(relpath: str) -> None:
 def test_nothing_unlisted_is_vendored() -> None:
     # A new file dropped in the directory must be a decision: pinned here, described in
     # PROVENANCE.md, licensed in NOTICE.md.
+    # dotfiles are skipped: opening the folder in Finder leaves a `.DS_Store`, which git
+    # ignores and which is not a vendored artifact
     on_disk = {p.relative_to(_FIXTURES).as_posix()
-               for p in _FIXTURES.rglob("*") if p.is_file()}
+               for p in _FIXTURES.rglob("*")
+               if p.is_file() and not p.name.startswith(".")}
     assert on_disk == set(_DIGESTS) | {"PROVENANCE.md", "NOTICE.md"}
 
 
