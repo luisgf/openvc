@@ -46,11 +46,12 @@ All notable changes to **openvc** are documented here. The format follows
   The Hopae registrar's tokens carry `"crit": ["sigT", "b64"]` in their JWS header, and
   openvc 1.35.1 refused them (`RpRegistrationError: ... critical, which this verifier does
   not process`): its `crit` allow-list for this lane was `{alg, typ, x5c, iat}`. They now
-  verify. **Why:** ETSI TS 119 182-1 V1.1.1 (JAdES) required every non-registered header
-  parameter to be listed in `crit`, and real registrars emit it; refusing the registrar
-  that exists today would make the lane unusable against it. (As #134 reads TS 119 182-1,
-  V1.2.1 dropped that requirement and forbids `sigT` in favour of a header `iat`: this is
-  interoperability with what producers emit, not an endorsement of the V1.1.1 form.)
+  verify. **Why:** as #134 reads ETSI TS 119 182-1 (JAdES), V1.1.1 required every
+  non-registered header parameter to be listed in `crit`, and V1.2.1 dropped that
+  requirement and forbids `sigT` in favour of a header `iat`. Real registrars emit the
+  V1.1.1 form, and refusing the registrar that exists today would make the lane unusable
+  against it: this is interoperability with what producers emit, not an endorsement of the
+  V1.1.1 form.
 
   The rules, all enforced and all tested:
 
