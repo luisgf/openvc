@@ -215,7 +215,10 @@ finite input", with no explicit constant.
 - **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **host allow-list**
   (`api-pilot`/`api-conformance`/`api.ebsi.eu`), redirects off, TLS-verify on,
   5 MiB cap. Purpose is to block registry-supplied `href` pivots; it is a
-  host-name allow-list and does **not** IP-pin (R4). `did:web` must **never** be
+  host-name allow-list and by default does **not** IP-pin (R4); the opt-in
+  `address_guard=AddressGuard()` (v1.37.0, #322) resolves the host, refuses it if any
+  address is not globally routable and connects to the validated address, with
+  keep-alive off. `did:web` must **never** be
   resolved through it (its allow-list would reject every legitimate host).
   Because the allow-list matches the host and not the port, the TIR v5 adapter pins
   `links.next`, the HATEOAS `attributes` URL and every revision `href` to the
@@ -345,18 +348,38 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   bound. *Impact:* CPU/allocation pressure under a large but well-formed
   document; no wrong-accept. *Consider:* an explicit element-count and/or
   cumulative-size cap.
-- **R4 — EBSI client is a host-name allow-list, no IP-pin.**
-  `src/openvc_ebsi/http.py` trusts DNS for allow-listed EBSI hosts and does not
-  pin to a validated IP (unlike `fetch.py`). DNS-rebinding of an allow-listed
-  host is out of scope of this guard *by design* (its job is blocking
-  registry-supplied `href` pivots), but a reviewer should confirm the threat
-  model accepts that.
+- **R4 — EBSI client: host-name allow-list; the resolved-address guard is opt-in.**
+  By default `src/openvc_ebsi/http.py` trusts DNS for allow-listed EBSI hosts and does
+  not pin to a validated IP (unlike `fetch.py`). The allow-list's job is blocking
+  registry-supplied `href` pivots, and while it held three `*.ebsi.eu` names run by one
+  party that was accepted. With `address_guard=AddressGuard()` (v1.37.0, #322) each request
+  that misses the cache resolves the host, refuses it if **any** address is not globally
+  routable (the `openvc.fetch` rules, `ip_is_forbidden`), and connects to the validated
+  address with the TLS server name, the certificate check and `Host` still the host name
+  (no window between the check and the connect; `Connection: close` on every pinned
+  request, because httpx pools by address and a reused connection would answer for a
+  second name with no certificate check for it). Clients built from a verified node list
+  (#324) are expected to enable it; that is #324's decision. *Residual:* off for a
+  hand-built allow-list; no defence against an attacker who also holds a valid
+  certificate for a public address, or a dishonest listed node; it needs the local
+  resolver, so a guarded client refuses to be built behind an environment proxy
+  (`HttpAddressGuardUnavailable`); NAT64 and IPv4-mapped classification inherit **R5**
+  (NAT64, 6to4, Teredo and the IPv4-compatible forms are refused as whole prefixes);
+  `getaddrinfo` has no deadline, with or without the guard. `did:web` still never goes
+  through this client.
 - **R5 — `fetch.py` leans on stdlib `ipaddress` classification.** No explicit
   IPv4-mapped-IPv6 (`::ffff:a.b.c.d`) / NAT64 normalization beyond what
   `ipaddress` classifies on the target Python. Worth an auditor sanity-check
   across the supported interpreter range. Since v1.25.0 `test_forbidden_ips` pins
   the IPv4-mapped private and CGNAT forms on every CI interpreter; the mapped-form
-  classification still varies across `ipaddress` versions.
+  classification still varies across `ipaddress` versions. Since v1.37.0 (#322) the
+  rule is public as `openvc.fetch.ip_is_forbidden` and
+  `tests/test_ebsi_address_guard.py` pins 57 forbidden and 6 allowed addresses (every
+  class: private, loopback, link-local, cloud metadata, unique-local, multicast, CGNAT,
+  benchmarking, documentation, IPv4-mapped and -compatible, NAT64, 6to4, Teredo); the
+  table was measured with no difference on CPython 3.10.20, 3.11.15, 3.12.13, 3.13.16,
+  3.14.8 and 3.15.0rc3. `is_global` alone is not enough (`224.0.0.1`, `ff0e::1`,
+  `::808:808` and `64:ff9b::808:808` report it true), which is why the flag union stays.
 - **R6 — XAdES primary verify relies on `signxml`/`lxml` DTD-forbidding.**
   openvc sets `resolve_entities=False, no_network=True, load_dtd=False`
   explicitly only on its defence-in-depth whole-document reparse

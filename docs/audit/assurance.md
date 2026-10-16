@@ -196,6 +196,13 @@ Example-based, but broad. Representative anchors:
   `links.next` or `href`, is typed or skipped, never fetched (`test_ebsi_verifier.py`).
   The client refuses such a URL, typed, before any request; a hostile token `iss`
   through `verify_ebsi_badge` included (`test_ebsi_http.py`, `test_ebsi_verifier.py`).
+  With the opt-in `address_guard=AddressGuard()` (v1.37.0) a host whose resolved answer
+  holds any non-public address (the table of every address class, an IP-literal host, the
+  numeric-shorthand hosts through an injected resolver, any order, any garbage answer) is
+  `HttpForbiddenAddress` with zero requests sent and nothing cached, the request goes to
+  the validated literal with the name kept for SNI and `Host`, and a loopback TLS server
+  shows the certificate is checked against the name and a connection is never reused for
+  a second name (`test_ebsi_address_guard.py`).
 - **OpenID4VP `vp_token` (W3C lanes)** — a victim's credential re-wrapped in another
   holder's correctly bound `jwt_vc_json` / `ldp_vc` VP, including a KB-stripped
   SD-JWT VC, enveloped or over the DC API; a nested SD-JWT VC whose KB-JWT names
@@ -323,6 +330,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `d57a749` — bound status-list decompression against compression bombs (#29)
 
 **SSRF / network**
+- `#322` — *defence in depth, opt-in, no wrong-accept* — the EBSI client's allow-list matched a host name and trusted DNS for it (R4), so a listed name that resolved to a private, loopback or link-local address was connected to (a TCP connect and a TLS handshake against an address of the attacker's choosing; the request is only sent after a certificate for the listed name verifies, so the gain is probing the client's network). `address_guard=AddressGuard()` resolves the host on each request that misses the cache, refuses it if any address is not globally routable (`openvc.fetch.ip_is_forbidden`, now public) and connects to the validated address with the name kept for SNI, the certificate check and `Host`. Step 0 found that httpx pools by the address in the URL, not the name the certificate was checked for: with keep-alive a second allow-listed name on the same address was served over a connection verified for the first, with no certificate check for it; a pinned request therefore carries `Connection: close` (measured on a loopback TLS server; the control without it reuses the connection). The address table is pinned on every interpreter (measured identical on CPython 3.10.20 to 3.15.0rc3); `is_global` alone is wrong for multicast, IPv4-compatible and NAT64 forms. Off by default; refused behind an environment proxy; no defence against a valid certificate for a public address (v1.37.0; `test_ebsi_address_guard.py`)
 - `#235` — *DoS, and identity confusion* — a `did:web` / `did:webvh` host must be ASCII, at most 253 characters and not an IPv4 number in any WHATWG form: CPython's quadratic punycode encoder let one unsigned credential stall `verify_many_async` (10k CJK characters ≈ 6.6 s), and IDNA2003 resolved `did:web:faß.de` as `fass.de`. The guarded fetch refuses a non-ASCII URL before `urlparse` (v1.31.2; `test_did_web_hostile_host.py`)
 - `#172` — *off-port fetch* — the EBSI client's allow-list matches the host, not the port, so the TIR v5 adapter now pins the HATEOAS `attributes` URL and every revision `href` to the listing's `scheme://host:port`, as `links.next` already was (v1.25.0; `test_ebsi_verifier.py`)
 - `#156` — *SSRF* — the guard refuses any address that is not `is_global`: RFC 6598 CGNAT `100.64.0.0/10` (and, on current interpreters, its IPv4-mapped form) carries no `is_private` flag and passed (v1.25.0; `test_fetch.py::test_forbidden_ips`)
