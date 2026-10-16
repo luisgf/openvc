@@ -38,7 +38,7 @@ classifiers = [
 # openvc.fetch; no HTTP client is required for the core.
 dependencies = [
     # >=45 for the X.509 path-validation ExtensionPolicy the x5c verifier relies on
-    # (49.x verified green; the x509.verification API goes stable in 50 — #125)
+    # (49.x verified green; the x509.verification API became stable in 50.0.0, 2026-07-31 — #125)
     "cryptography>=45",
     # >=2.13: security floor — the PyJWT 2.13.0 advisory batch (CVE-2026-32597
     # `crit` handling among them); the advisory-by-advisory reachability audit
