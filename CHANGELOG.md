@@ -79,7 +79,9 @@ All notable changes to **openvc** are documented here. The format follows
     `Client.stream(..., headers=, extensions=)` and nothing else of httpx. CI now has a
     floor leg (`test (py3.10, httpx 0.27.0)`, in `.github/workflows/ci.yml`, built like
     the pyld floor leg) that installs `httpx==0.27.0` over `[all]` on CPython 3.10 and runs
-    the whole suite, the loopback TLS tests included.
+    the whole suite, the loopback TLS tests included. Its first run was green with
+    `httpx-0.28.1` uninstalled and `httpx-0.27.0` installed: 17582 passed, 39 skipped, all
+    265 tests of `tests/test_ebsi_address_guard.py` among them.
 
   The classifier agreed on every class of the first 57 rows of the table on all six
   interpreters (private, loopback, link-local, cloud metadata, unique-local, unspecified,
