@@ -26,10 +26,11 @@ All notable changes to **openvc** are documented here. The format follows
     two detached-signature files (capped at 4 KiB). `trusted-keys.json` is parsed after the
     anchor's signature verifies, the custodian key blocks after that, and `tnl.json` only once
     `threshold` distinct custodians have signed it. A signature is attributed to its signer by
-    the **hashed** issuer-fingerprint subpacket (type 33) alone: the unhashed area is never
-    read, a signature by an unknown key or by a custodian's *subkey* is ignored, one invalid
-    signature by an allowed key rejects the whole file, and a custodian who signs twice counts
-    once. Each custodian fingerprint is recomputed from the key material and must equal the
+    the **hashed** issuer-fingerprint subpacket (type 33) alone: the unhashed area is walked
+    for structure only and never used to identify the signer (a malformed one, or a
+    critical-bit subpacket in it, rejects the file), a signature by an unknown key or by a
+    custodian's *subkey* is ignored, one invalid signature by an allowed key rejects the whole
+    file, and a custodian who signs twice counts once. Each custodian fingerprint is recomputed from the key material and must equal the
     listed one; a duplicate custodian is refused by fingerprint and by public point.
   - **The publisher's rules, enforced.** `expires` after `issued` and at most 90 days later
     (the live list is exactly 90.0 days); `now` at or after `expires` is expired; `issued`
@@ -67,10 +68,14 @@ All notable changes to **openvc** are documented here. The format follows
     blocks have. Everything else is an `OpenPgpError`. Key blocks: exactly one primary key,
     first; user IDs and subkeys are skipped without being read; a self-signature is not
     verified and is refused only if it is a revocation (0x20, 0x28, 0x30) or carries a hashed
-    key- or signature-expiration subpacket. Subpackets are never recursed into. Every size
-    and count is capped (below). The digest is RFC 4880 section 5.2.4's, reproduced against
-    the real signatures; GnuPG 2.5.24 agrees with the reader on the real chain and on a chain
-    the test writer produced (see the PR).
+    key- or signature-expiration subpacket. A signature file's signatures must each carry
+    exactly one hashed creation-time subpacket (type 2, 4 octets; RFC 4880 section 5.2.3.4),
+    whose value is not interpreted. Subpackets are never recursed into. Every size and count
+    is capped (below). The digest is RFC 4880 section 5.2.4's, reproduced against the real
+    signatures. GnuPG 2.5.24 accepts the real chain and a chain the test writer produced and
+    rejects the tampered variants the reader rejects; that is **not an equivalence**: the three
+    cases where the reader accepts what GnuPG rejects are stated in `docs/audit/assurance.md`
+    section 4 and in item 5 below.
   - **Errors.** `openvc_ebsi.errors.NodeListError(EbsiError)` with `NodeListConfigError`,
     `NodeListMalformed` (and its `OpenPgpError`), `NodeListSignatureError`,
     `NodeListThresholdError`, `NodeListRollback`, `NodeListExpired` (also meant for the
@@ -105,7 +110,27 @@ Each is one value or table away from the other option. None changes anything tha
    an outage risk without protecting anything); duplicate JSON member names
    and `NaN` / `Infinity` are refused; `expires` must be after `issued`; host names must be
    DNS names (labels of 1 to 63 characters, at most 253 in all, no leading or trailing
-   hyphen, no trailing dot), which all 45 live hosts are.
+   hyphen, no trailing dot), which all 45 live hosts are. Two more, from the review of this
+   PR (GnuPG 2.5.24 as the oracle: 27 hand-built signature cases and 2482 mutations of
+   the two real `.sig` files; none of the 2482 is now accepted by the reader and rejected by
+   GnuPG, and of the 27 two remain, the stated divergences of item 8):
+   - **A creation time is required.** Every signature in a signature file must carry exactly
+     one hashed creation-time subpacket of 4 octets; the real signatures each carry one.
+     GnuPG rejects a signature without one (RFC 4880 section 5.2.3.4), so the reader no
+     longer accepts it. A *second* one is also refused, although GnuPG accepts it: two values
+     for one fact are ambiguous, and the recorded signatures each carry exactly one. The
+     value is not interpreted.
+     The other option is "at least one": it would accept a signature GnuPG accepts.
+   - **A critical bit in the unhashed area is refused**, for any subpacket type. The area is
+     walked for structure and nothing in it is interpreted, so the reader can honour no
+     critical subpacket there; GnuPG calls a signature with an unknown critical subpacket
+     there a bad signature (flipping `0xFF` into the type byte of the real unhashed issuer
+     key ID gives GnuPG a bad signature, and used to give the reader the unchanged result).
+     GnuPG accepts a critical bit on a type it knows (16, 2, 33) there, so on those the
+     reader is stricter. The cost is that whoever can edit the unsigned area can make the
+     file fail, which they could already do by corrupting any signed byte. The other option
+     ignores the unhashed area entirely and leaves the reader more lenient than GnuPG by this
+     case.
 6. **Other choices made in the implementation:**
    - fingerprints (the anchor's and the key list's) must be 40 **upper-case** hex characters,
      as the publisher's own check compares gpg's upper-case output as strings;
@@ -139,7 +164,18 @@ Each is one value or table away from the other option. None changes anything tha
    they are not reproduced anywhere in the repository's prose. The upstream repository
    declares **no licence** for these files. Keeping the real chain, or replacing it by a
    synthetic one, is for the maintainer before release.
-8. **Open question 7 (qualified seal)** is not decided: the `Anchor` seam is where a second
+8. **Stated divergences from GnuPG** (nothing to decide; the reader is not a keyring). In the
+   cases measured the reader accepts and GnuPG 2.5.24 rejects: (a) a signature whose
+   creation time is 0 or earlier than the signing key's creation time; (b) a custodian key
+   whose self-signature key flags lack the signing bit (0x02); (c) a custodian key whose
+   self-signature carries a critical subpacket the reader does not know (not refused, by item
+   5). Self-signatures are not interpreted beyond a revocation or an expiration subpacket,
+   because the key list's signature is what vouches for the key block; closing (b) and (c)
+   would add an outage risk without protecting anything, and (a) would need the anchor's
+   creation time, which `Anchor` does not carry. A custodian or anchor key that is
+   compromised, or a signer that is buggy, is the only way any of them matters, and none
+   forges a signature.
+9. **Open question 7 (qualified seal)** is not decided: the `Anchor` seam is where a second
    kind of root would attach, as a new class.
 
 ### Tests
@@ -153,24 +189,35 @@ Each is one value or table away from the other option. None changes anything tha
   anchor, the wrong file for a signature, below threshold (one of two, the same one twice,
   `min_threshold=3`), rollback pairs and floors, each time boundary, authenticate-before-parse
   with a spy on the loader and the key-block reader, unknown signers, every argument error,
-  a lying `bytes` subclass, import without `httpx`.
+  a lying `bytes` subclass, import without `httpx`, the one-creation-time rule on the recorded
+  signatures, and the critical bit set on the unhashed issuer key ID of each of the three
+  recorded signature packets (refused, as GnuPG calls it a bad signature) next to the same
+  bytes with an unknown non-critical type (accepted, identical result).
 - `tests/test_ebsi_tnl_synthetic.py`: a test-only OpenPGP writer (`cryptography` only,
   throwaway keys, nothing committed) builds valid and then broken chains: thresholds 1-of-1
   to 3-of-3, subkey and unhashed-issuer attribution, the key-list replay after a rotation
   (named for the latent hole: accepted with neither floor nor pair, rejected by
   `keys_floor` and by `last_accepted_keys`), every row of the profile table, hostile key
-  material and MPIs, framing lies, a packet flood bounded by the cap and by the number of
-  ECDSA checks, 99 schema cases and 27 hostile JSON texts, and Hypothesis fuzzing
+  material and MPIs, framing lies, the creation-time and unhashed-area rules (rows in the
+  profile table, their messages, and what GnuPG accepts there staying accepted), a packet
+  flood bounded by the cap and by the number of ECDSA checks, a 4000-digit threshold whose
+  error message stays short, 103 schema cases (among them unknown environment names inside the one-to-three
+  bound) and 27 hostile JSON texts, and Hypothesis fuzzing
   (seeded, `derandomize=True`) of every reader entry point, of structure-aware mutations
   of the real files (an accepted mutation must give the identical result or a different
   fingerprint) and of the schema validators.
-- Mutation check: 51 mutants of the new code, including each in the issue's list (unhashed
+- Mutation check: 61 mutants of the new code, including each in the issue's list (unhashed
   issuer, packets counted for signers, a subkey as signer, a skipped invalid signature, the
   digest trailer, the 16-bit prefix, `>` for `>=` at the threshold and at `expires`, the
   90-day cap, the key-list floor against `keysVersion`, `match` for `fullmatch`, `bool` as
   an integer, the equal-hash rule, a floor, the fingerprint recompute, parsing before
-  authenticating, the revocation, expiry and critical-subpacket rules), are each killed by
-  at least one test.
+  authenticating, the revocation, expiry and critical-subpacket rules) and the ten of the
+  review round (the creation-time rule dropped, widened to any length or to a second one, the
+  unhashed critical-bit rule dropped or narrowed to unknown types, a critical creation time not
+  understood, the environment names unchecked, the threshold formatted whole, self-signatures
+  interpreted like signature files), are each killed by at least one test, and by a named
+  failing test: the real chain's baseline result is computed on first use, so a verifier
+  regression no longer surfaces as one collection error of the whole module.
 
 ### Documentation
 

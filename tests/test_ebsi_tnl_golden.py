@@ -301,7 +301,8 @@ def test_a_high_s_malleation_of_a_good_signature_still_verifies_identically() ->
 
 def test_the_unhashed_area_is_malleable_and_changes_nothing() -> None:
     """The unhashed issuer key ID (type 16) is not covered by the signature and is never
-    read: editing it must give the identical result (ADR-0009 measured the same)."""
+    used to identify the signer: editing its value must give the identical result
+    (ADR-0009 measured the same)."""
     sig_file = TNL_SIG
     loc = _locate(sig_file, 0)
     area = loc["hashed"] + loc["hashed_len"] + 2          # [length 9][type 16][8 octets]
@@ -311,6 +312,43 @@ def test_the_unhashed_area_is_malleable_and_changes_nothing() -> None:
         edited[area + 2 + i] ^= 0xFF
     assert bytes(edited) != sig_file
     assert _verify(tnl_sig=bytes(edited)) == _verify()
+    # an unknown type WITHOUT the critical bit is as inert: 0x10 ^ 0x7F = 0x6F
+    edited = bytearray(sig_file)
+    edited[area + 1] ^= 0x7F
+    assert edited[area + 1] == 0x6F and bytes(edited) != sig_file
+    assert _verify(tnl_sig=bytes(edited)) == _verify()
+
+
+@pytest.mark.parametrize("which,packet", [("tnl_sig", 0), ("tnl_sig", 1), ("keys_sig", 0)])
+def test_a_critical_bit_in_the_unhashed_area_rejects_the_file_as_gpg_does(
+        which: str, packet: int) -> None:
+    """Setting the critical bit on the unhashed issuer key ID (0x10 ^ 0xFF = 0xEF: critical,
+    unknown type 0x6F) leaves the signature valid, but GnuPG 2.5.24 calls the result a bad
+    signature ('unknown critical bit'), so the reader refuses it rather than being more
+    lenient than the reference verifier. The same bytes are refused for each of the three
+    recorded signature packets."""
+    sig_file = TNL_SIG if which == "tnl_sig" else KEYS_SIG
+    loc = _locate(sig_file, packet)
+    area = loc["hashed"] + loc["hashed_len"] + 2
+    assert sig_file[area:area + 2] == b"\x09\x10"
+    edited = bytearray(sig_file)
+    edited[area + 1] ^= 0xFF
+    assert edited[area + 1] == 0xEF
+    with pytest.raises(OpenPgpError, match="critical subpacket .* unhashed area") as info:
+        _verify(**{which: bytes(edited)})
+    assert type(info.value) is OpenPgpError
+
+
+def test_the_recorded_signatures_each_carry_one_creation_time() -> None:
+    """The recorded signatures satisfy the rule the reader enforces (RFC 4880 section
+    5.2.3.4): exactly one hashed creation-time subpacket of 4 octets."""
+    for sig_file in (TNL_SIG, KEYS_SIG):
+        for sig in _openpgp.read_signatures(sig_file):
+            assert sig.signer is not None
+            hashed_len = int.from_bytes(sig.suffix[4:6], "big")
+            kinds = [(kind, len(data)) for kind, _c, data in _openpgp._subpackets(
+                sig.suffix[6:6 + hashed_len])]
+            assert kinds.count((2, 4)) == 1 and [k for k, _n in kinds].count(2) == 1
 
 
 def test_a_replaced_anchor_is_a_signature_error() -> None:

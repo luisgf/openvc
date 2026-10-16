@@ -62,7 +62,7 @@ facing parser is currently guarded by **example-based negative tests only**.
 | `jwe` | ❌ | ✅ rich (`test_jwe.py:167-294`) | **Gap** |
 | `trustlist/parse` (XML) | ❌ | ✅ XXE/entity-bomb/oversize (`test_trustlist.py:104-144`) | **Gap** |
 | `trustlist/xades` (XML) | ❌ | ✅ DTD/tamper/forged (`test_trustlist_xades.py:123-229`) | **Gap** |
-| `openvc_ebsi/_openpgp` + `nodes` (EBSI Trusted Nodes List) | ✅ (derandomized Hypothesis, `test_ebsi_tnl_synthetic.py`) | ✅ the real chain and every tamper the ADR measured (`test_ebsi_tnl_golden.py`); a profile table, framing lies, MPIs, armor and 99 schema cases against chains the test writer signs; 51-mutant check | Strong |
+| `openvc_ebsi/_openpgp` + `nodes` (EBSI Trusted Nodes List) | ✅ (derandomized Hypothesis, `test_ebsi_tnl_synthetic.py`) | ✅ the real chain and every tamper the ADR measured (`test_ebsi_tnl_golden.py`); a profile table, framing lies, MPIs, armor and 103 schema cases against chains the test writer signs; 61-mutant check | Strong |
 
 **Highest-value property-fuzz targets:** `cose`, `mdoc`, `jwe`, and the two XML
 parsers — they consume the most complex attacker-controlled structure and
@@ -264,13 +264,14 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 **EBSI Trusted Nodes List verifier (ADR-0009)**
 - `#319` — *a new trust root and a new hand-written parser of attacker bytes* —
   `openvc_ebsi.nodes.verify_node_list` over a minimal OpenPGP reader. Built to the order
-  "a stage never reads bytes the previous one authenticated": only the two `.sig` files (4 KiB)
-  are parsed before a signature is checked. Checked three ways before review. (1) The real
+  "a stage never reads bytes the previous one did not authenticate": only the two `.sig` files
+  (4 KiB) are parsed before a signature is checked. Checked three ways before review. (1) The real
   chain verifies, and every tamper the ADR measured is rejected with its exact class
   (changed host, flipped bit in either document or in `r`, `s` past the digest prefix, the
   prefix and the hashed area, an appended byte, wrong anchor, wrong file, below threshold,
-  rollback, each time boundary). (2) A 51-mutant check of the new code, each mutant killed
-  by at least one test: the issue's list (the unhashed issuer, packets counted for signers, a
+  rollback, each time boundary). (2) A 61-mutant check of the new code (51 in the first
+  round, 10 more in the review round), each mutant killed by at least one named failing test:
+  the issue's list (the unhashed issuer, packets counted for signers, a
   subkey as signer, a skipped invalid signature, the digest trailer, the 16-bit prefix,
   `>` for `>=` at the threshold and at `expires`, the 90-day cap, the key-list floor against
   `keysVersion`, `match` for `fullmatch`, `bool` as an integer, the equal-hash rule, a floor,
@@ -278,17 +279,56 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
   critical-subpacket rules) plus a canonical-`s` rule that real signatures violate. (3) GnuPG
   2.5.24 as an independent implementation: it accepts the real chain and a chain the test
   writer produced (valid detached signatures and keys), and rejects the tampered variants the
-  reader rejects; it counts one good signature where the verifier's threshold rejects (a
-  policy difference, not a fact difference), and accepts a high-`s` malleation as the reader
-  does. What the mutation run found: a parser differential, not a code bug, that no test
-  covered. A new-format header whose tag bits read as tag 2 (`0xC8`) or tag 6 (`0xD8`) in the
-  old format was refused for the wrong reason by the cases first written (their tag bits read
-  as 0 or 1, not 2 or 6), so removing the bit-6 check survived; both are now cases that only the explicit
-  check refuses. Findings of the adversarial review pass over this PR are added below.
+  reader rejects (one direction only: see the list of divergences below); it counts one good
+  signature where the verifier's threshold rejects (a policy difference, not a fact
+  difference), and accepts a high-`s` malleation as the reader does. What the mutation run
+  found: a parser differential, not a code bug, that no test covered. A new-format header
+  whose tag bits read as tag 2 (`0xC8`) or tag 6 (`0xD8`) in the old format was refused for the
+  wrong reason by the cases first written (their tag bits read as 0 or 1, not 2 or 6), so
+  removing the bit-6 check survived; both are now cases that only the explicit check refuses.
+- `#319` review pass — *nine findings from two independent reviews of PR #334 (two were
+  reported by both), every one reproduced before it was fixed*; none is a forgery, each needs a
+  signature by a trusted key.
+  - **The reader accepted signatures GnuPG rejects, and the text implied equivalence** (medium).
+    Differential against GnuPG 2.5.24 (a scratch keyring; 27 hand-built signature cases, and
+    2482 mutations of the two real `.sig` files: xor `01`/`80`/`FF` at every byte, delete,
+    truncate and insert at every byte, append, duplicate). Closed in code: a signature with no hashed
+    creation-time subpacket (RFC 4880 section 5.2.3.4), and a critical-bit subpacket in the
+    unhashed area (flipping `0xFF` into the type byte of the real unhashed issuer key ID made
+    GnuPG say bad signature and gave the reader the unchanged result). After the fix none of
+    the 2482 mutations is accepted by the reader and rejected by GnuPG. Stated, not closed:
+    the last entry below.
+  - **`wiki/Trust.md` said a key carrying an unknown critical subpacket is refused** (medium; the
+    same finding came twice): in a key block it is accepted, by design (CHANGELOG decision 5).
+    The wiki is corrected; the code is not changed.
+  - **"The unhashed area is never read"** (low, twice: CHANGELOG, wiki, a test docstring): it is
+    walked for structure and a malformed one rejects the file. Reworded everywhere.
+  - **Test gap** (low): an unknown environment name inside the one-to-three bound
+    (`{pilot, prod, bogus}`) survived a mutant that dropped the name check; four schema cases
+    now kill it.
+  - **Collection error instead of a named failure** (low): the real chain's baseline result was
+    computed at import, so a verifier regression surfaced as one collection error of the whole
+    module. It is computed on first use.
+  - **This entry stated the invariant inverted** (low): fixed above.
+  - **A threshold of up to 4300 digits was formatted whole into an error message** (low): the
+    message goes through `safe_repr` (a 64-bit integer as itself, a larger one by its type).
 - Not covered, by design (ADR-0009 Option C): self-signature and binding checks, user IDs,
   subkeys, trust models, key expiry and revocation beyond refusing them, text signatures,
   v5/v6, new-format headers, armored `.sig` files, SHA-384/512 and other curves. Each is a
   typed `OpenPgpError` and a table entry plus a vector away from supported.
+- `#319` — *where the reader is more lenient than GnuPG* (GnuPG 2.5.24; measured; the reader
+  verifies two detached signatures by keys it was told to trust and is not a keyring). It accepts
+  and GnuPG rejects: (a) a signature whose creation time is 0 or earlier than the signing key's
+  creation time (the value of the creation-time subpacket is not interpreted, and the anchor
+  does not carry a creation time); (b) a custodian key whose self-signature key flags lack the
+  signing bit `0x02` (`0x01`, `0x04`, `0x20` and `0x00` were measured; GnuPG drops the key as
+  "No public key"); (c) a custodian key whose self-signature carries a critical subpacket the
+  reader does not know (GnuPG drops the key). (b) and (c) follow from not interpreting
+  self-signatures, since the key list's signature vouches for the key block. It is stricter than
+  GnuPG, among others, for a second creation-time subpacket and for a critical bit on a type it
+  knows (16, 2, 33) in the unhashed area, both of which GnuPG accepts. "GnuPG agrees" in this
+  entry therefore means that GnuPG also rejects what the reader rejects in the tampers measured,
+  not that the two are equivalent.
 
 **July 2026 hardening waves (milestones #9–#10)**
 - `90404f9` — depth wave: mdoc DS/IACA profile, status-issuer binding, XAdES &

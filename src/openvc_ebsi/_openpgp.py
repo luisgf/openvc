@@ -16,11 +16,14 @@ key blocks have and no other. Curve and hash are two small tables (:data:`_CURVE
 
 * A detached-signature file (:func:`read_signatures`): only tag-2 packets, each strictly
   parsed. The signer is the *hashed* issuer-fingerprint subpacket (type 33) and nothing
-  else — the unhashed area is not covered by the signature, so anyone can edit it, and it
-  is walked for structure only and never interpreted. A hashed signature-expiration (3) or
-  key-expiration (9) subpacket, and any critical hashed subpacket other than 2 and 33, is
-  refused: a full OpenPGP library honours them, so ignoring them would accept what the
-  reference verifier rejects.
+  else — the unhashed area is not covered by the signature, so anyone can edit it: it is
+  walked for structure only, never used to identify the signer, and a malformed one, or a
+  critical-bit subpacket in it, is refused. A signature must carry exactly one hashed
+  creation-time subpacket (type 2, 4 octets; RFC 4880 section 5.2.3.4 requires it) whose
+  value is not interpreted. A hashed signature-expiration (3) or key-expiration (9)
+  subpacket, and any critical hashed subpacket other than 2 and 33, is refused: a full
+  OpenPGP library honours them, so ignoring them would accept what the reference verifier
+  rejects.
 * A key block (:func:`read_public_key_block`): exactly one primary key (tag 6), first;
   the fingerprint is recomputed from its material. User IDs (13) and subkeys (14) are
   skipped without their content being read, and a subkey is never a signer identity. A
@@ -28,6 +31,21 @@ key blocks have and no other. Curve and hash are two small tables (:data:`_CURVE
   (types 0x20, 0x28, 0x30) or carries a hashed expiration subpacket (3 or 9). Any other
   tag is refused.
 * Subpackets are never recursed into: an embedded signature (type 32) is opaque bytes.
+
+**Where this reader is more lenient than GnuPG, on purpose.** It verifies two detached
+signatures by keys it was told to trust; it is not a keyring. Measured against GnuPG 2.5.24
+(docs/audit/assurance.md section 4), these are the cases it accepts and GnuPG rejects:
+(1) a signature whose creation time is 0 or earlier than the signing key's creation time (the
+value of the creation-time subpacket is not interpreted); (2) a custodian key whose
+self-signature key flags lack the signing bit 0x02, and (3) a custodian key whose
+self-signature carries a critical subpacket this reader does not know. Self-signatures are
+not interpreted beyond a revocation or an expiration subpacket: the key list's signature is
+what vouches for the key block, and refusing one more shape there would add an outage risk
+without protecting anything. "GnuPG agrees" is therefore not an equivalence: it means GnuPG
+also rejects the tampered variants the reader rejects, not that the reader rejects everything
+GnuPG does. The reader is also stricter than GnuPG in places, for example a second
+creation-time subpacket and a critical-bit subpacket of a type it knows in the unhashed area
+(GnuPG 2.5.24 accepts both).
 
 Every size and count is capped, so the work is bounded by the caps, not by the input.
 """
@@ -216,10 +234,12 @@ def _split_v4_signature(body: bytes) -> tuple[int, int, int, bytes, int]:
 def _check_hashed_area(hashed: bytes, *, signature_file: bool) -> str | None:
     """Walk a hashed area and refuse the expiration subpackets (3 and 9) wherever they
     are. In a signature file (*signature_file*) it also refuses a critical subpacket this
-    reader does not process and a malformed or repeated issuer fingerprint, and returns
-    that fingerprint (upper-case hex) or ``None`` when there is none; in a key block the
-    self-signature is not interpreted any further, so only the expirations matter."""
+    reader does not process, a malformed or repeated issuer fingerprint and anything but
+    exactly one 4-octet creation time, and returns the issuer fingerprint (upper-case hex)
+    or ``None`` when there is none; in a key block the self-signature is not interpreted
+    any further, so only the expirations matter."""
     signer: str | None = None
+    created = 0
     for kind, critical, data in _subpackets(hashed):
         if kind in (_SUB_SIG_EXPIRATION, _SUB_KEY_EXPIRATION):
             raise _fail(f"a hashed expiration subpacket (type {kind}) is not accepted")
@@ -227,13 +247,31 @@ def _check_hashed_area(hashed: bytes, *, signature_file: bool) -> str | None:
             continue
         if critical and kind not in _UNDERSTOOD_WHEN_CRITICAL:
             raise _fail(f"a critical hashed subpacket of type {kind} is not understood")
+        if kind == _SUB_CREATION_TIME:
+            if created or len(data) != 4:
+                raise _fail("a signature must have exactly one creation-time subpacket "
+                            "of 4 octets")
+            created += 1
         if kind == _SUB_ISSUER_FINGERPRINT:
             if signer is not None:
                 raise _fail("two issuer-fingerprint subpackets")
             if len(data) != 21 or data[0] != 4:
                 raise _fail("an issuer-fingerprint subpacket must be v4 and 21 octets")
             signer = data[1:].hex().upper()
+    if signature_file and not created:
+        raise _fail("a signature without a hashed creation-time subpacket (RFC 4880 5.2.3.4)")
     return signer
+
+
+def _check_unhashed_area(unhashed: bytes) -> None:
+    """Walk the unhashed area for structure and refuse a critical-bit subpacket: nothing in
+    this area is interpreted (it is not covered by the signature, so it never names the
+    signer), so none can be a critical subpacket the reader understands; GnuPG likewise
+    treats a signature with an unknown critical subpacket there as bad."""
+    for kind, critical, _data in _subpackets(unhashed):
+        if critical:
+            raise _fail(f"a critical subpacket (type {kind}) in the unhashed area is "
+                        "not accepted")
 
 
 def _parse_signature(body: bytes) -> Signature:
@@ -245,7 +283,7 @@ def _parse_signature(body: bytes) -> Signature:
     if hash_id not in _HASHES:
         raise _fail(f"hash algorithm {hash_id} is not accepted (SHA-256 only)")
     signer = _check_hashed_area(hashed, signature_file=True)
-    _subpackets(body[6 + len(hashed) + 2:after])        # structure only; never interpreted
+    _check_unhashed_area(body[6 + len(hashed) + 2:after])   # structure; never interpreted
     if after + 2 > len(body):
         raise _fail("a signature has no digest prefix")
     prefix = body[after:after + 2]

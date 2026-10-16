@@ -240,10 +240,11 @@ authenticate):
    with the listed one (a duplicate custodian is refused, by fingerprint and by key);
 4. `tnl.json.sig` must carry valid signatures by at least `threshold` **distinct custodian
    primary keys**; a signature is attributed to its signer by the *hashed*
-   issuer-fingerprint subpacket only (the unhashed area is not covered by the signature and
-   is never read), a signature by an unknown key or by a custodian's *subkey* is ignored,
-   one invalid signature by an allowed key rejects the whole file, and the same custodian
-   twice counts once;
+   issuer-fingerprint subpacket only (the unhashed area is not covered by the signature, so
+   anyone can edit it: it is walked for structure only and never used to identify the signer,
+   and a malformed one, or a critical-bit subpacket in it, rejects the file), a signature by
+   an unknown key or by a custodian's *subkey* is ignored, one invalid signature by an
+   allowed key rejects the whole file, and the same custodian twice counts once;
 5. only now is `tnl.json` parsed and checked by hand against the published schema (exactly
    five members; `version` / `keysVersion` integers of at least 1; `Z` timestamps;
    `expires` after `issued` and at most 90 days later; every node `url` a bare `https://`
@@ -281,10 +282,18 @@ authenticate):
   new key lists and strict clients fail closed until they upgrade or override the anchor.
 - **A narrow OpenPGP profile, on purpose.** OpenPGP v4, ECDSA over NIST P-256, SHA-256,
   binary signatures, old-format packet headers. Anything else (another curve or hash, a
-  v5/v6 packet, a new-format header, an armored `.sig`) is `OpenPgpError`, and a signature
-  or key carrying an expiration subpacket, a revocation or an unknown critical subpacket
-  is refused rather than ignored. Self-signatures and subkey bindings are not verified:
-  the key list's signature is what vouches for the custodian keys.
+  v5/v6 packet, a new-format header, an armored `.sig`) is `OpenPgpError`. In a signature
+  file, a signature without exactly one hashed creation-time subpacket, one carrying an
+  expiration subpacket or an unknown critical hashed subpacket, and one with a critical-bit
+  subpacket in its unhashed area are refused rather than ignored. In a key block, a
+  revocation or an expiration subpacket is refused; a self-signature or subkey binding is
+  otherwise not interpreted (not verified, and an unknown critical subpacket in one is not
+  refused), because the key list's signature is what vouches for the custodian keys.
+  GnuPG 2.5.24 agrees with the reader on the recorded chain, but this is not an equivalence:
+  it also rejects a signature dated before its key was created and a custodian key whose
+  self-signature lacks the signing flag, which the reader accepts. The cases are listed in
+  [docs/audit/assurance.md](https://github.com/luisgf/openvc/blob/main/docs/audit/assurance.md)
+  section 4.
 
 The errors are all `openvc_ebsi.errors.NodeListError` (an `EbsiError`):
 

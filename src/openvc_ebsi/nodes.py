@@ -493,7 +493,7 @@ def verify_node_list(
     _check_pair("trusted-keys.json", keys_version, keys_digest, keys_floor, last_keys)
     if not 1 <= threshold <= len(listed):
         raise NodeListMalformed(
-            f"trusted-keys.json threshold {threshold} is not between 1 and the "
+            f"trusted-keys.json threshold {safe_repr(threshold)} is not between 1 and the "
             f"{len(listed)} custodians")
     if minimum is not None and threshold < minimum:
         raise NodeListThresholdError(

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import functools
 import hashlib
 import json
 import unicodedata
@@ -310,6 +311,15 @@ def test_a_threshold_outside_one_to_custodians_is_malformed(threshold: Any) -> N
     raises(NodeListMalformed, b.call)
 
 
+def test_a_huge_threshold_does_not_lengthen_the_message() -> None:
+    """The integer is shown through safe_repr (a 64-bit int as itself, anything larger by its
+    type), not formatted whole: a 4000-digit integer would otherwise be a 4 KB message."""
+    err = raises(NodeListMalformed, bundle(CUST[:3], 10 ** 4000, signers=CUST[:3]).call)
+    assert "threshold" in str(err) and len(str(err)) < 200, len(str(err))
+    err = raises(NodeListMalformed, bundle(CUST[:3], 2 ** 63 - 1, signers=CUST[:3]).call)
+    assert "9223372036854775807" in str(err)
+
+
 def test_a_custodian_who_signs_twice_counts_once() -> None:
     b = bundle(CUST[:2], 2, signers=[CUST[0], CUST[0]])
     raises(NodeListThresholdError, b.call)
@@ -420,8 +430,14 @@ def test_subkeys_user_ids_and_unverified_self_signatures_are_skipped() -> None:
     b = bundle(blocks={0: block(CUST[0], odd_subkey, *many)})
     assert b.call().version == 4
     # an unknown CRITICAL subpacket in a self-signature is not interpreted (it is not verified)
+    # (GnuPG 2.5.24 drops such a key; this is a stated divergence, docs/audit/assurance.md s.4)
     crit = sig_body(CUST[1], b"", sig_type=0x13, extra_hashed=sub(100, b"x", critical=True))
     assert bundle(blocks={1: block(CUST[1], self_sig=crit)}).call().version == 4
+    # and neither is a missing or a repeated creation time, which a SIGNATURE FILE must not have
+    bare = sig_body(CUST[1], b"", sig_type=0x13, hashed=b"")
+    assert bundle(blocks={1: block(CUST[1], self_sig=bare)}).call().version == 4
+    twice = sig_body(CUST[1], b"", sig_type=0x13, extra_hashed=CTIME)
+    assert bundle(blocks={1: block(CUST[1], self_sig=twice)}).call().version == 4
 
 
 def _block_packets(*parts: bytes) -> str:
@@ -564,6 +580,9 @@ def _sig(**kw: Any) -> bytes:
     return sig_packet(CUST[0], b"doc", **{"r_s": (R256, S256), **kw})
 
 
+CTIME = sub(2, (1_790_000_100).to_bytes(4, "big"))     # the writer's own creation time
+
+
 def _signer_hashed(*extra: bytes, fp: str = CUST[0].fp) -> bytes:
     return sub(33, b"\x04" + bytes.fromhex(fp)) + b"".join(extra)
 
@@ -587,10 +606,26 @@ GOOD = _sig()
     ("critical notation data", _sig(extra_hashed=sub(20, bytes(8), critical=True))),
     ("critical key flags", _sig(extra_hashed=sub(27, b"\x03", critical=True))),
     ("two issuer fingerprints", _sig(extra_hashed=sub(33, b"\x04" + bytes.fromhex(CUST[1].fp)))),
-    ("issuer fingerprint v5", _sig(hashed=sub(33, b"\x05" + bytes.fromhex(CUST[0].fp)))),
+    ("issuer fingerprint v5", _sig(hashed=sub(33, b"\x05" + bytes.fromhex(CUST[0].fp)) + CTIME)),
     ("issuer fingerprint 20 octets",
-     _sig(hashed=sub(33, b"\x04" + bytes.fromhex(CUST[0].fp)[:19]))),
-    ("issuer fingerprint 32 octets", _sig(hashed=sub(33, b"\x06" + bytes(32)))),
+     _sig(hashed=sub(33, b"\x04" + bytes.fromhex(CUST[0].fp)[:19]) + CTIME)),
+    ("issuer fingerprint 32 octets", _sig(hashed=sub(33, b"\x06" + bytes(32)) + CTIME)),
+    # RFC 4880 section 5.2.3.4: a signature carries exactly one creation time in its hashed
+    # area; GnuPG 2.5.24 rejects a signature without one
+    ("no creation time", _sig(hashed=_signer_hashed())),
+    ("two creation times", _sig(extra_hashed=CTIME)),
+    ("creation time of 0 octets", _sig(hashed=_signer_hashed(sub(2, b"")))),
+    ("creation time of 2 octets", _sig(hashed=_signer_hashed(sub(2, b"\x00\x01")))),
+    ("creation time of 5 octets", _sig(hashed=_signer_hashed(sub(2, bytes(5))))),
+    ("creation time only in the unhashed area",
+     _sig(hashed=_signer_hashed(), unhashed=sub(16, bytes(8)) + CTIME)),
+    # nothing in the unhashed area is interpreted, so a critical-bit subpacket there is one
+    # the reader cannot honour; GnuPG 2.5.24 calls an unknown one a bad signature
+    ("unhashed critical unknown subpacket", _sig(unhashed=sub(100, b"x", critical=True))),
+    ("unhashed critical issuer key id", _sig(unhashed=sub(16, bytes(8), critical=True))),
+    ("unhashed critical creation time", _sig(unhashed=sub(2, bytes(4), critical=True))),
+    ("unhashed critical issuer fingerprint",
+     _sig(unhashed=sub(33, b"\x04" + bytes.fromhex(CUST[0].fp), critical=True))),
     ("new-format header", bytes([0xC2, len(GOOD) - 2]) + GOOD[2:]),
     # 0xC8 is a NEW-format header (tag 8, compressed data); an old-format reader takes it
     # for tag 2 with a one-octet length, so ignoring bit 6 would read this as a signature
@@ -646,6 +681,50 @@ def test_unknown_non_critical_and_nested_subpackets_are_ignored_not_recursed() -
     assert replace(b, tnl_sig=wrapped).call().version == 4
 
 
+@pytest.mark.parametrize("name,data,fragment", [
+    ("no creation time", _sig(hashed=_signer_hashed()), "without a hashed creation-time"),
+    ("two creation times", _sig(extra_hashed=CTIME), "exactly one creation-time"),
+    ("creation time of 2 octets", _sig(hashed=_signer_hashed(sub(2, b"\x00\x01"))),
+     "exactly one creation-time"),
+    ("unhashed critical unknown", _sig(unhashed=sub(100, b"x", critical=True)),
+     "critical subpacket (type 100) in the unhashed area"),
+    ("unhashed critical issuer key id", _sig(unhashed=sub(16, bytes(8), critical=True)),
+     "critical subpacket (type 16) in the unhashed area"),
+])
+def test_the_creation_time_and_unhashed_rules_name_themselves(
+        name: str, data: bytes, fragment: str) -> None:
+    """The profile table checks the class; this checks the reason, so a row cannot pass on
+    some other, earlier refusal."""
+    err = raises(OpenPgpError, lambda: _openpgp.read_signatures(data))
+    assert fragment in str(err), str(err)
+
+
+def test_what_gnupg_accepts_in_those_areas_is_accepted() -> None:
+    """GnuPG 2.5.24 accepts each of these (checked with the same bytes), so refusing them
+    would be an outage with nothing protected: a critical creation time (the reader
+    understands type 2), the creation time before or after the issuer, an empty or a
+    non-critical unhashed area."""
+    b = bundle()
+
+    def hashed_ct_first(k: Key) -> dict[str, Any]:
+        return dict(hashed=sub(2, (1_790_000_100).to_bytes(4, "big"), critical=True)
+                    + _signer_hashed(fp=k.fp))
+
+    def hashed_ct_last(k: Key) -> dict[str, Any]:
+        return dict(hashed=_signer_hashed(
+            sub(2, (1_790_000_100).to_bytes(4, "big"), critical=True), fp=k.fp))
+
+    variants: list[Callable[[Key], dict[str, Any]]] = [
+        hashed_ct_first, hashed_ct_last,
+        lambda k: dict(unhashed=b""),
+        lambda k: dict(unhashed=sub(100, b"x")),
+        lambda k: dict(unhashed=sub(16, bytes.fromhex(k.fp)[-8:]) * 3 + sub(20, bytes(8))),
+    ]
+    for variant in variants:
+        sigs = b"".join(sig_packet(k, b.tnl, **variant(k)) for k in CUST[:2])
+        assert replace(b, tnl_sig=sigs).call().version == 4
+
+
 def test_a_subpacket_inside_a_packet_inside_a_packet_is_not_followed() -> None:
     # a signature file that is one valid packet followed by bytes that LOOK like another
     # packet header are trailing bytes: refused, never skipped or recursed into
@@ -656,8 +735,7 @@ def test_a_subpacket_inside_a_packet_inside_a_packet_is_not_followed() -> None:
 
 def test_a_packet_flood_stops_at_the_cap_before_any_ecdsa(monkeypatch: pytest.MonkeyPatch) -> None:
     b = bundle()
-    tiny = sig_packet(CUST[0], b.tnl, hashed=sub(33, b"\x04" + bytes.fromhex(CUST[0].fp)),
-                      unhashed=b"")
+    tiny = sig_packet(CUST[0], b.tnl, hashed=_signer_hashed(CTIME), unhashed=b"")
     flood = tiny * ((_openpgp.MAX_SIGNATURE_FILE_BYTES // len(tiny)))
     assert len(flood) <= _openpgp.MAX_SIGNATURE_FILE_BYTES
     assert len(flood) // len(tiny) > _openpgp.MAX_PACKETS
@@ -672,8 +750,7 @@ def test_a_packet_flood_stops_at_the_cap_before_any_ecdsa(monkeypatch: pytest.Mo
 def test_the_number_of_ecdsa_checks_is_bounded_by_the_packet_cap(
         monkeypatch: pytest.MonkeyPatch) -> None:
     b = bundle()
-    tiny = sig_packet(CUST[0], b.tnl, hashed=sub(33, b"\x04" + bytes.fromhex(CUST[0].fp)),
-                      unhashed=b"")
+    tiny = sig_packet(CUST[0], b.tnl, hashed=_signer_hashed(CTIME), unhashed=b"")
     full = tiny * _openpgp.MAX_PACKETS                           # the most the cap allows
     assert len(full) <= _openpgp.MAX_SIGNATURE_FILE_BYTES
     calls: list[str] = []
@@ -798,6 +875,19 @@ def _add_env(name: str) -> Callable[[dict[str, Any]], None]:
     return mutate
 
 
+def _rename_env(old: str, new: str) -> Callable[[dict[str, Any]], None]:
+    """*old*'s nodes under the name *new*: the count of members is unchanged."""
+    def mutate(doc: dict[str, Any]) -> None:
+        doc["environments"][new] = doc["environments"].pop(old)
+    return mutate
+
+
+def _only_env(name: str) -> Callable[[dict[str, Any]], None]:
+    def mutate(doc: dict[str, Any]) -> None:
+        doc["environments"] = {name: nodes_for("prod", 1)}
+    return mutate
+
+
 def _add_node_member(doc: dict[str, Any]) -> None:
     doc["environments"]["prod"][0]["extra"] = "x"
 
@@ -872,6 +962,11 @@ SCHEMA_NEGATIVES: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
     ("environments null", _env(None)), ("environments list", _env([])),
     ("environments empty", _env({})), ("environments with an extra name", _add_env("test")),
     ("environments named production", _add_env("production")),
+    # inside the 1-to-3 bound, so only the check of the names themselves can refuse them
+    ("environments with a third name bogus", _rename_env("preprod", "bogus")),
+    ("environments with pilot renamed legacy", _rename_env("pilot", "legacy")),
+    ("environments with prod renamed Prod", _rename_env("prod", "Prod")),
+    ("environments of one unknown name", _only_env("bogus")),
     ("environments named Prod", _add_env("Prod")),
     ("empty environment list", _empty_env), ("environment as object", _as_obj),
     ("node as string", _string_node), ("node extra member", _add_node_member),
@@ -1128,7 +1223,13 @@ def _real(**over: Any) -> Any:
     return verify_node_list(**args)
 
 
-BASELINE = _real()
+@functools.cache
+def _baseline() -> Any:
+    """The real chain's result, computed on first use: a verifier regression must show up
+    as named test failures, not as a collection error of this whole module."""
+    return _real()
+
+
 _ops = st.lists(st.tuples(st.sampled_from(["flip", "insert", "delete", "truncate"]),
                           st.integers(min_value=0, max_value=10 ** 6),
                           st.integers(min_value=0, max_value=255)), min_size=1, max_size=4)
@@ -1202,7 +1303,7 @@ def test_fuzz_mutated_signature_files_give_the_same_answer_or_a_typed_error(
             result = _real(**{name: mutated})
         except NodeListError:
             continue
-        assert result == BASELINE      # an accepted mutation (the unhashed area) changes nothing
+        assert result == _baseline()   # an accepted mutation (the unhashed area) changes nothing
 
 
 @FUZZ
