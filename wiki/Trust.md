@@ -159,15 +159,19 @@ with for_ebsi("legacy-pilot") as http:
 
 - **Read-only by design**: resolve DIDs, read the registries. Onboarding /
   writing (JSON-RPC + OID4VP) is out of scope.
-- **SSRF-guarded**: the EBSI HTTP client is https-only with a host
-  allow-list, short client-side TTL caching, and bounded retries
+- **SSRF-guarded**: the EBSI HTTP client is https-only with an origin
+  allow-list (a listed host **and port 443**), short client-side TTL caching, and bounded retries
   ([ADR-0001](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0001-ebsi-http-client.md)).
-  A URL that is not visible ASCII, or that does not parse (port included), is
-  refused as `HttpForbiddenHost` before any request. The DID itself is checked before
-  it is put in a registry URL: anything but `did:ebsi:z` plus 22 or 23 base58btc
+  A listed host on any other port (`:80`, `:8443`, `:0`), a URL that carries userinfo
+  (`https://user@host/`), a URL that is not visible ASCII, and one that does not parse (port
+  included) are refused as `HttpForbiddenHost` before any request. An absent or empty port,
+  `:443` and `:0443` are 443. `allowed_hosts` still holds host names, so a caller on 443
+  changes nothing. The DID itself is checked before it is put in a registry URL: anything but `did:ebsi:z` plus 22 or 23 base58btc
   characters (a path, a `..`, a query, a fragment, a percent escape, another method) is a
   `DidResolutionError` from `resolve` / `issuer_record`, so an unsigned token's `iss`
   cannot choose the request path (`verify_ebsi_badge` reports `EbsiVerificationError`).
+  The client keeps no cookies: a `Set-Cookie` from a node is dropped and nothing is sent
+  back, so consecutive reads may reach different backends of one node.
   Never resolve `did:web` through it — `did:web` has its own guarded fetch
   (see [Resolving issuer keys](Resolving-Issuer-Keys)).
 - **The document must be for the DID asked**: `DidEbsiResolver.resolve(did)` raises
@@ -201,7 +205,8 @@ with for_ebsi("legacy-pilot") as http:
   - Any other name (another case, an empty string, a value that is not a string) raises
     `UnknownEbsiEnvironment`, which is also a `ValueError`.
 
-  Pass `extra_hosts` to also permit an issuer's status-list origin. The v5 Trusted Issuers
+  Pass `extra_hosts` (host names, port 443 only) to also permit an issuer's status-list host; a
+  status list on another port is refused. The v5 Trusted Issuers
   Registry `/attributes` listing is paginated, and openvc walks every page (bounded, and
   immune to EBSI's self-referential `next` cursor) so an issuer with many accreditations is
   read in full.

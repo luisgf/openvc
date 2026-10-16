@@ -10,11 +10,14 @@ It is deliberately small but covers the production concerns a verifier needs:
   * caching         : TTL + bounded size. EBSI registry reads (DID docs, TIR
                       entries, schemas) change rarely and are hit on every verify.
   * SSRF guard      : the TIR v5 flow follows `href` values taken from registry
-                      responses; those hrefs are only fetched if their host is on
-                      an allow-list derived from the configured EBSI base. A
-                      compromised/malicious registry response cannot pivot the
-                      client to an internal address.
+                      responses; those hrefs are only fetched if their ORIGIN is on
+                      the allow-list: https, a host derived from the configured EBSI
+                      base, and port 443 (an absent port is 443); a URL with userinfo
+                      is refused too (#318). A compromised/malicious registry
+                      response cannot pivot the client to an internal address, nor to
+                      another port of an allow-listed host.
   * connection reuse: a single pooled httpx.Client; redirects disabled.
+                      No cookie jar: a `Set-Cookie` is dropped, nothing is sent back.
 
 Pass ``client.get_json`` wherever a ``Fetch`` is expected (e.g. into the resolver).
 """
@@ -26,8 +29,9 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from http.cookiejar import Cookie, CookieJar, CookiePolicy
 from typing import Any
-from urllib.parse import urlparse
+from urllib.request import Request
 
 import httpx
 
@@ -36,6 +40,7 @@ from openvc import __version__
 from openvc.cache import TtlCache
 from openvc.proof._verify_common import safe_repr
 
+from ._url import HTTPS_PORT, UrlDoesNotParse, UrlNotVisibleAscii, carries_userinfo, read_origin
 from .environments import fixed_hosts
 from .errors import EbsiError, MalformedRegistryResponse, UnknownEbsiEnvironment
 
@@ -111,7 +116,45 @@ def _parse_retry_after(value: str | None) -> float | None:
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
+class _NoCookiePolicy(CookiePolicy):
+    """Refuse every cookie, in both directions.
+
+    The client is a stateless GET reader whose only state is the TTL cache (ADR-0001 D2):
+    a `Set-Cookie` (the load-balancer affinity cookie of a node, say) must neither be kept
+    nor sent back, or a retry stays pinned to the backend it is leaving and the jar becomes
+    hidden state that lives as long as the client (#317, ADR-0009).
+
+    ``set_ok`` is the load-bearing method. httpx copies the client's jar into a fresh
+    default-policy one when it builds a request, so a cookie that was stored would be sent
+    whatever ``return_ok`` says; the other three are defence in depth, not the guard.
+    """
+
+    netscape = True       # the jar reads these three attributes
+    rfc2965 = False
+    hide_cookie2 = False
+
+    def set_ok(self, cookie: Cookie, request: Request) -> bool:
+        return False
+
+    def return_ok(self, cookie: Cookie, request: Request) -> bool:
+        return False
+
+    def domain_return_ok(self, domain: str, request: Request) -> bool:
+        return False
+
+    def path_return_ok(self, path: str, request: Request) -> bool:
+        return False
+
+
 class EbsiHttpClient:
+    """A read-only, SSRF-guarded GET client for the EBSI registries.
+
+    ``allowed_hosts`` is a set of host NAMES, matched case-insensitively. A URL is fetched
+    only if it is ``https`` on one of those hosts at port 443 (an absent or empty port is
+    443; ``:0443`` reads as 443 too) and carries no userinfo: any other port of an
+    allow-listed host is :class:`HttpForbiddenHost`, before any request (#318). Port 443 is
+    implied; an entry that spells a scheme or a port never matches. Redirects are off."""
+
     def __init__(
         self,
         *,
@@ -143,6 +186,9 @@ class EbsiHttpClient:
                 "User-Agent": user_agent,
                 "Accept": "application/json, application/did+ld+json, */*;q=0.1",
             },
+            # No cookie jar (#317): a bare CookieJar is the only form httpx keeps as given
+            # (an httpx.Cookies, a dict or a list is rebuilt with the default policy).
+            cookies=CookieJar(policy=_NoCookiePolicy()),
         )
 
     # -- the Fetch capability --------------------------------------------- #
@@ -218,23 +264,33 @@ class EbsiHttpClient:
     # -- internals --------------------------------------------------------- #
 
     def _guard_host(self, url: str) -> None:
-        # A URL is checked by `urlparse` here and fetched by httpx, which reads some URLs
-        # differently: urlsplit drops a tab or newline and ignores other control
-        # characters that httpx rejects. Refuse anything that is not visible ASCII
-        # before `urlparse` reads it (on CPython <= 3.12 it NFKC-normalizes a non-ASCII
-        # netloc in quadratic time), and a URL `urlparse` cannot read, port included —
-        # typed, before any I/O (#246).
-        if not (url.isascii() and url.isprintable()) or " " in url:
-            raise HttpForbiddenHost("URL rejected: not visible ASCII", url=url)
+        # The guard admits an ORIGIN: https, a listed host, port 443 (#318). A URL is
+        # checked here by `urlparse` (through `read_origin`, the reader the TIR adapter's
+        # origin pin uses too) and fetched by httpx, which reads some URLs differently:
+        # urlsplit drops a tab or newline and ignores other control characters that httpx
+        # rejects. Refuse anything that is not visible ASCII before `urlparse` reads it (on
+        # CPython <= 3.12 it NFKC-normalizes a non-ASCII netloc in quadratic time), and a
+        # URL `urlparse` cannot read, port included — typed, before any I/O (#246).
         try:
-            parsed = urlparse(url)
-            parsed.port                       # raises on an out-of-range or non-numeric port
-        except ValueError as exc:
-            raise HttpForbiddenHost("URL rejected: does not parse", url=url) from exc
-        if parsed.scheme != "https":
+            scheme, host, port = read_origin(url)
+        except UrlNotVisibleAscii:
+            raise HttpForbiddenHost("URL rejected: not visible ASCII", url=url) from None
+        except UrlDoesNotParse as exc:
+            raise HttpForbiddenHost("URL rejected: does not parse", url=url) from exc.__cause__
+        if scheme != "https":
             raise HttpForbiddenHost(f"non-https URL rejected: {url}", url=url)
-        if parsed.hostname is None or parsed.hostname.lower() not in self._allowed:
-            raise HttpForbiddenHost(f"host not in allow-list: {parsed.hostname}", url=url)
+        if not host or host not in self._allowed:
+            raise HttpForbiddenHost(f"host not in allow-list: {host or None}", url=url)
+        # `read_origin` fills in 443 for an absent https port and only for an absent one,
+        # so `:0` stays 0 here and is refused with every other port.
+        if port != HTTPS_PORT:
+            raise HttpForbiddenHost(f"port {port} not allowed: https port 443 only", url=url)
+        # Userinfo is outside an origin and the Trusted Nodes List publishes none (ADR-0009).
+        # httpx would send it as a Basic `Authorization` header. This refusal names the rule
+        # and carries no credentials, in the message or in `.url` (None here); an earlier
+        # rule's message and `.url` still hold the URL as given.
+        if carries_userinfo(url):
+            raise HttpForbiddenHost("URL rejected: carries userinfo", url=None)
 
     def _sleep_before_retry(self, attempt: int, resp: httpx.Response | None = None) -> None:
         if attempt >= self._retry.attempts - 1:
@@ -281,7 +337,10 @@ def for_ebsi(
       (ADR-0009).
 
     ``extra_hosts`` lets you permit additional issuer status-list hosts if you
-    also follow StatusList proxies through this client.
+    also follow StatusList proxies through this client. Entries are host NAMES: only
+    ``https`` on port 443 of a listed host is reachable (#318), so a status list on another
+    port is refused as :class:`HttpForbiddenHost`, and an entry that spells a scheme or a
+    port never matches.
 
     An environment that is not one of these names (another case, empty, not a string)
     raises :class:`~openvc_ebsi.errors.UnknownEbsiEnvironment`, which is also a ``ValueError``.

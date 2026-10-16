@@ -506,7 +506,7 @@ DID document carries no verification method.
 | Node selection | Always the first listed node | Load concentration, one point of failure | Random among healthy; policy injected |
 | 90-day expiry | Publisher stops reissuing | Every client built from the list (D5) fails closed at the expiry instant; a hand-built allow-list keeps trusting its nodes | Typed `NodeListExpired` and a watch job; no grace in the library, so the consumer re-verifies or accepts the risk of a hand-built allow-list |
 | Node consistency | A lagging node 404s a new DID or serves an older key | A just-rotated key may be accepted briefly | Existing short TTL (ADR-0001 D2); 404 not treated as global |
-| Cookie jar | `SRV_ID` sticky-routing cookie on the pooled `httpx.Client` | Harmless state; makes consecutive reads sticky to a backend | Note only; follow-up to disable the jar |
+| Cookie jar | `SRV_ID` sticky-routing cookie on the pooled `httpx.Client` | Harmless state; makes consecutive reads sticky to a backend | Note only; follow-up to disable the jar (#317) |
 | Links inside accreditations | `credentialSchema.id` on `api-prod.ebsi.eu` / `api-test.ebsi.eu` | A future schema fetch must not assume node hosts | Keep schema fetching out of the node allow-list |
 
 ## Core v1 adapters and the environment table
@@ -681,7 +681,7 @@ Titles with one line each; none have been filed.
   v5 smoke; warns 14 days before `expires`.
 - `docs(audit): update threat model R4 wording when the adapters land` — the allow-list
   line stays true until then.
-- `feat(ebsi): disable the cookie jar on the pooled client` — sticky-routing cookies are
+- `feat(ebsi): disable the cookie jar on the pooled client` (#317) — sticky-routing cookies are
   state the client does not need.
 
 ## Appendix — what was called, and how to reproduce
