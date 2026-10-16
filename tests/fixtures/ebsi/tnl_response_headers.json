@@ -1,0 +1,174 @@
+{
+  "recording": {
+    "host": "tnl.ebsi.eu",
+    "recorded_at": "2026-10-16T16:15:16Z",
+    "client": "openvc-core/1.36.0, EbsiHttpClient via for_tnl(), one attempt per request",
+    "requests": 8,
+    "method": "GET",
+    "tls_verification": true,
+    "redirects_followed": false,
+    "request_headers": {
+      "User-Agent": "openvc-core/1.36.0",
+      "Accept": "*/*",
+      "Accept-Encoding": "identity",
+      "If-None-Match": "conditional round only: the ETag just received, verbatim"
+    },
+    "stored": "status, the headers named in issue #320, header names, body length and SHA-256 of each 200; never the bodies (those are the fixtures of #319)"
+  },
+  "unconditional": {
+    "trusted-keys.json": {
+      "status": 200,
+      "headers": {
+        "cache-control": "public, max-age=300, must-revalidate",
+        "content-length": "1811",
+        "content-type": "application/json; charset=utf-8",
+        "etag": "\"2e0f5f1bca81acebb602786137021f86a6a41fa4d6bfa40686c7dc37211f22ea\"",
+        "vary": "Origin"
+      },
+      "header_names": [
+        "cache-control",
+        "content-length",
+        "content-type",
+        "date",
+        "etag",
+        "vary"
+      ],
+      "set_cookie_present": false,
+      "body_length": 1811,
+      "body_sha256": "2e0f5f1bca81acebb602786137021f86a6a41fa4d6bfa40686c7dc37211f22ea"
+    },
+    "trusted-keys.json.sig": {
+      "status": 200,
+      "headers": {
+        "cache-control": "public, max-age=300, must-revalidate",
+        "content-length": "147",
+        "content-type": "application/pgp-signature",
+        "etag": "\"db1200d9f8d2cfeb8a47e9960245be3457d47c9ae94de850b61926cc2e2ceff0\"",
+        "vary": "Origin"
+      },
+      "header_names": [
+        "cache-control",
+        "content-length",
+        "content-type",
+        "date",
+        "etag",
+        "vary"
+      ],
+      "set_cookie_present": false,
+      "body_length": 147,
+      "body_sha256": "db1200d9f8d2cfeb8a47e9960245be3457d47c9ae94de850b61926cc2e2ceff0"
+    },
+    "tnl.json": {
+      "status": 200,
+      "headers": {
+        "cache-control": "public, max-age=300, must-revalidate",
+        "content-length": "7068",
+        "content-type": "application/json; charset=utf-8",
+        "etag": "\"ebff3ba5b210806d1bd0b302222d81e383312b3cdf068525a143d7a2a7d2fcb1\"",
+        "vary": "Origin"
+      },
+      "header_names": [
+        "cache-control",
+        "content-length",
+        "content-type",
+        "date",
+        "etag",
+        "vary"
+      ],
+      "set_cookie_present": false,
+      "body_length": 7068,
+      "body_sha256": "ebff3ba5b210806d1bd0b302222d81e383312b3cdf068525a143d7a2a7d2fcb1"
+    },
+    "tnl.json.sig": {
+      "status": 200,
+      "headers": {
+        "cache-control": "public, max-age=300, must-revalidate",
+        "content-length": "266",
+        "content-type": "application/pgp-signature",
+        "etag": "\"1d0438b2c82493786cd026a74db9b6b8f7d6c300b124cab00781ef639c1f7ff5\"",
+        "vary": "Origin"
+      },
+      "header_names": [
+        "cache-control",
+        "content-length",
+        "content-type",
+        "date",
+        "etag",
+        "vary"
+      ],
+      "set_cookie_present": false,
+      "body_length": 266,
+      "body_sha256": "1d0438b2c82493786cd026a74db9b6b8f7d6c300b124cab00781ef639c1f7ff5"
+    }
+  },
+  "conditional": {
+    "trusted-keys.json": {
+      "status": 304,
+      "headers": {
+        "cache-control": "public, max-age=300, must-revalidate",
+        "etag": "\"2e0f5f1bca81acebb602786137021f86a6a41fa4d6bfa40686c7dc37211f22ea\"",
+        "vary": "Origin"
+      },
+      "header_names": [
+        "cache-control",
+        "date",
+        "etag",
+        "vary"
+      ],
+      "set_cookie_present": false,
+      "body_length": null,
+      "body_sha256": null
+    },
+    "trusted-keys.json.sig": {
+      "status": 304,
+      "headers": {
+        "cache-control": "public, max-age=300, must-revalidate",
+        "etag": "\"db1200d9f8d2cfeb8a47e9960245be3457d47c9ae94de850b61926cc2e2ceff0\"",
+        "vary": "Origin"
+      },
+      "header_names": [
+        "cache-control",
+        "date",
+        "etag",
+        "vary"
+      ],
+      "set_cookie_present": false,
+      "body_length": null,
+      "body_sha256": null
+    },
+    "tnl.json": {
+      "status": 304,
+      "headers": {
+        "cache-control": "public, max-age=300, must-revalidate",
+        "etag": "\"ebff3ba5b210806d1bd0b302222d81e383312b3cdf068525a143d7a2a7d2fcb1\"",
+        "vary": "Origin"
+      },
+      "header_names": [
+        "cache-control",
+        "date",
+        "etag",
+        "vary"
+      ],
+      "set_cookie_present": false,
+      "body_length": null,
+      "body_sha256": null
+    },
+    "tnl.json.sig": {
+      "status": 304,
+      "headers": {
+        "cache-control": "public, max-age=300, must-revalidate",
+        "etag": "\"1d0438b2c82493786cd026a74db9b6b8f7d6c300b124cab00781ef639c1f7ff5\"",
+        "vary": "Origin"
+      },
+      "header_names": [
+        "cache-control",
+        "date",
+        "etag",
+        "vary"
+      ],
+      "set_cookie_present": false,
+      "body_length": null,
+      "body_sha256": null
+    }
+  }
+}

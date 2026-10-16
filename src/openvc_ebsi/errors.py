@@ -19,6 +19,16 @@ class MalformedRegistryResponse(EbsiError):
     ``AttributeError`` past the error family callers catch."""
 
 
+class UnknownEbsiEnvironment(EbsiError, ValueError):
+    """``for_ebsi`` was given an environment name the table does not hold: an unknown or
+    wrong-case string, an empty one, or a value that is not a ``str`` at all (``None``, a
+    number, an unhashable ``list``).
+
+    It is also a :class:`ValueError`, which is what ``for_ebsi`` raised for an unknown name
+    before this class existed, so ``except ValueError`` keeps working. Code that compares the
+    exact class (``type(exc) is ValueError``) must compare this one."""
+
+
 class NodeListError(EbsiError):
     """Base class for every failure of the Trusted Nodes List verifier
     (:func:`openvc_ebsi.nodes.verify_node_list`).

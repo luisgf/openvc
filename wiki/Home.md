@@ -37,6 +37,7 @@ so the snippets you read here are guaranteed to run against the current release.
 | [Issuing with OpenID4VCI](Issuing-with-OpenID4VCI) | verify a wallet's key proof, then issue bound to the key it proved |
 | [Status lists](Status-Lists) | revocation — check *and* issue, both encodings |
 | [Trust anchors](Trust) | X.509 `x5c`, EU Trusted Lists, the EBSI plugin |
+| [EBSI node trust](EBSI-Node-Trust) | where EBSI reads go today, the signed Trusted Nodes List, a node allow-list recipe |
 | [Relying-party certificates](Relying-Party-Certificates) | EUDI WRPAC + WRPRC, the two authorization cross-checks |
 | [Credential schemas](Credential-Schemas) | `credentialSchema` / JSON Schema validation |
 | [Spanish university credential](Spanish-University-Credential) | a worked EUDI-shaped example |

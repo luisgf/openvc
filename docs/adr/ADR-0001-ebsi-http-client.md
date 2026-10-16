@@ -3,6 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-07-05
 **Context owner:** openvc_ebsi.http
+**Extended by:** [ADR-0009](ADR-0009-ebsi-core-api-v1-and-node-trust.md) (EBSI Core API v1
+and how a node is trusted); see "Notes (2026-10-16)" at the end.
 
 ## Context
 
@@ -73,6 +75,10 @@ The allow-list is application logic; no HTTP library provides it. The v5 flow
 follows `href`/`attributes` URLs taken from registry responses, so the guard
 remains necessary. https-only + host allow-list retained.
 
+*Amended 2026-10-16:* the guard now admits an origin, https on a listed host at port 443
+and no userinfo, and `allowed_hosts` stays a set of host names. See ADR-0009 D1 and
+issue #318.
+
 ### D9 — DID document parser must handle the bare form
 The DID Registry returns the DID document without a `didDocument` wrapper. The
 parser's `raw.get("didDocument", raw)` fallback already handles this — confirmed
@@ -97,6 +103,27 @@ periodically" caveat below.
 - These findings are a point-in-time snapshot. **Re-probe periodically**; if EBSI
   starts sending `Cache-Control`/`ETag`, revisit D1–D2 (hishel would then become
   the more correct choice).
+
+## Notes (2026-10-16)
+
+Added after [ADR-0009](ADR-0009-ebsi-core-api-v1-and-node-trust.md); the decisions above are
+unchanged and the text above is not rewritten.
+
+- **Evidence and Reproduce describe the legacy pilot lane**, not "the EBSI API": per-service
+  `v5` paths on `api-pilot.ebsi.eu`. It was still served on 2026-10-16 (200 for
+  `did:ebsi:zZeKyEJf…`). EBSI Core API v1 is a different layout on per-node hosts taken from
+  the Trusted Nodes List, and it has no fixed production host.
+- **D1 and D2 (no validators) hold.** They were re-measured on Core v1 node responses on
+  2026-10-16: no `Cache-Control`, `ETag` or `Last-Modified`. The TNL files at `tnl.ebsi.eu`
+  do send `ETag` and `Cache-Control`; that matters to fetching the list (#320), not to the
+  registry client.
+- **D7 (problem+json)**: Core v1 errors now carry a stable `type` of the form
+  `urn:ebsi:problems:<slug>`. `openvc_ebsi.http` still maps by status alone; acting on the
+  `type` belongs to the Core v1 adapters (#321).
+- **D8 (SSRF allow-list)**: the hosts can now come from a signed source, the Trusted Nodes
+  List. The allow-list stays the primitive, and verifying the list is the consumer's job.
+- **D10 (`Accept`) holds on Core v1**: the client's `Accept` got `application/did+ld+json`
+  and no 406 on every v1 read in ADR-0009's probe.
 
 ## Reproduce
 

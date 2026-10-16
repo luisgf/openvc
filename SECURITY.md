@@ -28,7 +28,8 @@ Areas most relevant to security, and how the library is designed to fail closed:
 
 - **Signature verification.** The VC-JWT suite pins an algorithm allow-list
   (`{ES256, ES384, EdDSA, Ed25519}`) *before* any crypto runs — `alg: none`,
-  RS\*, HS\* are rejected (alg-confusion defence) — and reconciles the JWT
+  RS\*, HS\* are rejected (alg-confusion defence; `ES256K` is verified only by the
+  explicit, VC-JWT-only `VcJwtProofSuite(allow_es256k=True)` opt-in) — and reconciles the JWT
   envelope with the embedded credential. The Data Integrity suite verifies
   over the RDF (or JCS) canonical form.
 - **SSRF.** The EBSI client enforces an https-only host allow-list. The separate

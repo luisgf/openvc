@@ -48,22 +48,33 @@ class UnsafeUrlError(DidResolutionError):
     """The URL or a resolved address is not allowed (scheme, host, or IP range)."""
 
 
-def _ip_is_forbidden(ip_str: str) -> bool:
+def ip_is_forbidden(ip_str: str) -> bool:
     """True for any non-globally-routable / SSRF-sensitive address.
 
     The flag union covers private / loopback / link-local / reserved /
     multicast / unspecified. ``not is_global`` additionally closes RFC 6598
     shared space (``100.64.0.0/10``, CGNAT), which ``is_private`` does not
     set — multicast stays in the union because some multicast addresses
-    report ``is_global=True``. IPv4-mapped forms inherit the same
-    classification (``::ffff:100.64.0.1``).
+    report ``is_global=True``, and so does the deprecated IPv6 site-local
+    prefix ``fec0::/10`` (RFC 3879), which ``is_site_local`` catches.
+    IPv4-mapped forms inherit the same classification (``::ffff:100.64.0.1``).
+
+    Public so a caller that brings its own HTTP client applies the same rule instead of
+    a copy of it (the ``_ip_is_forbidden`` name is kept as the same function). Raises
+    ``ValueError`` for a string that is not an IP address; the caller decides what that
+    means.
     """
     ip = ipaddress.ip_address(ip_str)
     return (
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_multicast or ip.is_unspecified
         or not ip.is_global
+        # fec0::/10 reports is_global=True and no other flag; only IPv6 has the property.
+        or (isinstance(ip, ipaddress.IPv6Address) and ip.is_site_local)
     )
+
+
+_ip_is_forbidden = ip_is_forbidden
 
 
 def _resolve_public_ips(host: str, port: int) -> list[str]:
@@ -317,4 +328,5 @@ __all__ = [
     "https_json_fetch_async",
     "https_text_fetch",
     "https_text_fetch_async",
+    "ip_is_forbidden",
 ]

@@ -10,8 +10,8 @@
 > and the context-validation rows among them — which are as of their own release;
 > treat them as entry points, not guarantees, and re-anchor against the reviewed
 > commit. Entries added by the 2026-10-13 catch-up — the rest of the
-> v1.25.0–v1.31.2 hardening, I21, and the evidence added to I5–I18 — and I22 (v1.36.0)
-> cite symbols and test names instead of line numbers, so they stay valid as the code
+> v1.25.0–v1.31.2 hardening, I21, and the evidence added to I5–I18 — and I22 (v1.36.0) and
+> I23 (v1.37.0) cite symbols and test names instead of line numbers, so they stay valid as the code
 > moves.
 
 Part of the external-audit pack ([README](README.md)) for
@@ -86,7 +86,7 @@ boundary is attacker-controlled until a signature verifies.
 
 | Capability | Threat | Control (with citation) |
 |---|---|---|
-| Present a forged / tampered credential | Wrong-accept | Signature verified through the matching suite; the `{ES256, ES384, EdDSA, Ed25519}` allow-list runs **before any crypto** — `src/openvc/proof/vc_jwt.py:55,198`, `src/openvc/proof/_jws.py:84` (rejects `alg:none`, RS\*, HS\* by exclusion → alg-confusion defence). ES256 must be raw R‖S 64 bytes, never DER — `src/openvc/keys.py:575-589` |
+| Present a forged / tampered credential | Wrong-accept | Signature verified through the matching suite; the `{ES256, ES384, EdDSA, Ed25519}` allow-list runs **before any crypto** — `src/openvc/proof/vc_jwt.py:55,198`, `src/openvc/proof/_jws.py:84` (rejects `alg:none`, RS\*, HS\* by exclusion → alg-confusion defence). ES256 must be raw R‖S 64 bytes, never DER — `src/openvc/keys.py:575-589`. `ES256K` (RFC 8812) is outside that list: a VC-JWT suite constructed with `allow_es256k=True` is the only door, verification only, with an openvc-side secp256k1 key pin and 64-octet raw R‖S, and every other lane refuses it (I23; #323) |
 | Name issuer A but sign with key B | Impersonation | **Issuer binding**: a DI proof's `verificationMethod` must be controlled by the credential `issuer` DID — `src/openvc/verify.py:628-641`; VC-JWT reconciles the JWT envelope (`iss`/`sub`/`jti`) with the embedded `vc` — `src/openvc/proof/vc_jwt.py:360-381`; x5c binds the leaf SAN to `iss` — `src/openvc/x5c.py:56-70`; a W3C credential secured as SD-JWT (a VCDM payload, whatever its issuer `typ`) is reconciled the same way, and every identifier a present `issuer` carries must be `iss` — `issuer_identifiers` (#221); a W3C SD-JWT whose issuer JWT has no `iss` member and a W3C `typ` (or none; a header `"typ": null` is a present `typ`, not a state) is keyed on the `issuer` of its body instead (VC-JOSE-COSE §4.1.2, §4.2; never a disclosed one, never the `kid`), which is as unauthenticated as `iss` until the signature verifies, and `result.issuer` is the identifier whose key verified (its claims then carry no `iss`) — `_vcdm_issuer` in `proof/sd_jwt.py` (#290); an https `iss` that Python and a WHATWG parser read as different hosts is refused before the `/.well-known/jwt-vc-issuer` fetch and never binds an x5c `dNSName` — `_parse_https_issuer` in `jwt_vc_issuer.py` (#236) |
 | Re-spell a signed RDF Data Integrity credential's JSON while keeping its signed dataset (IRI-keyed or aliased member, inline `@context` re-mapping a term, undefined term, `@included`) | Wrong-accept: the policy reads JSON the signature does not cover (expiry/status/schema skipped, `credentialSubject` spoofed past holder binding, unsigned claims) | **Context validation** (VC-DI §2.4.1) after the proof verifies and before any policy read — `src/openvc/proof/_context_validation.py` (`validate_document`), called at `src/openvc/proof/data_integrity.py:236`, `src/openvc/proof/di_ecdsa_rdfc.py:205`, `src/openvc/proof/ecdsa_sd.py:749` (and on the signing side). VC base context first, then only loader-served URLs or absolute-IRI `@vocab`-only objects (`_check_context`); the document and proof must equal the compaction of their own expansion (`_check_compacted`), with no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, and nothing the RDF conversion drops — every node id, type and property a well-formed absolute IRI, no blank-node property (`_check_expanded`) |
 | Serve a malicious document at a fetched URL | **SSRF** (internal hosts / cloud metadata) | `src/openvc/fetch.py`: https-only (`:126`), blocks private/loopback/link-local/reserved/multicast/unspecified (`:49-55`) and, since v1.25.0, any other address that is not `is_global` (RFC 6598 CGNAT, #156), rejects the host if **any** resolved address is forbidden (`:58-72`), refuses redirects (`:143-144`), and **pins the socket to the validated IP** (`:75-92`) closing DNS-rebinding |
@@ -108,7 +108,12 @@ boundary is attacker-controlled until a signature verifies.
   key's `(kty, crv)` (`:341-351`) blocking cross-curve/OKP confusion; envelope↔
   `vc` reconciliation (`:360-381`); temporal defence-in-depth on the body
   (`:237`). ML-DSA (RFC 9964) is **opt-in only** (`allow_pq=True`, `:135`),
-  never in the default allow-list. Explicit typing: a JWS typed as an SD-JWT or a KB-JWT
+  never in the default allow-list. ES256K (RFC 8812) is a second, independent opt-in
+  (`allow_es256k=True`, `ALLOWED_ALGS_ES256K`, verification only, invariant I23): the flag
+  is exactly `True` or `False` (a string such as `"false"` is a `ProofError` at construction,
+  not a truthy value), a key-type pin (`_es256k_public_key`) runs before PyJWT loads the key
+  and holds the JWK's `alg`/`use`/`key_ops` to RFC 8812 section 3.2, and `sign()` never offers
+  the name. Explicit typing: a JWS typed as an SD-JWT or a KB-JWT
   (`_reject_sd_jwt_typ`, #189) and, whatever its `typ`, one whose payload carries an
   SD-JWT marker at any depth (`_reject_sd_jwt_payload`, #291) are `MalformedToken`
   before the signature is checked. The VP-JWT suite runs both on the presentation before it
@@ -213,16 +218,48 @@ finite input", with no explicit constant.
   trusting it** and enforce the anti-swap `sub == uri`. A **caller-injected**
   resolver opts out of the guard — documented, and the reason the secure path is
   the opt-in default (`src/openvc/resolvers.py:4-17`).
-- **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **host allow-list**
-  (`api-pilot`/`api-conformance`/`api.ebsi.eu`), redirects off, TLS-verify on,
-  5 MiB cap. Purpose is to block registry-supplied `href` pivots; it is a
-  host-name allow-list and does **not** IP-pin (R4). `did:web` must **never** be
+- **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **origin allow-list**
+  (`for_ebsi` seeds it from one named environment of `src/openvc_ebsi/environments.py`:
+  `legacy-pilot`, the default, and its alias `pilot` are `api-pilot.ebsi.eu`; `conformance` is
+  `api-conformance.ebsi.eu`; `production` is `api.ebsi.eu`; any other name is
+  `UnknownEbsiEnvironment`; port 443 only; a Core API v1 caller supplies the host of each node it
+  uses, R4), redirects off, TLS-verify on,
+  5 MiB cap, keeps no cookie jar (a `Set-Cookie` is dropped and nothing is sent back, so a
+  node's affinity cookie cannot pin a retry or cross to a sibling host; #317). Purpose is
+  to block registry-supplied `href` pivots; it matches the host and the port but by default does
+  **not** IP-pin (R4); the opt-in `address_guard=AddressGuard()` (v1.37.0, #322) resolves the
+  host, refuses it if any address is not globally routable and connects to the validated
+  address, with keep-alive off. `did:web` must **never** be
   resolved through it (its allow-list would reject every legitimate host).
-  Because the allow-list matches the host and not the port, the TIR v5 adapter pins
-  `links.next`, the HATEOAS `attributes` URL and every revision `href` to the
-  listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`; #172). An
-  absent https port is 443 (RFC 3986 §6.2.3), so `:443` and no port are one origin,
-  as they are to httpx; an explicit `:0` or another port stays off-origin (#253).
+  As of 2026-10-16 only `api-pilot.ebsi.eu` of those three hosts serves a registry
+  (`api-conformance.ebsi.eu` accepted no connection and `api.ebsi.eu` returned no HTTP
+  response); production nodes are `api.ebsi.<operator domain>` hosts taken from the
+  signed Trusted Nodes List
+  ([ADR-0009](../adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)).
+  **The guard admits an origin** (#318, v1.37.0): `EbsiHttpClient._guard_host` reads the
+  URL through `openvc_ebsi._url.read_origin` and admits `https` on a listed host at port
+  443 only. An absent or empty port, `:443`, `:0443` and `:00443` are 443; every other
+  port, `:0` included (`port is None`, never truthiness), is `HttpForbiddenHost` before
+  the cache lookup and any I/O, as is a URL that carries userinfo (`carries_userinfo`: an
+  `@` in the authority, the empty forms included; httpx sends it as a Basic
+  `Authorization` header). `allowed_hosts` still holds host names, port 443 implied;
+  origin strings in it are 2.0 work (#74). Before #318 the guard matched the host name
+  alone and every other port of a listed host was fetched. Redirects stay off, and that is
+  what stops a `Location` to another port: the guard never sees it
+  (`test_a_redirect_is_a_failed_read_and_is_never_followed`).
+  The TIR adapters' pin (the legacy v5 and the Core API v1 `TirCoreV1`, which share one
+  attribute walk, #321) is a second check with its own job, keeping a walk on the node it
+  started on: it pins `links.next`, the HATEOAS `attributes` URL and every revision
+  `href` to the listing's `scheme://host:port` (`_origin` in `openvc_ebsi/versioning.py`;
+  #172), and stays port-agnostic because the adapters take any injected `Fetch`. On Core
+  API v1 that listing is the answering node's own origin, since every link in a response
+  names the node that served it, so a walk cannot move from one node to another. The
+  guard and the pin read a URL through the same function, and
+  `test_the_guard_admits_a_url_exactly_when_the_pin_says_it_is_on_the_origin` keeps them in
+  step (the two documented gaps: userinfo, which the pin ignores, and a URL over 8 KiB,
+  which only the pin caps). An absent https port is 443 (RFC 3986 §6.2.3), so `:443` and
+  no port are one origin, as they are to httpx; an explicit `:0` or another port stays
+  off-origin (#253).
   A URL with no origin to compare is treated as off-origin: a typed
   `MalformedRegistryResponse` on the `attributes` hop, skipped on `links.next` and
   `href`. That covers a port that does not parse (`:99999`, `:abc`) and a broken IPv6
@@ -234,8 +271,41 @@ finite input", with no explicit constant.
   unsigned token whose `iss` held a control character escaped `verify_ebsi_badge` as
   a bare `httpx.InvalidURL` (#246). A body httpx cannot decompress is a
   `MalformedRegistryResponse`; before v1.32.1 it escaped as a bare
-  `httpx.DecodingError` (#248). The allow-list says which host answers, not which path
+  `httpx.DecodingError` (#248). An error answer's body is read at most 16 KiB, within the
+  client's deadline, and the connection is dropped past either; before v1.37.0 it was
+  drained with no cap and no deadline (#321), and the Problem Details `type` it carries
+  is kept only from an `application/problem+json` body. The allow-list says which host answers, not which path
   or which document, and the rest of this paragraph is what stands behind it.
+  **The exact-bytes path and the list host** (#320, v1.37.0): `get_bytes` returns a body
+  verbatim, for the Trusted Nodes List documents, which are signed and two of them binary.
+  It shares one request loop with `get_json` (host guard first, redirects off, the #246 and
+  #248 mappings, retry), and adds: a hard cap on the wire size **and** on the decoded size,
+  checked before a chunk is appended (the body is read with `iter_raw`, so httpx inflates
+  nothing, and a single `gzip` or `deflate` coding is decoded with `zlib` asked for at most
+  `remaining + 1` bytes, so a bomb is refused before the allocation; `br`, `zstd`, `x-gzip`
+  and lists of codings are `HttpUnexpectedEncoding`); no read of a non-200 body (a 403 can
+  be a firewall page, and an error body is never parsed or decoded); no cache (the ETag is
+  the cache, and a 304 is accepted only for an `If-None-Match` that was sent); and an
+  optional `deadline_s` (a number of seconds up to one day) over the attempts, the sleeps (a
+  `Retry-After` sleep is clamped to what remains) and the body read, which checks the clock
+  after every chunk. The list is fetched by a **separate**
+  client, `for_tnl()`, whose allow-list is the constant `{tnl.ebsi.eu}` and nothing else,
+  never a host taken from a list, so a poisoned node list cannot widen where the list itself
+  is fetched and R4's wording is unchanged; it keeps no cookies (that client: a hand-built
+  one with the same allow-list keeps what its jar accepts, until #317), sends
+  `Accept-Encoding: identity`, and `get_tnl_files` refuses a client whose allow-list is
+  anything else, before any request. The helper never fetches the pinned key-list key. **It authenticates
+  nothing**: its result is unauthenticated bytes for the verifier. **Residual, unchanged by
+  #320:** `get_json` still inflates per chunk before its cap (so a gzip body under the
+  5 MiB cap can allocate far more), drains a non-200 body with an uncapped `read()`, and
+  sleeps for an unbounded `Retry-After` when no budget is given (a bare `OverflowError` past
+  about 9.2e9 s). **Residual, shared by both paths:** neither `deadline_s` nor `timeout_s`
+  bounds the total time of one response's headers: `timeout_s` applies to each socket
+  operation, so a compromised allow-listed host that sends header bytes slowly enough can
+  hold the calling thread (measured: 8.1 s against `deadline_s=1.0`; the HTTP/1.1 stack's
+  header-size limit, 100 KiB in httpcore 1.0.9, is the only other bound and is not a time
+  bound). A late response is still refused at its first body chunk. A caller that needs a hard
+  wall-clock ceiling runs the call under its own timeout (a worker thread or process).
   **The DID is validated before it is put in a registry URL** (#266, v1.33.0):
   `DidEbsiResolver.resolve` and `.issuer_record` accept only `did:ebsi:z` plus 22 or 23
   base58btc characters (the legal-entity form of the EBSI DID method: a version byte and
@@ -287,8 +357,8 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 
 | # | Invariant | Enforced at | Pinned by |
 |---|---|---|---|
-| I1 | Alg allow-list `{ES256, ES384, EdDSA, Ed25519}` runs **before any crypto**; `alg:none`/RS\*/HS\* rejected; the value is type-checked first, so a JSON array/object `alg` is a typed `UnsupportedAlgorithm`, not a bare `TypeError` | `proof/vc_jwt.py:65,243`; `proof/_jws.py:89` | `test_hostile_input.py`, `test_cose.py:94`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py` |
-| I2 | ES256/384 JOSE signature is raw R‖S (64/96 bytes), never DER | `keys.py:575-589` | `test_vc_jwt.py` |
+| I1 | Alg allow-list `{ES256, ES384, EdDSA, Ed25519}` runs **before any crypto**; `alg:none`/RS\*/HS\* rejected; the value is type-checked first, so a JSON array/object `alg` is a typed `UnsupportedAlgorithm`, not a bare `TypeError`. The list is the default: `ES256K` and the ML-DSA names join a suite's set only through `allow_es256k=True` / `allow_pq=True` (I3, I23) | `proof/vc_jwt.py:65,243`; `proof/_jws.py:89` | `test_hostile_input.py`, `test_cose.py:94`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py` |
+| I2 | ES256/384 JOSE signature is raw R‖S (64/96 bytes), never DER; so is an opted-in ES256K signature (64 octets) | `keys.py:575-589`; `proof/vc_jwt.py` (PyJWT's `ECAlgorithm` for ES256K) | `test_vc_jwt.py`; `test_es256k_opt_in.py` (`SIGNATURES`, `test_a_signature_is_exactly_64_octets_of_r_then_s`) |
 | I3 | PQ (ML-DSA) never in the default allow-list — opt-in only | `proof/vc_jwt.py:135` | `test_mldsa.py` |
 | I4 | DI `verificationMethod` bound to the credential `issuer` DID | `verify.py:628-641` | `test_di_*` |
 | I5 | VC-JWT, and a W3C SD-JWT (a payload that names a VCDM base context, whatever its issuer `typ`), reconcile the JWT envelope with the credential (`iss`/`sub`/`jti`); every identifier a present `issuer` carries must be `iss`; with no `iss` member and a W3C `typ` (or none), the body `issuer` stands in for it (#290) | `proof/vc_jwt.py:360-381`; `issuer_identifiers` (`proof/_verify_common.py`); `_vcdm_issuer` (`proof/sd_jwt.py`) | `test_vc_jwt.py`, `test_sd_jwt_vcdm_consistency.py`, `test_sd_jwt_issuer_fallback.py` |
@@ -309,11 +379,12 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I20 | An RDF Data Integrity document is accepted, and signed, only in the compacted form of its own expansion under the VC base context plus loader-served URLs or absolute-IRI `@vocab`-only objects — no `@included`/`@reverse`/`@index`/`@direction`, no nested re-description of the document node, no array directly inside an array (outside a `@list` of lists, which compaction emits nested too), every key or `type` value that stands for an IRI any loader-served context (bundled or `extra_contexts`, listed by the document or not, so a dropped context cannot be respelled through an inline `@vocab`) defines a term for spelled as that term (as the VC base context's own term when it defines one, so an injected alias is refused), every top-level `type` value that is a served term standing for one of that term's IRIs, no entry of the top-level `credentialStatus` also described anywhere else other than as an exact copy (a nested node's `credentialStatus` included), on `ecdsa-sd-2023` the same blank-node identity for the signature as for the JSON (an injective derived-proof label map, and the presented document canonicalized without deskolemizing `urn:bnid:` IRIs), and nothing the RDF conversion drops (safe mode: every node id, type and property a well-formed absolute IRI, no blank-node property) — so every JSON member the policy reads is one the signature covers. The status check refuses a non-object `credentialStatus` array member and a typeless entry rather than skip them, and `expected_types` is matched by IRI against the expanded types, each name resolved through the served contexts only (GHSA-h9rq-wxcw-4rjc, v1.33.1) | `proof/_context_validation.py` (`validate_document`, `_check_compacted`, `_normalize`, `_term_index`, `_inline_vocabs`, `_misspelled_key`, `_is_misspelled`, `_hijacked_type`, `_check_status_in_place`, `missing_types`, `_trusted_iris`); `verify.py` / `aio.py` (`_check_di_types`); `proof/contexts/__init__.py` (`document_loader`'s `contexts`); `status/status_list.py` (`_as_entry_list`, `parse_status_entries`); `proof/data_integrity.py:184,236`; `proof/di_ecdsa_rdfc.py:149,205`; `proof/ecdsa_sd.py:563,749` (`decode_derived_proof`, `verify`, `_reveal_view`) | `test_di_context_validation.py`, `test_ecdsa_sd_interop.py` (`test_an_iri_id_on_a_signed_blank_node_is_rejected`), `test_ecdsa_sd_derived_proof_shape.py`, `test_status.py` (`test_non_object_status_member_is_refused_not_skipped`, `test_typeless_status_entry_is_refused_not_skipped`), `test_contexts.py` (`test_loader_lists_what_it_serves_read_only`) |
 | I21 | WRPRC authorization fails closed: the WRPRC `sub` must equal the WRPAC entity identifier (absent on either side is a failure, never a match), and a DCQL request is authorized only if every credential query (a) has at least one registered entry with the same non-blank string `format` and a `meta` that covers the query's, (b) names at least one claim — a query naming none asks for every attribute and is always refused — and (c) has every requested claim path inside the union of the grants of the entries so matched; an entry with an empty grant, or registered for a different `meta`, contributes nothing. Grant-side spelling precedence is narrow and decided by key presence (`claim` over `claims`, never their union), while the request side reads the union | `check_matches_access_certificate`, `check_request_within_registration`, `_registered_paths` (`rp_registration.py`) | `test_rp_registration.py` |
 | I22 | A JWS header extension marked `critical` is never ignored: the shared `reject_unknown_crit` refuses any `crit`; the two JAdES lanes (the LoTE verifier and the WRPRC lane) allow-list `{alg, typ, x5c, iat}` and refuse the rest; and there is **one documented exception** — the WRPRC lane alone also understands exactly `sigT` and `b64` (v1.36.0, #134; the real registrars list both). In the WRPRC lane `crit` must be a non-empty array of unique strings, each name present in the header and in `{alg, typ, x5c, iat, sigT, b64}`; `b64` must be the JSON boolean `true` (`false` is an unencoded payload, a signing input the verifier does not build) and `sigT` an RFC 3339 UTC `Z` time, each checked **whether or not `crit` names it**; `sigT` is surfaced as `claimed_signing_time` (JWT form only: a CWT's COSE protected header is not value-checked and the property is `None`) and never decides validity. The shared check and the LoTE verifier are untouched in behaviour and still refuse both names | `reject_unknown_crit` (`proof/_verify_common.py`); `_reject_unknown_crit` (`trustlist/lote.py`); `_reject_unknown_crit`, `_check_understood_params`, `_check_b64`, `_parse_sig_t` (`rp_registration.py`) | `test_jws_crit.py` (`test_*_still_refuses_sigt_and_b64`, `test_the_wrprc_lane_alone_accepts_sigt_and_b64`), `test_rp_registration.py` (the `sigT`/`b64` section), `test_rp_registration_real_artifacts.py` |
+| I23 | `ES256K` (RFC 8812) is verified only by an **explicit per-suite opt-in**, `VcJwtProofSuite(allow_es256k=True)`: never in `ALLOWED_ALGS` (a disjoint `ALLOWED_ALGS_ES256K`), independent of `allow_pq`, switched on by exactly `True` (any other value, a configuration string `"false"` included, is a `ProofError` at construction, never read as truthy), **verification only** (`sign()` hands `sign_compact` the verify set minus `ES256K`, so no suite signs with a third-party key whose `alg` is `ES256K`; no secp256k1 signing backend exists), and **VC-JWT only** — SD-JWT VC (issuer JWT and KB-JWT), VP-JWT, `verify_compact`, the status-list token, OpenID4VCI key proofs, the LoTE verifier, the WRPRC lane and COSE refuse it by their own allow-list, and `keys.verify_signature` (which a caller-widened `allowed_algs` reaches) has no secp256k1 branch, so a widened list stops there. The allow-list check, `crit`, `typ` and the SD-JWT-marker gates still run before any crypto. The key is pinned by openvc **before** PyJWT loads it: `kty: EC`, `crv: secp256k1` (exact), `x` and `y` canonical 32-octet unpadded base64url below the field prime and on the curve, and, when present, `alg` = `ES256K`, `use` = `sig` and `key_ops` an array of strings including `verify` (RFC 8812 section 3.2; the classic branches do not read these members), every failure a plain `ProofError` (not `ClaimsInvalid`, which is where PyJWT's `InvalidKeyError` would land); the other algorithms' curve pins are unchanged, so a secp256k1 key never verifies an `ES256`/`ES384`/`EdDSA`/`Ed25519` header. Low-`s` and high-`s` signatures both verify (RFC 8812 is silent; ES256 does the same; openvc keys nothing on signature bytes). One suite serves the leaf and the chain hops in `verify_ebsi_badge`, so an opted-in suite accepts an `ES256K` leaf badge too (v1.37.0; #323) | `ALLOWED_ALGS_ES256K`, `VcJwtProofSuite.__init__` (`_algs`, `_sign_algs`), `_es256k_public_key`, `_es256k_check_members` (`proof/vc_jwt.py`); `keys.verify_signature` (no branch) | `test_es256k_default_refused.py` (the sweep, with a spy on every signature primitive), `test_es256k_opt_in.py`, `test_es256k_ebsi_chain.py` (the recorded preprod RootTAO golden), `test_trustlist_lote.py` (`test_rejects_algorithms_outside_the_allow_list`), `test_docs_claims.py` |
 
 ## 9. Residual risks & known limitations
 
 The honest register. No open item is a wrong-accept that openvc's own checks could
-catch (I1–I7, I20, I21 and I22 hold); the open items are **availability /
+catch (I1–I7, I20, I21, I22 and I23 hold); the open items are **availability /
 typed-error-hygiene** hardening and documented caveats — the "harden next" list an
 external reviewer should weigh. One caveat, **R7**, is an issuer-configuration gap: an
 expired or revoked credential whose issuer made `exp` / `nbf` / status selectively
@@ -354,18 +425,54 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   bound. *Impact:* CPU/allocation pressure under a large but well-formed
   document; no wrong-accept. *Consider:* an explicit element-count and/or
   cumulative-size cap.
-- **R4 — EBSI client is a host-name allow-list, no IP-pin.**
-  `src/openvc_ebsi/http.py` trusts DNS for allow-listed EBSI hosts and does not
-  pin to a validated IP (unlike `fetch.py`). DNS-rebinding of an allow-listed
-  host is out of scope of this guard *by design* (its job is blocking
-  registry-supplied `href` pivots), but a reviewer should confirm the threat
-  model accepts that.
+- **R4 — EBSI client is an origin allow-list (host and port 443); the resolved-address guard is
+  opt-in.** By default `src/openvc_ebsi/http.py` trusts DNS for allow-listed EBSI hosts and does not
+  pin to a validated IP (unlike `fetch.py`). Since #318 it admits port 443 only, so the port half of
+  the old host-name allow-list is closed. The allow-list's job is blocking registry-supplied `href`
+  pivots, and while it held three `*.ebsi.eu` names run by one party that was accepted. Since the
+  EBSI Core API v1 (`DidRegistryCoreV1` / `TirCoreV1`, #321) the allow-listed hosts are **node
+  operators' own domains**, not only `*.ebsi.eu`: none of the 45 node hosts in the Trusted Nodes
+  List read on 2026-10-16 is under `ebsi.eu`, and the 27 operator domains include second-level and
+  third-party zones ([ADR-0009](../adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)). DNS for each
+  of them is trusted, and a verified node list authenticates the *operator*, not the content a node
+  serves (ADR-0009 D7).
+  With `address_guard=AddressGuard()` (v1.37.0, #322) each request
+  that misses the cache resolves the host, refuses it if **any** address is not globally
+  routable (the `openvc.fetch` rules, `ip_is_forbidden`), and connects to the validated
+  address with the TLS server name, the certificate check and `Host` still the host name
+  (no window between the check and the connect; `Connection: close` on every pinned
+  request, because httpx pools by address and a reused connection would answer for a
+  second name with no certificate check for it). Clients built from a verified node list
+  (#324) are expected to enable it; that is #324's decision. *Residual:* off for a
+  hand-built allow-list (DNS rebinding of a listed host is out of scope of the default by
+  design, and a reviewer should confirm the threat model accepts that); no defence against an attacker who also holds a valid
+  certificate for a public address, or a dishonest listed node; it needs the local
+  resolver, so a guarded client refuses to be built behind an environment proxy
+  (`HttpAddressGuardUnavailable`); NAT64 and IPv4-mapped classification inherit **R5**
+  (NAT64, 6to4, Teredo and the IPv4-compatible forms are refused as whole prefixes);
+  `getaddrinfo` has no deadline, with or without the guard. A host with several
+  addresses is tried one address per attempt, so with the default `RetryPolicy` only the
+  first three addresses of an answer are ever tried (a name-based connect tries them all
+  in one attempt): three dead addresses before a live one is an outage for a guarded
+  client, which then needs `RetryPolicy(attempts=...)` at least the number of addresses
+  it must reach. `did:web` still never goes through this client.
 - **R5 — `fetch.py` leans on stdlib `ipaddress` classification.** No explicit
   IPv4-mapped-IPv6 (`::ffff:a.b.c.d`) / NAT64 normalization beyond what
   `ipaddress` classifies on the target Python. Worth an auditor sanity-check
   across the supported interpreter range. Since v1.25.0 `test_forbidden_ips` pins
   the IPv4-mapped private and CGNAT forms on every CI interpreter; the mapped-form
-  classification still varies across `ipaddress` versions.
+  classification still varies across `ipaddress` versions. Since v1.37.0 (#322) the
+  rule is public as `openvc.fetch.ip_is_forbidden` and
+  `tests/test_ebsi_address_guard.py` pins 59 forbidden and 6 allowed addresses (every
+  class: private, loopback, link-local, cloud metadata, unique-local, multicast, CGNAT,
+  benchmarking, documentation, IPv4-mapped and -compatible, NAT64, 6to4, Teredo, and the
+  deprecated IPv6 site-local prefix `fec0::/10`); the first 57 were measured with no
+  difference on CPython 3.10.20, 3.11.15, 3.12.13, 3.13.16, 3.14.8 and 3.15.0rc3, the two
+  site-local rows on 3.13.16, 3.14.8 and 3.15.0rc3 (the CI matrix runs the table on 3.10
+  to 3.15). `is_global` alone is not enough (`224.0.0.1`, `ff0e::1`, `::808:808`,
+  `64:ff9b::808:808` and `fec0::1` report it true), which is why the flag union stays;
+  `fec0::/10` is caught by `is_site_local`, which only IPv6 has (a review-round finding:
+  before it, `did:web` accepted a host that resolved there).
 - **R6 — XAdES primary verify relies on `signxml`/`lxml` DTD-forbidding.**
   openvc sets `resolve_entities=False, no_network=True, load_dtd=False`
   explicitly only on its defence-in-depth whole-document reparse
@@ -609,6 +716,22 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
      reach this lane once a `~` is appended is held to it too. What stays invisible is an
      `aud` the issuer made disclosable and the holder withheld, the R7 limit
      (`test_sd_jwt_issuer_aud.py`).
+- **R12 — A signed EBSI node list authenticates the operator, not the registry's data.
+  Open, documented.** EBSI Core API v1 has no fixed production host: a client picks a node
+  from an OpenPGP-signed Trusted Nodes List
+  ([ADR-0009](../adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md), D7). Registry
+  responses (DID documents, issuer records, accreditations) are unsigned JSON from
+  whichever node answers, so a dishonest listed node can serve another key for a DID, or
+  forged accreditations, and `openvc_ebsi` verifies against them. The list narrows "any
+  host on the internet" to the listed nodes and no further. The mitigation is comparing
+  trust-critical reads across nodes: a consumer policy with a cost (twice the requests,
+  against EBSI's documented 20 requests per second per IP), which openvc does not provide. The chain's real root is the single key-list key
+  (a stopgap, per the list's own README): with it an attacker substitutes the custodians and
+  the threshold and signs any list, and the two-custodian threshold protects only against
+  compromise of the custodians. DNS or certificate compromise of one listed host is not
+  defended either (R4), and a hand-built allow-list has no expiry bound. Not a defect in
+  `src/`, which builds no node set from the list yet: a boundary the recipe states, in
+  [EBSI node trust](https://github.com/luisgf/openvc/wiki/EBSI-Node-Trust).
 
 ## 10. Out of scope
 

@@ -41,7 +41,10 @@ already hold the key. Normally you let the pipeline resolve it from the
   `{ES256, ES384, EdDSA, Ed25519}` are accepted (`Ed25519` is the RFC 9864
   fully-specified name for EdDSA — see
   [Versioning & deprecation](Versioning-and-Deprecation)); `alg: none`, RS\*,
-  and HS\* are rejected up front, which closes the classic alg-confusion attacks.
+  and HS\* are rejected up front, which closes the classic alg-confusion attacks. Two
+  opt-ins add names and nothing else, per suite: `allow_pq=True` (experimental ML-DSA) and
+  `allow_es256k=True` (`ES256K`, verification only, for EBSI Core API v1 roots; see
+  [Keys & HSM](Keys-and-HSM#es256k-ebsi-interop-opt-in)). Neither implies the other.
 - **Unknown `crit` header extensions are rejected** (RFC 7515 §4.1.11). openvc
   processes no JWS extension parameters, so a token that marks any as critical
   fails closed — on the VC-JWT, SD-JWT, KB-JWT and status-list-token lanes
