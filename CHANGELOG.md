@@ -13,18 +13,19 @@ All notable changes to **openvc** are documented here. The format follows
   be attacked", row "Cookie jar"). The pooled `httpx.Client` used httpx's default jar, so a
   `Set-Cookie` from an allow-listed host was stored and sent back on later requests from
   that client. The client has no use for that: `get_json` is a stateless GET reader whose
-  only state is the TTL cache (ADR-0001 D2), and nothing in `src/` or `tests/` reads a
-  cookie. The jar is now a bare `http.cookiejar.CookieJar` whose policy refuses every cookie
-  in both directions, so a `Set-Cookie` is dropped and nothing is ever sent back: not on the
-  next request, not on a retry after a 5xx that set one, not to a sibling host that the
-  cookie's `Domain` would have reached. **This is a behaviour change:** a node's affinity
-  cookie (the two `edelivery.lt` hosts of ADR-0009 set an `SRV_ID`) is no longer returned,
-  so consecutive reads of one registry walk (issuer record, attribute pages, revisions) may
-  reach different backends of one node. Nothing in `openvc_ebsi` reads a cookie or assumes
-  same-backend reads, and the trust model already treats a node as one unauthenticated
-  source; whether the backends behind one node disagree has not been measured. No new
-  public name, constructor option, error class or dependency; every other `httpx.Client`
-  argument, and every error class `get_json` raises, is unchanged.
+  only state is the TTL cache (ADR-0001 D2), and before this change nothing in `src/` or
+  `tests/` read a cookie. The jar is now a bare `http.cookiejar.CookieJar` whose policy
+  refuses every cookie in both directions, so a `Set-Cookie` is dropped and nothing is
+  ever sent back: not on the next request, not on a retry after a 5xx that set one, not to
+  a sibling host that the cookie's `Domain` would have reached. **This is a behaviour
+  change:** a node's affinity cookie (the two `edelivery.lt` hosts of ADR-0009 set an
+  `SRV_ID`) is no longer returned, so consecutive reads of one registry walk (issuer
+  record, attribute pages, revisions) may reach different backends of one node. Nothing
+  in `openvc_ebsi` reads a cookie or assumes same-backend reads, and the trust model
+  already treats a node as one unauthenticated source; whether the backends behind one
+  node disagree has not been measured. No new public name, constructor option, error
+  class or dependency; every other `httpx.Client` argument, and every error class
+  `get_json` raises, is unchanged.
   - **`set_ok` is the load-bearing method.** httpx copies the client's jar into a fresh
     default-policy one when it builds a request, so `return_ok` and the other two methods
     are never consulted on the send path (a policy that stored the cookie and refused only to
