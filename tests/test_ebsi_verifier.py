@@ -11,8 +11,8 @@ Two tiers, by design:
     These are the real safety net and the drift alarm.
 
   * LIVE (opt-in) — set OPENVC_EBSI_LIVE=1 to smoke-test against the real
-    conformance environment. Skipped by default so CI never depends on an
-    external service whose data rotates.
+    legacy pilot registry (api-pilot.ebsi.eu). Skipped by default so CI never
+    depends on an external service whose data rotates.
 
 The TIR v5 adapter and DID-document checks run against GOLDEN FIXTURES recorded
 verbatim from the pilot registry (tests/fixtures/ebsi/) — real wire shapes, so a
@@ -359,11 +359,11 @@ UNPARSEABLE_URLS = [
 def test_origin_refuses_non_ascii_before_urlparse(monkeypatch: pytest.MonkeyPatch) -> None:
     # The order matters on CPython <= 3.12, where urlparse NFKC-normalizes a non-ASCII
     # netloc in quadratic time: the check must run before urlparse ever sees the URL.
-    from openvc_ebsi import versioning
+    from openvc_ebsi import _url, versioning
 
     def no_urlparse(url: str) -> None:
         raise AssertionError("urlparse reached")
-    monkeypatch.setattr(versioning, "urlparse", no_urlparse)
+    monkeypatch.setattr(_url, "urlparse", no_urlparse)     # the reader `_origin` calls
     with pytest.raises(MalformedRegistryResponse):
         versioning._origin("https://api-pilot.ebsi.eú/x")      # short: not the cap
 
@@ -1064,15 +1064,15 @@ def test_verify_ebsi_badge_wrapper_messages_are_bounded() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Live (opt-in): smoke test against real conformance
+# Live (opt-in): smoke test against the real legacy pilot registry
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.skipif(os.getenv("OPENVC_EBSI_LIVE") != "1", reason="live EBSI test is opt-in")
 def test_live_resolve() -> None:
     # Smoke-test real DID resolution — exercises the did+ld+json content
-    # negotiation the offline tests can't. Defaults to the pilot registry + a known
+    # negotiation the offline tests can't. Defaults to the legacy pilot registry + a known
     # pilot DID; override with OPENVC_EBSI_ENV / OPENVC_EBSI_DID.
-    env = os.getenv("OPENVC_EBSI_ENV", "pilot")
+    env = os.getenv("OPENVC_EBSI_ENV", "legacy-pilot")
     did = os.getenv("OPENVC_EBSI_DID", "did:ebsi:zZeKyEJfUTGwajhNyNX928z")
     suite = VcJwtProofSuite()
     with for_ebsi(env) as http:
