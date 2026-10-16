@@ -38,26 +38,20 @@ import httpx
 from openvc import _json
 from openvc import __version__
 from openvc.cache import TtlCache
+from openvc.proof._verify_common import safe_repr
 
 from ._url import HTTPS_PORT, UrlDoesNotParse, UrlNotVisibleAscii, carries_userinfo, read_origin
-from .errors import EbsiError, MalformedRegistryResponse
+from .environments import fixed_hosts
+from .errors import EbsiError, MalformedRegistryResponse, UnknownEbsiEnvironment
 
 # EBSI registry reads (DID docs, TIR entries, schemas) are small; bound the memory an
 # attacker-influenced (or compromised) allow-listed host can force. The general fetch caps
 # did:web at 1 MiB; TIR walks can be a little larger, so allow more headroom here.
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
-# Hosts per EBSI environment (used to seed the SSRF allow-list).
-EBSI_HOSTS: dict[str, str] = {
-    "pilot": "api-pilot.ebsi.eu",
-    "conformance": "api-conformance.ebsi.eu",
-    # EBSI's business/production environment (EUROPEUM-EDIC-governed, ebsi.eu family)
-    # launches Q4 2026 on the unprefixed production host, following the established
-    # api-<env>.ebsi.eu naming. Registered so `for_ebsi("production")`, `EBSI_BASE`, and
-    # the SSRF allow-list are ready at cutover; any additional issuer host a deployment
-    # needs (e.g. a status-list origin) is still permitted explicitly via `extra_hosts`.
-    "production": "api.ebsi.eu",
-}
+# Host per EBSI environment name (used to seed the SSRF allow-list): the fixed-host projection
+# of the table in `environments.py`, which says what each name means.
+EBSI_HOSTS: dict[str, str] = fixed_hosts()
 EBSI_BASE: dict[str, str] = {env: f"https://{host}" for env, host in EBSI_HOSTS.items()}
 
 
@@ -325,20 +319,38 @@ class EbsiHttpClient:
 # --------------------------------------------------------------------------- #
 
 def for_ebsi(
-    environment: str = "pilot",
+    environment: str = "legacy-pilot",
     *,
     extra_hosts: set[str] | None = None,
     **kwargs: Any,
 ) -> EbsiHttpClient:
     """Build a client whose SSRF allow-list is seeded from the EBSI environment.
 
+    * ``"legacy-pilot"`` (the default): ``api-pilot.ebsi.eu``, the legacy per-service lane
+      (the v5 adapters), the only place the recorded fixtures and the weekly smoke are valid.
+    * ``"pilot"``: the same host and lane as ``"legacy-pilot"``, kept for compatibility. It
+      is not the Core API pilot that EBSI now also calls "pilot".
+    * ``"conformance"``: ``api-conformance.ebsi.eu``. A measurement on 2026-10-16 completed
+      no connection in 12 s (ADR-0009).
+    * ``"production"``: ``api.ebsi.eu``. The certificate that host presented on 2026-10-16
+      did not cover its name, so a client built from it is not known to complete a request
+      (ADR-0009).
+
     ``extra_hosts`` lets you permit additional issuer status-list hosts if you
     also follow StatusList proxies through this client. Entries are host NAMES: only
     ``https`` on port 443 of a listed host is reachable (#318), so a status list on another
     port is refused as :class:`HttpForbiddenHost`, and an entry that spells a scheme or a
     port never matches.
+
+    An environment that is not one of these names (another case, empty, not a string)
+    raises :class:`~openvc_ebsi.errors.UnknownEbsiEnvironment`, which is also a ``ValueError``.
     """
-    if environment not in EBSI_HOSTS:
-        raise ValueError(f"unknown EBSI environment: {environment!r}")
-    hosts = {EBSI_HOSTS[environment]} | (extra_hosts or set())
+    # `type(...)`, not `isinstance`: a value whose `__class__` claims `str` is not one, and
+    # `str.__str__` would raise a bare TypeError on it.
+    name = str.__str__(environment) if issubclass(type(environment), str) else None
+    if name is None or name not in EBSI_HOSTS:
+        raise UnknownEbsiEnvironment(
+            f"unknown EBSI environment: {safe_repr(environment)} "
+            f"(known: {', '.join(sorted(map(str, EBSI_HOSTS)))})")
+    hosts = {EBSI_HOSTS[name]} | (extra_hosts or set())
     return EbsiHttpClient(allowed_hosts=hosts, **kwargs)

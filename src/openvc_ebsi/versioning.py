@@ -48,6 +48,7 @@ from openvc.did.base import DidDocument, DidResolutionError, parse_did_document
 from openvc.observability import logger
 from openvc.proof._verify_common import safe_repr
 from ._url import UrlDoesNotParse, UrlNotVisibleAscii, read_origin
+from .environments import LEGACY_PILOT_BASE
 from .errors import MalformedRegistryResponse
 from .models import Accreditation, IssuerRecord
 
@@ -426,7 +427,7 @@ class DidEbsiResolver:
         http_get: Fetch,
         decode_jwt: DecodeJwt,
         *,
-        base: str = "https://api-pilot.ebsi.eu",
+        base: str = LEGACY_PILOT_BASE,
         didr: DidRegistryAdapter | None = None,
         tir: TirAdapter | None = None,
     ) -> None:

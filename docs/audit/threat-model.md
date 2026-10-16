@@ -213,7 +213,10 @@ finite input", with no explicit constant.
   resolver opts out of the guard — documented, and the reason the secure path is
   the opt-in default (`src/openvc/resolvers.py:4-17`).
 - **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **origin allow-list**
-  (`api-pilot`/`api-conformance`/`api.ebsi.eu`, port 443), redirects off, TLS-verify on,
+  (`for_ebsi` seeds it from one named environment of `src/openvc_ebsi/environments.py`:
+  `legacy-pilot`, the default, and its alias `pilot` are `api-pilot.ebsi.eu`; `conformance` is
+  `api-conformance.ebsi.eu`; `production` is `api.ebsi.eu`; any other name is
+  `UnknownEbsiEnvironment`; port 443 only), redirects off, TLS-verify on,
   5 MiB cap, keeps no cookie jar (a `Set-Cookie` is dropped and nothing is sent back, so a
   node's affinity cookie cannot pin a retry or cross to a sibling host; #317). Purpose is
   to block registry-supplied `href` pivots; it matches the host and the port but does
