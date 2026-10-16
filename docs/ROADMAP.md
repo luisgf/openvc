@@ -14,7 +14,9 @@ landed through its own pull request. Browse it by milestone:
 - **[Conformance & production readiness](https://github.com/luisgf/openvc/milestone/11)** —
   deferred follow-ups that each need a real signed artifact or a launched
   external service before they can land — today: the EBSI production launch
-  (Q4 2026 under EUROPEUM-EDIC).
+  (Q4 2026 under EUROPEUM-EDIC); how `openvc_ebsi` follows it (the Core API v1 and
+  trusting a node picked from the signed Trusted Nodes List) is proposed in
+  [ADR-0009](adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md).
 - **[Long term — PQ, BBS & 2.0](https://github.com/luisgf/openvc/milestone/8)** —
   the 2027 horizon: the BBS gate re-evaluation, the external security review,
   and the 2.0 breaking-cleanup window keyed to the W3C 2.1/1.1 maintenance
