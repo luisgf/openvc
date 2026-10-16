@@ -5,6 +5,12 @@ critical must be rejected — on the VC-JWT lane (where pre-2.13 PyJWT accepted 
 CVE-2026-32597), and on the hand-rolled JWS lanes (SD-JWT issuer JWT, KB-JWT, the
 IETF status-list token), which never consulted ``crit`` at all. The COSE and JWE
 paths already took this stance; these tests pin the JWS lanes to it.
+
+**One documented exception (v1.36.0, issue #134):** the WRPRC lane
+(``openvc.rp_registration``) understands exactly ``sigT`` and ``b64: true`` in ``crit``,
+because the real registrars' tokens list them. The last section pins that the exception
+is *only* that lane: every other lane still refuses a ``crit`` naming ``sigT`` or ``b64``,
+with a header that is otherwise perfectly valid for the WRPRC lane.
 """
 import base64
 import json
@@ -126,3 +132,144 @@ def test_kb_jwt_rejects_unknown_crit() -> None:
         SdJwtVcProofSuite().verify(
             issuer_jwt + "~" + kb_jwt,
             public_key_jwk=issuer.public_jwk(), audience="verifier", nonce="n-1")
+
+
+# --------------------------------------------------------------------------- #
+# the one exception is one lane: `sigT` and `b64` are understood by the WRPRC
+# verifier and by nothing else (issue #134, maintainer decision 2026-10-16)
+# --------------------------------------------------------------------------- #
+
+_SIG_T = "2026-07-12T15:32:23Z"
+_WRPRC_CRITS = [["sigT"], ["b64"], ["sigT", "b64"], ["b64", "sigT"]]
+
+
+def _wrprc_extensions(crit: list[str]) -> dict[str, object]:
+    """Header members that make `crit: [sigT, b64]` a fully valid WRPRC-lane header."""
+    return {"crit": crit, "sigT": _SIG_T, "b64": True}
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_the_wrprc_lane_alone_accepts_sigt_and_b64(crit: list[str]) -> None:
+    # The control for every refusal below: the same header, on the lane that understands it.
+    from openvc.rp_registration import parse_rp_registration_certificate
+
+    key = _key()
+    token = sign_compact(
+        {"alg": key.alg, "typ": "rc-wrp+jwt", **_wrprc_extensions(crit)},
+        {"sub": "VATES-B12345678"}, signing_key=key)
+    reg = parse_rp_registration_certificate(token)
+    assert reg.header["crit"] == crit
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_the_shared_check_still_refuses_sigt_and_b64(crit: list[str]) -> None:
+    from openvc.proof._verify_common import reject_unknown_crit
+
+    with pytest.raises(MalformedToken, match="crit"):
+        reject_unknown_crit({"alg": "ES256", **_wrprc_extensions(crit)})
+    # and the behaviour is unchanged for the plain case it has always had
+    reject_unknown_crit({"alg": "ES256"})
+    with pytest.raises(MalformedToken, match="crit"):
+        reject_unknown_crit({"alg": "ES256", "crit": []})
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_verify_compact_still_refuses_sigt_and_b64(crit: list[str]) -> None:
+    key = _key()
+    token = sign_compact(
+        {"alg": key.alg, "kid": key.kid, **_wrprc_extensions(crit)},
+        {"iss": "did:example:issuer"}, signing_key=key)
+    with pytest.raises(MalformedToken, match="crit"):
+        verify_compact(token, public_key_jwk=key.public_jwk())
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_vc_jwt_still_refuses_sigt_and_b64(crit: list[str]) -> None:
+    key = _key()
+    token = sign_compact(
+        {"alg": key.alg, "typ": "JWT", "kid": key.kid, **_wrprc_extensions(crit)},
+        {"iss": "did:example:issuer", "vc": {}, "exp": _FAR_FUTURE}, signing_key=key)
+    with pytest.raises(MalformedToken, match="crit"):
+        VcJwtProofSuite().verify(token, public_key_jwk=key.public_jwk())
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_sd_jwt_issuer_jwt_still_refuses_sigt_and_b64(crit: list[str]) -> None:
+    key = _key()
+    issuer_jwt = sign_compact(
+        {"alg": key.alg, "typ": "dc+sd-jwt", **_wrprc_extensions(crit)},
+        {"iss": "did:example:issuer", "exp": _FAR_FUTURE}, signing_key=key)
+    with pytest.raises(MalformedToken, match="crit"):
+        SdJwtVcProofSuite().verify(issuer_jwt + "~", public_key_jwk=key.public_jwk())
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_kb_jwt_still_refuses_sigt_and_b64(crit: list[str]) -> None:
+    issuer, holder = _key(), _key("did:example:holder#k1")
+    issuer_jwt = sign_compact(
+        {"alg": issuer.alg, "typ": "dc+sd-jwt"},
+        {"iss": "did:example:issuer", "vct": "urn:example:vct", "exp": _FAR_FUTURE,
+         "cnf": {"jwk": holder.public_jwk()}},
+        signing_key=issuer)
+    kb_jwt = sign_compact(
+        {"alg": holder.alg, "typ": "kb+jwt", **_wrprc_extensions(crit)},
+        {"aud": "verifier", "nonce": "n-1", "iat": 1, "sd_hash": "x"},
+        signing_key=holder)
+    with pytest.raises(MalformedToken, match="crit"):
+        SdJwtVcProofSuite().verify(
+            issuer_jwt + "~" + kb_jwt,
+            public_key_jwk=issuer.public_jwk(), audience="verifier", nonce="n-1")
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_status_list_token_still_refuses_sigt_and_b64(crit: list[str]) -> None:
+    key = _key()
+    token = sign_compact(
+        {"alg": key.alg, "typ": "statuslist+jwt", **_wrprc_extensions(crit)},
+        {"sub": "https://status.example/1", "iat": 1, "exp": _FAR_FUTURE,
+         "status_list": {"bits": 1, "lst": "eNrbuRgAAhcBXQ"}},
+        signing_key=key)
+    with pytest.raises(MalformedToken, match="crit"):
+        verify_status_list_token(token, public_key_jwk=key.public_jwk())
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_vp_jwt_still_refuses_sigt_and_b64(crit: list[str]) -> None:
+    from openvc.proof.vp_jwt import VpJwtProofSuite
+
+    key = _key()
+    token = sign_compact(
+        {"alg": key.alg, "typ": "JWT", "kid": key.kid, **_wrprc_extensions(crit)},
+        {"iss": key.kid, "aud": "verifier", "nonce": "n-1", "vp": {}}, signing_key=key)
+    with pytest.raises(MalformedToken, match="crit"):
+        VpJwtProofSuite().verify(token, audience="verifier", nonce="n-1")
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_oid4vci_key_proof_still_refuses_sigt_and_b64(crit: list[str]) -> None:
+    from openvc.openid4vci import verify_credential_request_proofs
+
+    key = _key()
+    proof = sign_compact(
+        {"alg": key.alg, "typ": "openid4vci-proof+jwt", "jwk": key.public_jwk(),
+         **_wrprc_extensions(crit)},
+        {"aud": "https://issuer.example", "iat": 1, "nonce": "n"}, signing_key=key)
+    request = {"credential_configuration_id": "cfg", "proofs": {"jwt": [proof]}}
+    with pytest.raises(MalformedToken, match="crit"):
+        verify_credential_request_proofs(
+            request, credential_issuer="https://issuer.example", require_nonce=False)
+
+
+@pytest.mark.parametrize("crit", _WRPRC_CRITS)
+def test_lote_still_refuses_sigt_and_b64(crit: list[str]) -> None:
+    # The LoTE verifier keeps its own copy of the JAdES allow-list, {alg, typ, x5c, iat}:
+    # the WRPRC lane's widening is deliberately not shared with it.
+    from openvc.trustlist.errors import TrustListSignatureError
+    from openvc.trustlist.lote import consume_lote
+
+    key = _key()
+    token = sign_compact(
+        {"alg": key.alg, "typ": "JWT", **_wrprc_extensions(crit)},
+        {"LoTE": {}}, signing_key=key)
+    with pytest.raises(TrustListSignatureError, match="critical"):
+        consume_lote(token, expected_signer_certs=[])

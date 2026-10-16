@@ -45,7 +45,9 @@ already hold the key. Normally you let the pipeline resolve it from the
 - **Unknown `crit` header extensions are rejected** (RFC 7515 §4.1.11). openvc
   processes no JWS extension parameters, so a token that marks any as critical
   fails closed — on the VC-JWT, SD-JWT, KB-JWT and status-list-token lanes
-  alike (the COSE and JWE paths already take the same stance).
+  alike (the COSE and JWE paths already take the same stance). The one exception is the
+  EUDI relying-party registration certificate, whose lane understands exactly `sigT` and
+  `b64: true` ([Relying-party certificates](Relying-Party-Certificates)).
 - **An SD-JWT issuer JWT is not a VC-JWT** (explicit typing, RFC 8725 §3.11). A JWS
   typed `sd-jwt`, `*+sd-jwt` or `kb+jwt` (any case, with or without the `application/`
   prefix) is a `MalformedToken` before the signature is checked. So is one whose payload

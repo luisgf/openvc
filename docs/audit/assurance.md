@@ -220,6 +220,19 @@ Example-based, but broad. Representative anchors:
   key narrowing a request (the request side of #89's CRITICAL); a registered array
   index read as the array wildcard; a request naming no claims; a format-less entry
   matching a format-less query (`test_rp_registration.py`).
+- **Relying-party registration certificates (WRPRC) — real tokens and the `crit`
+  exception** (v1.36.0) — five real third-party-signed WRPRCs from four producers verify
+  end to end against their own pinned roots; a flipped payload byte, a flipped signature
+  byte and an edited `sigT` are signature failures; another producer's root is refused;
+  each certificate fails outside its window; an alg, typ, `crit` or `b64` edit that leaves
+  the genuine signature stale is refused by the pre-crypto check, not by the signature;
+  an empty grant and a payload with no `credentials` authorize nothing
+  (`test_rp_registration_real_artifacts.py`). The `crit` rules — non-empty unique
+  array, every name present, only `sigT`/`b64` beyond `{alg, typ, x5c, iat}`, `b64` only
+  the JSON boolean `true`, `sigT` only a UTC `Z` time, both checked listed or not — and
+  that every other lane still refuses `sigT` and `b64` (`test_rp_registration.py`,
+  `test_jws_crit.py`). The tokens are **provisional**: third-party-signed, not
+  registrar-anchored.
 - **Expiry waiver** — under `require_not_expired=False`, `expired` equals the default
   policy's expiry verdict on both pipelines and every suite, and a schema credential
   inherits no waiver (`test_expired_flag_parity.py`).
@@ -403,6 +416,7 @@ waves (milestones #9–#10) were the broadest sweeps; the per-issue fixes since
 - `f18d222` — parse + validate EUDI relying-party access certs / WRPAC (#88)
 
 **Relying-party certificates (WRPAC ↔ WRPRC authorization)**
+- `#134` — *interop; a recorded decision, not a finding, and no adversarial review has run on it yet* — the first real signed WRPRCs (the German EUDI sandbox registrar, the Hopae development registrar, the DIGG wallet ecosystem, an EU verifier-endpoint sample) were vendored and verified; three of the four producers verified under v1.35.1 unchanged, and the Hopae tokens were refused on one header: the registrar lists `sigT` and `b64` in `crit`, and the WRPRC lane's allow-list was `{alg, typ, x5c, iat}`. The maintainer decided to understand exactly those two names **in that lane only** (the one documented exception to the library's `crit` invariant, threat model I22): `crit` a non-empty array of unique strings, each name present in the header, `b64` only the JSON boolean `true` (RFC 7797 `false` is an unencoded payload and is refused), `sigT` only an RFC 3339 UTC time, surfaced as `claimed_signing_time` and never used for a validity decision, `b64` and `sigT` checked whether or not `crit` names them. The shared `reject_unknown_crit` and the LoTE verifier are untouched; the tests pin that they still refuse both names. The real tokens also settled `intermediary.sname` (not `name`), `intermediary.sub` beside `act.sub`, and no header `iat`. Limits: the tokens are third-party-signed, **not** registrar-anchored, so #134 stays open for the registrar-anchored goal and the CWT form (v1.36.0; `test_rp_registration_real_artifacts.py`, `test_rp_registration.py`, `test_jws_crit.py`)
 - `#161` — **wrong-authorize** — a missing, blank or non-string `format` on a WRPRC entry and on a DCQL query both normalised to `None` and matched; an absent `format` is now a failure, never a match (v1.25.0; `test_rp_registration.py`)
 - `#160` — **wrong-authorize (scope escalation)** — a present but empty `claim` fell through to `claims` and widened the grant, the empty-first half of #89's two-spellings escalation; a present `claim` is now the whole grant (v1.25.0; `test_rp_registration.py`)
 - `#152` — **wrong-authorize** — an empty grant authorized a DCQL request naming no claims as "equally unrestricted", so an incomplete, registrar-signed WRPRC granted the whole credential; an empty grant now grants nothing (v1.25.0; `test_rp_registration.py`)
@@ -438,7 +452,7 @@ lanes verify through openvc's own JWS code, not PyJWT. Advisory by advisory:
 | GHSA-993g-76c3-p5m4 / CVE-2026-48522 | `PyJWKClient` SSRF (`file://`, `ftp://`, `data:`) | **No** — `PyJWKClient` unused; JWKS via `openvc.fetch` (https-only, private ranges blocked) |
 | GHSA-fhv5-28vv-h8m8 / CVE-2026-48524 | `PyJWKClient` kid-driven request flood | **No** — `PyJWKClient` unused |
 | GHSA-752w-5fwx-jx9f / CVE-2026-32597 | unknown `crit` extensions accepted | **Was reachable** — on the VC-JWT lane with PyJWT < 2.13, and **independently on openvc's own JWS lanes** (SD-JWT issuer JWT, KB-JWT, status-list token), which never consulted `crit`. Closed both ways: the `>=2.13` floor **and** the lane-uniform openvc-side rejection (`reject_unknown_crit`), regression-tested per lane in `tests/test_jws_crit.py` |
-| GHSA-w7vc-732c-9m39 / CVE-2026-48525 | DoS via unbounded b64 decode of the unused segment of a `b64=false` detached JWS | **Marginally, pre-2.13** — a hostile token reaches `jwt.decode` on the VC-JWT lane (cost ∝ input size; no wrong-accept). Closed by the floor. On the hand-rolled lanes `b64` is an inert unknown parameter — verification always runs over `b64url(header).b64url(payload)`, so detached-payload confusion is impossible; and a *conformant* `b64=false` token must list `b64` in `crit` (RFC 7797 §6), which every lane now rejects |
+| GHSA-w7vc-732c-9m39 / CVE-2026-48525 | DoS via unbounded b64 decode of the unused segment of a `b64=false` detached JWS | **Marginally, pre-2.13** — a hostile token reaches `jwt.decode` on the VC-JWT lane (cost ∝ input size; no wrong-accept). Closed by the floor. On the hand-rolled lanes `b64` is an inert unknown parameter — verification always runs over `b64url(header).b64url(payload)`, so detached-payload confusion is impossible; and a *conformant* `b64=false` token must list `b64` in `crit` (RFC 7797 §6), which every lane now rejects — except the WRPRC lane (v1.36.0, #134), which understands `b64` in `crit` but only as the JSON boolean `true`; `b64=false` there, listed or not, is refused before any crypto, so the detached-payload confusion stays impossible (`test_rp_registration.py`, `test_rp_registration_real_artifacts.py`) |
 
 Outcome: floor raised to `pyjwt>=2.13` (defense in depth even where structurally
 unreachable) plus the lane-uniform `crit` rejection.

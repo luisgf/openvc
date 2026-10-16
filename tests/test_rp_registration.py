@@ -369,6 +369,146 @@ def test_crit_rejects_malformed_shapes(registrar, crit):
         parse_rp_registration_certificate(token)
 
 
+# --- sigT and b64: the two extensions the real registrars list (issue #134) ---------
+# The Hopae registrar's tokens carry "crit": ["sigT", "b64"]
+# (test_rp_registration_real_artifacts.py). The maintainer decision is to understand
+# exactly those two, in this lane only, under narrow rules; everything below is signed
+# with a valid key so the accept paths run the real verification, not just the parse.
+
+_SIG_T = "2026-05-31T23:00:00Z"
+# the lane's own refusal of a malformed sigT, not just any message that names the field
+_SIG_T_REFUSED = r"header 'sigT' (must be an RFC 3339 UTC time|.* is not a valid UTC time)"
+
+
+def _verified(registrar, header, **kwargs):
+    root, chain, key = registrar
+    token = jwt_wrprc(claims(), chain, key, header=header)
+    kwargs.setdefault("now", _AT)
+    return verify_rp_registration_certificate(token, trust_anchors=[root], **kwargs)
+
+
+@pytest.mark.parametrize("crit", [["sigT", "b64"], ["b64", "sigT"], ["sigT"], ["b64"]])
+def test_crit_accepts_sigt_and_b64_true_and_verifies(registrar, crit):
+    header = {"crit": crit, "sigT": _SIG_T, "b64": True}
+    reg = _verified(registrar, header)
+    assert reg.header["crit"] == crit
+    assert reg.claimed_signing_time == dt.datetime(2026, 5, 31, 23, tzinfo=dt.timezone.utc)
+
+
+def test_crit_that_lists_an_understood_name_still_refuses_an_unknown_one(registrar):
+    for crit in (["sigT", "b64", "exp"], ["sigT", "sigD"], ["unknown"]):
+        header = {"crit": crit, "sigT": _SIG_T, "b64": True, "exp": 1, "sigD": {}, "unknown": 1}
+        with pytest.raises(RpRegistrationError, match="critical"):
+            _verified(registrar, header)
+
+
+@pytest.mark.parametrize("crit", [["sigT", "sigT"], ["b64", "b64"], ["sigT", "b64", "sigT"]])
+def test_crit_refuses_a_name_listed_twice(registrar, crit):
+    # RFC 7515 §4.1.11: the list must not repeat a name.
+    with pytest.raises(RpRegistrationError, match="more than once"):
+        _verified(registrar, {"crit": crit, "sigT": _SIG_T, "b64": True})
+
+
+def test_crit_that_names_sigt_or_b64_must_find_it_in_the_header(registrar):
+    with pytest.raises(RpRegistrationError, match="not present"):
+        _verified(registrar, {"crit": ["sigT", "b64"], "b64": True})
+    with pytest.raises(RpRegistrationError, match="not present"):
+        _verified(registrar, {"crit": ["sigT", "b64"], "sigT": _SIG_T})
+
+
+@pytest.mark.parametrize("b64", [False, "true", "false", 1, 0, None, [], {}, [True], 1.0])
+@pytest.mark.parametrize("listed", [True, False])
+def test_b64_other_than_true_is_refused_listed_or_not(registrar, b64, listed):
+    # `b64: false` is an UNENCODED payload (RFC 7797): a signing input this verifier does
+    # not build. The token is validly signed here — over the ordinary encoded input — so
+    # only the value check stands between it and acceptance.
+    header = {"b64": b64}
+    if listed:
+        header["crit"] = ["b64"]
+    with pytest.raises(RpRegistrationError, match="JSON boolean true"):
+        _verified(registrar, header)
+
+
+def test_b64_true_is_fine_without_being_listed(registrar):
+    # The default value; RFC 7797 §6 asks a producer to list it, a verifier need not.
+    assert _verified(registrar, {"b64": True}).claimed_signing_time is None
+
+
+@pytest.mark.parametrize("sigt", [
+    "", "yesterday", "2026-05-31", "2026-05-31T23:00:00", "2026-05-31T23:00:00+00:00",
+    "2026-05-31T23:00:00-00:00", "2026-05-31t23:00:00z", "2026-05-31 23:00:00Z",
+    "2026-05-31T23:00:00Z ", " 2026-05-31T23:00:00Z", "2026-05-31T23:00:00Z\n",
+    "2026-02-29T23:00:00Z", "2026-05-31T23:60:00Z", "2026-05-31T23:00:60Z",
+    "2026-05-31T24:00:00Z", "2026-00-10T00:00:00Z", "0000-05-31T23:00:00Z",
+    "2026-05-31T23:00:00.Z", "2026-05-31T23:00:00.1234567890Z",
+    "٢٠٢٦-05-31T23:00:00Z", "2026-05-31T23:00:00Z" + "0" * 10_000,
+    0, 1.5, True, [], ["2026-05-31T23:00:00Z"], {}, None,
+])
+@pytest.mark.parametrize("listed", [True, False])
+def test_sigt_that_is_not_a_utc_rfc_3339_time_is_refused_listed_or_not(
+        registrar, sigt, listed):
+    header = {"sigT": sigt}
+    if listed:
+        header["crit"] = ["sigT"]
+    with pytest.raises(RpRegistrationError, match=_SIG_T_REFUSED):
+        _verified(registrar, header)
+
+
+@pytest.mark.parametrize("sigt, expected", [
+    ("2026-05-31T23:00:00Z", dt.datetime(2026, 5, 31, 23, tzinfo=dt.timezone.utc)),
+    ("2026-05-31T23:00:00.5Z",
+     dt.datetime(2026, 5, 31, 23, 0, 0, 500000, tzinfo=dt.timezone.utc)),
+    ("2026-05-31T23:00:00.123456Z",
+     dt.datetime(2026, 5, 31, 23, 0, 0, 123456, tzinfo=dt.timezone.utc)),
+    ("2026-05-31T23:00:00.123456789Z",
+     dt.datetime(2026, 5, 31, 23, 0, 0, 123456, tzinfo=dt.timezone.utc)),
+    ("2028-02-29T00:00:00Z", dt.datetime(2028, 2, 29, tzinfo=dt.timezone.utc)),
+])
+def test_sigt_accepts_the_utc_z_form_with_optional_fractional_seconds(
+        registrar, sigt, expected):
+    assert _verified(registrar, {"sigT": sigt}).claimed_signing_time == expected
+
+
+@pytest.mark.parametrize("sigt", ["1970-01-01T00:00:00Z", "2999-12-31T23:59:59Z"])
+def test_sigt_is_surfaced_and_never_decides_validity(registrar, sigt):
+    # A signing time a thousand years out, or before the certificate existed, changes
+    # nothing: the temporal gate reads the payload's iat/exp and the chain's validity.
+    reg = _verified(registrar, {"crit": ["sigT"], "sigT": sigt})
+    assert reg.claimed_signing_time is not None
+    assert reg.issued_at == dt.datetime.fromtimestamp(_IAT, tz=dt.timezone.utc)
+    with pytest.raises(RpRegistrationError, match="expired"):
+        _verified(registrar, {"crit": ["sigT"], "sigT": sigt},
+                  now=_AT + dt.timedelta(days=2))
+
+
+def test_claimed_signing_time_is_none_without_sigt_and_for_the_cwt_form(registrar):
+    root, chain, key = registrar
+    assert _verified(registrar, None).claimed_signing_time is None
+    assert parse_rp_registration_certificate(cwt_wrprc(claims(), chain, key)
+                                             ).claimed_signing_time is None
+
+
+def test_claimed_signing_time_never_raises_on_a_hand_built_header(registrar):
+    # The API validates sigT at read time; a dataclass built by hand with junk gets None.
+    import dataclasses
+
+    reg = _verified(registrar, {"sigT": _SIG_T})
+    for junk in ("nope", 5, [], {"a": 1}):
+        assert dataclasses.replace(reg, header={"sigT": junk}).claimed_signing_time is None
+
+
+def test_the_parse_entry_point_enforces_the_same_crit_rules(registrar):
+    root, chain, key = registrar
+    ok = jwt_wrprc(claims(), chain, key,
+                   header={"crit": ["sigT", "b64"], "sigT": _SIG_T, "b64": True})
+    assert parse_rp_registration_certificate(ok).claimed_signing_time is not None
+    for header in ({"crit": ["sigT", "b64"], "sigT": _SIG_T, "b64": False},
+                   {"crit": ["sigT", "sigT"], "sigT": _SIG_T},
+                   {"crit": ["sigT", "x"], "sigT": _SIG_T, "x": 1}):
+        with pytest.raises(RpRegistrationError):
+            parse_rp_registration_certificate(jwt_wrprc(claims(), chain, key, header=header))
+
+
 def test_a_header_iat_does_not_displace_the_payload_iat(registrar):
     # JAdES puts a claimed signing time in the *header* `iat`; TS 119 475 puts issuance
     # in the *payload* `iat`. They are different fields and must not be collapsed —
