@@ -200,6 +200,7 @@ finite input", with no explicit constant.
 | Decompress (gzip/zlib) | Issuer status bytes (**not** covered by the 1 MiB fetch cap) | **16 MiB**, incremental | `DecompressionBomb` — **not** an `OpenvcError`, re-wrapped at call sites (R2) | `src/openvc/status/_decompress.py:23,28,38-66` |
 | LOTL/TL XML | EU trusted-list bytes (pre-signature) | **DOCTYPE refused** (blocks XXE + expansion); 16 MiB + 500k elements | `TrustListParseError` (typed) | `src/openvc/trustlist/parse.py:22,108-120,100-117` |
 | XAdES signature XML | Signed trusted-list | 16 MiB; XAdES-BASELINE-B alg profile; XSW subtree guard | `XadesError` family; hardened lxml on the reparse (R6) | `src/openvc/trustlist/xades.py:71-81,97-98,115-127` |
+| OpenPGP detached signatures, custodian key blocks, then the TNL JSON (EBSI, #319) | `tnl.json.sig` / `trusted-keys.json.sig` (**the only bytes parsed before any signature is checked**); then armored key blocks and `trusted-keys.json` (after the anchor verifies), `tnl.json` (after `threshold` custodians verify) | `.sig` **4 KiB**; ≤32 packets per file or block; ≤64 subpackets per area; every length checked against its container (old-format headers only, no partial or indefinite length); MPIs strict (a signature's `r` and `s` ≤256 bits, the public point exactly 65 octets); armored block ≤12288 characters (8192 bytes decoded); `trusted-keys.json` 64 KiB and `tnl.json` 256 KiB through the bounded loader (depth 100, no duplicate member, no NaN), ≤16 custodians, ≤512 nodes; one profile (v4 / ECDSA P-256 / SHA-256 / binary), anything else refused; ECDSA runs only for a signer that is an allowed key, at most once per packet | `OpenPgpError` (a `NodeListMalformed`) and the rest of the `NodeListError` family: every one an `OpenvcError` | `src/openvc_ebsi/_openpgp.py` (`_packets`, `_subpackets`, `_mpi`, `dearmor`), `src/openvc_ebsi/nodes.py` (`verify_node_list`, `_parse_list`, `_parse_key_list`) |
 
 ## 7. Network & SSRF surface
 
@@ -339,6 +340,14 @@ finite input", with no explicit constant.
   **Residual:** the TIR `attributes` URL and each revision `href` are pinned to the
   listing's origin (#172), not to `.../issuers/{did}/`, and a revision's own `did` is not
   read; both are outside #266 and #267.
+  **Which hosts to allow-list** is now answerable offline: `openvc_ebsi.nodes.verify_node_list`
+  (#319, ADR-0009) authenticates a Trusted Nodes List before anything in it is parsed (anchor,
+  then key list, then a threshold of custodians, then the list) and returns the nodes of one
+  environment. It authenticates the *operator* of a node, not the content the node serves
+  (D7: a dishonest listed node can still serve another key for a DID), the chain's real root
+  is the single anchor key, and a caller that persists nothing is bounded only by the two
+  shipped version floors, `max_age` and `min_threshold`. The parser surface is in §6; the
+  host-name allow-list itself, and R4, are unchanged.
 
 ## 8. Fail-closed invariants catalog
 

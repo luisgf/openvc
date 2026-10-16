@@ -329,3 +329,120 @@ files = get_tnl_files(etags=etags)           # a 304 is BytesResponse(None, <the
   preprod nodes and the one-issuer production seed, with a hash manifest), plus an
   opt-in live smoke test (`OPENVC_EBSI_LIVE=1 pytest`, today against the legacy
   pilot host).
+
+### Which node? Verifying the Trusted Nodes List
+
+EBSI no longer publishes a host to call. A client picks a *node* from the **Trusted Nodes
+List (TNL)** at `https://tnl.ebsi.eu`: a JSON document signed with OpenPGP by a threshold of
+*custodians*, whose keys are in a second document signed by one Europeum **key-list key**.
+`openvc_ebsi.nodes.verify_node_list` checks that chain **offline**, from the four files
+exactly as served, and returns the nodes of **one** environment (`"pilot"`, `"preprod"` or
+`"prod"`, the list's own names). It fetches nothing, reads no clock, opens no socket and
+keeps nothing
+([ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)).
+It needs only `cryptography`, so it works without the `ebsi` extra.
+
+<!-- docs: no-run -->
+```python
+from datetime import datetime, timezone
+
+from openvc_ebsi.errors import NodeListError
+from openvc_ebsi.http import EbsiHttpClient
+from openvc_ebsi.nodes import verify_node_list
+
+# the four files, byte for byte as tnl.ebsi.eu served them: do not decode, re-save or
+# re-format them (a str is refused)
+try:
+    result = verify_node_list(
+        tnl=tnl_bytes, tnl_sig=tnl_sig_bytes, keys=keys_bytes, keys_sig=keys_sig_bytes,
+        environment="prod",
+        now=datetime.now(timezone.utc),            # required: the function reads no clock
+        last_accepted_list=saved_list,             # Accepted(version, sha256), None on a first run
+        last_accepted_keys=saved_keys,             # the same for trusted-keys.json
+    )
+except NodeListError:
+    ...  # keep using the last list you accepted until its own `expires`, and alert
+
+saved_list, saved_keys = result.accepted_list, result.accepted_keys   # persist once YOU accept
+print(result.version, result.expires, [node.origin for node in result.nodes])
+with EbsiHttpClient(allowed_hosts=set(result.hosts)) as http:   # lower-case hosts, ONE environment
+    ...
+```
+
+The chain, in the order it is checked (a stage never reads bytes the previous one did not
+authenticate):
+
+1. the arguments and the size caps (a `.sig` file is capped at 4 KiB);
+2. `trusted-keys.json.sig` must carry a valid signature by the **anchor**, and only then is
+   `trusted-keys.json` parsed (its version is checked against the floor and your
+   `last_accepted_keys`; `threshold` must be between 1 and the number of custodians);
+3. each custodian's key block is read and its v4 fingerprint is **recomputed** and compared
+   with the listed one (a duplicate custodian is refused, by fingerprint and by key);
+4. `tnl.json.sig` must carry valid signatures by at least `threshold` **distinct custodian
+   primary keys**; a signature is attributed to its signer by the *hashed*
+   issuer-fingerprint subpacket only (the unhashed area is not covered by the signature, so
+   anyone can edit it: it is walked for structure only and never used to identify the signer,
+   and a malformed one, or a critical-bit subpacket in it, rejects the file), a signature by
+   an unknown key or by a custodian's *subkey* is ignored, one invalid signature by an
+   allowed key rejects the whole file, and the same custodian twice counts once;
+5. only now is `tnl.json` parsed and checked by hand against the published schema (exactly
+   five members; `version` / `keysVersion` integers of at least 1; `Z` timestamps;
+   `expires` after `issued` and at most 90 days later; every node `url` a bare `https://`
+   origin, ASCII, unique, starting with its environment's prefix; two-letter upper-case
+   `country`; a non-empty `organisation` without leading or trailing whitespace), then the
+   version against its floor and your `last_accepted_list`, `keysVersion` against the key
+   list's own `version`, and the time rules.
+
+**What it gives, and what it does not.**
+
+- The list authenticates the **operator** of each node, not the **content** it serves: a
+  dishonest listed node can still serve another key for a DID or a forged accreditation,
+  and openvc will verify what it is given. The real root of the chain is the single anchor
+  key.
+- **Persistence is yours.** `last_accepted_list` and `last_accepted_keys` are required
+  arguments so the obligation is in the signature, but `None` ("first run") is always
+  passable, so the function cannot tell an honest `None` from a convenient one. What bounds
+  a caller that persists nothing is two version floors shipped in the wheel
+  (`LIST_VERSION_FLOOR`, `KEYS_VERSION_FLOOR`), the optional `max_age`, and `min_threshold`
+  (default **2**, the live value; pass `None` for no minimum, or a lower number for a key
+  list whose threshold is 1). A floor can only reject, so it is raised to the newest
+  version EBSI has published **at each openvc release**; one that falls behind only weakens
+  the replay bound of a stateless caller.
+- **The list expires, at most 90 days after it was issued.** `now` at or after `expires` is
+  `NodeListExpired`; a client that outlives its list must re-verify (a list issued more than
+  300 s in the future is `NodeListNotYetValid`). Keep fetching about every hour, with
+  `If-None-Match`; that part is yours too.
+- **The anchor.** `EUROPEUM_KEY_LIST_ANCHOR` is the key-list key as served on 2026-10-16
+  (fingerprint `ACCC82E5FC8902F114929481747CB65CFB7574F9`). What was checked is that the
+  fingerprint agrees across `tnl.ebsi.eu`, the public TNL repository and the hub
+  documentation, which are all Europeum's own channels; nothing independent confirms it.
+  Pass your own with `Anchor.from_public_key_block(armored)` after you have verified the key
+  out of band; never download it at runtime. Europeum has announced that a qualified
+  electronic seal will replace this key, at which point a shipped anchor stops verifying
+  new key lists and strict clients fail closed until they upgrade or override the anchor.
+- **A narrow OpenPGP profile, on purpose.** OpenPGP v4, ECDSA over NIST P-256, SHA-256,
+  binary signatures, old-format packet headers. Anything else (another curve or hash, a
+  v5/v6 packet, a new-format header, an armored `.sig`) is `OpenPgpError`. In a signature
+  file, a signature without exactly one hashed creation-time subpacket, one carrying an
+  expiration subpacket or an unknown critical hashed subpacket, and one with a critical-bit
+  subpacket in its unhashed area are refused rather than ignored. In a key block, a
+  revocation or an expiration subpacket is refused; a self-signature or subkey binding is
+  otherwise not interpreted (not verified, and an unknown critical subpacket in one is not
+  refused), because the key list's signature is what vouches for the custodian keys.
+  GnuPG 2.5.24 agrees with the reader on the recorded chain, but this is not an equivalence:
+  it also rejects a signature dated before its key was created and a custodian key whose
+  self-signature lacks the signing flag, which the reader accepts. The cases are listed in
+  [docs/audit/assurance.md](https://github.com/luisgf/openvc/blob/main/docs/audit/assurance.md)
+  section 4.
+
+The errors are all `openvc_ebsi.errors.NodeListError` (an `EbsiError`):
+
+| Raised | When |
+|---|---|
+| `NodeListConfigError` | a bad argument: unknown environment, `now` missing, a `str` instead of bytes, a malformed `Accepted`, anchor, floor, `max_age` or `min_threshold` |
+| `NodeListMalformed` (`OpenPgpError`) | a size cap, JSON or schema rule, a duplicate or mislisted custodian; `OpenPgpError` for anything outside the OpenPGP profile |
+| `NodeListSignatureError` | a signature by an allowed key does not verify, or the key list is not signed by the anchor |
+| `NodeListThresholdError` | fewer distinct custodians signed than `threshold`, or `threshold` is below `min_threshold` |
+| `NodeListRollback` | a version below its floor or your last accepted one, the same version with different bytes, or a `keysVersion` above the key list's version |
+| `NodeListExpired` / `NodeListNotYetValid` / `NodeListStale` | `now` at or after `expires`; `issued` more than 300 s ahead; `issued` older than `max_age` |
+| `NodeListEnvironmentMissing` | the verified list has no node for the requested environment |

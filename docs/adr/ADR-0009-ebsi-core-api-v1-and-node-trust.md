@@ -5,6 +5,15 @@ an ECDSA-only OpenPGP reader; it vendors an anchor, never the list) and the ES25
 (open question 3) are accepted. Open question 1 is answered by the first. Open questions 2,
 4, 5, 6, 7 and 8 stay open. This ADR ships no code and changes nothing under `src/`; the
 ES256K opt-in it accepted was implemented afterwards, as #323 (v1.37.0), see D8.
+**Implemented so far:** D1 (the origin allow-list, #318), D4's fetch half (#320), the
+Core v1 adapters and the `legacy-pilot` name (D6 in part: #321, #325 part 1), D8 (#323) and,
+in [#319](https://github.com/luisgf/openvc/issues/319) (unreleased, held), D2 (the pure verifier
+`openvc_ebsi.nodes.verify_node_list` over a minimal ECDSA-only OpenPGP reader) and D3's anchor
+and two version floors (the list itself is not vendored). #319's decisions 1 to 4 were taken
+as its stated defaults (P-256 and SHA-256 only; the pin justified by consistency across
+Europeum's channels only; required `last_accepted_*` pairs; `min_threshold` default 2; the
+extra reject rules), each listed under "Defaults pending maintainer confirmation" in the
+CHANGELOG. D5 (the node-bound client) and D7's remaining text are not implemented.
 **Date:** 2026-10-16 (revised the same day after review: D2, D3, D5 and the measured facts)
 **Context owner:** `openvc_ebsi.http`, `openvc_ebsi.versioning` (and a future
 `openvc_ebsi.nodes`)
