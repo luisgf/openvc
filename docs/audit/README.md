@@ -29,7 +29,7 @@ external review.
 
 | Document | What it holds |
 |---|---|
-| [threat-model.md](threat-model.md) | The code-cited threat model: assets, trust boundaries, attacker model, per-suite and per-parser attack-surface tables, the **fail-closed invariants catalog** (I1–I22), and the **residual-risk register** (R1–R11) |
+| [threat-model.md](threat-model.md) | The code-cited threat model: assets, trust boundaries, attacker model, per-suite and per-parser attack-surface tables, the **fail-closed invariants catalog** (I1–I22), and the **residual-risk register** (R1–R12) |
 | [assurance.md](assurance.md) | Property-based **fuzz** coverage, the "harden-next" gap map, negative/tamper coverage by suite, and the **adversarial-review history** |
 | [Security-Model](https://github.com/luisgf/openvc/wiki/Security-Model) (wiki) | The user/integrator-facing summary the threat model annex expands |
 | [SECURITY.md](https://github.com/luisgf/openvc/blob/main/SECURITY.md) | Reporting policy + per-control hardening notes |

@@ -27,8 +27,8 @@ There are two lanes, and `openvc_ebsi` reads one of them.
 **The legacy pilot lane.** `api-pilot.ebsi.eu`, with per-service `v5` paths. It is the only
 place the recorded fixtures and the weekly live smoke test are valid, and it is what
 `for_ebsi("pilot")` reaches. On 2026-10-16 it still answered 200 for
-`did:ebsi:zZeKyEJfUTGwajhNyNX928z` on `/did-registry/v5/identifiers/…`. EBSI's migration guide
-lists the nine old APIs as legacy and available on the Pilot environment only; **no retirement
+`did:ebsi:zZeKyEJfUTGwajhNyNX928z` on `/did-registry/v5/identifiers/…`. The hub lists
+the nine old APIs as legacy, "available on the Pilot environment only"; **no retirement
 date** appears in the migration guide, the API index or the changelog as of 2026-10-16.
 
 **EBSI Core API v1.** One API replaces the nine services, under a per-node base:
@@ -83,7 +83,7 @@ the 2.0 window, is [#325](https://github.com/luisgf/openvc/issues/325)'s questio
 
 ## Getting the nodes
 
-The TNL is a short chain of three documents, each signed with OpenPGP, served at
+The TNL is a short chain: one pinned key, and two documents signed with OpenPGP. It is served at
 <https://tnl.ebsi.eu> and published in the public repository
 <https://gitlab.com/europeum/public/trusted-nodes-list> (its README and `public/` directory):
 
@@ -230,7 +230,15 @@ BARE_ORIGIN = re.compile(r"https://[a-z0-9.-]+")      # no port, path, userinfo;
 
 def allow_list(verified: dict, environment: str, *, now: datetime) -> frozenset[str]:
     """Host names of ONE environment of a list whose signatures, threshold, rollback and
-    schema were already checked elsewhere. Anything unexpected is a ValueError."""
+    schema were already checked elsewhere. Anything unexpected is a ValueError, a list of
+    the wrong shape included, so one `except ValueError` means "refuse this list"."""
+    try:
+        return _hosts(verified, environment, now)
+    except (AttributeError, KeyError, TypeError) as exc:    # a missing key, a wrong type
+        raise ValueError(f"malformed list ({type(exc).__name__})") from exc
+
+
+def _hosts(verified: dict, environment: str, now: datetime) -> frozenset[str]:
     if environment not in PREFIX:
         raise ValueError(f"unknown environment {environment!r}")
     expires = datetime.fromisoformat(verified["expires"].replace("Z", "+00:00"))
@@ -272,6 +280,16 @@ def reason(verified: dict, environment: str, now: datetime = NOW) -> str:
 
 
 # Negatives first. A list that is refused never becomes a client:
+EXPIRES = "2027-01-04T13:33:18Z"
+assert "malformed list" in reason({"version": 4}, "prod")                      # no expiry
+assert "malformed list" in reason({"expires": EXPIRES}, "prod")                # no environments
+assert "malformed list" in reason({"expires": "2027-01-04T13:33:18", "environments": {
+    "prod": [{"url": PROD[0]}]}}, "prod")                                      # naive expiry
+assert "malformed list" in reason({"expires": EXPIRES, "environments": {
+    "prod": [{"country": "XX"}]}}, "prod")                                     # node without url
+assert "malformed list" in reason({"expires": EXPIRES, "environments": {
+    "prod": [{"url": 7}]}}, "prod")                                            # url not a string
+assert "malformed list" in reason({"expires": EXPIRES, "environments": []}, "prod")  # not a map
 assert "bare https origin" in reason(sample(prod=["https://api.ebsi.node-a.example/v1"]), "prod")
 assert "bare https origin" in reason(sample(prod=["https://api.ebsi.node-a.example:9200"]), "prod")
 assert "bare https origin" in reason(sample(prod=["https://user@api.ebsi.node-a.example"]), "prod")

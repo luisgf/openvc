@@ -14,12 +14,14 @@ All notable changes to **openvc** are documented here. The format follows
   [#113](https://github.com/luisgf/openvc/issues/113)). No library behaviour changes. EBSI Core
   API v1 has no fixed production host: a client picks a node from the signed Trusted Nodes List
   (TNL), and the repo still told integrators the answer was `api.ebsi.eu`. The new page
-  (sidebar entry under "Verifying in practice") covers the two lanes (the legacy pilot lane on
+  (sidebar entry under "Verifying in practice", and a row in the Guides table of
+  `wiki/Home.md`) covers the two lanes (the legacy pilot lane on
   `api-pilot.ebsi.eu` with `v5` paths, and Core API v1 on per-node hosts), what the three
   `for_ebsi` names mean today, the TNL chain and its five files, the publisher's verification
   rules as a checklist, the `(version, sha256)` pair to persist for the list and for the key
   list, how to build a one-environment explicit allow-list from a verified list (an offline
-  snippet that `tests/test_docs_blocks.py` runs, negatives first), what a signed list does not
+  snippet that `tests/test_docs_blocks.py` runs, negatives first; every unexpected input,
+  a list of the wrong shape included, is a `ValueError`), what a signed list does not
   authenticate (the operator, not the data), why `api.ebsi.*` must not be matched as a pattern,
   the known limits on Core v1, and what to watch. Every dated statement is ADR-0009's, as of
   2026-10-16; anything the ADR does not give reads *to be measured*. In particular
