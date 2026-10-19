@@ -354,6 +354,17 @@ def test_a_compressed_body_that_does_not_decode_is_malformed_and_not_retried(bui
     assert "https://" in str(exc) and len(str(exc)) < 200     # bounded, names the URL
 
 
+def test_a_raw_deflate_stream_is_malformed_where_httpx_used_to_accept_it(build):
+    """``deflate`` here is the zlib format (``zlib.compress``), as on the ``get_bytes`` path.
+    httpx fell back to a raw stream (no zlib header) when the first attempt failed; that
+    tolerance is not kept, because the reader decodes with ``zlib`` itself."""
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    wire = compressor.compress(GOOD) + compressor.flush()
+    script = Script(reply(200, wire, {"Content-Encoding": "deflate"}))
+    expect(MalformedRegistryResponse, build(script).get_json, NODE_URL)
+    assert script.n == 1
+
+
 def test_a_corrupt_stream_chains_the_zlib_error_that_caused_it(build):
     script = Script(reply(200, GARBAGE, {"Content-Encoding": "gzip"}))
     exc = expect(MalformedRegistryResponse, build(script).get_json, NODE_URL)

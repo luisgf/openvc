@@ -941,8 +941,8 @@ Each is one value or table away from the other option. None changes anything tha
   `x-gzip`, `compress`, a list of codings (`gzip, gzip`, `identity, gzip`) or anything else
   that is not `identity`, `gzip` or `deflate` is `HttpUnexpectedEncoding` (an `HttpError`,
   status 200, not retried, the body unread), as it already was for `get_bytes`; a `deflate`
-  body must be the zlib format RFC 9110 names (httpx also retried a raw deflate stream, which
-  is now `MalformedRegistryResponse`); and bytes after the end of a compressed stream (a
+  body must be the zlib format, what `zlib.compress` writes (httpx fell back to a raw deflate
+  stream, which was accepted and is now `MalformedRegistryResponse`); and bytes after the end of a compressed stream (a
   trailing byte, a second gzip member) and a truncated stream are `MalformedRegistryResponse`
   where httpx dropped the bytes or accepted the body (measured: a gzip body missing its
   trailer, and `gzip.compress(b'{"ok": 1}' * 50)[:20]`, a stream cut after 20 bytes, came
