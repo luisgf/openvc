@@ -459,7 +459,8 @@ All notable changes to **openvc** are documented here. The format follows
     budget is given, which is a bare `OverflowError` once the header is longer than
     `time.sleep` takes (about 9.2e9 s, so any 11-digit value; measured; `get_bytes` without a
     `deadline_s` has it too, and `get_tnl_files` always passes one). They are outside this
-    change and are tracked separately.
+    change and are tracked separately (the drain was bounded by #321, the other two by #335;
+    see *Fixed*).
 - **`openvc.fetch.ip_is_forbidden(address)`**
   ([#322](https://github.com/luisgf/openvc/issues/322)), the address rule `openvc.fetch`
   applies to `did:web`, public and in `__all__` so a caller with its own HTTP client applies
@@ -541,10 +542,11 @@ All notable changes to **openvc** are documented here. The format follows
     environment these tests ran in resolves exactly `2.13.0`, the floor itself; its default
     registry carries `ES256K` as SHA-256 on `SECP256K1` (a test pins that on the suite's
     private instance, and openvc's own curve pin does not depend on PyJWT's `expected_curve`).
-    CI has no PyJWT floor leg of its own (only pyld and httpx do): it resolves the newest PyJWT
-    (2.15.1 on 2026-10-16), where the signature segment's encoding is judged more strictly than
-    on 2.13.0 (invalid characters and `=` padding are refused); the parity tests assert that
-    ES256K gets what ES256 gets on both.
+    CI had no PyJWT floor leg of its own until #340 (this release adds
+    `test (py3.10, pyjwt 2.13.0)`, next to the pyld and httpx ones); until then it resolved only
+    the newest PyJWT (2.15.1 on 2026-10-16), where the signature segment's encoding is judged
+    more strictly than on 2.13.0 (invalid characters and `=` padding are refused); the parity
+    tests assert that ES256K gets what ES256 gets on both.
   - **Every other lane keeps refusing the algorithm, twice.** SD-JWT VC (issuer JWT and
     KB-JWT, with and without `allow_pq`), VP-JWT, `verify_compact`, the status-list token,
     the OpenID4VCI key proof (also with `allowed_algs=ALLOWED_ALGS | {"ES256K"}`, which stops
@@ -773,7 +775,20 @@ Each is one value or table away from the other option. None changes anything tha
    forges a signature.
 9. **Open question 7 (qualified seal)** is not decided: the `Anchor` seam is where a second
    kind of root would attach, as a new class.
-
+- **`RetryPolicy.retry_after_max_s`**
+  ([#335](https://github.com/luisgf/openvc/issues/335); it delivers rows (a) and (b) of the
+  request-path fixes of [#324](https://github.com/luisgf/openvc/issues/324)). The longest
+  ONE sleep between attempts may be, whatever a server asks for with `Retry-After`: every
+  sleep is `min(max(backoff, Retry-After), ceiling)`, and a caller's `deadline_s` can still
+  only shorten it. `None`, the default, means `backoff_max_s`, looked up when a sleep is
+  taken: a policy built with defaults sleeps at most 5 s, one built with `backoff_max_s=60`
+  at most 60 s, `dataclasses.replace(policy, backoff_max_s=X)` follows `X`, and the attribute
+  itself stays `None`. An explicit value must be a number of seconds from 0 to one day
+  (`True`, a string, `nan`, `inf`, a negative and `10**400` are a `ValueError` when the
+  policy is built); `backoff_max_s` is not validated, as it never was, and no sleep is longer
+  than one day whatever it is, nor negative (a negative `backoff_max_s` sleeps 0 s). An
+  add-only field: every existing `RetryPolicy(...)` call, and a `dataclasses.replace` of one,
+  still builds. See *Changed* for what the default does to a node that asks for a long wait.
 - **`openvc_ebsi.node_client.for_nodes`: a client bound to a verified Trusted Nodes List, with a
   health check and single-node failover**
   ([#324](https://github.com/luisgf/openvc/issues/324), ADR-0009 D5; refs
@@ -1073,7 +1088,236 @@ Each is one value or table away from the other option. None changes anything tha
   `UnsafeUrlError` where it used to connect. There is nothing to pass instead: a publicly
   reachable host does not resolve to this prefix; fix the DNS record. Only IPv6 has the
   property, so IPv4 classification is unchanged.
+- **`allow_pq` must be exactly `True` or `False` on both JOSE suites**
+  ([#341](https://github.com/luisgf/openvc/issues/341)). `VcJwtProofSuite(allow_pq=...)` and
+  `SdJwtVcProofSuite(allow_pq=...)` read the flag by truthiness, so any truthy value switched
+  the EXPERIMENTAL ML-DSA algorithms (RFC 9964) on. Measured on `main` at cf6d100 (CPython
+  3.14.8): `allow_pq="false"`, `"0"`, `"x"` and `1` all constructed and put `ML-DSA-44`,
+  `ML-DSA-65` and `ML-DSA-87` in the suite's allow-list, while `""`, `0`, `None` and `[]`
+  silently meant off. A deployment that reads the flag from an environment variable or a
+  configuration file as a string therefore enabled a post-quantum verify path it meant to
+  disable. Anything but the `bool` `True` or `False` is now refused at construction: a
+  `ProofError` on `VcJwtProofSuite`, a `SdJwtError` (a `ProofError`, like that constructor's
+  other checks) on `SdJwtVcProofSuite`, with the message `allow_pq must be True or False, got
+  str`, which names the type and never echoes the value. It is the rule `allow_es256k` has
+  had since #323 (`type()`, not `isinstance()`, so an object whose `__class__` claims `bool`
+  is refused too); on `VcJwtProofSuite` the two flags are checked in signature order, after
+  `leeway_s`. **Who is affected:** a caller that passes a string, a number, `None` or any
+  other non-bool, including the falsy values that used to mean off (`0`, `None`, `""`).
+  **What to pass instead:** `True` or `False`, or leave the argument out (the default is
+  `False`); parse a configuration string yourself before constructing the suite. `True`,
+  `False` and the default behave exactly as before. The grep of every `allow_*` in `src/`
+  found `allow_pq` on the two suites (fixed together, because both guard the same algorithm
+  family), `allow_es256k` (strict since #323) and two private keywords, `allow_scalar` in
+  `rp_registration._str_tuple` and `allow_string` in `status._index.status_index`, which every
+  call site sets with a literal and which guard no algorithm family or trust decision: they are
+  left alone (`allow_nan=False` in `_context_validation` is a `json.dumps` argument).
+- **The TIR adapters check the JSON type of every scalar they copy into the model, and
+  `hasAttributes` must be a JSON boolean**
+  ([#337](https://github.com/luisgf/openvc/issues/337); found by the review of #332).
+  Hardening; no wrong-accept was found against a node that follows its published schema.
+  The adapters in `openvc_ebsi.versioning` copied registry members into `Accreditation` and
+  `IssuerRecord` as sent. Measured on `cf6d100` (CPython 3.14.8) through
+  `DidEbsiResolver.issuer_record`: `"hasAttributes": "false"` (and `"0"`, `"true"`, `1`) read
+  as `has_attributes=True`, so the walk went on to fetch the listing and every revision,
+  while `""`, `0`, `[]`, `{}` and `null` read as `False`; an `issuerType`, `tao`, `rootTao`
+  or `hash` that was an object, an array, a number, a boolean or `null` was stored in the
+  record as sent, on v4, v5 and Core v1 (a `hash` only where it was the value copied: always
+  on v4, and on v5 and Core v1 only when the listing item had no usable `id`); a listing
+  item `id` that was an object, an array, a
+  number or `true` was stored as sent, while `0`, `false`, `[]`, `{}` and `null` fell through
+  to the attribute's `hash`; and a v4 attribute `body` that was not a string reached the
+  proof suite's `decode` and raised a bare `AttributeError` (v5 and Core v1 had typed it in
+  #321). The consumers are few: the trust walk compares `tao` with the token's `iss` and
+  fails with `AccreditationInvalid`, nothing in the library reads `rootTao` or `attribute_id`, and
+  `is_revoked` is `issuer_type == "revoked"`, which is false for any value that is not that
+  string, so an `issuerType` of the wrong type read as "not revoked".
 
+  Each field is now checked against the type the model declares, and a wrong one is
+  `MalformedRegistryResponse` (`TIR attribute tao is not a string: 7`; the value goes through
+  `safe_repr`, so an attacker-sized one is bounded):
+
+  | member | where | accepted | absent | `null` |
+  | --- | --- | --- | --- | --- |
+  | `hasAttributes` | v5, Core v1 issuer response | `true`, `false` only | `false` | raises |
+  | `id` | v5, Core v1 listing item | string | `""` | raises |
+  | `issuerType` | v4 attribute; v5, Core v1 `attribute` | string | `""` | raises |
+  | `hash` | v4 attribute, always; v5, Core v1 `attribute`, only when the listing item's `id` is absent or empty | string | `""` | raises |
+  | `tao`, `rootTao`, `body` | v4 attribute; v5, Core v1 `attribute` | string | `None` | `None` |
+
+  `hasAttributes` is tested with `isinstance(value, bool)`, not by truth, so `"false"`, `0`
+  and `[]` are wrong values and not falsy ones; a non-boolean raises after the one request
+  for the issuer response, before the listing is fetched. A listing item's `id` is typed
+  before it can fall back to the attribute's `hash`, so `0`, `false`, `[]` and `null` no
+  longer fall through; on v5 and Core v1 the `hash` is read only when the `id` is absent or
+  empty, which is the only case in which it is copied (a `hash` of any type next to a usable
+  `id` parses, and the `id` is the attribute id; on v4, which has no listing, it is always the
+  attribute id and always typed). Every scalar of an entry is typed before the proof suite's
+  `decode` is handed its token, and one bad entry rejects the whole record, as a revision with
+  no `attribute` object already did (a partial record would be a trust decision made on part
+  of the registry's answer). The `body` message of v5 and Core v1 keeps its text and gains
+  the value (`TIR attribute body is not a string: 7`).
+
+  Who is affected: a node that sends what its schema says is not, and there is nothing to
+  migrate. A differential over the four recorded walks (the pilot's v5 response, the two
+  preprod Core v1 nodes and the production seed) gives the same `IssuerRecord`, as canonical
+  JSON, on `cf6d100` and on this change (the script was a one-off and is not kept), and every
+  existing EBSI test passes unchanged. What changes is a registry or a hand-written `Fetch`
+  that sent a member with the wrong JSON type: `hasAttributes` as a number or a string, a
+  number as the `hash` that is copied (see the table), `null` as `issuerType`. It used to be carried through (or, for
+  `hasAttributes`, read by truth) and is now `MalformedRegistryResponse`; send the type the
+  real registry sends (`true`, a string). There is no recorded TIR v4 response in this
+  repository, so the v4 cases are synthetic, around a recorded accreditation token.
+
+  SemVer: a wire value that used to be carried through now raises, so the entry is recorded
+  as a change and not only as a fix; it rides in the unreleased 1.37.0 (a minor), so it needs
+  no bump of its own. Alone it would be a patch: it narrows what the adapters accept to what
+  the model already declared, and no shipped path turned the old behaviour into an accept.
+
+  Defaults taken, for the maintainer to confirm: (1) `null` is wrong for the `str` and `bool`
+  members and is `None` for the `str | None` ones, following the model; reading `null` as
+  absent instead would carry `""` / `False` through for the first group. (2) An absent
+  `hasAttributes` stays `false`, as before; making it a required member would turn a response
+  without it into `MalformedRegistryResponse`. (3) A `hash` that is not copied is not read
+  (v5 and Core v1 next to a usable `id`; on v4 it is always copied, so always typed); typing
+  it always would reject a record for a member nothing uses. (4) One bad entry rejects
+  the record; skipping it would hide an accreditation without saying so. (5) Not covered, and
+  left as it was: a v4 `attributes` member that is not an array, or an entry of it that is not
+  an object, is a bare `TypeError` / `AttributeError` (measured on `cf6d100`; v4 only, since
+  the shared walk skips non-object items). It is a shape check and not a scalar.
+- **The maintainer's decisions on #325's three switches, taken on 2026-10-19**
+  ([#325](https://github.com/luisgf/openvc/issues/325), Part 2; recorded in ADR-0009 as the
+  answer to open question 4). Part 1 had taken the non-breaking option on switches 2 and 3 as
+  defaults pending this answer; the answer replaces them:
+  1. *Switch 1, add `legacy-pilot`:* done, as above.
+  2. *Switch 2, `pilot`: 2b.* `for_ebsi("pilot")` emits a `DeprecationWarning` naming
+     `legacy-pilot` and keeps seeding the same allow-list; see **Deprecated** below. A bare
+     `for_ebsi()` and `for_ebsi("legacy-pilot")` warn nothing. It is a MINOR: the versioning
+     policy's steps 1 to 3 are followed (the name keeps working, the warning names the
+     replacement, the entry below gives the earliest change). The alternative, 2a (leave
+     `pilot` silent and re-mean it at 2.0), is not taken.
+  3. *Switch 3, `production` and `conformance`: 3a.* Both rows are kept, unchanged, with the
+     same allow-list rule, and documented plainly (`wiki/Trust.md`, `wiki/EBSI-Node-Trust.md`,
+     `for_ebsi`'s docstring, `environments.py`). **No warning and no refusal.** A test pins that
+     both are silent and still build a client. The alternatives are not taken: 3b, a
+     `DeprecationWarning` (there is no replacement to name for either until the node-based
+     client of #324); 3c, `for_ebsi` refuses, keeping the keys (a documented, pinned call that
+     built a client would raise, which the versioning policy reads as MAJOR unless the CHANGELOG
+     records a narrow decision, as 1.35.0 did for `did:key`); 3d, remove the keys (MAJOR, and
+     `test_for_ebsi_production_environment_is_registered` pins them). So `for_ebsi("production")`
+     does not raise `ValueError`; a request through it still fails closed, late, as
+     `HttpTransientExhausted` when the connection fails (pinned with a stubbed `httpx.ConnectError`
+     in `test_ebsi_environments.py`).
+
+  **Migration notes.** (i) In 1.x the Core API pilot that the Trusted Nodes List calls `pilot`
+  has no `for_ebsi` spelling, because `pilot` stays the legacy lane until the MAJOR release.
+  The node-based constructor planned in #324 takes the list's own spelling, so `for_ebsi` need
+  not carry it; a 1.x spelling would be a new name for the maintainer to choose (ADR-0009's end
+  state calls it `pilot`). (ii) At that MAJOR (the 2.0 window,
+  [#74](https://github.com/luisgf/openvc/issues/74)) `pilot` changes meaning. A caller who
+  ignored the warning would then read a different ledger, where ADR-0009 measured the legacy DID
+  to be a 404. Use `legacy-pilot` today to say which one you mean.
+- **A `Retry-After` above the policy's ceiling is no longer honoured in full**
+  ([#335](https://github.com/luisgf/openvc/issues/335)). `get_json` and `get_bytes` used to
+  sleep as long as a node asked, `attempts - 1` times: `Retry-After: 86400` on a 429 was two
+  sleeps of a day. With the default `RetryPolicy` no sleep is longer than 5 s now
+  (`retry_after_max_s`, which defaults to `backoff_max_s`, so the same holds for a policy you
+  built: its `backoff_max_s` is its ceiling unless you set `retry_after_max_s`; measured:
+  `RetryPolicy(backoff_base_s=0, backoff_max_s=0)` slept a `Retry-After: 30` for 30 s, twice,
+  and now sleeps 0 s); the call still retries
+  `attempts` times and then raises `HttpTransientExhausted` as before, so a rate-limiting node
+  is asked again sooner than it said and may answer 429 again. What to pass instead: a policy
+  with a higher ceiling, `RetryPolicy(retry_after_max_s=60.0)`, on the client (`retry=`), or
+  a larger `attempts`. A `Retry-After` of 0 and the small values are still slept as asked, up
+  to the ceiling. The value is also read more strictly (see *Fixed*): ten digits and more are
+  ignored, where a value past about 9.2e9 s used to be an `OverflowError` and a smaller one a
+  sleep of up to 292 years; and a delta-seconds written with another script's decimal digits
+  (`١٢٣`, Devanagari, fullwidth) or padded with a no-break space or another Unicode space was
+  read as that many seconds (measured: `١٢٣` slept 123 s, `5` and a no-break space slept 5 s)
+  and is ignored now, so the client keeps its own backoff.
+- **`get_json` accepts one `gzip` or one `deflate` coding and nothing else, and asks for
+  those** ([#335](https://github.com/luisgf/openvc/issues/335)). It used to hand a 200 body to
+  httpx, which decoded whatever it supports. Now a `Content-Encoding` of `br`, `zstd`,
+  `x-gzip`, `compress`, a list of codings (`gzip, gzip`, `identity, gzip`) or anything else
+  that is not `identity`, `gzip` or `deflate` is `HttpUnexpectedEncoding` (an `HttpError`,
+  status 200, not retried, the body unread), as it already was for `get_bytes`; a `deflate`
+  body must be the zlib format, what `zlib.compress` writes (httpx fell back to a raw deflate
+  stream, which was accepted and is now `MalformedRegistryResponse`); and bytes after the end of a compressed stream (a
+  trailing byte, a second gzip member) and a truncated stream are `MalformedRegistryResponse`
+  where httpx dropped the bytes or accepted the body (measured: a gzip body missing its
+  trailer, and `gzip.compress(b'{"ok": 1}' * 50)[:20]`, a stream cut after 20 bytes, came
+  back as `{"ok": 1}`). The client now sends `Accept-Encoding: gzip, deflate`
+  by default (httpx added `br` and `zstd` when their packages were installed, which this
+  client cannot read inside a cap); `get_bytes` still sends `identity`. A corrupt 200 body is
+  `MalformedRegistryResponse` with the `zlib.error` as its `__cause__` (it was an
+  `httpx.DecodingError`; an error body still reports that one). The messages changed too:
+  `response exceeds N bytes once decoded` for the decoded size and `read exceeded its deadline`.
+  A compressed body whose wire size alone is over `max_response_bytes` is refused even if it
+  would decode under it (only an incompressible body within a few bytes of the cap is
+  affected). If a registry you read sends a coding other than these, the call now fails with
+  `HttpUnexpectedEncoding`; there is no opt-in, so ask the operator to serve `gzip` or no
+  coding.
+- **Defaults pending maintainer confirmation** ([#335](https://github.com/luisgf/openvc/issues/335);
+  for each, what the other option would change):
+  - `retry_after_max_s` is a new field although #335's own scope line said "no change to
+    `RetryPolicy`'s fields": the design is #324's, because that issue's acceptance needs the
+    bound and two changes must not implement `Retry-After` twice. It is add-only;
+  - its default is `backoff_max_s` (5 s), looked up when a sleep is taken: the field stays
+    `None` and is not filled in when the policy is built, and it is not a literal 5.0. A literal
+    would clamp the backoff of a policy that raised `backoff_max_s` alone, and so did a number
+    filled in at construction for a policy derived with `dataclasses.replace(policy,
+    backoff_max_s=X)` (measured: it kept the old 5 s and cut the backoff at it, and a
+    `replace` of a policy built with `backoff_max_s=1e6` was a `ValueError`). The other option,
+    filling it in at construction, makes the attribute read the effective number (5.0) at those
+    two costs; a read-only property could give the number without them. A ceiling below
+    `backoff_max_s` lowers the backoff's ceiling too, because the bound is on every sleep
+    (`min(max(backoff, Retry-After), ceiling)`); capping only the `Retry-After` term
+    (`max(backoff, min(Retry-After, ceiling))`) would differ only for such a policy;
+  - a `Retry-After` that is not one to nine ASCII digits or an HTTP-date (a run of ten digits
+    or more, which is 31 years and up) is ignored, so the client keeps its own backoff; clamping
+    it to the ceiling instead would differ only when `retry_after_max_s` is above
+    `backoff_max_s`, where it would wait longer;
+  - only spaces and tabs around the value are dropped (HTTP optional whitespace), where
+    `str.strip()` also dropped other Unicode whitespace (a no-break space around a number was
+    read as seconds); an HTTP-date is tried only on a
+    value of at most 64 ASCII characters (the three forms are 29, 33 at most, and 24);
+  - an explicit ceiling outside 0 to one day is a `ValueError` at construction (one that
+    follows `backoff_max_s` is not checked, as `backoff_max_s` never was); and no single sleep is
+    ever above one day (`_MAX_DEADLINE_S`) whatever the policy, because a policy whose
+    `backoff_max_s` is huge would otherwise let an HTTP-date in the year 9999 reach
+    `time.sleep` as an `OverflowError` (it raises from about 9.2e9 s);
+  - the default `Accept-Encoding` is `gzip, deflate`; `identity` (no compression at all) would
+    be simpler and would cost bandwidth on large registry pages, and httpx's own default
+    would keep advertising `br` and `zstd` when installed, which are then refused;
+  - the codings above are refused rather than decoded: decoding `br` or `zstd`, a chain of
+    codings, or a raw deflate stream inside the cap would need a decoder per coding that is
+    bounded the way `zlib` is;
+  - a response a test double built with `content=` and a `Content-Encoding` of `gzip` or
+    `deflate` is read as httpx left it (decoded, in memory) under the same cap, by `get_json`
+    and by `get_bytes`. `get_json` served it before this change, and `get_bytes` has raised a
+    bare `httpx.StreamConsumed` on it since it was added (#331). Refusing it with a typed
+    `HttpError` instead would have kept `get_bytes`'s outcome and turned every such downstream
+    double into an error. No socket hands over a consumed stream, so nothing on the wire
+    reaches this;
+  - a negative ceiling sleeps 0 s (it raised from `time.sleep` before): `backoff_max_s` is
+    not validated, so `RetryPolicy(backoff_max_s=-1)` can be built, and its ceiling bounds
+    every sleep, which `time.sleep` refuses with a `ValueError` below zero. The sleep is
+    `time.sleep(max(0.0, delay))`. Measured on `main` at cf6d100 (a 503, three attempts, the
+    default `backoff_base_s`): with no `Retry-After` that policy was a bare `ValueError` out of
+    `get_json`; with `Retry-After: 30` it slept 30 s twice and ended in
+    `HttpTransientExhausted`, there being no ceiling, and it now sleeps 0 s twice and ends in
+    the same exception. No wire value makes the delay negative (a parsed `Retry-After` is
+    never negative and the caller's budget is clamped at 0), and an explicit
+    `retry_after_max_s` is validated from 0, so only `backoff_max_s` reaches this. The other
+    option, refusing a negative `backoff_max_s` with a `ValueError` when the policy is built,
+    would make a policy that builds today fail at construction, and would validate a field
+    that never was.
+  - **Not changed, a finding:** the read of a non-200 body (#321) still decodes with
+    `iter_bytes`, so one small `gzip` error body inflates a whole chunk before its 16 KiB
+    check fires (measured: a 260 935-byte body that inflates to 256 MiB peaks at 557 MiB on a
+    403). It is the same class as the 200 read fixed below and needs its own change: it must
+    keep returning `None` for a body it cannot use and `HttpNotFound` for a 404 whatever the
+    coding.
 - **`HttpTransientExhausted.status` can now be set** (#324). It was always `None`; it is now the
   last attempt's HTTP status (a 429 or a 5xx) and is still `None` when that attempt never got an
   answer (a transport error, a timeout, an address the guard could not resolve), which is how the
@@ -1086,6 +1330,41 @@ Each is one value or table away from the other option. None changes anything tha
   is what `verify_node_list` applied to every node, now named. `_node` calls it with the
   messages it always had (the Trusted Nodes List suites pass untouched). The issue asked for exactly this: a client built from a result that may be hand-built
   re-checks the nodes with the verifier's own rule instead of a copy of it.
+
+### Deprecated
+
+- **`for_ebsi("pilot")`: use `for_ebsi("legacy-pilot")`**
+  ([#325](https://github.com/luisgf/openvc/issues/325), Part 2; decided by the maintainer on
+  2026-10-19). Calling `for_ebsi("pilot")` now emits a `DeprecationWarning`
+  (`stacklevel=2`, so it names the caller's own line). The message names the replacement,
+  `legacy-pilot`, and says `pilot` will change meaning at the next MAJOR release, to the EBSI
+  Core API pilot, a different ledger. It still builds exactly the client it built before, an
+  allow-list of `{"api-pilot.ebsi.eu"}`, so nothing breaks in 1.x. **Earliest change: 2.0**
+  ([#74](https://github.com/luisgf/openvc/issues/74)): the name is not removed but re-meant,
+  and `wiki/Versioning-and-Deprecation.md` lists it under "Currently deprecated". The warning is
+  raised before the client is built, so under `-W error::DeprecationWarning` no client is left
+  open.
+  - **What warns.** Only the call `for_ebsi("pilot")`, whether the name is a literal, a `str`
+    subclass or a `(str, Enum)` member holding it. `for_ebsi()`, `for_ebsi("legacy-pilot")`,
+    `"conformance"` and `"production"` are silent.
+  - **What cannot warn.** `EBSI_HOSTS["pilot"]`, `EBSI_BASE["pilot"]` and
+    `ENVIRONMENTS["pilot"]` are plain lookups on a `dict` and a read-only mapping; they keep
+    working, silently, and are re-meant at the same time. Move them to `"legacy-pilot"` too.
+  - **`OPENVC_EBSI_ENV`.** No code in openvc reads it. The opt-in weekly smoke test
+    (`test_live_resolve`) reads it, defaulting to `legacy-pilot`, and passes the value to
+    `for_ebsi`; a value of `pilot` warns there, in `for_ebsi`, like any other source of the
+    name. There is no second code path to keep in step.
+  - **Visibility.** Python shows a `DeprecationWarning` by default only when it is raised from
+    `__main__` (measured: a call from `__main__` prints it, the same call from an imported
+    module prints nothing, and `python -W default` prints it). Run your tests with
+    `-W error::DeprecationWarning`, `-W default` or `-X dev` to find the calls.
+  - **Migration.** `for_ebsi("pilot")` to `for_ebsi("legacy-pilot")` (the identical
+    allow-list and the identical lane); an `OPENVC_EBSI_ENV=pilot` to `legacy-pilot`;
+    `EBSI_HOSTS["pilot"]` and `EBSI_BASE["pilot"]` to `["legacy-pilot"]`. In this repository the
+    tests that built `pilot` only to get a client (`test_ebsi_address_guard.py`,
+    `test_ebsi_http_bytes.py`, `test_ebsi_guard_origin.py`) now say `legacy-pilot`; the ones
+    that pin the old name, in `test_ebsi_environments.py`, assert the warning.
+  - `conformance` and `production` are **not** deprecated (switch 3a above).
 
 ### Fixed
 
@@ -1114,6 +1393,65 @@ Each is one value or table away from the other option. None changes anything tha
   boolean reached the proof suite's `decode` and raised a bare `AttributeError` (`'int'
   object has no attribute 'isascii'`) out of `issuer_record` and `verify_ebsi_badge`; it is
   now `MalformedRegistryResponse`.
+- **`VcJwtProofSuite` turns a JWK that is not an object into a `ProofError`**
+  ([#341](https://github.com/luisgf/openvc/issues/341)). `_jwk_to_key(jwk, alg)` read
+  `jwk.get(...)` before looking at what it held, so a resolver or a caller that handed over
+  `None`, a list, a string or a number got a bare `AttributeError` (`'NoneType' object has
+  no attribute 'get'`) for `ES256`, `ES384`, `EdDSA` and `Ed25519`. That is no `OpenvcError`,
+  so it escaped `verify_many` and `verify_many_async` and aborted the whole batch instead of
+  becoming one item's `error` (measured on `main` at cf6d100, CPython 3.14.8, PyJWT 2.13.0).
+  It is now `ProofError("ES256 requires a JWK object, got NoneType")`: the message names the
+  algorithm and the type and never echoes the value. `ES256K` already did this since #323 and
+  keeps its identical message; the ML-DSA lane never reached this function and was already a
+  `SignatureInvalid` (a `ProofError`), which the tests now pin. A `dict` subclass is still a
+  JWK object, and `{}` still reports the key-type pin ("requires an EC P-256 key"). A
+  `Mapping` that is not a `dict` (`MappingProxyType`, `UserDict`) and an object that only has
+  a `get` method are not JWK objects either: on `main` they were already a `ProofError`, but
+  one that said something else ("Object of type mappingproxy is not JSON serializable", or a
+  key-type pin naming `kty=None`) and, for the wrapper of a valid key, blamed the key; they now
+  meet the same first message as every other non-object (measured at cf6d100). The parameter
+  is typed `dict`, so this was a caller or resolver bug rather than attacker input.
+- **`EbsiHttpClient.get_json` no longer materialises an inflated chunk larger than its cap**
+  ([#335](https://github.com/luisgf/openvc/issues/335); found by the review of
+  [#331](https://github.com/luisgf/openvc/issues/331), which bounded the new `get_bytes` and
+  left this path alone). Hardening against an allow-listed host; no wrong-accept. `get_json`
+  read a 200 body with `iter_bytes` and checked `len(body) > max_response_bytes` after
+  appending, but `iter_bytes` yields a chunk httpx has already inflated, so one small
+  `Content-Encoding: gzip` chunk could allocate its expansion ratio before the check: measured
+  on `main` at cf6d100 (CPython 3.14.8, httpx 0.28.1), a 260 935-byte gzip body that inflates
+  to 256 MiB, as one chunk, under a 1 MiB cap, peaked at **557 MiB** under `tracemalloc` before
+  the `HttpError`. It now reads through the reader `get_bytes` has: the wire is read raw, the
+  wire size and the decoded size are checked **before** a chunk is held, and one `gzip` or
+  `deflate` coding is decoded with `zlib` asked for at most the room left plus one byte, so
+  the same body is refused as the same `HttpError` ("response exceeds N bytes", status 200)
+  at a peak of about **2 MiB**. A declared `Content-Length` over the cap is refused before the
+  body is read. A well-formed answer, compressed or not, is returned exactly as before; see
+  *Changed* for what else a body now has to be.
+- **A hostile `Retry-After` no longer escapes as a bare exception or holds a walk**
+  ([#335](https://github.com/luisgf/openvc/issues/335); rows (a) and (b) of
+  [#324](https://github.com/luisgf/openvc/issues/324); the same class as #246 and #248).
+  `_parse_retry_after` returned `float(value)` for any `str.isdigit()` value and
+  `_sleep_before_retry` passed `max(delay, secs)` to `time.sleep`. Measured on `main`:
+  `Retry-After: 99999999999` was `OverflowError: timestamp out of range for C PyTime_t`; 400
+  digits parsed to `inf` and raised the same; `"²"`, which is a digit to `isdigit()`, was
+  `ValueError: could not convert string to float` out of `get_json`, while `"١٢٣"` and
+  fullwidth digits, which are digits to `isdigit()` and numbers to `float()`, were slept as
+  123 s and 5 s; and a 429 asking for 86 400 s slept it, `attempts - 1` times. Delta-seconds is now one to nine ASCII digits
+  (`isascii()` and `isdigit()`, so `²`, `٣`, `١٢٣` and fullwidth digits are not numbers, and a
+  5 000-digit run never reaches `int()` and its conversion limit); the HTTP-date form is tried
+  on a value of at most 64 ASCII characters, with every stdlib failure caught: for 300 000
+  generated date-like strings `parsedate_to_datetime` raises only `ValueError` on CPython 3.13
+  to 3.15 and `ValueError` or `OverflowError` on 3.10 to 3.12 (for example
+  `01 Jan 99999999999 00:00:00 GMT`, measured on 3.10.20, 3.11.15 and 3.12.13), where the
+  `(TypeError, ValueError)` the client caught before let a bare `OverflowError` out of
+  `get_json`; CPython 3.9, which the package does not support, also raised `TypeError` and
+  `IndexError`, which stay in the tuple. Two such dates are in the parametrized parser test,
+  so the 3.10 to 3.12 lanes pin the `OverflowError` catch; anything else (`nan`,
+  `inf`, `-1`, `+5`, `1e400`, a fraction, two numbers, the empty value) is ignored and the
+  client keeps its own backoff. The result is `None` or a finite number of seconds, never
+  negative, and the sleep is capped as described under *Added* and *Changed*, so `time.sleep`
+  is never handed more than a day whatever the policy. Pinned by `test_ebsi_get_json_bounds.py`
+  on the 429 path and on every retried 5xx.
 
 ### Tests
 
@@ -1152,10 +1490,24 @@ Each is one value or table away from the other option. None changes anything tha
   `HttpTransientExhausted`, measured), written and green on v1.36.0; then the refusals
   (`UnknownEbsiEnvironment`, exact class, for seven inputs and twelve more shapes, a
   bounded message, a hostile `repr` and a hostile `str` subclass), the controls (`legacy-pilot`
-  seeds the same allow-list, the default is pinned by the signature, every known name is silent
-  under `warnings.simplefilter("error")`), the table (read-only, bare lower-case hosts, a row
+  seeds the same allow-list, the default is pinned by the signature, the default,
+  `legacy-pilot`, `conformance` and `production` are each silent under
+  `warnings.simplefilter("error")`), the table (read-only, bare lower-case hosts, a row
   with no fixed host is not projected) and an import of `environments`, `errors` and
-  `versioning` with `httpx` blocked.
+  `versioning` with `httpx` blocked. Part 2 adds the deprecation: the exact
+  `DeprecationWarning` class (`category is`, not a subclass) naming `legacy-pilot`; the
+  warning attributed to the calling file and line (`stacklevel=2`); the message saying that
+  `pilot` changes meaning at the next MAJOR release; the same allow-list as `legacy-pilot`;
+  the warning raised before any `EbsiHttpClient` exists; one warning per call; a hostile `str`
+  subclass and a `(str, Enum)` member holding `pilot` warn by their characters; a refused name
+  warns nothing; the tables cannot warn; a name read from `OPENVC_EBSI_ENV` warns like the
+  literal. The tests that only needed a client moved to `legacy-pilot`; the ones that must
+  still build `pilot` assert the warning through a helper that also makes every other name
+  silent. Mutants killed by a named test: the warning removed, `stacklevel` 1 and 3, a warning
+  on the default, on `legacy-pilot`, on `production`, on `conformance`, the check made on the
+  caller's object instead of its characters, the warning after the client is built, the wrong
+  category (`FutureWarning`), a message that does not name `legacy-pilot` or drops the MAJOR
+  sentence.
 - **`tests/test_ebsi_core_v1.py`** (426 tests): the manifest hashes every recorded file; the
   registry names and the defaults; the exact URLs; the `contract_address` bound (negatives
   first, a `str` subclass included) and the cache; hostile DIDs on the Core v1 pair with zero
@@ -1283,7 +1635,46 @@ Each is one value or table away from the other option. None changes anything tha
   interpreted like signature files), are each killed by at least one test, and by a named
   failing test: the real chain's baseline result is computed on first use, so a verifier
   regression no longer surfaces as one collection error of the whole module.
-
+- `tests/test_vcjwt_input_hygiene.py` (#341, 255 tests, 36 of them ML-DSA controls that skip
+  where `cryptography` is older than 48 or OpenSSL older than 3.5). `allow_pq` on both suites
+  against twenty-two non-bool values (strings, `1`/`0`/`1.0`/`0.0`, `None`, containers, bytes,
+  `object()`), each an exact class; no echo of a long value; an object whose `__class__` claims
+  `bool`; the signature-order rule; the keyword-only rule; the controls. A non-object JWK on
+  `ES256`, `ES384`, `EdDSA`, `Ed25519` and `ES256K`, both through `_jwk_to_key` and through
+  `verify()` with a token a real key signed, and through `verify_many` and `verify_many_async`
+  with a resolver that returns the bad key for one of three credentials; the allow-list still
+  runs before the key is looked at; an empty object, a dict subclass and a wrong-curve key keep
+  their old behaviour; the ML-DSA lane is pinned as a `SignatureInvalid`; a `MappingProxyType`,
+  a `UserDict` and an object with only a `get` method, each holding a valid key, are refused
+  with the object message (a reviewer's mutant, `hasattr(jwk, "get")` in place of
+  `isinstance(jwk, dict)`, passed the first version of the file because it changes only the
+  message); a fuzz of arbitrary JSON values as the JWK. Run against the sources at cf6d100,
+  186 of the 255 fail and the controls pass; twenty-two targeted mutants of the change were
+  applied to scratch copies, twenty-one killed and one survivor that is equivalent (the object
+  check moved after the `ES256K` branch, which has the identical check of its own).
+- `tests/test_ebsi_get_json_bounds.py` (#335): the bomb that inflates to 256 MiB, as one
+  chunk and split over many, in `gzip` and `zlib`, is `HttpError` with status 200 at a
+  `tracemalloc` peak under 16 MiB (557 MiB before); a decoded size at the cap passes and one
+  over fails; a declared length over the cap is refused with the body unread; twelve codings
+  `get_json` must refuse are `HttpUnexpectedEncoding` with the body unread; corrupt,
+  truncated and over-long streams are `MalformedRegistryResponse`; a body the transport has
+  already read (`httpx.Response(json=...)`) is still served; `Retry-After` through
+  `_parse_retry_after` and through the client (429 and every retried 5xx, raw UTF-8 header
+  bytes, a day-out date, the year 9999, a date with a huge offset): never a bare exception,
+  every sleep at most the ceiling, `0` and small values still honoured; Hypothesis for the
+  sleep (finite, in `[0, ceiling]`, where the ceiling is `retry_after_max_s`, or
+  `backoff_max_s` when that is `None`, and exactly `min(max(backoff, Retry-After), ceiling)`
+  for a digit run), for the parser and for arbitrary bytes under a coding; a negative
+  `backoff_max_s` (with and without a `Retry-After`, after a transport error, under an
+  explicit ceiling and under a caller's budget) sleeps exactly 0 s and ends in
+  `HttpTransientExhausted`, never a bare `ValueError`, with the fake clock refusing a negative
+  sleep as `time.sleep` does; the policy's default, a `dataclasses.replace` of it and its
+  validation; a `gzip` or `deflate` body that a test double has already read into memory. Six
+  existing tests changed with the behaviour: four
+  in `test_ebsi_http_bytes.py` relied on an unbounded `Retry-After` (they now build a policy
+  with a ceiling, and the one that used a 400-digit value uses the longest readable one),
+  `test_ebsi_http.py` expects the `zlib` error as the cause of a corrupt 200 body, and
+  `test_ebsi_http_cookies.py` pins the constructor headers with `Accept-Encoding` added.
 - **`tests/test_ebsi_node_client.py`** (377 tests, new) and **86 new rows in
   `tests/test_ebsi_http.py`** (the file had 84): offline (`httpx.MockTransport` injected into the
   `httpx.Client` the real constructor builds, a fixed wall clock, a fake `time`), negatives first,
@@ -1327,7 +1718,8 @@ Each is one value or table away from the other option. None changes anything tha
   names; `docs/audit/assurance.md` has the row for the typed error. The stale docstring and
   heading in `tests/test_ebsi_verifier.py` that called the live smoke a "conformance" test,
   and the weekly workflow's job name, now say it resolves a DID on the legacy pilot lane.
-  Recording the outcome of ADR-0009's open question 4 waits for the maintainer.
+  The outcome of ADR-0009's open question 4 is recorded since 2026-10-19 (see **Deprecated**
+  and the Status line of the ADR).
 - `wiki/Trust.md` (EBSI section), `README.md`, the `versioning.py` module docstring and its
   closing "adding a new version" comment name both lanes and the Core v1 footgun (select
   `base`, `didr` and `tir` together).
@@ -1338,7 +1730,8 @@ Each is one value or table away from the other option. None changes anything tha
   `*.ebsi.eu`).
 - `docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md`: this issue is listed under
   "Proposed follow-up issues" and the recorded 400 and 406 results (and the 405 gap) are in
-  the appendix. The Status line is left to the maintainer.
+  the appendix. The Status line was left to the maintainer; it records the answer to open
+  question 4 since 2026-10-19.
 - `wiki/Trust.md` (EBSI section) documents `get_bytes`, `for_tnl` and `get_tnl_files` and says
   the list host is a second, separate allow-list; `docs/audit/threat-model.md` §7 and
   `docs/audit/assurance.md` §§1, 3 and 4 record the separate one-host client, the bounded
@@ -1391,8 +1784,9 @@ Each is one value or table away from the other option. None changes anything tha
   that a wiki page is not a channel to trust it from (the alternative is to omit the value and
   point to the TNL repository); the `src/` comment edit stays in this change (the alternative
   moves it to #325); the page describes what each environment name is today and prescribes
-  nothing about renaming, multi-node agreement or the qualified-seal switch (ADR-0009 open
-  questions 4, 5 and 7).
+  nothing about multi-node agreement or the qualified-seal switch (ADR-0009 open questions 5
+  and 7); on renaming it carries the maintainer's decision of 2026-10-19 (question 4, see
+  **Deprecated**).
 - **Not done here:** the `gpg` command sequence for the two detached signatures. The issue asked
   for the commands to be run against the then-live list, but also forbade a network request, so
   the page publishes only the two commands ADR-0009's appendix gives and marks the rest *to be
@@ -1413,7 +1807,20 @@ Each is one value or table away from the other option. None changes anything tha
   `SECURITY.md` ("Signature verification") name the opt-in next to the allow-list, with the
   braces list unchanged; the fixtures README says that the DEFAULT allow-list refuses the
   RootTAO tokens; the wiki and the threat model (I23) carry the flag rule and the JWK members.
-
+- **#325 Part 2, the deprecation of `pilot`**: `wiki/Trust.md` (the `pilot` bullet says it is
+  deprecated, what changes at the MAJOR and why a `DeprecationWarning` may not be seen;
+  `conformance` and `production` are documented as kept, without a warning),
+  `wiki/EBSI-Node-Trust.md` (the names table and the paragraph that left the question open),
+  `wiki/Versioning-and-Deprecation.md` ("Currently deprecated"), `docs/audit/threat-model.md`
+  (the EBSI client bullet), `docs/audit/assurance.md` (the #325 row), and ADR-0009 (open question
+  4 recorded as decided by the maintainer on 2026-10-19, with its Status line, the environment
+  table paragraph of D6, Stage 3 and the follow-up list). The examples that said
+  `for_ebsi("pilot", ...)` say `legacy-pilot`.
+- `wiki/Trust.md` (EBSI section): "Bounded body reads and bounded waits", with the one-line
+  recipe for a higher `retry_after_max_s`. `docs/audit/threat-model.md` (EBSI client
+  paragraph: the residual of #320 is closed for the 200 read and the sleep, and the non-200
+  decode is recorded as the one that remains) and `docs/audit/assurance.md` (section 3 row and
+  section 4 entry).
 - `wiki/EBSI-Node-Trust.md`: "Keep using the nodes: `for_nodes`" (the lifetime gate and "rebuild
   before `expires`", single-node walks, what fails over, "a 404 is one node's answer", health,
   the address guard and its proxy limit, the measured worst case, and what the list still does

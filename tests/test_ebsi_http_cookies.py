@@ -331,6 +331,8 @@ def test_the_constructor_passes_the_old_kwargs_plus_a_bare_cookiejar():
     assert recorded["headers"] == {
         "User-Agent": f"openvc-core/{__version__}",
         "Accept": "application/json, application/did+ld+json, */*;q=0.1",
+        # only the codings the bounded body reader decodes (#335); `get_bytes` sends identity
+        "Accept-Encoding": "gzip, deflate",
     }
     # A bare CookieJar: httpx keeps only that as given (an httpx.Cookies, a dict or a list
     # is rebuilt with the default policy, which would silently lose ours).

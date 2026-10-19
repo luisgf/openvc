@@ -57,6 +57,14 @@ FAST = H.RetryPolicy(attempts=3, backoff_base_s=0.0, backoff_max_s=0.0)
 ONCE = H.RetryPolicy(attempts=1)
 
 
+def patient(cap):
+    """A zero-backoff policy that lets a ``Retry-After`` through up to *cap* seconds (the
+    default ceiling is ``backoff_max_s``, here 0, which would turn every such sleep into none).
+    Built per call: ``retry_after_max_s`` is new in #335, and a module-level constant would
+    stop this file from importing against the previous release."""
+    return H.RetryPolicy(attempts=3, backoff_base_s=0.0, backoff_max_s=0.0, retry_after_max_s=cap)
+
+
 # --------------------------------------------------------------------------- #
 # Harness
 # --------------------------------------------------------------------------- #
@@ -229,7 +237,7 @@ def test_tnl_client_refuses_any_other_host_before_any_request(build, method, url
 @pytest.mark.parametrize("method", ["get_json", "get_bytes"])
 def test_node_client_refuses_the_list_host(build, method):
     script = Script(reply(200, b'{"ok": true}'))
-    client = build(script, factory=lambda **kw: H.for_ebsi("pilot", **kw), retry=FAST)
+    client = build(script, factory=lambda **kw: H.for_ebsi("legacy-pilot", **kw), retry=FAST)
     expect(H.HttpForbiddenHost, getattr(client, method), TNL_URL)
     assert script.n == 0
 
@@ -270,7 +278,7 @@ def test_get_tnl_files_refuses_a_client_that_is_not_the_list_host_alone(build, h
 
 def test_get_tnl_files_refuses_a_pilot_environment_client(build):
     script = Script(reply(200, b"x"))
-    client = build(script, factory=lambda **kw: H.for_ebsi("pilot", **kw))
+    client = build(script, factory=lambda **kw: H.for_ebsi("legacy-pilot", **kw))
     expect(H.HttpForbiddenHost, H.get_tnl_files, client)
     assert script.n == 0
 
@@ -561,7 +569,7 @@ def test_a_retry_after_sleep_is_clamped_to_the_budget_and_the_call_then_fails(
     fake = FakeTime()
     monkeypatch.setattr(H, "time", fake)
     script = Script(reply(503, headers={"Retry-After": "86400"}))
-    client = build(script, retry=FAST)
+    client = build(script, retry=patient(86400))     # the budget, not the ceiling, is the clamp
     exc = expect(H.HttpError, client.get_bytes, NODE_URL, deadline_s=2)
     assert "deadline" in str(exc)
     assert fake.sleeps and max(fake.sleeps) <= 2.0
@@ -578,11 +586,12 @@ def test_a_backoff_sleep_is_clamped_to_the_budget_too(build, monkeypatch):
     assert fake.sleeps and sum(fake.sleeps) <= 1.0
 
 
-def test_get_json_is_given_no_overall_budget_so_its_sleeps_are_not_clamped(build, monkeypatch):
+def test_get_json_is_given_no_overall_budget_so_only_the_policys_ceiling_clamps_its_sleeps(
+        build, monkeypatch):
     fake = FakeTime()
     monkeypatch.setattr(H, "time", fake)
     script = Script(reply(503, headers={"Retry-After": "5"}))
-    expect(H.HttpTransientExhausted, build(script, retry=FAST).get_json, NODE_URL)
+    expect(H.HttpTransientExhausted, build(script, retry=patient(10)).get_json, NODE_URL)
     assert fake.sleeps == [5.0, 5.0] and script.n == 3
 
 
@@ -610,14 +619,17 @@ def test_deadline_s_up_to_a_day_is_taken(build, ok):
     assert build(Script(reply(200, b"x"))).get_bytes(NODE_URL, deadline_s=ok).body == b"x"
 
 
-def test_a_day_long_budget_clamps_even_an_infinite_retry_after_to_a_sleepable_time(
+def test_a_day_long_budget_and_ceiling_still_clamp_the_longest_retry_after_to_a_sleepable_time(
         build, monkeypatch):
-    # The reason for the ceiling: with the longest budget a sleep is still clamped to a value
-    # `time.sleep` takes, whatever the server asks for (a 400-digit Retry-After parses to inf).
+    # The reason for the one-day ceilings: with the longest budget AND the longest policy
+    # ceiling a sleep is still a value `time.sleep` takes, whatever the server asks for. Nine
+    # digits is the longest delta-seconds that is read (a longer run is ignored, see
+    # test_ebsi_get_json_bounds.py), and it is 11 574 days.
     fake = FakeTime()
     monkeypatch.setattr(H, "time", fake)
-    script = Script(reply(503, headers={"Retry-After": "9" * 400}))
-    expect(H.HttpError, build(script, retry=FAST).get_bytes, NODE_URL, deadline_s=86400)
+    script = Script(reply(503, headers={"Retry-After": "9" * 9}))
+    expect(H.HttpError, build(script, retry=patient(86400)).get_bytes, NODE_URL,
+           deadline_s=86400)
     assert fake.sleeps and max(fake.sleeps) <= 86400.0
 
 
@@ -1073,7 +1085,8 @@ def test_a_slow_503_storm_cannot_outlast_the_helpers_deadline(build, monkeypatch
     fake = FakeTime()
     monkeypatch.setattr(H, "time", fake)
     script = Script(reply(503, headers={"Retry-After": "86400"}))
-    expect(H.HttpError, H.get_tnl_files, tnl_client(build, script, retry=FAST), deadline_s=5)
+    expect(H.HttpError, H.get_tnl_files, tnl_client(build, script, retry=patient(86400)),
+           deadline_s=5)
     assert fake.sleeps and sum(fake.sleeps) <= 5.0
 
 

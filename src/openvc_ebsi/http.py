@@ -6,7 +6,15 @@ It is deliberately small but covers the production concerns a verifier needs:
   * timeouts        : never block forever (connect + read).
   * retries         : bounded, only on idempotent GET and transient failures
                       (network errors, 429, 5xx), with exponential backoff + jitter
-                      and Retry-After support — no thundering herd.
+                      and Retry-After support — no thundering herd. No single sleep is
+                      longer than ``RetryPolicy.retry_after_max_s`` (default: the backoff
+                      ceiling), whatever a server asks for, and a ``Retry-After`` that is not
+                      a short run of ASCII digits or an HTTP-date is ignored.
+  * body reads      : ``get_json`` and ``get_bytes`` read a 200 body through ONE bounded
+                      reader. The wire size and the DECODED size are both held to the cap
+                      before a chunk is appended; a single ``gzip`` or ``deflate`` coding is
+                      decoded with zlib asked for at most the room left, so a decompression
+                      bomb is refused inside the stdlib and never allocated.
   * caching         : TTL + bounded size. EBSI registry reads (DID docs, TIR
                       entries, schemas) change rarely and are hit on every verify.
   * SSRF guard      : the TIR v5 flow follows `href` values taken from registry
@@ -52,6 +60,7 @@ import socket
 import sys
 import time
 import urllib.request
+import warnings
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -204,10 +213,40 @@ class ProbeResponse:
 
 @dataclass(frozen=True)
 class RetryPolicy:
+    """How a read is retried.
+
+    ``retry_after_max_s`` is the longest ONE sleep between attempts may be, whatever the
+    server asks for with ``Retry-After``: every sleep is
+    ``min(max(backoff, Retry-After), ceiling)``, and a caller's ``deadline_s`` can only shorten
+    it further. An allow-listed host (a listed node, say) therefore cannot hold a walk for the
+    time it asks. ``None``, the default, means ``backoff_max_s``: the ceiling is looked up
+    when a sleep is taken, so a policy derived with ``dataclasses.replace(policy,
+    backoff_max_s=X)`` follows ``X`` and the attribute keeps reading ``None``. By default a
+    server therefore cannot make the client wait longer than its own backoff would. The bound
+    applies to every sleep, the backoff included, so a ceiling below ``backoff_max_s`` lowers
+    that ceiling too. An explicit value must be a number from 0 to one day; anything else is a
+    ``ValueError`` when the policy is built (construction-time misuse, not wire input).
+    ``backoff_max_s`` is not validated, as it never was, and a value that follows it is not
+    either: whatever the policy, no sleep is longer than one day, and none is negative (a
+    negative ``backoff_max_s`` is a ceiling that sleeps 0 s)."""
+
     attempts: int = 3
     backoff_base_s: float = 0.25
     backoff_max_s: float = 5.0
     retry_statuses: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+    retry_after_max_s: float | None = None
+
+    def __post_init__(self) -> None:
+        cap = self.retry_after_max_s
+        if cap is None:
+            return                            # `backoff_max_s`, looked up when a sleep is taken
+        if (not isinstance(cap, (int, float)) or isinstance(cap, bool)
+                or not 0 <= cap <= _MAX_DEADLINE_S):
+            # Compared, never converted: `0 <= nan` is False, and `10**400` compares without
+            # becoming a float (`float(10**400)` raises OverflowError).
+            raise ValueError(
+                f"retry_after_max_s must be None or a number of seconds from 0 to "
+                f"{_MAX_DEADLINE_S}, not {safe_repr(cap)}")
 
     def backoff(self, attempt: int) -> float:
         # exponential with equal jitter: half fixed, half random.
@@ -356,17 +395,41 @@ def _refuse_environment_proxy() -> None:
 # Client
 # --------------------------------------------------------------------------- #
 
+# The delta-seconds form of `Retry-After` is a short run of ASCII digits. Nine digits reach 31
+# years, far past any wait a client honours (every sleep is cut to the policy's ceiling,
+# `retry_after_max_s` or `backoff_max_s` when that is None, anyway), and keep `float()` of a
+# hostile value finite. A longer run is not read as a number.
+_RETRY_AFTER_MAX_DIGITS = 9
+# An HTTP-date is 29 characters (IMF-fixdate) and at most 33 in the obsolete forms (RFC 850 with
+# the longest day name). A longer value is not one, and is not handed to the stdlib's date parser.
+_RETRY_AFTER_MAX_DATE_CHARS = 64
+
+
 def _parse_retry_after(value: str | None) -> float | None:
     """`Retry-After` as seconds, supporting both the delta-seconds and the HTTP-date forms
-    (RFC 9110 §10.2.3). Returns None when absent or unparseable (caller keeps its backoff)."""
-    if not value:
+    (RFC 9110 §10.2.3). Returns None when absent or unparseable (caller keeps its backoff).
+
+    The value comes from an allow-listed but not trusted host, so this never raises and the
+    result is either ``None`` or a finite number of seconds, never negative. Delta-seconds is
+    a run of ASCII digits only (``str.isdigit`` alone also accepts a superscript, which
+    ``float`` rejects with a bare ``ValueError``, and other scripts' decimal digits, which
+    ``float`` reads as a number of seconds: ``"١٢٣"`` was 123 s), at most
+    :data:`_RETRY_AFTER_MAX_DIGITS` long; ``-1``, ``nan``, ``1e400``, a sign or a blank are
+    not it. Spaces and tabs around the value are optional whitespace and are dropped. Anything
+    else is read as an HTTP-date, which may be far in the future: the caller bounds the sleep,
+    not this function."""
+    if not isinstance(value, str):
         return None
-    value = value.strip()
-    if value.isdigit():
-        return float(value)
+    text = value.strip(" \t")
+    if not text or not text.isascii():
+        return None
+    if text.isdigit():                        # ASCII digits only: `isascii` held above
+        return float(text) if len(text) <= _RETRY_AFTER_MAX_DIGITS else None
+    if len(text) > _RETRY_AFTER_MAX_DATE_CHARS:
+        return None
     try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError, OverflowError, IndexError):
         return None
     if when is None:
         return None
@@ -521,6 +584,10 @@ class EbsiHttpClient:
             headers={
                 "User-Agent": user_agent,
                 "Accept": "application/json, application/did+ld+json, */*;q=0.1",
+                # Ask only for the codings the bounded reader decodes (httpx would add `br`
+                # and `zstd` when their packages are installed, and a body in either is
+                # refused). `get_bytes` overrides this per request with `identity`.
+                "Accept-Encoding": "gzip, deflate",
             },
             # No cookie jar (#317): a bare CookieJar is the only form httpx keeps as given
             # (an httpx.Cookies, a dict or a list is rebuilt with the default policy).
@@ -754,17 +821,14 @@ class EbsiHttpClient:
         )
 
     def _read_capped(self, resp: httpx.Response, url: str) -> bytes:
-        """Read the streamed body against the size cap and a total wall-clock deadline."""
-        deadline = time.monotonic() + self._timeout_s
-        body = bytearray()
-        for chunk in resp.iter_bytes():
-            if time.monotonic() > deadline:
-                raise HttpError(f"read exceeded {self._timeout_s:g}s deadline", url=url)
-            body += chunk
-            if len(body) > self._max_bytes:
-                raise HttpError(
-                    f"response exceeds {self._max_bytes} bytes", status=200, url=url)
-        return bytes(body)
+        """Read the streamed body of :meth:`get_json` against the client's size cap and a total
+        wall-clock deadline: the reader :meth:`get_bytes` uses, at the client's cap and with no
+        overall budget. The cap holds on the wire size and on the DECODED size, checked before
+        a chunk is appended (``iter_bytes`` would hand over a whole inflated chunk first, so
+        one small ``gzip`` chunk could allocate the expansion ratio times itself). Only
+        ``identity``, one ``gzip`` or one ``deflate`` coding is read; any other
+        ``Content-Encoding`` is :class:`HttpUnexpectedEncoding`."""
+        return self._read_verbatim(resp, url, self._max_bytes, None)
 
     def _open_stream(
         self, url: str, tried: list[str], headers: Mapping[str, str] | None = None
@@ -816,14 +880,26 @@ class EbsiHttpClient:
     def _read_verbatim(
         self, resp: httpx.Response, url: str, cap: int, until: float | None
     ) -> bytes:
-        """Read a 200 body for :meth:`get_bytes`: the raw wire bytes, or the result of
-        decoding ONE ``gzip`` / ``deflate`` coding, never more than *cap* bytes of either.
+        """Read a 200 body for :meth:`get_bytes` and :meth:`get_json`: the wire bytes, or the
+        result of decoding ONE ``gzip`` / ``deflate`` coding, never more than *cap* bytes of
+        either.
 
-        ``iter_raw`` hands over the wire bytes undecoded, so httpx never inflates anything.
-        The wire total and the decoded total are both checked BEFORE a chunk is appended,
-        and ``zlib`` is asked for at most ``room + 1`` bytes, so a decompression bomb is
-        refused inside the stdlib, before the allocation, not after it."""
+        A coded body is read with ``iter_raw``, which hands over the wire bytes undecoded, so
+        httpx never inflates anything. A body with no coding has nothing to inflate and is
+        read with ``iter_bytes`` (``_decoder_for`` returns ``None`` only for no coding or
+        ``identity``, and httpx then applies no decoder), as is a body a test double has
+        already read into memory, a coded one too (httpx decoded it when it was built). The
+        wire total and the decoded total are both checked BEFORE a chunk is appended, and
+        ``zlib`` is asked for at most ``room + 1`` bytes, so a decompression bomb is refused
+        inside the stdlib, before the allocation, not after it."""
         decoder = _decoder_for(resp.headers.get("content-encoding"), url)
+        if decoder is not None and resp.is_stream_consumed:
+            # A response a test double built from `content=` is read into memory when it is
+            # made, and httpx has already decoded it: `iter_raw` would raise `StreamConsumed`
+            # and there is nothing left to inflate. No socket hands one over (a stream is
+            # consumed only by reading it), so this is not reachable from the wire; the cap
+            # still holds on what is read.
+            decoder = None
         declared = _declared_length(resp.headers.get("content-length"))
         if declared is not None and declared > cap:
             raise HttpError(f"response exceeds {cap} bytes", status=200, url=url)
@@ -833,7 +909,7 @@ class EbsiHttpClient:
             deadline = min(deadline, until)
         wire = 0
         body = bytearray()
-        for chunk in resp.iter_raw():
+        for chunk in (resp.iter_bytes() if decoder is None else resp.iter_raw()):
             if time.monotonic() > deadline:
                 raise HttpError("read exceeded its deadline", url=url)
             wire += len(chunk)
@@ -929,9 +1005,18 @@ class EbsiHttpClient:
             secs = _parse_retry_after(resp.headers.get("Retry-After"))
             if secs is not None:
                 delay = max(delay, secs)
+        # A server decides what it asks for, never how long this client waits: no sleep is
+        # longer than the policy's ceiling (`retry_after_max_s`, `backoff_max_s` when that is
+        # None), and none is longer than one day, which `time.sleep` always takes (it raises
+        # OverflowError from about 9.2e9 s). Nor is one negative, which `time.sleep` refuses
+        # with a ValueError: `backoff_max_s` is not validated, so a negative one is a ceiling
+        # of every sleep, and it sleeps 0 s.
+        ceiling = self._retry.retry_after_max_s
+        delay = min(delay, self._retry.backoff_max_s if ceiling is None else ceiling,
+                    _MAX_DEADLINE_S)
         if until is not None:                 # never sleep past the caller's budget
             delay = min(delay, max(0.0, until - time.monotonic()))
-        time.sleep(delay)
+        time.sleep(max(0.0, delay))
 
     # -- lifecycle --------------------------------------------------------- #
 
@@ -1117,6 +1202,13 @@ def get_tnl_files(
 # Factory
 # --------------------------------------------------------------------------- #
 
+_PILOT_DEPRECATION = (
+    "for_ebsi('pilot') is deprecated: use 'legacy-pilot', which seeds the same allow-list "
+    "(api-pilot.ebsi.eu, the legacy per-service lane). 'pilot' will change meaning at the next "
+    "MAJOR release, to the EBSI Core API pilot, which is a different ledger "
+    "(https://github.com/luisgf/openvc/issues/74)")
+
+
 def for_ebsi(
     environment: str = "legacy-pilot",
     *,
@@ -1127,8 +1219,13 @@ def for_ebsi(
 
     * ``"legacy-pilot"`` (the default): ``api-pilot.ebsi.eu``, the legacy per-service lane
       (the v5 adapters), the only place the recorded fixtures and the weekly smoke are valid.
-    * ``"pilot"``: the same host and lane as ``"legacy-pilot"``, kept for compatibility. It
-      is not the Core API pilot that EBSI now also calls "pilot".
+    * ``"pilot"``: the same host and lane as ``"legacy-pilot"``, **deprecated** since 1.37.0.
+      It emits a :class:`DeprecationWarning` that names ``"legacy-pilot"``, and seeds exactly
+      the same allow-list. EBSI now also calls its Core API pilot "pilot", a different ledger
+      that this name does not reach; the name will change meaning at the next MAJOR release
+      (2.0, #74), so use ``"legacy-pilot"``. The warning is raised here, so a name read from
+      configuration (an environment variable, say) and passed on to this function warns the
+      same way.
     * ``"conformance"``: ``api-conformance.ebsi.eu``. A measurement on 2026-10-16 completed
       no connection in 12 s (ADR-0009).
     * ``"production"``: ``api.ebsi.eu``. The certificate that host presented on 2026-10-16
@@ -1160,5 +1257,10 @@ def for_ebsi(
         raise UnknownEbsiEnvironment(
             f"unknown EBSI environment: {safe_repr(environment)} "
             f"(known: {', '.join(sorted(map(str, EBSI_HOSTS)))})")
+    if name == "pilot":
+        # `name` is the plain `str` read above, never the caller's object, so a `str` subclass
+        # holding "pilot" is compared by its characters. Before the client is built, so a
+        # warning turned into an error leaves no client open.
+        warnings.warn(_PILOT_DEPRECATION, DeprecationWarning, stacklevel=2)
     hosts = {EBSI_HOSTS[name]} | (extra_hosts or set())
     return EbsiHttpClient(allowed_hosts=hosts, **kwargs)

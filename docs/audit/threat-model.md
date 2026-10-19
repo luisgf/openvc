@@ -107,8 +107,9 @@ boundary is attacker-controlled until a signature verifies.
   precedes key load (`:206`) and decode (`:208`); alg pinned to the resolved
   key's `(kty, crv)` (`:341-351`) blocking cross-curve/OKP confusion; envelope↔
   `vc` reconciliation (`:360-381`); temporal defence-in-depth on the body
-  (`:237`). ML-DSA (RFC 9964) is **opt-in only** (`allow_pq=True`, `:135`),
-  never in the default allow-list. ES256K (RFC 8812) is a second, independent opt-in
+  (`:237`). ML-DSA (RFC 9964) is **opt-in only** (`allow_pq=True`, `:135`; exactly `True` or
+  `False`, like `allow_es256k`: a string such as `"false"` is a `ProofError` at construction on
+  both JOSE suites, #341), never in the default allow-list. ES256K (RFC 8812) is a second, independent opt-in
   (`allow_es256k=True`, `ALLOWED_ALGS_ES256K`, verification only, invariant I23): the flag
   is exactly `True` or `False` (a string such as `"false"` is a `ProofError` at construction,
   not a truthy value), a key-type pin (`_es256k_public_key`) runs before PyJWT loads the key
@@ -220,7 +221,8 @@ finite input", with no explicit constant.
   the opt-in default (`src/openvc/resolvers.py:4-17`).
 - **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **origin allow-list**
   (`for_ebsi` seeds it from one named environment of `src/openvc_ebsi/environments.py`:
-  `legacy-pilot`, the default, and its alias `pilot` are `api-pilot.ebsi.eu`; `conformance` is
+  `legacy-pilot`, the default, and its deprecated alias `pilot` (a `DeprecationWarning` from
+  `for_ebsi`, same allow-list) are `api-pilot.ebsi.eu`; `conformance` is
   `api-conformance.ebsi.eu`; `production` is `api.ebsi.eu`; any other name is
   `UnknownEbsiEnvironment`; port 443 only; a Core API v1 caller supplies the host of each node it
   uses, R4), redirects off, TLS-verify on,
@@ -295,11 +297,25 @@ finite input", with no explicit constant.
   one with the same allow-list keeps what its jar accepts, until #317), sends
   `Accept-Encoding: identity`, and `get_tnl_files` refuses a client whose allow-list is
   anything else, before any request. The helper never fetches the pinned key-list key. **It authenticates
-  nothing**: its result is unauthenticated bytes for the verifier. **Residual, unchanged by
-  #320:** `get_json` still inflates per chunk before its cap (so a gzip body under the
-  5 MiB cap can allocate far more), drains a non-200 body with an uncapped `read()`, and
-  sleeps for an unbounded `Retry-After` when no budget is given (a bare `OverflowError` past
-  about 9.2e9 s). **Residual, shared by both paths:** neither `deadline_s` nor `timeout_s`
+  nothing**: its result is unauthenticated bytes for the verifier. **The two paths share one
+  body reader and one sleep bound** (#335, v1.37.0). Before it, `get_json` read with
+  `iter_bytes`, which yields an already-inflated chunk, and checked its cap after appending
+  (a 260 935-byte gzip body that inflates to 256 MiB peaked at 557 MiB under a 1 MiB cap);
+  it now reads through `get_bytes`'s reader, so the cap holds on the wire and on the
+  decoded size before a chunk is held (about 2 MiB on the same body and cap, about twice the cap in general), a single `gzip` or
+  `deflate` coding is decoded and any other is `HttpUnexpectedEncoding` (the client asks for
+  `gzip, deflate` only; `get_bytes` asks for `identity`). A `Retry-After` was honoured
+  without a bound and read with `str.isdigit` and `float`, so 400 digits became `inf` and
+  reached `time.sleep` as a bare `OverflowError`, and `"²"` was a bare `ValueError`; now the
+  value is one to nine ASCII digits or an HTTP-date and anything else is ignored, and no
+  sleep is longer than `RetryPolicy.retry_after_max_s` (default `backoff_max_s`, 5 s), so a
+  listed node cannot hold the calling thread for the time it asks. **Residual, unchanged
+  by #320 and #335:** the non-200 body read (#321) stops at 16 KiB after decoding, but it
+  decodes with `iter_bytes`, so one small `gzip` error body can still inflate a whole chunk
+  first (measured: a 260 935-byte body that inflates to 256 MiB peaks at 557 MiB on a 403;
+  the 16 KiB check then fires and the connection is dropped). It is the same class as the
+  200 read above and is not yet bounded.
+  **Residual, shared by both paths:** neither `deadline_s` nor `timeout_s`
   bounds the total time of one response's headers: `timeout_s` applies to each socket
   operation, so a compromised allow-listed host that sends header bytes slowly enough can
   hold the calling thread (measured: 8.1 s against `deadline_s=1.0`; the HTTP/1.1 stack's
@@ -337,6 +353,13 @@ finite input", with no explicit constant.
   matching `id` or `did` with its own key. What the checks close is a misrouted or
   steered response (a registry bug, a wrong `base`, a cache keyed on less than the URL, an
   unsigned token's `iss`) being accepted as the requested DID's document or record.
+  **So are the scalars the adapters copy** (#337, v1.37.0): `hasAttributes` must be a JSON
+  boolean and `id`, `hash`, `issuerType`, `tao`, `rootTao` and `body` the string (or, for
+  the last three, `null`) the model declares, else `MalformedRegistryResponse` on every
+  lane, so a wrong-typed member is no longer stored as sent nor read by truth (the string
+  `"false"` was `has_attributes=True`). The `hash` is typed where it is the value copied:
+  always on v4, and on v5 and Core v1 only when the listing item's `id` is absent or empty
+  (otherwise the `id` is the attribute id and the `hash`, of any type, is not read).
   **Residual:** the TIR `attributes` URL and each revision `href` are pinned to the
   listing's origin (#172), not to `.../issuers/{did}/`, and a revision's own `did` is not
   read; both are outside #266 and #267.
@@ -392,7 +415,7 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 |---|---|---|---|
 | I1 | Alg allow-list `{ES256, ES384, EdDSA, Ed25519}` runs **before any crypto**; `alg:none`/RS\*/HS\* rejected; the value is type-checked first, so a JSON array/object `alg` is a typed `UnsupportedAlgorithm`, not a bare `TypeError`. The list is the default: `ES256K` and the ML-DSA names join a suite's set only through `allow_es256k=True` / `allow_pq=True` (I3, I23) | `proof/vc_jwt.py:65,243`; `proof/_jws.py:89` | `test_hostile_input.py`, `test_cose.py:94`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py` |
 | I2 | ES256/384 JOSE signature is raw R‖S (64/96 bytes), never DER; so is an opted-in ES256K signature (64 octets) | `keys.py:575-589`; `proof/vc_jwt.py` (PyJWT's `ECAlgorithm` for ES256K) | `test_vc_jwt.py`; `test_es256k_opt_in.py` (`SIGNATURES`, `test_a_signature_is_exactly_64_octets_of_r_then_s`) |
-| I3 | PQ (ML-DSA) never in the default allow-list — opt-in only | `proof/vc_jwt.py:135` | `test_mldsa.py` |
+| I3 | PQ (ML-DSA) never in the default allow-list — opt-in only, switched on by exactly `True` (any other value, a configuration string `"false"` included, is a `ProofError` at construction on `VcJwtProofSuite` and a `SdJwtError` on `SdJwtVcProofSuite`, never read as truthy; #341). A non-object JWK handed to `VcJwtProofSuite` is a `ProofError`, not a bare `AttributeError` that would escape `verify_many` | `proof/vc_jwt.py:135` (`VcJwtProofSuite.__init__`, `_jwk_to_key`); `proof/sd_jwt.py` (`SdJwtVcProofSuite.__init__`) | `test_mldsa.py`, `test_vcjwt_input_hygiene.py` |
 | I4 | DI `verificationMethod` bound to the credential `issuer` DID | `verify.py:628-641` | `test_di_*` |
 | I5 | VC-JWT, and a W3C SD-JWT (a payload that names a VCDM base context, whatever its issuer `typ`), reconcile the JWT envelope with the credential (`iss`/`sub`/`jti`); every identifier a present `issuer` carries must be `iss`; with no `iss` member and a W3C `typ` (or none), the body `issuer` stands in for it (#290) | `proof/vc_jwt.py:360-381`; `issuer_identifiers` (`proof/_verify_common.py`); `_vcdm_issuer` (`proof/sd_jwt.py`) | `test_vc_jwt.py`, `test_sd_jwt_vcdm_consistency.py`, `test_sd_jwt_issuer_fallback.py` |
 | I6 | x5c leaf SAN bound to `iss`; binding after path-validation; a `dNSName` binds only an unambiguous https `iss` | `x5c.py:56-70,151-154`; `_parse_https_issuer` (`jwt_vc_issuer.py`) | `test_x5c*`, `test_sd_jwt.py:425`, `test_https_issuer_identifier.py` |

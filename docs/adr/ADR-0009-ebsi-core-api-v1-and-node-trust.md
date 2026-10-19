@@ -1,12 +1,15 @@
 # ADR-0009 — EBSI Core API v1, and how `openvc_ebsi` trusts a production node
 
 **Status:** Accepted in part (2026-10-16) — direction C (D2: a pure, stateless verifier on
-an ECDSA-only OpenPGP reader; it vendors an anchor, never the list) and the ES256K opt-in
-(open question 3) are accepted. Open question 1 is answered by the first. Open questions 2,
-4, 5, 6, 7 and 8 stay open. This ADR ships no code and changes nothing under `src/`; the
-ES256K opt-in it accepted was implemented afterwards, as #323 (v1.37.0), see D8.
+an ECDSA-only OpenPGP reader; it vendors an anchor, never the list), the ES256K opt-in
+(open question 3) and, on 2026-10-19, the names and compatibility decision (open question 4:
+`pilot` deprecated, `conformance` and `production` kept) are accepted. Open question 1 is
+answered by the first. Open questions 2, 5, 6, 7 and 8 stay open. This ADR ships no code and
+changes nothing under `src/`; the ES256K opt-in it accepted was implemented afterwards, as #323
+(v1.37.0), see D8, and the answer to question 4 as #325 (v1.37.0), see "Open questions".
 **Implemented so far:** D1 (the origin allow-list, #318), D4's fetch half (#320), the
-Core v1 adapters and the `legacy-pilot` name (D6 in part: #321, #325 part 1), D8 (#323) and,
+Core v1 adapters, the `legacy-pilot` name and the deprecation of `pilot` (D6 in part: #321,
+#325 parts 1 and 2; part 3, the node-derived rows, waits for #324), D8 (#323) and,
 in [#319](https://github.com/luisgf/openvc/issues/319) (unreleased, held), D2 (the pure verifier
 `openvc_ebsi.nodes.verify_node_list` over a minimal ECDSA-only OpenPGP reader) and D3's anchor
 and two version floors (the list itself is not vendored). #319's decisions 1 to 4 were taken
@@ -553,7 +556,7 @@ Names only; no code is proposed in this ADR.
   `production -> api.ebsi.eu` are the compatibility question: `pilot` today means the legacy
   lane under a name EBSI has since reused, and `production` names a host where a verifying
   client cannot connect today (the certificate served does not cover the name; Context).
-  Open question 4.
+  Open question 4, decided by the maintainer on 2026-10-19: see "Open questions".
 
 ## Migration plan
 
@@ -564,7 +567,9 @@ Names only; no code is proposed in this ADR.
 3. **Stage 2.** Bytes-GET, the `tnl.ebsi.eu` helper, the node-based constructor and
    failover, the weekly workflow extended to the TNL and Core v1 preprod.
 4. **Stage 3.** ES256K: decided as an explicit opt-in and shipped as #323 (see D8);
-   environment-table clean-up with the 2.0 window (#74), still decision-gated.
+   environment-table clean-up with the 2.0 window (#74): the `pilot` deprecation shipped in
+   v1.37.0 (open question 4, decided 2026-10-19), the re-meaning of `pilot` and any removal wait
+   for the MAJOR.
 5. **The v5 lane stays** until EBSI retires it. The migration guide gives no date and the
    legacy host still serves; the lane costs nothing to keep and the recorded fixtures remain
    its drift alarm. Re-check at each hub changelog entry.
@@ -629,7 +634,8 @@ Golden fixtures are the drift alarm (invariant 6); the data to record exists now
   ebsi.eu home page (the organiser's own page; no second source; it names an event, not a
   production-API go-live). Look for SLA, pricing, onboarding and access terms for automated
   readers, a prod announcement that changes the 20 requests/second limit, and a working
-  certificate for `api.ebsi.eu` (open question 4).
+  certificate for `api.ebsi.eu` (it would bear on the `production` row, which open question 4
+  kept as it was).
 - **2027-01-04:** the current `tnl.json` expires. Expect a new version before then; if none
   appears, every strict client fails closed. A CI job should warn at 14 days.
 - **hub.ebsi.eu changelog** (<https://hub.ebsi.eu/api/changelog>) for Core API v1 amendments, a
@@ -661,6 +667,25 @@ Golden fixtures are the drift alarm (invariant 6); the data to record exists now
 4. **Names and compatibility.** `for_ebsi("pilot")` means the legacy lane and the wiki documents
    it; `production` names a host that presents no certificate valid for its name. Alias and deprecate now, or leave until
    2.0 (#74)? Is a `ValueError` on `for_ebsi("production")` acceptable as a bug fix?
+   **Decided by the maintainer on 2026-10-19**, on the three switches of
+   [#325](https://github.com/luisgf/openvc/issues/325): *switch 1*, add `legacy-pilot` and make
+   it `for_ebsi`'s default (unconditional, shipped as Part 1); *switch 2, option 2b*:
+   `for_ebsi("pilot")` emits a `DeprecationWarning` (`stacklevel=2`) that names `legacy-pilot`
+   and says `pilot` will change meaning at the next MAJOR, to the Core API pilot (#74), and it
+   still seeds exactly `{"api-pilot.ebsi.eu"}`; *switch 3, option 3a*: `production` and
+   `conformance` are kept unchanged and documented, with no warning and no refusal, so a
+   `ValueError` on `for_ebsi("production")` is **not** taken. The decision states no reasons;
+   the issue's own reading is that a warning needs a replacement name to put in it, and there
+   is none for either row until the node-based client (#324) exists, and that a refusal would
+   move a failure to construction time for code that builds clients at startup. Shipped as
+   Part 2 of #325 in v1.37.0 (a MINOR under the versioning policy). Two consequences, in the
+   CHANGELOG: the Core API pilot that the TNL calls `pilot` has no `for_ebsi` spelling in 1.x
+   (the node-based constructor takes the list's own); and at the MAJOR a caller that ignored
+   the warning reads a different ledger, where the legacy DID answered 404. Implementation
+   note, not part of the decision: no library code reads `OPENVC_EBSI_ENV` (the live smoke test
+   passes it to `for_ebsi`), so a value of `pilot` from it warns through `for_ebsi` like any
+   other source of the name. The "What to watch" item about a working certificate for
+   `api.ebsi.eu` still applies to the `production` row.
 5. **Multi-node agreement.** A documented consumer pattern, a helper in the plugin, or nothing?
    And is a 404 on one node authoritative?
 6. **The shape of persistence, and the stateless defaults.** Required `last_accepted_list` /
@@ -694,7 +719,8 @@ Titles with one line each; none have been filed.
 - `feat(ebsi): node-based client constructor with health check and single-node failover` —
   injected selection policy; walks never mix nodes; clients carry the list's `expires` and an injected clock; one environment per client.
 - `fix(ebsi): environment table — legacy-pilot, node-derived pilot/preprod/prod` — resolves
-  open question 4.
+  open question 4 (#325: parts 1 and 2 done, decided 2026-10-19; part 3, the node-derived rows,
+  waits for #324).
 - `security(ebsi): allow-list on origin (host and port 443), not host name` — the TNL
   guarantees bare origins.
 - `security(ebsi): optional resolved-address guard for list-derived hosts` — reuse

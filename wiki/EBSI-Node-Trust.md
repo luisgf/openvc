@@ -29,7 +29,7 @@ There are two lanes, and `openvc_ebsi` reads one of them.
 
 **The legacy pilot lane.** `api-pilot.ebsi.eu`, with per-service `v5` paths. It is the only
 place the recorded fixtures and the weekly live smoke test are valid, and it is what
-`for_ebsi()` reaches (its default, `legacy-pilot`, which is also spelled `pilot`). On 2026-10-16 it still answered 200 for
+`for_ebsi()` reaches (its default, `legacy-pilot`; the older spelling `pilot` reaches it too and is deprecated). On 2026-10-16 it still answered 200 for
 `did:ebsi:zZeKyEJfUTGwajhNyNX928z` on `/did-registry/v5/identifiers/…`. The hub lists
 the nine old APIs as legacy, "available on the Pilot environment only"; **no retirement
 date** appears in the migration guide, the API index or the changelog as of 2026-10-16.
@@ -78,14 +78,22 @@ default. As of 2026-10-16:
 | Name | Host | What it is |
 |---|---|---|
 | `legacy-pilot` | `api-pilot.ebsi.eu` | The **legacy pilot lane** above, and the default. |
-| `pilot` | `api-pilot.ebsi.eu` | The same host and lane as `legacy-pilot`, kept for compatibility. Not the TNL's `pilot` environment. |
+| `pilot` | `api-pilot.ebsi.eu` | The same host and lane as `legacy-pilot`, **deprecated since 1.37.0**: `for_ebsi("pilot")` warns (`DeprecationWarning`, naming `legacy-pilot`) and builds the same client. Not the TNL's `pilot` environment, and it will change meaning at the next MAJOR release (2.0, [#74](https://github.com/luisgf/openvc/issues/74)). |
 | `conformance` | `api-conformance.ebsi.eu` | The name resolves, but no TCP connection completed within 12 s (curl exit 28). It is outside the TNL's scope. |
 | `production` | `api.ebsi.eu` | **Not a node.** No HTTP response was obtained: of four addresses, two did not accept a connection in about 3 s and 6 s, and the one that answered presented a certificate for an Amazon Lightsail wildcard that does not cover `api.ebsi.eu`, so verification stops at the handshake (curl exit 60). Whether any address serves a certificate valid for the name is not established. |
 
 Production nodes are `api.ebsi.<operator domain>` hosts taken from the TNL: 10 of them in list
-version 4. The names stay as they are for now (an unknown name is `UnknownEbsiEnvironment`);
-whether to deprecate `pilot`, `conformance` and `production`, or wait for the 2.0 window, is
-[#325](https://github.com/luisgf/openvc/issues/325)'s open question, not this page's.
+version 4. The names stay as they are for now (an unknown name is `UnknownEbsiEnvironment`), by
+the maintainer's decision of 2026-10-19 on
+[#325](https://github.com/luisgf/openvc/issues/325): `pilot` is deprecated in favour of
+`legacy-pilot`; `conformance` and `production` are kept, documented here and silent (no
+warning, no refusal). The reasons are #325's reading, not part of the decision. EBSI now also
+calls its Core API pilot "pilot", and the name will mean that ledger at the next MAJOR release;
+a warning can name `legacy-pilot` as the replacement. `for_ebsi` has no name to point
+`conformance` and `production` at: the node-based client that would take its nodes from the
+verified list does not exist yet (#324), and until it does the recipe below is how to reach a
+node. A request through a client built from `production` or `conformance` is not known to
+complete today, as the table says.
 
 ## Getting the nodes
 

@@ -1,5 +1,5 @@
 """
-tests/test_ebsi_environments.py — the EBSI environment-name table (#325, Part 1).
+tests/test_ebsi_environments.py — the EBSI environment-name table (#325, Parts 1 and 2).
 
 ``for_ebsi(environment)`` seeds the https-only host allow-list of an ``EbsiHttpClient`` from
 a name. These tests pin what each name means, what the default is, and how a name the table
@@ -10,7 +10,9 @@ by ``httpx.MockTransport``. No bytes are parsed, so there is no golden fixture a
 Section A is the baseline, written and green on the code as it stood before #325 (the commit
 before the implementation), so a later change to a name, a host or the default is a conscious
 edit of a pin. The two baseline pins #325 had to move are marked. Section B is the new
-behaviour, refusals first, then the controls.
+behaviour, refusals first, then the controls. Section C is Part 2, the maintainer's decisions of
+2026-10-19 on ADR-0009's open question 4: ``for_ebsi("pilot")`` is deprecated (switch 2b) and
+``production`` and ``conformance`` are kept, documented, silent (switch 3a).
 """
 from __future__ import annotations
 
@@ -60,6 +62,20 @@ def _ok(request):
     return httpx.Response(200, json={"ok": True})
 
 
+def _build(name, **kwargs):
+    """``for_ebsi(name, **kwargs)`` for a test that wants the client, not the warning.
+
+    ``pilot`` is deprecated (section C), so building it must warn: that is asserted here and the
+    warning swallowed. Every other name must be silent: an error filter makes a warning fail the
+    test that built it."""
+    if name == "pilot":
+        with pytest.warns(DeprecationWarning, match="legacy-pilot"):
+            return for_ebsi(name, **kwargs)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        return for_ebsi(name, **kwargs)
+
+
 def _mock(client, handler=_ok):
     """Replace the client's transport: no request leaves the process."""
     client._client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -90,9 +106,10 @@ def test_the_host_and_base_tables_hold_exactly_the_current_names():
 
 @pytest.mark.parametrize("call", [
     pytest.param(lambda **kw: for_ebsi(**kw), id="default"),
-    pytest.param(lambda **kw: for_ebsi("pilot", **kw), id="pilot"),
+    pytest.param(lambda **kw: _build("pilot", **kw), id="pilot"),
 ])
 def test_the_default_and_pilot_seed_exactly_the_pilot_host(call):
+    # MOVED by #325 Part 2: building ``pilot`` now warns (``_build`` asserts it).
     with call() as http:
         assert http._allowed == {PILOT_HOST}
 
@@ -103,12 +120,12 @@ def test_the_default_and_pilot_seed_exactly_the_pilot_host(call):
     ("production", PRODUCTION_HOST),
 ])
 def test_each_name_seeds_exactly_its_own_host(name, host):
-    with for_ebsi(name) as http:
+    with _build(name) as http:
         assert http._allowed == {host}
 
 
 def test_extra_hosts_are_merged_and_lower_cased():
-    with for_ebsi("pilot", extra_hosts={"Status.Example.ORG"}) as http:
+    with _build("pilot", extra_hosts={"Status.Example.ORG"}) as http:
         assert http._allowed == {PILOT_HOST, "status.example.org"}
 
 
@@ -127,7 +144,7 @@ def test_a_host_of_another_environment_is_refused_before_any_io(name, other):
         calls.append(request)
         return _ok(request)
 
-    with _mock(for_ebsi(name), handler) as http:
+    with _mock(_build(name), handler) as http:
         with pytest.raises(HttpForbiddenHost):
             http.get_json(f"https://{other}/anything")
     assert calls == []
@@ -149,7 +166,7 @@ def test_production_first_request_with_a_connect_error_exhausts_the_retry_budget
         calls.append(request.url.host)
         raise httpx.ConnectError("no route to host", request=request)
 
-    with _mock(for_ebsi("production", retry=FAST_RETRY), handler) as http:
+    with _mock(_build("production", retry=FAST_RETRY), handler) as http:
         with pytest.raises(HttpTransientExhausted) as info:
             http.get_json(f"https://{PRODUCTION_HOST}/v1/alive")
     assert type(info.value) is HttpTransientExhausted
@@ -294,8 +311,11 @@ def test_a_str_subclass_is_read_as_its_characters_not_through_its_own_methods():
 
 def test_a_str_subclass_holding_a_known_name_is_that_name():
     # What is checked is what is used: the plain characters. Control for the case above.
-    with for_ebsi(_HostileStr("pilot")) as http:
-        assert http._allowed == {PILOT_HOST}
+    # (The same subclass holding the deprecated "pilot" is in section C.)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with for_ebsi(_HostileStr("legacy-pilot")) as http:
+            assert http._allowed == {PILOT_HOST}
 
 
 def test_a_real_str_is_read_as_its_characters_whatever_its_class_property_says():
@@ -324,7 +344,7 @@ def test_a_str_enum_member_still_selects_its_environment():
 # --------------------------------------------------------------------------- #
 
 def test_legacy_pilot_seeds_the_same_allow_list_as_pilot():
-    with for_ebsi("legacy-pilot") as legacy, for_ebsi("pilot") as pilot, for_ebsi() as default:
+    with for_ebsi("legacy-pilot") as legacy, _build("pilot") as pilot, for_ebsi() as default:
         assert legacy._allowed == {PILOT_HOST}
         assert legacy._allowed == pilot._allowed == default._allowed
 
@@ -361,20 +381,21 @@ def test_legacy_pilot_merges_extra_hosts_like_pilot():
         assert http._allowed == {PILOT_HOST, "status.example.org"}
 
 
-def test_building_a_client_from_any_known_name_is_silent():
-    """Pins the compatibility options taken in #325, so a later warning is a conscious edit:
-    ``pilot`` is NOT deprecated (switch 2a), and ``conformance`` and ``production`` are kept
-    and documented, not warned about (switch 3a). The default and ``legacy-pilot`` are silent."""
+@pytest.mark.parametrize("call", [
+    pytest.param(lambda: for_ebsi(), id="default"),
+    pytest.param(lambda: for_ebsi("legacy-pilot"), id="legacy-pilot"),
+    pytest.param(lambda: for_ebsi("conformance"), id="conformance"),
+    pytest.param(lambda: for_ebsi("production"), id="production"),
+])
+def test_building_a_client_from_these_names_is_silent(call):
+    """The default and ``legacy-pilot`` are what ``pilot`` is deprecated in favour of, so a
+    warning from either would send a caller in a circle. ``conformance`` and ``production`` are
+    kept, documented and silent (switch 3a, decided by the maintainer on 2026-10-19), not
+    warned about: there is no replacement to name for either until the node-based client
+    (#324). A later warning or refusal for them is a conscious edit of this test."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        for call in (
-            lambda: for_ebsi(),
-            lambda: for_ebsi("legacy-pilot"),
-            lambda: for_ebsi("pilot"),
-            lambda: for_ebsi("conformance"),
-            lambda: for_ebsi("production"),
-        ):
-            call().close()
+        call().close()
 
 
 def test_the_resolver_default_base_is_the_table_row():
@@ -443,3 +464,132 @@ def test_the_name_table_imports_with_httpx_blocked(module, tmp_path):
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "pilot,conformance,production,legacy-pilot"
+
+
+# --------------------------------------------------------------------------- #
+# C. Part 2: ``for_ebsi("pilot")`` is deprecated (switch 2b, decided 2026-10-19)
+# --------------------------------------------------------------------------- #
+
+def _pilot_warning():
+    """Build ``pilot`` and hand back the one warning it raised (for the tests of its content;
+    the test of where it is attributed calls ``for_ebsi`` from its own body)."""
+    with pytest.warns(DeprecationWarning) as record:
+        for_ebsi("pilot").close()
+    assert len(record) == 1
+    return record[0]
+
+
+def test_pilot_warns_with_exactly_a_deprecation_warning_naming_the_replacement():
+    warning = _pilot_warning()
+    assert warning.category is DeprecationWarning                  # not a subclass, not another
+    message = str(warning.message)
+    assert "'legacy-pilot'" in message                             # the replacement, named
+    assert message.startswith("for_ebsi('pilot') is deprecated")
+
+
+def test_the_pilot_warning_is_attributed_to_the_caller_not_to_http_py():
+    # The call is made from this function's own body, so ``stacklevel=2`` is the only value that
+    # lands on this file and this line: 1 would name http.py, 3 the code that called the test.
+    here = inspect.currentframe().f_lineno
+    with pytest.warns(DeprecationWarning) as record:
+        for_ebsi("pilot").close()
+    assert len(record) == 1
+    assert record[0].filename == __file__
+    assert record[0].lineno == here + 2
+
+
+def test_the_pilot_warning_says_the_name_changes_meaning_at_the_next_major():
+    message = str(_pilot_warning().message)
+    assert "will change meaning at the next MAJOR release" in message
+    assert "Core API" in message and "different ledger" in message
+    assert "issues/74" in message                                  # the 2.0 window, #74
+    assert "api-pilot.ebsi.eu" in message                          # what the replacement reaches
+
+
+def test_pilot_still_seeds_exactly_the_allow_list_legacy_pilot_does():
+    with pytest.warns(DeprecationWarning):
+        pilot = for_ebsi("pilot", extra_hosts={"Status.Example.ORG"})
+    with pilot, for_ebsi("legacy-pilot", extra_hosts={"Status.Example.ORG"}) as legacy:
+        assert pilot._allowed == legacy._allowed == {PILOT_HOST, "status.example.org"}
+    assert EBSI_HOSTS["pilot"] == EBSI_HOSTS["legacy-pilot"] == PILOT_HOST
+
+
+def test_the_warning_comes_before_any_client_exists(monkeypatch):
+    # Under ``-W error::DeprecationWarning`` the warning is an exception: no client may be left
+    # open (a ResourceWarning of its own), so nothing is built before it.
+    def boom(*args, **kwargs):
+        raise AssertionError("an EbsiHttpClient was constructed before the warning")
+
+    monkeypatch.setattr(ebsi_http, "EbsiHttpClient", boom)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(DeprecationWarning, match="legacy-pilot"):
+            for_ebsi("pilot")
+
+
+def test_pilot_warns_exactly_once_per_call():
+    # One warning per call, however many times the name is built: no second warning from a
+    # second code path, and none swallowed after the first.
+    for _ in range(2):
+        with pytest.warns(DeprecationWarning) as record:
+            for_ebsi("pilot").close()
+        assert len(record) == 1
+
+
+def test_a_str_subclass_holding_pilot_warns_by_its_characters():
+    # The check reads the plain characters, never the caller's object: this subclass raises on
+    # hash, equality and repr, so comparing it directly would escape as a RuntimeError.
+    with pytest.warns(DeprecationWarning, match="legacy-pilot") as record:
+        with for_ebsi(_HostileStr("pilot")) as http:
+            assert http._allowed == {PILOT_HOST}
+    assert len(record) == 1 and record[0].filename == __file__
+
+
+def test_a_str_enum_member_holding_pilot_warns():
+    class Env(str, enum.Enum):
+        PILOT = "pilot"
+
+    with pytest.warns(DeprecationWarning, match="legacy-pilot"):
+        for_ebsi(Env.PILOT).close()
+
+
+@pytest.mark.parametrize("bad", SEVEN + MORE)
+def test_a_refused_name_raises_the_error_and_warns_nothing(bad):
+    # A name that is refused is not "pilot": no warning, just ``UnknownEbsiEnvironment``. Under
+    # an error filter a stray DeprecationWarning would be raised instead and fail the exact-class
+    # check. ``Pilot``, ``PILOT``, ``" pilot"`` and ``"pilot "`` are in the lists above: the
+    # match is the exact name, as the lookup is.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(UnknownEbsiEnvironment) as info:
+            for_ebsi(bad)
+    assert type(info.value) is UnknownEbsiEnvironment
+
+
+def test_reading_the_tables_cannot_warn():
+    """Only ``for_ebsi`` warns. ``EBSI_HOSTS`` and ``EBSI_BASE`` are plain ``dict``s and
+    ``ENVIRONMENTS`` a read-only mapping, so a lookup of ``pilot`` is silent; the CHANGELOG and
+    ``environments.py`` say so, and this pins that it stays a documented limit."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert EBSI_HOSTS["pilot"] == PILOT_HOST
+        assert EBSI_BASE["pilot"] == f"https://{PILOT_HOST}"
+        assert ENVIRONMENTS["pilot"].fixed_host == PILOT_HOST
+    assert type(EBSI_HOSTS) is dict and type(EBSI_BASE) is dict
+
+
+def test_a_name_read_from_OPENVC_EBSI_ENV_warns_exactly_like_the_literal(monkeypatch):
+    """No code in openvc reads ``OPENVC_EBSI_ENV``: the weekly smoke test
+    (``test_live_resolve``) reads it and passes the value to ``for_ebsi``. The decision taken
+    for the variable (2026-10-19) is that there is no second path: a value that reaches
+    ``for_ebsi`` as ``pilot`` warns in ``for_ebsi``, attributed to the caller; unset, the
+    smoke test's own default is silent."""
+    monkeypatch.setenv("OPENVC_EBSI_ENV", "pilot")
+    with pytest.warns(DeprecationWarning, match="legacy-pilot") as record:
+        for_ebsi(os.getenv("OPENVC_EBSI_ENV", "legacy-pilot")).close()
+    assert len(record) == 1 and record[0].filename == __file__
+
+    monkeypatch.delenv("OPENVC_EBSI_ENV")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for_ebsi(os.getenv("OPENVC_EBSI_ENV", "legacy-pilot")).close()
