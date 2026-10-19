@@ -925,6 +925,38 @@ Each is one value or table away from the other option. None changes anything tha
   subclass is read as the characters it holds (so what is checked is what is looked up, the
   #266 rule), and the message cuts the value through `safe_repr`. A `str` subclass that holds
   a known name, such as a `(str, Enum)` member, still selects its environment.
+- **The EBSI client no longer echoes an unbounded URL or host in an error message**
+  ([#338](https://github.com/luisgf/openvc/issues/338); pre-existing, found by the review of
+  the origin allow-list PR #330). `_guard_host` formatted the offending value straight into
+  its message, against the rule that a value a remote party can influence goes through
+  `safe_repr`. Measured on `main` at cf6d100 with `allowed_hosts={"api-pilot.ebsi.eu"}`: a
+  70 000-character host gave a 70 032-character `host not in allow-list` message and a
+  70 000-character `http://` URL a 70 033-character `non-https URL rejected` message; both
+  are 243 characters now. The value is the caller's and, in practice, a DID document's, a
+  registry link's or a Trusted Nodes List entry's. Five messages of `openvc_ebsi/http.py`
+  echoed a URL or a host, and now cut it through `safe_repr` (the first 200 characters, then
+  `... (N chars)`): `non-https URL rejected: …` and `host not in allow-list: …`
+  (`_guard_host`), `registry returned a 200 with a non-JSON body: …` and `registry returned
+  a 200 that is not a JSON object: …` (`get_json`; the URL's path and query are unbounded
+  past the guard) and `registry returned a body that does not decode: …` (`_request`). The
+  rest needed nothing: `URL rejected: not visible ASCII`, `does not parse` and `carries
+  userinfo` echo nothing; `port N not allowed` prints a number `urlparse` has range-checked;
+  the bytes path's messages (a body that does not decode, a truncated compressed stream,
+  bytes after its end) and the unsupported `Content-Encoding` one already went through
+  `safe_repr`, as do the address guard's; no message formats a `Location` (redirects are
+  off).
+
+  Only the text changed. Every exception class, the leading words of every message (so every
+  `match=` keeps matching), and `.url` are as before: `.url` still holds the whole URL as
+  given (`None` for the userinfo refusal), because it is data a caller may use and not a log
+  line. A value now appears quoted, as the module's other `safe_repr` messages show theirs
+  (`host not in allow-list: 'evil.example'`), so a caller that matched the bare host after
+  the colon must match the quoted one; an empty host is still `None`. This supersedes the
+  #318 entry's sentence that the non-https message "quotes it as before": it quotes it,
+  cut past 200 characters. Not changed here: `gave up after N attempts: …`, which formats
+  the last transport error's own text and is not a URL, host or `Location` (measured through
+  httpx 0.28.1 and h11 0.16.0 against a local socket: a 5 000-byte malformed status line
+  makes a 5 044-character `RemoteProtocolError`).
 - **`EbsiHttpClient.get_json` no longer drains an error body unbounded**
   ([#321](https://github.com/luisgf/openvc/issues/321); it predates ADR-0009). The non-200
   branch called `resp.read()`: no size cap and no wall-clock deadline, where the 200 branch
@@ -957,6 +989,14 @@ Each is one value or table away from the other option. None changes anything tha
   reader's own contract. `test_guard_refuses_non_ascii_before_urlparse` and
   `test_origin_refuses_non_ascii_before_urlparse` now patch `openvc_ebsi._url.urlparse`, the
   one place the URL is parsed.
+- `tests/test_ebsi_guard_bounded_messages.py` (#338): every guard rule with a 70 000-character
+  component (host, URL, path, userinfo, port), each through `_guard_host`, `get_json` and
+  `get_bytes`, asserting the exact class, a message under 300 characters, the leading words,
+  the start of the value still shown, its size reported and `.url` still the whole URL
+  (`None` for userinfo); a short value shown whole and quoted, and an empty host still
+  `None`; the three `get_json` refusals of a 200 and the `get_bytes` ones (controls: those
+  already passed) with a 50 000-character path; and a Hypothesis property that no refusal of
+  `_guard_host` reaches 500 characters.
 - `tests/test_ebsi_http_cookies.py` (#317). The client is built through its real constructor
   with the transport injected by patching `httpx.Client` for the constructor call, because
   the existing EBSI suites assign `client._client = httpx.Client(...)`, which discards the
