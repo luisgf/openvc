@@ -220,7 +220,8 @@ finite input", with no explicit constant.
   the opt-in default (`src/openvc/resolvers.py:4-17`).
 - **EBSI client** (`src/openvc_ebsi/http.py`): an https-only **origin allow-list**
   (`for_ebsi` seeds it from one named environment of `src/openvc_ebsi/environments.py`:
-  `legacy-pilot`, the default, and its alias `pilot` are `api-pilot.ebsi.eu`; `conformance` is
+  `legacy-pilot`, the default, and its deprecated alias `pilot` (a `DeprecationWarning` from
+  `for_ebsi`, same allow-list) are `api-pilot.ebsi.eu`; `conformance` is
   `api-conformance.ebsi.eu`; `production` is `api.ebsi.eu`; any other name is
   `UnknownEbsiEnvironment`; port 443 only; a Core API v1 caller supplies the host of each node it
   uses, R4), redirects off, TLS-verify on,

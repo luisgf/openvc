@@ -44,6 +44,7 @@ import socket
 import sys
 import time
 import urllib.request
+import warnings
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -967,6 +968,13 @@ def get_tnl_files(
 # Factory
 # --------------------------------------------------------------------------- #
 
+_PILOT_DEPRECATION = (
+    "for_ebsi('pilot') is deprecated: use 'legacy-pilot', which seeds the same allow-list "
+    "(api-pilot.ebsi.eu, the legacy per-service lane). 'pilot' will change meaning at the next "
+    "MAJOR release, to the EBSI Core API pilot, which is a different ledger "
+    "(https://github.com/luisgf/openvc/issues/74)")
+
+
 def for_ebsi(
     environment: str = "legacy-pilot",
     *,
@@ -977,8 +985,13 @@ def for_ebsi(
 
     * ``"legacy-pilot"`` (the default): ``api-pilot.ebsi.eu``, the legacy per-service lane
       (the v5 adapters), the only place the recorded fixtures and the weekly smoke are valid.
-    * ``"pilot"``: the same host and lane as ``"legacy-pilot"``, kept for compatibility. It
-      is not the Core API pilot that EBSI now also calls "pilot".
+    * ``"pilot"``: the same host and lane as ``"legacy-pilot"``, **deprecated** since 1.37.0.
+      It emits a :class:`DeprecationWarning` that names ``"legacy-pilot"``, and seeds exactly
+      the same allow-list. EBSI now also calls its Core API pilot "pilot", a different ledger
+      that this name does not reach; the name will change meaning at the next MAJOR release
+      (2.0, #74), so use ``"legacy-pilot"``. The warning is raised here, so a name read from
+      configuration (an environment variable, say) and passed on to this function warns the
+      same way.
     * ``"conformance"``: ``api-conformance.ebsi.eu``. A measurement on 2026-10-16 completed
       no connection in 12 s (ADR-0009).
     * ``"production"``: ``api.ebsi.eu``. The certificate that host presented on 2026-10-16
@@ -1010,5 +1023,10 @@ def for_ebsi(
         raise UnknownEbsiEnvironment(
             f"unknown EBSI environment: {safe_repr(environment)} "
             f"(known: {', '.join(sorted(map(str, EBSI_HOSTS)))})")
+    if name == "pilot":
+        # `name` is the plain `str` read above, never the caller's object, so a `str` subclass
+        # holding "pilot" is compared by its characters. Before the client is built, so a
+        # warning turned into an error leaves no client open.
+        warnings.warn(_PILOT_DEPRECATION, DeprecationWarning, stacklevel=2)
     hosts = {EBSI_HOSTS[name]} | (extra_hosts or set())
     return EbsiHttpClient(allowed_hosts=hosts, **kwargs)
