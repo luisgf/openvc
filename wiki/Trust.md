@@ -326,9 +326,24 @@ files = get_tnl_files(etags=etags)           # a 304 is BytesResponse(None, <the
   the origin pin and the caps are written once; the trust logic never sees wire
   formats. Conformance is pinned by recorded fixtures for both lanes: the pilot
   (`tests/fixtures/ebsi/`) and the Core API v1 (`tests/fixtures/ebsi/core-v1/`, two
-  preprod nodes and the one-issuer production seed, with a hash manifest), plus an
-  opt-in live smoke test (`OPENVC_EBSI_LIVE=1 pytest`, today against the legacy
-  pilot host).
+  preprod nodes and the one-issuer production seed, with a hash manifest), plus three
+  opt-in live checks, none of them part of the release gate. They need the network and
+  a real clock; run them all with `OPENVC_EBSI_LIVE=1 pytest`, or let the
+  scheduled workflow `live-ebsi.yml` run them as one job each, so a red job names its
+  cause:
+  - **legacy pilot** (`test_live_resolve`): one DID document from `api-pilot.ebsi.eu`,
+    the host the recorded v5 fixtures come from.
+  - **Core v1 preprod** (`tests/test_ebsi_live.py`): from the *verified* Trusted Nodes
+    List, two healthy preprod nodes of different operators; one DID document and one
+    issuer record read from each through the `"core-v1"` adapters; red if a read fails
+    or the two parsed results differ. A node that does not answer is passed over.
+  - **Trusted Nodes List watch** (same file): verifies the live list with the shipped
+    anchor and floors and no stored state, and is red when the list is within 14 days of
+    its `expires` (a daily schedule, so the warning arrives within a day of that mark), when
+    `tnl.json` or `trusted-keys.json` is at a version other than the one last seen, or
+    when the served `keylist-key.asc` is not the recorded file. A red run changes
+    nothing by itself: the maintainer bumps the last-seen constant in a test-only PR and
+    re-records the fixtures.
 
 ### Which node? Verifying the Trusted Nodes List
 

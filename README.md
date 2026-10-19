@@ -191,7 +191,8 @@ the boundary; see
 ```sh
 pip install -e ".[all]"       # from a checkout
 pytest                        # offline: deterministic, no network
-OPENVC_EBSI_LIVE=1 pytest     # + the opt-in live EBSI smoke test
+OPENVC_EBSI_LIVE=1 pytest     # + the opt-in live EBSI checks (network and a real clock;
+                              #   the node-list watch is red near the list's expiry)
 ```
 
 ## License
