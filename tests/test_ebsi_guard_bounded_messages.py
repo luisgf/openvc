@@ -234,8 +234,10 @@ GET_JSON_REFUSALS = [
                  "registry returned a 200 that is not a JSON object: ", id="array"),
     pytest.param(_answer(body=b"null"),
                  "registry returned a 200 that is not a JSON object: ", id="null"),
+    # Since #335 the 200 path decodes with the bounded decoder the bytes path uses, so a body
+    # that does not decode is reported in that decoder's words.
     pytest.param(_answer(body=b"this is not gzip", headers={"Content-Encoding": "gzip"}),
-                 "registry returned a body that does not decode: ", id="does-not-decode"),
+                 "response body does not decode: ", id="does-not-decode"),
 ]
 
 
@@ -365,7 +367,7 @@ SUBCLASS_REFUSALS = [
     pytest.param(f"https://{HOST}/x",
                  _answer(body=b"this is not gzip", headers={"Content-Encoding": "gzip"}),
                  MalformedRegistryResponse,
-                 "registry returned a body that does not decode: ", id="does-not-decode"),
+                 "response body does not decode: ", id="does-not-decode"),   # since #335
 ]
 
 
