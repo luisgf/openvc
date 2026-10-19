@@ -971,7 +971,11 @@ Each is one value or table away from the other option. None changes anything tha
   - **`gave up after N attempts: …` is not touched.** It formats the last transport error's
     own text and is not a URL, host or `Location`. Measured through httpx 0.28.1 and h11
     0.16.0 against a local socket, a 5 000-byte malformed status line makes a 5 044-character
-    `RemoteProtocolError`; a bound there is its own change.
+    `RemoteProtocolError`; a bound there is its own change. Two messages of
+    `openvc_ebsi/verify.py` repeat an issuer-controlled value unbounded as well, and are not
+    touched either (neither is a URL or host): `IssuerNotTrusted` formats the credential's
+    type list (a 70 000-character `type` entry gave a 70 107-character message) and
+    `CredentialRevoked` its `id`. The other option is a `safe_repr` on each, in its own change.
   - **The #318 entry is superseded, not rewritten.** Its sentence that the non-https
     message "quotes it as before" is superseded by this entry: the message quotes the URL,
     cut past 200 characters.
