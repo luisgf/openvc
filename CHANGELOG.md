@@ -541,10 +541,11 @@ All notable changes to **openvc** are documented here. The format follows
     environment these tests ran in resolves exactly `2.13.0`, the floor itself; its default
     registry carries `ES256K` as SHA-256 on `SECP256K1` (a test pins that on the suite's
     private instance, and openvc's own curve pin does not depend on PyJWT's `expected_curve`).
-    CI has no PyJWT floor leg of its own (only pyld and httpx do): it resolves the newest PyJWT
-    (2.15.1 on 2026-10-16), where the signature segment's encoding is judged more strictly than
-    on 2.13.0 (invalid characters and `=` padding are refused); the parity tests assert that
-    ES256K gets what ES256 gets on both.
+    CI had no PyJWT floor leg of its own until #340 (this release adds
+    `test (py3.10, pyjwt 2.13.0)`, next to the pyld and httpx ones); until then it resolved only
+    the newest PyJWT (2.15.1 on 2026-10-16), where the signature segment's encoding is judged
+    more strictly than on 2.13.0 (invalid characters and `=` padding are refused); the parity
+    tests assert that ES256K gets what ES256 gets on both.
   - **Every other lane keeps refusing the algorithm, twice.** SD-JWT VC (issuer JWT and
     KB-JWT, with and without `allow_pq`), VP-JWT, `verify_compact`, the status-list token,
     the OpenID4VCI key proof (also with `allowed_algs=ALLOWED_ALGS | {"ES256K"}`, which stops
@@ -858,6 +859,156 @@ Each is one value or table away from the other option. None changes anything tha
   compares equal to a name (`collections.UserString("pilot")`) was accepted by the old
   dictionary lookup; it is refused by the `str` type check. Pass `str(value)`. A
   `str` or a `str` subclass (a `(str, Enum)` member, say) that holds a name is unaffected.
+- **Defaults taken, pending maintainer confirmation.** #325 leaves three switches to the
+  maintainer; Part 1 ships only the unconditional one and takes the non-breaking option on the
+  other two, so nothing is deprecated or removed here and each can still go either way:
+  1. *Switch 1, add `legacy-pilot`:* done, as above.
+  2. *Switch 2, `pilot`: 2a (taken)* leaves `pilot` silent and documents it as the same lane
+     as `legacy-pilot`. The alternative, 2b, would emit a `DeprecationWarning` naming
+     `legacy-pilot` from `for_ebsi("pilot")` (MINOR; the versioning policy's steps 1 to 3 would
+     apply: `### Deprecated` here with the earliest removal, removal only at a MAJOR).
+     A test pins that `pilot` is silent, so adding the warning later is a conscious edit.
+  3. *Switch 3, `production` and `conformance`: 3a (taken)* keeps both rows, with the same
+     allow-list rule, and documents them plainly (`wiki/Trust.md`, `for_ebsi`'s docstring,
+     `environments.py`). The alternatives: 3b, a `DeprecationWarning` from `for_ebsi` (there is
+     no replacement to name for either until the node-based client of #324, so the message
+     would have none); 3c, `for_ebsi` refuses, keeping the keys (a documented, pinned call that
+     built a client would raise, which the versioning policy reads as MAJOR unless the
+     CHANGELOG records a narrow decision, as 1.35.0 did for `did:key`); 3d, remove the keys
+     (MAJOR, and `test_for_ebsi_production_environment_is_registered` pins them). A test pins
+     that both are silent.
+
+  **Migration notes, whichever option is chosen later.** (i) In 1.x the Core API pilot that the
+  Trusted Nodes List calls `pilot` has no `for_ebsi` spelling, because `pilot` stays the legacy
+  lane until a MAJOR release. The node-based constructor planned in #324 takes the list's own
+  spelling, so `for_ebsi` need not carry it; a 1.x spelling would be a new name for the
+  maintainer to choose (ADR-0009's end state calls it `pilot`). (ii) At that MAJOR (the 2.0
+  window, [#74](https://github.com/luisgf/openvc/issues/74); not decided), `pilot` may change
+  meaning. A caller who ignored the warning (2b) or the documentation (2a) would then read a
+  different ledger, where ADR-0009 measured the legacy DID to be a 404. Use `legacy-pilot`
+  today to say which one you mean.
+- **A TIR attribute response without an `attribute` object is `MalformedRegistryResponse`**
+  (both lanes, `TirV5` and `TirCoreV1`). It used to be read as an empty attribute, which is
+  an accreditation with no type restriction, and single-level trust
+  (`evaluate_issuer_trust`) accepts such an accreditation for any credential. A registry
+  that answers `{"did": ...}` or `{"attribute": null}` for an `href` is malformed, not
+  unrestricted; there is nothing to pass instead, the walk now stops with a typed error.
+  Recursive trust was unaffected (an accreditation with no token is refused).
+  This is a shape check, not the end of the wildcard: an `attribute` object with no `body`,
+  an empty `body`, or a `body` whose claims name no `accreditedFor` is still an
+  accreditation with no type restriction, which single-level trust accepts for any
+  credential (its documented policy: that mode trusts the node's list). Recursive trust
+  refuses one that has no token (`AccreditationInvalid`) and otherwise needs a token that
+  verifies. Pinned by `test_an_attribute_object_with_no_usable_body_is_still_a_wildcard_by_design`
+  and its neighbour.
+- **`openvc.fetch` refuses the deprecated IPv6 site-local prefix `fec0::/10`**
+  ([#322](https://github.com/luisgf/openvc/issues/322), review round).
+  `ip_is_forbidden` (and so `did:web` and every fetch that resolves through
+  `_resolve_public_ips`) used to accept it: `ipaddress` reports `fec0::1` as
+  `is_global=True`, `is_private=False` and sets only `is_site_local` (measured on CPython
+  3.13.16, 3.14.8 and 3.15.0rc3), so nothing in the flag union caught it. RFC 3879
+  deprecated the prefix and it is not globally routable. A `did:web` (or status-list or
+  schema) host whose DNS answer includes a `fec0::/10` address now raises
+  `UnsafeUrlError` where it used to connect. There is nothing to pass instead: a publicly
+  reachable host does not resolve to this prefix; fix the DNS record. Only IPv6 has the
+  property, so IPv4 classification is unchanged.
+- **`allow_pq` must be exactly `True` or `False` on both JOSE suites**
+  ([#341](https://github.com/luisgf/openvc/issues/341)). `VcJwtProofSuite(allow_pq=...)` and
+  `SdJwtVcProofSuite(allow_pq=...)` read the flag by truthiness, so any truthy value switched
+  the EXPERIMENTAL ML-DSA algorithms (RFC 9964) on. Measured on `main` at cf6d100 (CPython
+  3.14.8): `allow_pq="false"`, `"0"`, `"x"` and `1` all constructed and put `ML-DSA-44`,
+  `ML-DSA-65` and `ML-DSA-87` in the suite's allow-list, while `""`, `0`, `None` and `[]`
+  silently meant off. A deployment that reads the flag from an environment variable or a
+  configuration file as a string therefore enabled a post-quantum verify path it meant to
+  disable. Anything but the `bool` `True` or `False` is now refused at construction: a
+  `ProofError` on `VcJwtProofSuite`, a `SdJwtError` (a `ProofError`, like that constructor's
+  other checks) on `SdJwtVcProofSuite`, with the message `allow_pq must be True or False, got
+  str`, which names the type and never echoes the value. It is the rule `allow_es256k` has
+  had since #323 (`type()`, not `isinstance()`, so an object whose `__class__` claims `bool`
+  is refused too); on `VcJwtProofSuite` the two flags are checked in signature order, after
+  `leeway_s`. **Who is affected:** a caller that passes a string, a number, `None` or any
+  other non-bool, including the falsy values that used to mean off (`0`, `None`, `""`).
+  **What to pass instead:** `True` or `False`, or leave the argument out (the default is
+  `False`); parse a configuration string yourself before constructing the suite. `True`,
+  `False` and the default behave exactly as before. The grep of every `allow_*` in `src/`
+  found `allow_pq` on the two suites (fixed together, because both guard the same algorithm
+  family), `allow_es256k` (strict since #323) and two private keywords, `allow_scalar` in
+  `rp_registration._str_tuple` and `allow_string` in `status._index.status_index`, which every
+  call site sets with a literal and which guard no algorithm family or trust decision: they are
+  left alone (`allow_nan=False` in `_context_validation` is a `json.dumps` argument).
+- **The TIR adapters check the JSON type of every scalar they copy into the model, and
+  `hasAttributes` must be a JSON boolean**
+  ([#337](https://github.com/luisgf/openvc/issues/337); found by the review of #332).
+  Hardening; no wrong-accept was found against a node that follows its published schema.
+  The adapters in `openvc_ebsi.versioning` copied registry members into `Accreditation` and
+  `IssuerRecord` as sent. Measured on `cf6d100` (CPython 3.14.8) through
+  `DidEbsiResolver.issuer_record`: `"hasAttributes": "false"` (and `"0"`, `"true"`, `1`) read
+  as `has_attributes=True`, so the walk went on to fetch the listing and every revision,
+  while `""`, `0`, `[]`, `{}` and `null` read as `False`; an `issuerType`, `tao`, `rootTao`
+  or `hash` that was an object, an array, a number, a boolean or `null` was stored in the
+  record as sent, on v4, v5 and Core v1 (a `hash` only where it was the value copied: always
+  on v4, and on v5 and Core v1 only when the listing item had no usable `id`); a listing
+  item `id` that was an object, an array, a
+  number or `true` was stored as sent, while `0`, `false`, `[]`, `{}` and `null` fell through
+  to the attribute's `hash`; and a v4 attribute `body` that was not a string reached the
+  proof suite's `decode` and raised a bare `AttributeError` (v5 and Core v1 had typed it in
+  #321). The consumers are few: the trust walk compares `tao` with the token's `iss` and
+  fails with `AccreditationInvalid`, nothing in the library reads `rootTao` or `attribute_id`, and
+  `is_revoked` is `issuer_type == "revoked"`, which is false for any value that is not that
+  string, so an `issuerType` of the wrong type read as "not revoked".
+
+  Each field is now checked against the type the model declares, and a wrong one is
+  `MalformedRegistryResponse` (`TIR attribute tao is not a string: 7`; the value goes through
+  `safe_repr`, so an attacker-sized one is bounded):
+
+  | member | where | accepted | absent | `null` |
+  | --- | --- | --- | --- | --- |
+  | `hasAttributes` | v5, Core v1 issuer response | `true`, `false` only | `false` | raises |
+  | `id` | v5, Core v1 listing item | string | `""` | raises |
+  | `issuerType` | v4 attribute; v5, Core v1 `attribute` | string | `""` | raises |
+  | `hash` | v4 attribute, always; v5, Core v1 `attribute`, only when the listing item's `id` is absent or empty | string | `""` | raises |
+  | `tao`, `rootTao`, `body` | v4 attribute; v5, Core v1 `attribute` | string | `None` | `None` |
+
+  `hasAttributes` is tested with `isinstance(value, bool)`, not by truth, so `"false"`, `0`
+  and `[]` are wrong values and not falsy ones; a non-boolean raises after the one request
+  for the issuer response, before the listing is fetched. A listing item's `id` is typed
+  before it can fall back to the attribute's `hash`, so `0`, `false`, `[]` and `null` no
+  longer fall through; on v5 and Core v1 the `hash` is read only when the `id` is absent or
+  empty, which is the only case in which it is copied (a `hash` of any type next to a usable
+  `id` parses, and the `id` is the attribute id; on v4, which has no listing, it is always the
+  attribute id and always typed). Every scalar of an entry is typed before the proof suite's
+  `decode` is handed its token, and one bad entry rejects the whole record, as a revision with
+  no `attribute` object already did (a partial record would be a trust decision made on part
+  of the registry's answer). The `body` message of v5 and Core v1 keeps its text and gains
+  the value (`TIR attribute body is not a string: 7`).
+
+  Who is affected: a node that sends what its schema says is not, and there is nothing to
+  migrate. A differential over the four recorded walks (the pilot's v5 response, the two
+  preprod Core v1 nodes and the production seed) gives the same `IssuerRecord`, as canonical
+  JSON, on `cf6d100` and on this change (the script was a one-off and is not kept), and every
+  existing EBSI test passes unchanged. What changes is a registry or a hand-written `Fetch`
+  that sent a member with the wrong JSON type: `hasAttributes` as a number or a string, a
+  number as the `hash` that is copied (see the table), `null` as `issuerType`. It used to be carried through (or, for
+  `hasAttributes`, read by truth) and is now `MalformedRegistryResponse`; send the type the
+  real registry sends (`true`, a string). There is no recorded TIR v4 response in this
+  repository, so the v4 cases are synthetic, around a recorded accreditation token.
+
+  SemVer: a wire value that used to be carried through now raises, so the entry is recorded
+  as a change and not only as a fix; it rides in the unreleased 1.37.0 (a minor), so it needs
+  no bump of its own. Alone it would be a patch: it narrows what the adapters accept to what
+  the model already declared, and no shipped path turned the old behaviour into an accept.
+
+  Defaults taken, for the maintainer to confirm: (1) `null` is wrong for the `str` and `bool`
+  members and is `None` for the `str | None` ones, following the model; reading `null` as
+  absent instead would carry `""` / `False` through for the first group. (2) An absent
+  `hasAttributes` stays `false`, as before; making it a required member would turn a response
+  without it into `MalformedRegistryResponse`. (3) A `hash` that is not copied is not read
+  (v5 and Core v1 next to a usable `id`; on v4 it is always copied, so always typed); typing
+  it always would reject a record for a member nothing uses. (4) One bad entry rejects
+  the record; skipping it would hide an accreditation without saying so. (5) Not covered, and
+  left as it was: a v4 `attributes` member that is not an array, or an entry of it that is not
+  an object, is a bare `TypeError` / `AttributeError` (measured on `cf6d100`; v4 only, since
+  the shared walk skips non-object items). It is a shape check and not a scalar.
 - **The maintainer's decisions on #325's three switches, taken on 2026-10-19**
   ([#325](https://github.com/luisgf/openvc/issues/325), Part 2; recorded in ADR-0009 as the
   answer to open question 4). Part 1 had taken the non-breaking option on switches 2 and 3 as
@@ -890,31 +1041,6 @@ Each is one value or table away from the other option. None changes anything tha
   [#74](https://github.com/luisgf/openvc/issues/74)) `pilot` changes meaning. A caller who
   ignored the warning would then read a different ledger, where ADR-0009 measured the legacy DID
   to be a 404. Use `legacy-pilot` today to say which one you mean.
-- **A TIR attribute response without an `attribute` object is `MalformedRegistryResponse`**
-  (both lanes, `TirV5` and `TirCoreV1`). It used to be read as an empty attribute, which is
-  an accreditation with no type restriction, and single-level trust
-  (`evaluate_issuer_trust`) accepts such an accreditation for any credential. A registry
-  that answers `{"did": ...}` or `{"attribute": null}` for an `href` is malformed, not
-  unrestricted; there is nothing to pass instead, the walk now stops with a typed error.
-  Recursive trust was unaffected (an accreditation with no token is refused).
-  This is a shape check, not the end of the wildcard: an `attribute` object with no `body`,
-  an empty `body`, or a `body` whose claims name no `accreditedFor` is still an
-  accreditation with no type restriction, which single-level trust accepts for any
-  credential (its documented policy: that mode trusts the node's list). Recursive trust
-  refuses one that has no token (`AccreditationInvalid`) and otherwise needs a token that
-  verifies. Pinned by `test_an_attribute_object_with_no_usable_body_is_still_a_wildcard_by_design`
-  and its neighbour.
-- **`openvc.fetch` refuses the deprecated IPv6 site-local prefix `fec0::/10`**
-  ([#322](https://github.com/luisgf/openvc/issues/322), review round).
-  `ip_is_forbidden` (and so `did:web` and every fetch that resolves through
-  `_resolve_public_ips`) used to accept it: `ipaddress` reports `fec0::1` as
-  `is_global=True`, `is_private=False` and sets only `is_site_local` (measured on CPython
-  3.13.16, 3.14.8 and 3.15.0rc3), so nothing in the flag union caught it. RFC 3879
-  deprecated the prefix and it is not globally routable. A `did:web` (or status-list or
-  schema) host whose DNS answer includes a `fec0::/10` address now raises
-  `UnsafeUrlError` where it used to connect. There is nothing to pass instead: a publicly
-  reachable host does not resolve to this prefix; fix the DNS record. Only IPv6 has the
-  property, so IPv4 classification is unchanged.
 
 ### Deprecated
 
@@ -978,6 +1104,24 @@ Each is one value or table away from the other option. None changes anything tha
   boolean reached the proof suite's `decode` and raised a bare `AttributeError` (`'int'
   object has no attribute 'isascii'`) out of `issuer_record` and `verify_ebsi_badge`; it is
   now `MalformedRegistryResponse`.
+- **`VcJwtProofSuite` turns a JWK that is not an object into a `ProofError`**
+  ([#341](https://github.com/luisgf/openvc/issues/341)). `_jwk_to_key(jwk, alg)` read
+  `jwk.get(...)` before looking at what it held, so a resolver or a caller that handed over
+  `None`, a list, a string or a number got a bare `AttributeError` (`'NoneType' object has
+  no attribute 'get'`) for `ES256`, `ES384`, `EdDSA` and `Ed25519`. That is no `OpenvcError`,
+  so it escaped `verify_many` and `verify_many_async` and aborted the whole batch instead of
+  becoming one item's `error` (measured on `main` at cf6d100, CPython 3.14.8, PyJWT 2.13.0).
+  It is now `ProofError("ES256 requires a JWK object, got NoneType")`: the message names the
+  algorithm and the type and never echoes the value. `ES256K` already did this since #323 and
+  keeps its identical message; the ML-DSA lane never reached this function and was already a
+  `SignatureInvalid` (a `ProofError`), which the tests now pin. A `dict` subclass is still a
+  JWK object, and `{}` still reports the key-type pin ("requires an EC P-256 key"). A
+  `Mapping` that is not a `dict` (`MappingProxyType`, `UserDict`) and an object that only has
+  a `get` method are not JWK objects either: on `main` they were already a `ProofError`, but
+  one that said something else ("Object of type mappingproxy is not JSON serializable", or a
+  key-type pin naming `kty=None`) and, for the wrapper of a valid key, blamed the key; they now
+  meet the same first message as every other non-object (measured at cf6d100). The parameter
+  is typed `dict`, so this was a caller or resolver bug rather than attacker input.
 
 ### Tests
 
@@ -1161,6 +1305,23 @@ Each is one value or table away from the other option. None changes anything tha
   interpreted like signature files), are each killed by at least one test, and by a named
   failing test: the real chain's baseline result is computed on first use, so a verifier
   regression no longer surfaces as one collection error of the whole module.
+- `tests/test_vcjwt_input_hygiene.py` (#341, 255 tests, 36 of them ML-DSA controls that skip
+  where `cryptography` is older than 48 or OpenSSL older than 3.5). `allow_pq` on both suites
+  against twenty-two non-bool values (strings, `1`/`0`/`1.0`/`0.0`, `None`, containers, bytes,
+  `object()`), each an exact class; no echo of a long value; an object whose `__class__` claims
+  `bool`; the signature-order rule; the keyword-only rule; the controls. A non-object JWK on
+  `ES256`, `ES384`, `EdDSA`, `Ed25519` and `ES256K`, both through `_jwk_to_key` and through
+  `verify()` with a token a real key signed, and through `verify_many` and `verify_many_async`
+  with a resolver that returns the bad key for one of three credentials; the allow-list still
+  runs before the key is looked at; an empty object, a dict subclass and a wrong-curve key keep
+  their old behaviour; the ML-DSA lane is pinned as a `SignatureInvalid`; a `MappingProxyType`,
+  a `UserDict` and an object with only a `get` method, each holding a valid key, are refused
+  with the object message (a reviewer's mutant, `hasattr(jwk, "get")` in place of
+  `isinstance(jwk, dict)`, passed the first version of the file because it changes only the
+  message); a fuzz of arbitrary JSON values as the JWK. Run against the sources at cf6d100,
+  186 of the 255 fail and the controls pass; twenty-two targeted mutants of the change were
+  applied to scratch copies, twenty-one killed and one survivor that is equivalent (the object
+  check moved after the `ES256K` branch, which has the identical check of its own).
 
 ### Docs
 
@@ -1264,7 +1425,6 @@ Each is one value or table away from the other option. None changes anything tha
   `SECURITY.md` ("Signature verification") name the opt-in next to the allow-list, with the
   braces list unchanged; the fixtures README says that the DEFAULT allow-list refuses the
   RootTAO tokens; the wiki and the threat model (I23) carry the flag rule and the JWK members.
-
 - **#325 Part 2, the deprecation of `pilot`**: `wiki/Trust.md` (the `pilot` bullet says it is
   deprecated, what changes at the MAJOR and why a `DeprecationWarning` may not be seen;
   `conformance` and `production` are documented as kept, without a warning),
