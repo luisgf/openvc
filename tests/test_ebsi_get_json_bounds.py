@@ -117,6 +117,8 @@ class FakeTime:
         return self.now
 
     def sleep(self, seconds):
+        if seconds < 0:                   # as ``time.sleep`` does: a negative length is refused
+            raise ValueError("sleep length must be non-negative")
         self.sleeps.append(seconds)
         self.now += seconds
 
@@ -720,6 +722,56 @@ def test_a_backoff_ceiling_above_a_day_cannot_reach_time_sleep(build, fake_time)
     script = Script(reply(503, headers={"Retry-After": far}))
     expect(H.HttpTransientExhausted, build(script, retry=policy).get_json, NODE_URL)
     assert fake_time.sleeps == [86400.0]
+
+
+_NEGATIVE_STEPS = {
+    "no-retry-after": lambda: Script(reply(503)),
+    "retry-after-30": lambda: Script(reply(503, headers={"Retry-After": "30"})),
+    "transport-error": lambda: Script(httpx.ConnectError("refused")),
+}
+
+
+@pytest.mark.parametrize("backoff_max_s", [-1.0, -0.5, -86400.0, -1e300])
+@pytest.mark.parametrize("step", sorted(_NEGATIVE_STEPS))
+def test_a_negative_ceiling_sleeps_zero_and_is_a_typed_outcome_not_a_bare_exception(
+        build, fake_time, backoff_max_s, step):
+    """``backoff_max_s`` is not validated, so a negative one is a policy that can be built, and
+    it is the ceiling of every sleep when ``retry_after_max_s`` is ``None``. ``time.sleep``
+    raises ``ValueError`` on a negative number, so the sleep is clamped at zero where it is
+    computed. (A negative ``retry_after_max_s`` cannot reach a sleep: it is a ``ValueError``
+    when the policy is built, pinned in section 4.) On ``main`` a retry with no ``Retry-After``
+    was a bare ``ValueError`` out of ``time.sleep``, and one with ``Retry-After: 30`` slept the
+    30 s in full (there was no ceiling)."""
+    policy = H.RetryPolicy(attempts=3, backoff_base_s=0.25, backoff_max_s=backoff_max_s)
+    assert policy.retry_after_max_s is None
+    script = _NEGATIVE_STEPS[step]()
+    expect(H.HttpTransientExhausted, build(script, retry=policy).get_json, NODE_URL)
+    assert script.n == 3 and fake_time.sleeps == [0.0, 0.0]
+
+
+@pytest.mark.parametrize("asked,slept", [
+    pytest.param(None, 0.0, id="no-retry-after"),
+    pytest.param("30", 5.0, id="retry-after-30"),
+])
+def test_a_negative_backoff_ceiling_under_an_explicit_ceiling_still_never_sleeps_below_zero(
+        build, fake_time, asked, slept):
+    """The clamp is a floor and nothing else: the explicit ceiling still cuts a ``Retry-After``
+    at 5 s, and the negative backoff it is compared with sleeps 0 s."""
+    policy = H.RetryPolicy(attempts=3, backoff_base_s=0.25, backoff_max_s=-1.0,
+                           retry_after_max_s=5.0)
+    script = Script(reply(503, headers={} if asked is None else {"Retry-After": asked}))
+    expect(H.HttpTransientExhausted, build(script, retry=policy).get_json, NODE_URL)
+    assert script.n == 3 and fake_time.sleeps == [slept, slept]
+
+
+def test_a_negative_ceiling_under_a_callers_budget_sleeps_zero(build, fake_time):
+    """``deadline_s`` takes its own branch of the sleep: a negative ceiling must not slip
+    through it either."""
+    policy = H.RetryPolicy(attempts=3, backoff_base_s=0.25, backoff_max_s=-1.0)
+    script = Script(reply(503, headers={"Retry-After": "30"}))
+    expect(H.HttpTransientExhausted, build(script, retry=policy).get_bytes, NODE_URL,
+           deadline_s=60)
+    assert script.n == 3 and fake_time.sleeps == [0.0, 0.0]
 
 
 def test_the_last_attempt_does_not_sleep(build, fake_time):

@@ -190,7 +190,8 @@ class RetryPolicy:
     that ceiling too. An explicit value must be a number from 0 to one day; anything else is a
     ``ValueError`` when the policy is built (construction-time misuse, not wire input).
     ``backoff_max_s`` is not validated, as it never was, and a value that follows it is not
-    either: whatever the policy, no sleep is longer than one day."""
+    either: whatever the policy, no sleep is longer than one day, and none is negative (a
+    negative ``backoff_max_s`` is a ceiling that sleeps 0 s)."""
 
     attempts: int = 3
     backoff_base_s: float = 0.25
@@ -358,8 +359,9 @@ def _refuse_environment_proxy() -> None:
 # --------------------------------------------------------------------------- #
 
 # The delta-seconds form of `Retry-After` is a short run of ASCII digits. Nine digits reach 31
-# years, far past any wait a client honours (every sleep is cut to `RetryPolicy.retry_after_max_s`
-# anyway), and keep `float()` of a hostile value finite. A longer run is not read as a number.
+# years, far past any wait a client honours (every sleep is cut to the policy's ceiling,
+# `retry_after_max_s` or `backoff_max_s` when that is None, anyway), and keep `float()` of a
+# hostile value finite. A longer run is not read as a number.
 _RETRY_AFTER_MAX_DIGITS = 9
 # An HTTP-date is 29 characters (IMF-fixdate) and at most 33 in the obsolete forms (RFC 850 with
 # the longest day name). A longer value is not one, and is not handed to the stdlib's date parser.
@@ -855,13 +857,15 @@ class EbsiHttpClient:
         # A server decides what it asks for, never how long this client waits: no sleep is
         # longer than the policy's ceiling (`retry_after_max_s`, `backoff_max_s` when that is
         # None), and none is longer than one day, which `time.sleep` always takes (it raises
-        # OverflowError from about 9.2e9 s).
+        # OverflowError from about 9.2e9 s). Nor is one negative, which `time.sleep` refuses
+        # with a ValueError: `backoff_max_s` is not validated, so a negative one is a ceiling
+        # of every sleep, and it sleeps 0 s.
         ceiling = self._retry.retry_after_max_s
         delay = min(delay, self._retry.backoff_max_s if ceiling is None else ceiling,
                     _MAX_DEADLINE_S)
         if until is not None:                 # never sleep past the caller's budget
             delay = min(delay, max(0.0, until - time.monotonic()))
-        time.sleep(delay)
+        time.sleep(max(0.0, delay))
 
     # -- lifecycle --------------------------------------------------------- #
 

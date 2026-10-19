@@ -290,7 +290,7 @@ Example-based, but broad. Representative anchors:
   for 11, 400 and 5000 digits, `ValueError` out of `float` for `²`, and `١٢٣`, fullwidth
   digits and a number padded with a no-break space slept as seconds), a date in the year 9999 and a malformed date with a huge offset never reach
   `time.sleep`, and for every value (Hypothesis, binary and text) the sleep is a finite
-  number in `[0, retry_after_max_s]` and equals `min(max(backoff, Retry-After), ceiling)`
+  number in `[0, ceiling]` (the ceiling is `retry_after_max_s`, or `backoff_max_s` when that is `None`) and equals `min(max(backoff, Retry-After), ceiling)`
   for a digit run; `0` and small values are still slept as asked, on 429 and every retried
   5xx, and the ceiling bounds a transport-error backoff too; a response a test double has
   already read into memory is served, a `gzip` or `deflate` one too, under the same cap

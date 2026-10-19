@@ -785,9 +785,9 @@ Each is one value or table away from the other option. None changes anything tha
   itself stays `None`. An explicit value must be a number of seconds from 0 to one day
   (`True`, a string, `nan`, `inf`, a negative and `10**400` are a `ValueError` when the
   policy is built); `backoff_max_s` is not validated, as it never was, and no sleep is longer
-  than one day whatever it is. An add-only field: every existing `RetryPolicy(...)` call, and
-  a `dataclasses.replace` of one, still builds. See *Changed* for what the default does to a
-  node that asks for a long wait.
+  than one day whatever it is, nor negative (a negative `backoff_max_s` sleeps 0 s). An
+  add-only field: every existing `RetryPolicy(...)` call, and a `dataclasses.replace` of one,
+  still builds. See *Changed* for what the default does to a node that asks for a long wait.
 
 ### Changed
 
@@ -1008,12 +1008,19 @@ Each is one value or table away from the other option. None changes anything tha
     `HttpError` instead would have kept `get_bytes`'s outcome and turned every such downstream
     double into an error. No socket hands over a consumed stream, so nothing on the wire
     reaches this;
-  - the sleep is not clamped to zero from below (`time.sleep(delay)`, not
-    `time.sleep(max(0.0, delay))`): no wire path makes the delay negative (a parsed
-    `Retry-After` is never negative, the caller's budget is already clamped at 0, and an
-    explicit ceiling is validated from 0), and a negative `backoff_max_s` is construction
-    misuse that raised from `time.sleep` before this change too. The other option, keeping the
-    clamp, would make "a negative `backoff_max_s` sleeps 0 s" a contract to pin with a test.
+  - a negative ceiling sleeps 0 s (it raised from `time.sleep` before): `backoff_max_s` is
+    not validated, so `RetryPolicy(backoff_max_s=-1)` can be built, and its ceiling bounds
+    every sleep, which `time.sleep` refuses with a `ValueError` below zero. The sleep is
+    `time.sleep(max(0.0, delay))`. Measured on `main` at cf6d100 (a 503, three attempts, the
+    default `backoff_base_s`): with no `Retry-After` that policy was a bare `ValueError` out of
+    `get_json`; with `Retry-After: 30` it slept 30 s twice and ended in
+    `HttpTransientExhausted`, there being no ceiling, and it now sleeps 0 s twice and ends in
+    the same exception. No wire value makes the delay negative (a parsed `Retry-After` is
+    never negative and the caller's budget is clamped at 0), and an explicit
+    `retry_after_max_s` is validated from 0, so only `backoff_max_s` reaches this. The other
+    option, refusing a negative `backoff_max_s` with a `ValueError` when the policy is built,
+    would make a policy that builds today fail at construction, and would validate a field
+    that never was.
   - **Not changed, a finding:** the read of a non-200 body (#321) still decodes with
     `iter_bytes`, so one small `gzip` error body inflates a whole chunk before its 16 KiB
     check fires (measured: a 260 935-byte body that inflates to 256 MiB peaks at 557 MiB on a
@@ -1268,10 +1275,15 @@ Each is one value or table away from the other option. None changes anything tha
   `_parse_retry_after` and through the client (429 and every retried 5xx, raw UTF-8 header
   bytes, a day-out date, the year 9999, a date with a huge offset): never a bare exception,
   every sleep at most the ceiling, `0` and small values still honoured; Hypothesis for the
-  sleep (finite, in `[0, retry_after_max_s]`, and exactly `min(max(backoff, Retry-After),
-  ceiling)` for a digit run), for the parser and for arbitrary bytes under a coding; the
-  policy's default, a `dataclasses.replace` of it and its validation; a `gzip` or `deflate`
-  body that a test double has already read into memory. Six existing tests changed with the behaviour: four
+  sleep (finite, in `[0, ceiling]`, where the ceiling is `retry_after_max_s`, or
+  `backoff_max_s` when that is `None`, and exactly `min(max(backoff, Retry-After), ceiling)`
+  for a digit run), for the parser and for arbitrary bytes under a coding; a negative
+  `backoff_max_s` (with and without a `Retry-After`, after a transport error, under an
+  explicit ceiling and under a caller's budget) sleeps exactly 0 s and ends in
+  `HttpTransientExhausted`, never a bare `ValueError`, with the fake clock refusing a negative
+  sleep as `time.sleep` does; the policy's default, a `dataclasses.replace` of it and its
+  validation; a `gzip` or `deflate` body that a test double has already read into memory. Six
+  existing tests changed with the behaviour: four
   in `test_ebsi_http_bytes.py` relied on an unbounded `Retry-After` (they now build a policy
   with a ceiling, and the one that used a 400-digit value uses the longest readable one),
   `test_ebsi_http.py` expects the `zlib` error as the cause of a corrupt 200 body, and
