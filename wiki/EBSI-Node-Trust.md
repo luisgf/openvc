@@ -86,12 +86,14 @@ Production nodes are `api.ebsi.<operator domain>` hosts taken from the TNL: 10 o
 version 4. The names stay as they are for now (an unknown name is `UnknownEbsiEnvironment`), by
 the maintainer's decision of 2026-10-19 on
 [#325](https://github.com/luisgf/openvc/issues/325): `pilot` is deprecated in favour of
-`legacy-pilot`, because EBSI now also calls its Core API pilot "pilot" and the name will mean that
-ledger at the next MAJOR release; `conformance` and `production` are kept, documented here and
-silent (no warning, no refusal), because `for_ebsi` has no name to point them at: the node-based
-client that would take its nodes from the verified list does not exist yet (#324), and until it
-does the recipe below is how to reach a node. A request through a client built from `production`
-or `conformance` is not known to complete today, as the table says.
+`legacy-pilot`; `conformance` and `production` are kept, documented here and silent (no
+warning, no refusal). The reasons are #325's reading, not part of the decision. EBSI now also
+calls its Core API pilot "pilot", and the name will mean that ledger at the next MAJOR release,
+so `pilot` has a replacement to point at. `for_ebsi` has no name to point `conformance` and
+`production` at: the node-based client that would take its nodes from the verified list does
+not exist yet (#324), and until it does the recipe below is how to reach a node. A request
+through a client built from `production` or `conformance` is not known to complete today, as the
+table says.
 
 ## Getting the nodes
 

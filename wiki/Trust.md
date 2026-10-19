@@ -260,9 +260,9 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
     with one of them.
   - `conformance` (`api-conformance.ebsi.eu`) and `production` (`api.ebsi.eu`) are kept as
     they were, with the same allow-list rule, and without a warning or a refusal (the
-    maintainer's decision of 2026-10-19: documentation only, because there is no replacement
-    to name until the node-based client). A client built from either is not known to
-    complete a request today. One 12-second probe of the conformance host (a single attempt
+    maintainer's decision of 2026-10-19: documentation only). There is no replacement to
+    name for either until the node-based client (#324). A client built from either is not
+    known to complete a request today. One 12-second probe of the conformance host (a single attempt
     from one place, so possibly transient) completed no TCP connection; the certificate the
     production host presented did not cover its name, and none of the 45 node URLs in version
     4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a client fails
