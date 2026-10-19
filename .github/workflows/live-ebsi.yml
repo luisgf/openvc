@@ -10,7 +10,8 @@ name: Live EBSI smoke
 #   core-v1   the EBSI Core API v1 on PREPROD: from the verified Trusted Nodes List take two
 #             healthy nodes of different operators, read one DID document and one issuer
 #             record from each, require the two parsed results to agree. Alarms on a change
-#             of the Core v1 shapes, of the Problem Details type or of the per-node hosts.
+#             of the Core v1 shapes or of the per-node hosts. It reads no error response,
+#             so the Problem Details type stays pinned by the golden fixtures alone.
 #   tnl-watch the Trusted Nodes List itself, verified with the SHIPPED anchor and floors and a
 #             real clock: red 14 days (dispatch input warn_days) before the list expires, when
 #             tnl.json or trusted-keys.json is at a version other than the one last seen

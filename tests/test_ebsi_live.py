@@ -8,8 +8,9 @@ Three lanes, one workflow, never on a pull request:
   * ``core-v1`` — ``test_live_core_v1_preprod``: from the VERIFIED Trusted Nodes List take two
     preprod nodes (different operators, ``/v1/alive`` healthy), read a DID document and a
     Trusted Issuers Registry record from each through ``DidRegistryCoreV1`` / ``TirCoreV1``,
-    and require the two parsed results to agree. The alarm for the Core v1 shapes, the Problem
-    Details ``type`` and the per-node hosts that the golden fixtures pin offline.
+    and require the two parsed results to agree. The alarm for the Core v1 shapes and the
+    per-node hosts that the golden fixtures pin offline. It reads no error response, so it
+    does not watch the Problem Details ``type``: only the golden fixtures pin that.
   * ``tnl-watch`` — ``test_live_tnl_watch``: verify the live list chain with the SHIPPED anchor
     and floors, a real clock and no stored state (the stateless caller of ADR-0009 D2), then
     turn red for each of: the list is within ``OPENVC_TNL_WARN_DAYS`` (default 14) of its
@@ -26,6 +27,10 @@ OFFLINE (always run, no socket: an autouse fixture refuses one): the pure functi
 summary renderers), the real chain fixture of #319 through the real verifier with the clock
 fixed inside its window, and the whole core-v1 flow against the RECORDED preprod bodies of
 two nodes (``tests/fixtures/ebsi/core-v1/``) through real clients with an injected transport.
+Each live test is only the clock, the environment and the fetch around a lane function
+(``core_v1_lane``, ``tnl_watch_lane``) that holds everything a run decides and writes: the
+lanes run offline on those recorded bodies, so the step from a verdict to a red job is tested
+too, and a test pins that each live test calls its lane.
 LIVE (opt-in): ``OPENVC_EBSI_LIVE=1``, exactly the pattern of ``test_live_resolve``. The
 workflow selects a live test with ``-k live_core_v1`` or ``-k live_tnl_watch``, so no offline
 test name below contains either string (a test pins that).
@@ -572,8 +577,9 @@ def _requests_text(requests: Counter[str]) -> str:
 
 def write_step_summary(markdown: str) -> None:
     """Append to ``$GITHUB_STEP_SUMMARY`` when the runner sets it (and nowhere else). Only the
-    two live tests call this: ``ci.yml`` runs the offline suite on a runner that sets the
-    variable too, and must not write a page."""
+    two lanes call this: ``ci.yml`` runs the offline suite on a runner that sets the variable
+    too, and must not write a page, so an autouse fixture unsets it for every offline test and
+    the tests of a lane point it at a temporary file."""
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
         return
@@ -648,6 +654,40 @@ def watch(result: VerifiedNodeList, chain: Chain, *, now: datetime, warn_days: i
         recorded_keylist_key_sha256=RECORDED_KEYLIST_KEY_SHA256)
 
 
+# --------------------------------------------------------------------------- #
+# The two lanes: everything a live test decides and writes, short of the clock, the
+# environment and the fetch, so the offline suite runs it on recorded bodies
+# --------------------------------------------------------------------------- #
+
+def core_v1_lane(nodes: Sequence[Node], did: str) -> None:
+    """The core-v1 smoke over the nodes of a VERIFIED list: select, read, compare, write the
+    step summary (also when a read raises), and turn the outcome into a red job: fewer than
+    two usable nodes, or two parsed results that differ. A read that raises propagates."""
+    run = CoreRun()
+    try:
+        run_core_v1(run, nodes, did)
+    finally:
+        write_step_summary(render_core_summary(
+            did=did, selection=run.selection, reads=run.reads, requests=run.counts,
+            differences=run.differences))
+    assert run.selection is not None
+    if len(run.selection.chosen) < WANT_NODES:
+        pytest.fail(too_few_nodes_message(run.selection), pytrace=False)
+    assert not run.differences, "; ".join(run.differences)
+
+
+def tnl_watch_lane(result: VerifiedNodeList, chain: Chain, requests: Counter[str],
+                   *, now: datetime, warn_days: int) -> None:
+    """The watch over a list the verifier ACCEPTED: write the step summary, then fail once
+    with every finding (the code and the action each, in the fixed order)."""
+    findings = watch(result, chain, now=now, warn_days=warn_days)
+    write_step_summary(render_tnl_summary(
+        result=result, now=now, threshold=key_list_threshold(chain), warn_days=warn_days,
+        keylist_key_sha256=_sha256(chain.keylist_key), requests=requests, findings=findings))
+    if findings:
+        pytest.fail("\n".join(str(finding) for finding in findings), pytrace=False)
+
+
 # =========================================================================== #
 # LIVE (opt-in): OPENVC_EBSI_LIVE=1. Each reaches public, read-only, unauthenticated hosts.
 # =========================================================================== #
@@ -663,19 +703,8 @@ def live_chain() -> tuple[Chain, Counter[str]]:
 @needs_live
 def test_live_core_v1_preprod(live_chain: tuple[Chain, Counter[str]]) -> None:
     chain, _ = live_chain
-    result = verify_chain(chain, now=datetime.now(timezone.utc))
-    did = os.getenv("OPENVC_EBSI_CORE_DID", DEFAULT_CORE_DID)
-    run = CoreRun()
-    try:
-        run_core_v1(run, result.nodes, did)
-    finally:
-        write_step_summary(render_core_summary(
-            did=did, selection=run.selection, reads=run.reads, requests=run.counts,
-            differences=run.differences))
-    assert run.selection is not None
-    if len(run.selection.chosen) < WANT_NODES:
-        pytest.fail(too_few_nodes_message(run.selection), pytrace=False)
-    assert not run.differences, "; ".join(run.differences)
+    result = verify_chain(chain, now=datetime.now(timezone.utc))   # never caught: see above
+    core_v1_lane(result.nodes, os.getenv("OPENVC_EBSI_CORE_DID", DEFAULT_CORE_DID))
 
 
 @needs_live
@@ -684,12 +713,7 @@ def test_live_tnl_watch(live_chain: tuple[Chain, Counter[str]]) -> None:
     now = datetime.now(timezone.utc)
     warn_days = parse_warn_days(os.getenv("OPENVC_TNL_WARN_DAYS"))
     result = verify_chain(chain, now=now)              # never caught: see the module docstring
-    findings = watch(result, chain, now=now, warn_days=warn_days)
-    write_step_summary(render_tnl_summary(
-        result=result, now=now, threshold=key_list_threshold(chain), warn_days=warn_days,
-        keylist_key_sha256=_sha256(chain.keylist_key), requests=requests, findings=findings))
-    if findings:
-        pytest.fail("\n".join(str(finding) for finding in findings), pytrace=False)
+    tnl_watch_lane(result, chain, requests, now=now, warn_days=warn_days)
 
 
 # =========================================================================== #
@@ -708,6 +732,16 @@ def _no_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest)
     monkeypatch.setattr(socket.socket, "connect", refuse)
     monkeypatch.setattr(socket, "getaddrinfo", refuse)
     monkeypatch.setattr(socket, "create_connection", refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_runner_summary(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    """``ci.yml`` runs this module on a runner that sets ``GITHUB_STEP_SUMMARY``: an offline
+    test of a lane must not append its recorded-body page to that job's summary. A test that
+    wants to read the summary points the variable at a temporary file."""
+    if request.node.name in LIVE_TESTS:
+        return                      # the live job is meant to write its page
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
 
 
 NOW = datetime(2026, 10, 16, 12, 0, 0, tzinfo=timezone.utc)
@@ -1242,7 +1276,7 @@ def test_only_the_two_live_tests_read_the_wall_clock() -> None:
                    for stmt in module_level for call in ast.walk(stmt))
 
 
-def test_only_the_two_live_tests_write_a_step_summary() -> None:
+def test_only_the_two_lanes_write_a_step_summary() -> None:
     tree = ast.parse(Path(__file__).read_text())
     writers = {
         node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
@@ -1251,8 +1285,13 @@ def test_only_the_two_live_tests_write_a_step_summary() -> None:
     } - {"write_step_summary"}
     # the unit test of the writer itself points GITHUB_STEP_SUMMARY at a temporary file
     assert writers == {
-        "test_live_core_v1_preprod", "test_live_tnl_watch",
+        "core_v1_lane", "tnl_watch_lane",
         "test_the_step_summary_is_appended_where_the_runner_says_and_nowhere_else"}
+
+
+def test_the_offline_suite_has_no_step_summary_target() -> None:
+    # ci.yml's runner sets GITHUB_STEP_SUMMARY; the autouse fixture unsets it for this module
+    assert "GITHUB_STEP_SUMMARY" not in os.environ
 
 
 # ---- the real chain of #319, through the real verifier, with the clock fixed -------------
@@ -1587,6 +1626,160 @@ def test_a_second_node_with_a_missing_record_is_a_read_failure_not_a_pass(
         (NODE_GRNET.host, "read ok"), (NODE_INCM.host, "read failed: HttpNotFound")]
 
 
+# ---- the two lanes, offline: a verdict becomes a red job, and the page is written ---------
+# (a live test is the clock, the environment and the fetch around its lane)
+
+def _summary_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    target = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(target))
+    return target
+
+
+def test_the_core_v1_lane_fewer_than_two_usable_nodes_is_a_red_job_and_names_them(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen = _transport(monkeypatch)
+    target = _summary_target(monkeypatch, tmp_path)
+    with pytest.raises(pytest.fail.Exception) as caught:
+        core_v1_lane([NODE_DOWN, NODE_DEAD, NODE_GRNET], DEFAULT_CORE_DID)
+    message = caught.value.msg
+    assert message is not None and message.endswith(
+        f"1 found; failures: {NODE_DOWN.host}: HttpError 403; "
+        f"{NODE_DEAD.host}: HttpTransientExhausted")
+    assert "Firewall" not in message
+    assert len(seen) == 3                                       # three probes, nothing read
+    page = target.read_text()
+    assert f"| {NODE_GRNET.host} | alive, not read | 1 |" in page
+    assert f"| {NODE_DOWN.host} | not used: HttpError 403 | 1 |" in page
+    # the dead node never answered: no response, so nothing to count
+    assert f"| {NODE_DEAD.host} | not used: HttpTransientExhausted | 0 |" in page
+
+
+def test_the_core_v1_lane_exactly_two_usable_nodes_is_enough(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _transport(monkeypatch)
+    target = _summary_target(monkeypatch, tmp_path)
+    core_v1_lane([NODE_DOWN, NODE_GRNET, NODE_INCM], DEFAULT_CORE_DID)    # no exception
+    page = target.read_text()
+    assert f"| {NODE_GRNET.host} | read ok | 5 |" in page
+    assert f"| {NODE_INCM.host} | read ok | 5 |" in page
+    assert f"| {NODE_DOWN.host} | not used: HttpError 403 | 1 |" in page
+    assert "**Differences between the two nodes:** none" in page
+
+
+def test_the_core_v1_lane_two_nodes_that_differ_are_a_red_job_that_names_the_field(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _transport(monkeypatch, tweak={"incm.pt/v1/did-registry": lambda b: b.replace(
+        b'"secp256k1"', b'"secp256k2"')})
+    target = _summary_target(monkeypatch, tmp_path)
+    difference = ("verification methods (ids, types, controllers, keys): "
+                  f"{NODE_GRNET.host} and {NODE_INCM.host} differ")
+    with pytest.raises(AssertionError, match=re.escape(difference)):
+        core_v1_lane([NODE_GRNET, NODE_INCM], DEFAULT_CORE_DID)
+    page = target.read_text()
+    assert f"- {difference}" in page and "secp256k" not in page       # the field, never a value
+
+
+def test_the_core_v1_lane_a_failed_read_propagates_and_the_page_is_still_written(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _transport(monkeypatch, drop=lambda url: url.startswith(NODE_INCM.origin)
+               and "/issuers-registry/issuers/" in url)
+    target = _summary_target(monkeypatch, tmp_path)
+    with pytest.raises(HttpNotFound):
+        core_v1_lane([NODE_GRNET, NODE_INCM], DEFAULT_CORE_DID)
+    page = target.read_text()
+    assert f"| {NODE_GRNET.host} | read ok | 5 |" in page
+    assert f"| {NODE_INCM.host} | read failed: HttpNotFound |" in page
+
+
+def _result_at_last_seen(chain: Chain) -> VerifiedNodeList:
+    """The recorded list as if it were at the last-seen versions (the constants move, the
+    fixture stays where it was)."""
+    return dataclasses.replace(
+        verify_chain(chain, now=NOW), version=LAST_SEEN_TNL_VERSION,
+        accepted_keys=Accepted(LAST_SEEN_KEYS_VERSION, "0" * 64))
+
+
+def test_the_tnl_watch_lane_a_quiet_list_is_green_and_writes_its_page(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    chain = fixture_chain()
+    target = _summary_target(monkeypatch, tmp_path)
+    tnl_watch_lane(_result_at_last_seen(chain), chain, Counter({TNL_HOST: 5}),
+                   now=NOW, warn_days=DEFAULT_WARN_DAYS)                  # no exception
+    page = target.read_text()
+    assert "**Findings:** none" in page and "keylist-key.asc | the recorded file" in page
+    assert "custodian threshold | 2" in page and f"{TNL_HOST}: 5" in page
+
+
+def _moved_list(result: VerifiedNodeList, chain: Chain) -> tuple[VerifiedNodeList, Chain]:
+    return dataclasses.replace(result, version=result.version + 1), chain
+
+
+def _rotated_keys(result: VerifiedNodeList, chain: Chain) -> tuple[VerifiedNodeList, Chain]:
+    return dataclasses.replace(
+        result, accepted_keys=Accepted(result.accepted_keys.version + 1, "0" * 64)), chain
+
+
+def _swapped_key_file(result: VerifiedNodeList, chain: Chain) -> tuple[VerifiedNodeList, Chain]:
+    return result, dataclasses.replace(chain, keylist_key=chain.keylist_key + b"\n")
+
+
+@pytest.mark.parametrize("code,change,now", [
+    ("EXPIRING", None, EXPIRES - timedelta(days=DEFAULT_WARN_DAYS)),
+    ("LIST_VERSION", _moved_list, NOW),
+    ("KEYS_VERSION", _rotated_keys, NOW),
+    ("ANCHOR_FILE", _swapped_key_file, NOW),
+], ids=["expiring", "list-version", "keys-version", "anchor-file"])
+def test_the_tnl_watch_lane_each_cause_is_a_red_job_with_its_action_and_its_page_entry(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path, code: str,
+        change: Callable[[VerifiedNodeList, Chain], tuple[VerifiedNodeList, Chain]] | None,
+        now: datetime) -> None:
+    chain = fixture_chain()
+    result = _result_at_last_seen(chain)
+    if change is not None:
+        result, chain = change(result, chain)
+    target = _summary_target(monkeypatch, tmp_path)
+    with pytest.raises(pytest.fail.Exception) as caught:
+        tnl_watch_lane(result, chain, Counter(), now=now, warn_days=DEFAULT_WARN_DAYS)
+    message = caught.value.msg
+    assert message is not None and message.startswith(f"{code}: ")
+    assert "\n" not in message and len(message) > len(code) + 2          # one finding, an action
+    page = target.read_text()
+    assert f"- `{code}`" in page and page.count("- `") == 1
+
+
+def test_the_tnl_watch_lane_warns_at_the_days_it_was_given_not_at_the_default(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # the forced-red dispatch of the workflow: 80 days left at NOW, a warning at 100 (365 live)
+    chain = fixture_chain()
+    result = _result_at_last_seen(chain)
+    target = _summary_target(monkeypatch, tmp_path)
+    with pytest.raises(pytest.fail.Exception) as caught:
+        tnl_watch_lane(result, chain, Counter(), now=NOW, warn_days=100)
+    assert caught.value.msg is not None and caught.value.msg.startswith("EXPIRING: ")
+    assert "warning at 100 d" in caught.value.msg
+    assert "days left | 80 (warning at 100)" in target.read_text()
+
+
+def test_the_tnl_watch_lane_fails_once_with_every_finding_in_the_fixed_order(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    chain = fixture_chain()
+    result, chain = _swapped_key_file(*_rotated_keys(*_moved_list(
+        _result_at_last_seen(chain), chain)))
+    target = _summary_target(monkeypatch, tmp_path)
+    with pytest.raises(pytest.fail.Exception) as caught:
+        tnl_watch_lane(result, chain, Counter(), now=EXPIRES, warn_days=DEFAULT_WARN_DAYS)
+    message = caught.value.msg
+    assert message is not None
+    lines = message.split("\n")
+    assert [line.split(":")[0] for line in lines] == [
+        "EXPIRING", "LIST_VERSION", "KEYS_VERSION", "ANCHOR_FILE"]
+    expected = watch(result, chain, now=EXPIRES, warn_days=DEFAULT_WARN_DAYS)
+    assert lines == [str(finding) for finding in expected]
+    page = target.read_text()
+    assert [line for line in page.splitlines() if line.startswith("- `")] == [
+        "- `EXPIRING`", "- `LIST_VERSION`", "- `KEYS_VERSION`", "- `ANCHOR_FILE`"]
+
+
 # ---- the live tests are opt-in, and the workflow can select them by name -----------------
 
 LIVE_TESTS = {"test_live_core_v1_preprod": "live_core_v1", "test_live_tnl_watch": "live_tnl_watch"}
@@ -1598,6 +1791,23 @@ def test_each_live_test_is_skipped_unless_the_opt_in_variable_is_one(name: str) 
     assert len(marks) == 1
     assert marks[0].args == (os.getenv("OPENVC_EBSI_LIVE") != "1",)
     assert marks[0].kwargs["reason"] == "live EBSI test is opt-in"
+
+
+@pytest.mark.parametrize("name,lane", [
+    ("test_live_core_v1_preprod", "core_v1_lane"), ("test_live_tnl_watch", "tnl_watch_lane"),
+], ids=["core-v1-smoke", "watch"])
+def test_each_live_test_verifies_the_chain_and_ends_by_running_its_lane(
+        name: str, lane: str) -> None:
+    # a live test that did not reach its lane would be green without having checked anything
+    function = ast.parse(inspect.getsource(globals()[name])).body[0]
+    assert isinstance(function, ast.FunctionDef)
+    verifies = [stmt for stmt in function.body if isinstance(stmt, ast.Assign)
+                and isinstance(stmt.value, ast.Call) and isinstance(stmt.value.func, ast.Name)
+                and stmt.value.func.id == "verify_chain"]
+    assert len(verifies) == 1
+    last = function.body[-1]
+    assert isinstance(last, ast.Expr) and isinstance(last.value, ast.Call)
+    assert isinstance(last.value.func, ast.Name) and last.value.func.id == lane
 
 
 def _candidate_ids(mark: Any) -> list[str]:
