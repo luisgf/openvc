@@ -1071,7 +1071,8 @@ def test_verify_ebsi_badge_wrapper_messages_are_bounded() -> None:
 def test_live_resolve() -> None:
     # Smoke-test real DID resolution — exercises the did+ld+json content
     # negotiation the offline tests can't. Defaults to the legacy pilot registry + a known
-    # pilot DID; override with OPENVC_EBSI_ENV / OPENVC_EBSI_DID.
+    # pilot DID; override with OPENVC_EBSI_ENV / OPENVC_EBSI_DID. (OPENVC_EBSI_ENV=pilot still
+    # works but warns: `pilot` is deprecated in favour of `legacy-pilot`, see `for_ebsi`.)
     env = os.getenv("OPENVC_EBSI_ENV", "legacy-pilot")
     did = os.getenv("OPENVC_EBSI_DID", "did:ebsi:zZeKyEJfUTGwajhNyNX928z")
     suite = VcJwtProofSuite()

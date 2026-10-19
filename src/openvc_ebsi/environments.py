@@ -11,11 +11,16 @@ What each name means, as measured and documented in
 
 * ``legacy-pilot`` — ``api-pilot.ebsi.eu``, the legacy per-service lane (the v5 adapters). The
   only place the recorded fixtures and the weekly smoke test are valid. It is the default.
-* ``pilot`` — the same host and the same lane as ``legacy-pilot``, kept for compatibility. EBSI
+* ``pilot`` — the same host and the same lane as ``legacy-pilot``, **deprecated** since 1.37.0
+  (the maintainer's decision of 2026-10-19, ADR-0009 open question 4): ``for_ebsi("pilot")``
+  emits a ``DeprecationWarning`` naming ``legacy-pilot`` and seeds the same allow-list. EBSI
   has since used "pilot" for the Core API pilot too, which is a different ledger that this name
-  does not reach; ``legacy-pilot`` says which one is meant.
+  does not reach; the name will change meaning at the next MAJOR release (2.0, #74). Only
+  ``for_ebsi`` warns: reading this table, ``EBSI_HOSTS`` or ``EBSI_BASE`` cannot.
 * ``conformance`` — ``api-conformance.ebsi.eu``. A single measurement on 2026-10-16 completed
-  no TCP connection within 12 s, so it may be transient; the row is kept as it was.
+  no TCP connection within 12 s, so it may be transient; the row is kept as it was, like the
+  ``production`` row (the maintainer's decision of 2026-10-19, ADR-0009 open question 4: for
+  both, documentation only, with no warning and no refusal).
 * ``production`` — ``api.ebsi.eu``. The certificate that host presented did not cover its name
   when measured, and none of the Trusted Nodes List's node hosts is under ``ebsi.eu``, so a
   client built from it is not known to complete a request. The row is kept as it was; where

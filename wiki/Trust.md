@@ -158,7 +158,8 @@ with for_ebsi("legacy-pilot") as http:
     print(result.trusted, result.issuer)
 ```
 
-`for_ebsi()` (the default `legacy-pilot`, and its alias `"pilot"`) is the **legacy pilot lane**
+`for_ebsi()` (the default `legacy-pilot`; the older spelling `"pilot"` is deprecated, see
+below) is the **legacy pilot lane**
 (`api-pilot.ebsi.eu`, the per-service `v5` paths): the lane the recorded fixtures and the weekly live
 smoke test cover. On EBSI Core API v1 the recursive walk (`trust_anchors=`) needs one more
 argument, as of 2026-10-16: the prod and preprod RootTAO accreditations are signed `ES256K`, which
@@ -227,7 +228,7 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   It does not stop an attacker who also holds a valid certificate for a public address, a
   dishonest listed node, or anything about registry content. There are no exemptions: to
   reach an internal mirror, build a second client without the guard. Use it as
-  `for_ebsi("pilot", address_guard=AddressGuard())`, with `AddressGuard` from
+  `for_ebsi("legacy-pilot", address_guard=AddressGuard())`, with `AddressGuard` from
   `openvc_ebsi.http`.
 - **The document must be for the DID asked**: `DidEbsiResolver.resolve(did)` raises
   `DidResolutionError` unless the registry document's `id` is exactly `did`, as `did:web`
@@ -238,25 +239,45 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   every API version), before any `attributes` page or revision is fetched, so
   `IssuerRecord.did` is the DID the registry answered for. The `attributes` / `href` path
   is still pinned to the registry's origin, not to the issuer.
+- **The scalars it copies are typed**: the TIR adapters (v4, v5 and Core v1) check the JSON
+  type of every scalar they copy into `Accreditation` and `IssuerRecord`, and a wrong one
+  raises `MalformedRegistryResponse`, with the value shown bounded. `hasAttributes` must be
+  `true` or `false` (the string `"false"` is not read as `true`, nor `0` as `false`); `id`
+  and `issuerType` must be strings (`null` is wrong), and so must `hash` where it is the
+  value copied: always on v4, and on v5 and Core v1 only when the listing item's `id` is
+  absent or empty (otherwise the `id` is the attribute id and the `hash` is not read);
+  `tao`, `rootTao` and `body` a string or `null`. An absent member keeps its default (`""`,
+  `None`, `false`), and one bad accreditation rejects the whole record. A node that sends
+  what its schema says is unaffected.
 - **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
   named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
   recorded on 2026-10-16
   ([ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)):
   - `legacy-pilot` is `api-pilot.ebsi.eu`, the legacy per-service lane (the v5 adapters), and
     the only place the recorded fixtures and the weekly smoke test are valid.
-  - `pilot` is the same host and the same lane, kept as it was and not deprecated. EBSI now
-    also uses "pilot" for its Core API pilot, which is a different ledger that this name does
-    not reach; `legacy-pilot` says which one you mean. ADR-0009's planned end state gives
-    `pilot` the Core API meaning, at the earliest in the 2.0 window
-    ([#74](https://github.com/luisgf/openvc/issues/74); not decided yet), so prefer
-    `legacy-pilot` in code that will outlive a major upgrade.
+  - `pilot` is the same host and the same lane, **deprecated since 1.37.0**:
+    `for_ebsi("pilot")` emits a `DeprecationWarning` that names `legacy-pilot`, and builds the
+    same client (the identical allow-list), so nothing breaks today. EBSI now also uses "pilot"
+    for its Core API pilot, which is a different ledger that this name does not reach (the
+    legacy DID answered 404 on the two nodes of it that ADR-0009 tried on 2026-10-16).
+    **`pilot` will change meaning at the next MAJOR release**
+    (2.0, [#74](https://github.com/luisgf/openvc/issues/74)), so a caller that keeps the name
+    would then read the other ledger. Use `legacy-pilot`, which says which one you mean. Only
+    `for_ebsi` warns: a lookup of `EBSI_HOSTS["pilot"]` or `EBSI_BASE["pilot"]` cannot, so move
+    those too. A name you read from your own configuration (an environment variable, say) and
+    pass to `for_ebsi` warns the same way. Python hides a `DeprecationWarning` raised outside
+    `__main__` unless you ask (`python -W default`, `-X dev`, or pytest), so run your tests
+    with one of them.
   - `conformance` (`api-conformance.ebsi.eu`) and `production` (`api.ebsi.eu`) are kept as
-    they were, with the same allow-list rule, but a client built from either is not known to
-    complete a request today. One 12-second probe of the conformance host (a single attempt
-    from one place, so possibly transient) completed no TCP connection; the certificate the
-    production host presented did not cover its name, and none of the 45 node URLs in version
-    4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a client fails
-    closed. `api.ebsi.eu` is not a node: no HTTP response could be obtained from it.
+    they were, with the same allow-list rule, and without a warning or a refusal (the
+    maintainer's decision of 2026-10-19: documentation only). There is no replacement to
+    name for either until the node-based client (#324). A client built from either is not
+    known to complete a request today. One 12-second probe of the conformance host (a single
+    attempt from one place, so possibly transient) completed no TCP connection; the
+    certificate the production host presented did not cover its name, and none of the 45 node
+    URLs in version 4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a
+    client fails closed. `api.ebsi.eu` is not a node: no HTTP response could be obtained from
+    it.
   - Any other name (another case, an empty string, a value that is not a string) raises
     `UnknownEbsiEnvironment`, which is also a `ValueError`.
 

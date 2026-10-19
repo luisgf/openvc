@@ -70,7 +70,13 @@ Currently deprecated (removable at the next MAJOR): the verb-last
 `openvc.proof.ecdsa_sd` codec aliases — `cbor_encode`/`cbor_decode`,
 `serialize_base_proof`/`parse_base_proof`,
 `serialize_derived_proof`/`parse_derived_proof` — each warns and forwards to its
-verb-first replacement (`encode_cbor`/`decode_cbor`, `encode_base_proof`/…).
+verb-first replacement (`encode_cbor`/`decode_cbor`, `encode_base_proof`/…); and the
+EBSI environment name `"pilot"` of `openvc_ebsi.http.for_ebsi` (deprecated in 1.37.0,
+[#325](https://github.com/luisgf/openvc/issues/325)). `for_ebsi("pilot")` warns, names
+`"legacy-pilot"` and builds the identical client; the name is not removed but **changes
+meaning** at the next MAJOR, to the EBSI Core API pilot, a different ledger
+([#74](https://github.com/luisgf/openvc/issues/74)). `"conformance"` and `"production"` are
+documented and unchanged, with no warning.
 
 ## Supported Python versions
 
