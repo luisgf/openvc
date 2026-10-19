@@ -907,10 +907,12 @@ Each is one value or table away from the other option. None changes anything tha
   9. *`NodeClientConfigError` is also a `ValueError`*, like `UnknownEbsiEnvironment`, so the
      issue's "`ValueError` for exactly one of the pair" and its "`NodeClientConfigError` for a
      bad clock" are one class.
-  10. *The shipped client still reads a 403's body* (bounded, #321) for `HttpError.problem_type`;
-      the node client never carries it. The issue's "the body is never parsed" row is therefore
-      met at the node-client layer (nothing of a body reaches a `NodeFailure`, an error or a
-      log), not by changing the shared error path.
+  10. *The shipped client still reads a 403's body* (bounded, #321) for `HttpError.problem_type`,
+      an opaque validated string; `run` does not surface it for a node it fails over from, and
+      does for a node's *answer* (a 404 or another 4xx), as does a bare `session.get_json`. The
+      issue's "the body is never parsed" row is therefore met on the failover path (nothing of a
+      failing node's answer reaches a `NodeFailure`, a `NoHealthyNode` or the log line), not by
+      changing the shared error path, which still parses it for `type`.
   11. *Not done here, on purpose:* the issue's three request-path fixes. The `Retry-After` bound
       and parsing (a, b) are #335's; the unbounded error-body read (c) already landed with #321.
       `docs/audit/assurance.md` section 4 gets its entry after the adversarial review, and ADR-0009

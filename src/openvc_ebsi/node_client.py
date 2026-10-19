@@ -131,7 +131,7 @@ class NodeFailure:
     """Why one node was passed over: its ``origin``, a ``kind`` from :data:`FAILURE_KINDS` and
     the HTTP ``status`` when there was one. **Nothing else, on purpose**: never a response
     body, a header value, a ``Location`` or an exception message, so a hostile node cannot put
-    text into a log line or an error."""
+    text into a log line or into the :class:`NoHealthyNode` that lists its failure."""
 
     origin: str
     kind: NodeFailureKind

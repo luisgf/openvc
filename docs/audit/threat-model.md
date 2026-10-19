@@ -370,8 +370,11 @@ finite input", with no explicit constant.
   (one table, `node_client._FAILOVER`); an attempt during which the session saw a node failure is
   discarded even if the walk caught it, and a swallowed expiry or off-node refusal is raised at
   the end. A node answer (a 404, any other 4xx, a malformed 200) and every content error propagate
-  unchanged. Bodies never reach an error or a log line: a `NodeFailure` is `origin`, a closed
-  `kind` and `status`. **Residual:** the list authenticates the operator, not the content (R12);
+  unchanged. On the failover path nothing of a node's answer reaches an error or a log line (a
+  `NodeFailure` is `origin`, a closed `kind` and `status`); a node's *answer* that propagates (a
+  404 or another 4xx), and any error from a bare `session.get_json` (a 403 included), can carry
+  `HttpError.problem_type`, the bounded, validated, opaque Problem Details `type` and nothing
+  else of the body. **Residual:** the list authenticates the operator, not the content (R12);
   a node that answers 404 for a DID another node holds is believed (ADR-0009 open question 5);
   `timeout_s` bounds each socket operation, not a response's headers (above), so a listed node
   that drips headers can hold a walk; a request in flight when the list expires finishes; the
