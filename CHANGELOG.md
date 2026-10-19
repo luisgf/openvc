@@ -1770,6 +1770,30 @@ Each is one value or table away from the other option. None changes anything tha
   raises, or returns 100 000 characters, through the four messages that format the URL
   (the typed refusal, the message equal to the quoted URL); and a Hypothesis property that no
   refusal of `_guard_host` reaches 500 characters.
+- **Live EBSI workflow: a Core v1 preprod smoke and a Trusted Nodes List watch**
+  ([#326](https://github.com/luisgf/openvc/issues/326)). CI and tests only: nothing under
+  `src/` and no change to `ci.yml`. `.github/workflows/live-ebsi.yml` gains two jobs next
+  to the legacy v5 one, on `schedule` and `workflow_dispatch` only, with
+  `permissions: contents: read` unchanged. `core-v1` takes two healthy preprod nodes of
+  different operators from the *verified* list, reads one DID document and one issuer
+  record from each through the `"core-v1"` adapters and requires the two parsed results to
+  agree. `tnl-watch` verifies the live list with the shipped anchor and floors and a real
+  clock, and is red 14 days before `expires`, when `tnl.json` or `trusted-keys.json` is at
+  a version other than the one last seen, or when the served `keylist-key.asc` is not the
+  recorded file. The tests are in `tests/test_ebsi_live.py` (the two live ones skip unless
+  `OPENVC_EBSI_LIVE=1`; the decisions, both lanes end to end on the recorded bodies of two
+  preprod nodes, and the workflow text are tested offline). Defaults taken, pending the
+  maintainer: preprod only (no prod read, no TNL `pilot` node); "version changed" is measured
+  against two test-only constants, `LAST_SEEN_TNL_VERSION = 4` and
+  `LAST_SEEN_KEYS_VERSION = 1` (live values on 2026-10-19), not against the shipped
+  floors; a red job per cause and no issue opened from CI; a second, daily schedule
+  (`17 6 * * 0,2-6`) that runs `tnl-watch` alone, the Monday entry running all three jobs
+  (so `live` now runs weekly only); a `warn_days` dispatch input (a string, default `14`,
+  passed through the environment as `OPENVC_TNL_WARN_DAYS`). The `core-v1` job reads no
+  error response, so it does not watch the Problem Details `type`: the golden fixtures
+  alone pin that. For a developer, `OPENVC_EBSI_LIVE=1 pytest` now also runs both live
+  tests, needs the network and a real clock, and `tnl-watch` is red by design from
+  2026-12-21T13:33:18Z, 14 days before the current list expires.
 
 ### Docs
 

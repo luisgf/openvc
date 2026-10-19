@@ -12,7 +12,9 @@ Two tiers, by design:
 
   * LIVE (opt-in) — set OPENVC_EBSI_LIVE=1 to smoke-test against the real
     legacy pilot registry (api-pilot.ebsi.eu). Skipped by default so CI never
-    depends on an external service whose data rotates.
+    depends on an external service whose data rotates. The other two live
+    lanes, the Core v1 preprod smoke and the Trusted Nodes List expiry/version
+    watch, are in tests/test_ebsi_live.py (see .github/workflows/live-ebsi.yml).
 
 The TIR v5 adapter and DID-document checks run against GOLDEN FIXTURES recorded
 verbatim from the pilot registry (tests/fixtures/ebsi/) — real wire shapes, so a

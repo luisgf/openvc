@@ -11,7 +11,8 @@ pip install -e ".[all]"       # core + ebsi + data-integrity + schema + trustlis
 
 ```sh
 pytest                        # offline: deterministic, no network
-OPENVC_EBSI_LIVE=1 pytest     # optionally also the live EBSI smoke test
+OPENVC_EBSI_LIVE=1 pytest     # optionally also the live EBSI checks (network, real clock;
+                              #   the node-list watch is red near the list's expiry)
 flake8 src tests              # lint (max line length 100)
 mypy                          # type check (strict-ish; the code is fully typed)
 gitlint                       # commit-message convention (see below)

@@ -1,24 +1,50 @@
 name: Live EBSI smoke
 
-# A drift alarm against the REAL EBSI registries. It runs weekly (and on demand),
-# never on pull requests: the offline suite in ci.yml is the gate; this only warns
-# if EBSI's live behaviour diverges from what the adapters expect (a new API
-# version, a changed content type, a moved link). See docs/adr/ADR-0001.
+# Drift alarms against the REAL EBSI services. They run on a schedule (and on demand),
+# never on pull requests: the offline suite in ci.yml is the gate and stays the only gate.
+# Opt-in by design: every test here needs OPENVC_EBSI_LIVE=1 and is skipped without it.
+# Three lanes, one job each, so one failure never masks another and a red job names its cause:
+#
+#   live      the legacy v5 lane on api-pilot.ebsi.eu (what the golden fixtures in
+#             tests/fixtures/ebsi/ record): one DID resolved. Unchanged.
+#   core-v1   the EBSI Core API v1 on PREPROD: from the verified Trusted Nodes List take two
+#             healthy nodes of different operators, read one DID document and one issuer
+#             record from each, require the two parsed results to agree. Alarms on a change
+#             of the Core v1 shapes or of the per-node hosts. It reads no error response,
+#             so the Problem Details type stays pinned by the golden fixtures alone.
+#   tnl-watch the Trusted Nodes List itself, verified with the SHIPPED anchor and floors and a
+#             real clock: red 14 days (dispatch input warn_days) before the list expires, when
+#             tnl.json or trusted-keys.json is at a version other than the one last seen
+#             (tests/test_ebsi_live.py), or when the served keylist-key.asc is not the recorded
+#             file. See docs/adr/ADR-0009 ("What to watch"). Nothing is opened or changed
+#             automatically: a red run is the cue for a by-hand, test-only PR.
+#
+# Schedule: Mondays run all three lanes. Every other day runs tnl-watch alone (five small
+# GETs), so the expiry warning lands within a day of the 14-day mark. The daily entry skips
+# Monday only because the Monday entry already runs tnl-watch.
 on:
   schedule:
-    - cron: "17 6 * * 1"          # Mondays 06:17 UTC
+    - cron: "17 6 * * 1"          # Mondays 06:17 UTC: live, core-v1 and tnl-watch
+    - cron: "17 6 * * 0,2-6"      # the other days 06:17 UTC: tnl-watch only
   workflow_dispatch:
+    inputs:
+      warn_days:
+        description: >-
+          tnl-watch: turn red when the node list expires within this many days (1 to 400).
+          A dispatch with 365 is the forced-red run that shows the failure path.
+        type: string
+        default: "14"
 
-# Least privilege: this job only checks out and runs pytest against the live
-# registries — it never touches the GitHub API. Explicit here (not inherited)
-# so the one unattended, scheduled workflow stays read-only regardless of the
-# repository-wide default.
+# Least privilege: these jobs only check out and run pytest against public, read-only
+# services — they never touch the GitHub API. Explicit here (not inherited) so the
+# unattended, scheduled workflow stays read-only regardless of the repository-wide default.
 permissions:
   contents: read
 
 jobs:
   live:
     name: Resolve a real DID against the legacy pilot lane
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 6 * * 1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -36,3 +62,51 @@ jobs:
         env:
           OPENVC_EBSI_LIVE: "1"
         run: pytest -q tests/test_ebsi_verifier.py -k live
+
+  core-v1:
+    name: Read a DID and an issuer from two Core v1 preprod nodes
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 6 * * 1'
+    runs-on: ubuntu-latest
+    # a first contact with a node was measured at 6.5 s (ADR-0009); a dead node costs one
+    # 10 s timeout per probe, so this bounds a bad day, not a normal one
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install (core + ebsi + dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[ebsi,dev]"
+
+      - name: Core v1 preprod smoke (two nodes must agree)
+        env:
+          OPENVC_EBSI_LIVE: "1"
+        run: pytest -q -rs tests/test_ebsi_live.py -k live_core_v1
+
+  tnl-watch:
+    name: Verify the Trusted Nodes List and watch its expiry and versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install (core + ebsi + dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[ebsi,dev]"
+
+      - name: TNL expiry and version watch
+        env:
+          OPENVC_EBSI_LIVE: "1"
+          # An env value, never interpolated into the script. A schedule run has no inputs,
+          # so the expression falls back to the default; the test also treats "" as 14.
+          OPENVC_TNL_WARN_DAYS: ${{ inputs.warn_days || '14' }}
+        run: pytest -q -rs tests/test_ebsi_live.py -k live_tnl_watch
