@@ -341,7 +341,9 @@ finite input", with no explicit constant.
   boolean and `id`, `hash`, `issuerType`, `tao`, `rootTao` and `body` the string (or, for
   the last three, `null`) the model declares, else `MalformedRegistryResponse` on every
   lane, so a wrong-typed member is no longer stored as sent nor read by truth (the string
-  `"false"` was `has_attributes=True`).
+  `"false"` was `has_attributes=True`). The `hash` is typed where it is the value copied:
+  always on v4, and on v5 and Core v1 only when the listing item's `id` is absent or empty
+  (otherwise the `id` is the attribute id and the `hash`, of any type, is not read).
   **Residual:** the TIR `attributes` URL and each revision `href` are pinned to the
   listing's origin (#172), not to `.../issuers/{did}/`, and a revision's own `did` is not
   read; both are outside #266 and #267.

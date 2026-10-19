@@ -293,12 +293,14 @@ def test_a_listing_item_with_an_empty_id_falls_back_to_the_attributes_hash(lane:
     assert acc.attribute_id == wire_hash
 
 
-@pytest.mark.parametrize("lane", WALKS, ids=_lane_id)
-def test_a_hash_that_is_not_copied_is_not_read(lane: Lane) -> None:
+@pytest.mark.parametrize("lane", RECORDED, ids=_lane_id)
+@pytest.mark.parametrize("value", [*NOT_STRINGS, _p(None)])
+def test_a_hash_that_is_not_copied_is_not_read(lane: Lane, value: Any) -> None:
     # the listing item's id is what the record carries; the attribute's hash is only the
-    # fallback, so a hash of any type next to a usable id is a field nothing copies
+    # fallback, so a hash of any type, `null` included, next to a usable id is a field
+    # nothing copies (the docs say so: it is typed "where it is the value copied")
     item_id = _record(lane).accreditations[0].attribute_id
-    acc = _record(lane, attribute={"hash": {"not": ["a", "string"]}}).accreditations[0]
+    acc = _record(lane, attribute={"hash": value}).accreditations[0]
     assert acc.attribute_id == item_id
 
 

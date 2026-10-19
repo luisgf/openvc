@@ -921,7 +921,9 @@ Each is one value or table away from the other option. None changes anything tha
   as `has_attributes=True`, so the walk went on to fetch the listing and every revision,
   while `""`, `0`, `[]`, `{}` and `null` read as `False`; an `issuerType`, `tao`, `rootTao`
   or `hash` that was an object, an array, a number, a boolean or `null` was stored in the
-  record as sent, on v4, v5 and Core v1; a listing item `id` that was an object, an array, a
+  record as sent, on v4, v5 and Core v1 (a `hash` only where it was the value copied: always
+  on v4, and on v5 and Core v1 only when the listing item had no usable `id`); a listing
+  item `id` that was an object, an array, a
   number or `true` was stored as sent, while `0`, `false`, `[]`, `{}` and `null` fell through
   to the attribute's `hash`; and a v4 attribute `body` that was not a string reached the
   proof suite's `decode` and raised a bare `AttributeError` (v5 and Core v1 had typed it in
@@ -938,15 +940,18 @@ Each is one value or table away from the other option. None changes anything tha
   | --- | --- | --- | --- | --- |
   | `hasAttributes` | v5, Core v1 issuer response | `true`, `false` only | `false` | raises |
   | `id` | v5, Core v1 listing item | string | `""` | raises |
-  | `hash`, `issuerType` | v4 attribute; v5, Core v1 `attribute` | string | `""` | raises |
+  | `issuerType` | v4 attribute; v5, Core v1 `attribute` | string | `""` | raises |
+  | `hash` | v4 attribute, always; v5, Core v1 `attribute`, only when the listing item's `id` is absent or empty | string | `""` | raises |
   | `tao`, `rootTao`, `body` | v4 attribute; v5, Core v1 `attribute` | string | `None` | `None` |
 
   `hasAttributes` is tested with `isinstance(value, bool)`, not by truth, so `"false"`, `0`
   and `[]` are wrong values and not falsy ones; a non-boolean raises after the one request
   for the issuer response, before the listing is fetched. A listing item's `id` is typed
   before it can fall back to the attribute's `hash`, so `0`, `false`, `[]` and `null` no
-  longer fall through; the `hash` is read only when the `id` is absent or empty, which is the
-  only case in which it is copied. Every scalar of an entry is typed before the proof suite's
+  longer fall through; on v5 and Core v1 the `hash` is read only when the `id` is absent or
+  empty, which is the only case in which it is copied (a `hash` of any type next to a usable
+  `id` parses, and the `id` is the attribute id; on v4, which has no listing, it is always the
+  attribute id and always typed). Every scalar of an entry is typed before the proof suite's
   `decode` is handed its token, and one bad entry rejects the whole record, as a revision with
   no `attribute` object already did (a partial record would be a trust decision made on part
   of the registry's answer). The `body` message of v5 and Core v1 keeps its text and gains
@@ -958,7 +963,7 @@ Each is one value or table away from the other option. None changes anything tha
   JSON, on `cf6d100` and on this change (the script was a one-off and is not kept), and every
   existing EBSI test passes unchanged. What changes is a registry or a hand-written `Fetch`
   that sent a member with the wrong JSON type: `hasAttributes` as a number or a string, a
-  number as `hash`, `null` as `issuerType`. It used to be carried through (or, for
+  number as the `hash` that is copied (see the table), `null` as `issuerType`. It used to be carried through (or, for
   `hasAttributes`, read by truth) and is now `MalformedRegistryResponse`; send the type the
   real registry sends (`true`, a string). There is no recorded TIR v4 response in this
   repository, so the v4 cases are synthetic, around a recorded accreditation token.
@@ -972,8 +977,9 @@ Each is one value or table away from the other option. None changes anything tha
   members and is `None` for the `str | None` ones, following the model; reading `null` as
   absent instead would carry `""` / `False` through for the first group. (2) An absent
   `hasAttributes` stays `false`, as before; making it a required member would turn a response
-  without it into `MalformedRegistryResponse`. (3) A `hash` that is not copied is not read;
-  typing it always would reject a record for a member nothing uses. (4) One bad entry rejects
+  without it into `MalformedRegistryResponse`. (3) A `hash` that is not copied is not read
+  (v5 and Core v1 next to a usable `id`; on v4 it is always copied, so always typed); typing
+  it always would reject a record for a member nothing uses. (4) One bad entry rejects
   the record; skipping it would hide an accreditation without saying so. (5) Not covered, and
   left as it was: a v4 `attributes` member that is not an array, or an entry of it that is not
   an object, is a bare `TypeError` / `AttributeError` (measured on `cf6d100`; v4 only, since

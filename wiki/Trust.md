@@ -241,11 +241,13 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
 - **The scalars it copies are typed**: the TIR adapters (v4, v5 and Core v1) check the JSON
   type of every scalar they copy into `Accreditation` and `IssuerRecord`, and a wrong one
   raises `MalformedRegistryResponse`, with the value shown bounded. `hasAttributes` must be
-  `true` or `false` (the string `"false"` is not read as `true`, nor `0` as `false`); `id`,
-  `hash` and `issuerType` must be strings (`null` is wrong); `tao`, `rootTao` and `body` a
-  string or `null`. An absent member keeps its default (`""`, `None`, `false`), and one bad
-  accreditation rejects the whole record. A node that sends what its schema says is
-  unaffected.
+  `true` or `false` (the string `"false"` is not read as `true`, nor `0` as `false`); `id`
+  and `issuerType` must be strings (`null` is wrong), and so must `hash` where it is the
+  value copied: always on v4, and on v5 and Core v1 only when the listing item's `id` is
+  absent or empty (otherwise the `id` is the attribute id and the `hash` is not read);
+  `tao`, `rootTao` and `body` a string or `null`. An absent member keeps its default (`""`,
+  `None`, `false`), and one bad accreditation rejects the whole record. A node that sends
+  what its schema says is unaffected.
 - **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
   named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
   recorded on 2026-10-16
