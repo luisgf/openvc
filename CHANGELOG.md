@@ -947,10 +947,15 @@ Each is one value or table away from the other option. None changes anything tha
   off).
 
   Only the text changed. Every exception class, the leading words of every message (so every
-  `match=` keeps matching), and `.url` are as before. A value now appears quoted, as the
-  module's other `safe_repr` messages show theirs (`host not in allow-list: 'evil.example'`),
-  so a caller that matched the bare host after the colon must match the quoted one, or read
-  `.url`; an empty host is still `None`. Nothing that succeeded now raises.
+  `match=` keeps matching), and `.url` are as before, with one exception: a `str` subclass
+  whose `__format__` raises, passed as the URL, escaped as that error from the four messages
+  that format the URL (the non-https rule and the three refusals of a 200) and is now the typed
+  `HttpForbiddenHost` or `MalformedRegistryResponse`, because `safe_repr` reads `str.__str__`
+  and never the subclass's methods (one whose `__format__` returned 100 000 characters put
+  them all in the message). A value now appears quoted, as the module's other `safe_repr`
+  messages show theirs (`host not in allow-list: 'evil.example'`), so a caller that matched
+  the bare host after the colon must match the quoted one, or read `.url`; an empty host is
+  still `None`. Nothing that succeeded now raises.
 
   **Defaults pending maintainer confirmation.** Each is the smallest change that meets the
   issue; the other option is what would change.
@@ -968,7 +973,8 @@ Each is one value or table away from the other option. None changes anything tha
     0.16.0 against a local socket, a 5 000-byte malformed status line makes a 5 044-character
     `RemoteProtocolError`; a bound there is its own change.
   - **The #318 entry is superseded, not rewritten.** Its sentence that the non-https
-    message "quotes it as before" now reads: it quotes it, cut past 200 characters.
+    message "quotes it as before" is superseded by this entry: the message quotes the URL,
+    cut past 200 characters.
   - **No wiki page is edited**: `wiki/Trust.md` and `wiki/EBSI-Node-Trust.md` describe the
     refusals by exception class, never by message wording.
 - **`EbsiHttpClient.get_json` no longer drains an error body unbounded**
@@ -1009,8 +1015,10 @@ Each is one value or table away from the other option. None changes anything tha
   the start of the value still shown, its size reported and `.url` still the whole URL
   (`None` for userinfo); a short value shown whole and quoted, and an empty host still
   `None`; the three `get_json` refusals of a 200 and the `get_bytes` ones (controls: those
-  already passed) with a 50 000-character path; and a Hypothesis property that no refusal of
-  `_guard_host` reaches 500 characters.
+  already passed) with a 50 000-character path; a `str` subclass URL whose `__format__`
+  raises, or returns 100 000 characters, through the four messages that format the URL
+  (the typed refusal, the message equal to the quoted URL); and a Hypothesis property that no
+  refusal of `_guard_host` reaches 500 characters.
 - `tests/test_ebsi_http_cookies.py` (#317). The client is built through its real constructor
   with the transport injected by patching `httpx.Client` for the constructor call, because
   the existing EBSI suites assign `client._client = httpx.Client(...)`, which discards the

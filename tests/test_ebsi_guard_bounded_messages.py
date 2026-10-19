@@ -10,8 +10,9 @@ characters). On ``main`` at cf6d100, with ``allowed_hosts={"api-pilot.ebsi.eu"}`
 character host or URL gave a 70 032 or 70 033 character message. Three siblings in
 ``get_json`` / ``_request`` echoed the URL of a 200 they refused, unbounded too.
 
-Every message of ``http.py`` that formats a URL, a host or a ``Location`` (redirects are off, so
-no ``Location`` is ever formatted) is pinned here:
+Every message of ``http.py`` that echoed a URL or a host of the caller's unbounded on ``main`` is
+pinned here, with the bytes path's messages (controls) and the guard rules that echo nothing
+variable (redirects are off, so no ``Location`` is ever formatted):
 
   * the two ``_guard_host`` rules that echo (non-https, host not in the allow-list), from the
     guard, ``get_json`` and ``get_bytes``;
@@ -25,8 +26,13 @@ no ``Location`` is ever formatted) is pinned here:
 
 What is NOT changed is pinned too: the exception class, the leading words of each message (the
 existing ``match=`` assertions), and ``.url``, which keeps the whole URL as given (``None`` for
-the userinfo rule): the message is bounded, the data is not. The helpers are self-contained
-(tests/ is not a package: no cross-import).
+the userinfo rule): the message is bounded, the data is not. The one class that did change is
+a ``str`` subclass whose ``__format__`` raises, which escaped as that error from the four
+messages that format the URL and is now the typed refusal (``safe_repr`` reads ``str.__str__``):
+pinned too. The address guard's messages (``resolves to blocked address``, ``cannot resolve``,
+``did not resolve``) already went through ``safe_repr`` and are not repeated here; the first has
+its bound pinned in ``test_ebsi_address_guard.py``. The helpers are self-contained (tests/ is
+not a package: no cross-import).
 """
 from __future__ import annotations
 
@@ -319,6 +325,75 @@ def test_the_unsupported_encoding_message_is_bounded_as_well() -> None:
             c.get_bytes(f"https://{HOST}/x")
         assert str(exc_info.value).startswith("unsupported Content-Encoding ")
         assert len(str(exc_info.value)) < MAX_MESSAGE
+    finally:
+        c.close()
+
+
+# --------------------------------------------------------------------------- #
+# A str subclass: the one case where the class of the exception changed
+# --------------------------------------------------------------------------- #
+
+class _RaisesOnFormat(str):
+    """A URL whose own ``__format__`` and ``__repr__`` raise: ``f"{url}"`` raised that error
+    out of the four messages that format the URL, before #338."""
+
+    def __format__(self, spec: str) -> str:
+        raise RuntimeError("format")
+
+    def __repr__(self) -> str:
+        raise RuntimeError("repr")
+
+
+class _LongOnFormat(str):
+    """A URL whose own ``__format__`` returns 100 000 characters: ``f"{url}"`` put them all in
+    the message before #338."""
+
+    def __format__(self, spec: str) -> str:
+        return "x" * 100_000
+
+
+# (the host rule is not here: `host` is read out of the URL by `urlparse` as a plain `str`, so a
+# subclass's methods were never consulted for it)
+SUBCLASS_REFUSALS = [
+    pytest.param(f"http://{HOST}/x", None, HttpForbiddenHost,
+                 "non-https URL rejected: ", id="non-https"),
+    pytest.param(f"https://{HOST}/x", _answer(body=b"<html>not json</html>"),
+                 MalformedRegistryResponse,
+                 "registry returned a 200 with a non-JSON body: ", id="not-json"),
+    pytest.param(f"https://{HOST}/x", _answer(body=b"[1]"), MalformedRegistryResponse,
+                 "registry returned a 200 that is not a JSON object: ", id="not-an-object"),
+    pytest.param(f"https://{HOST}/x",
+                 _answer(body=b"this is not gzip", headers={"Content-Encoding": "gzip"}),
+                 MalformedRegistryResponse,
+                 "registry returned a body that does not decode: ", id="does-not-decode"),
+]
+
+
+@pytest.mark.parametrize("kind", [_RaisesOnFormat, _LongOnFormat])
+@pytest.mark.parametrize("url,handler,error,leading", SUBCLASS_REFUSALS)
+def test_a_str_subclass_url_is_read_as_the_characters_it_holds(
+        kind: type, url: str, handler: Any, error: type, leading: str) -> None:
+    # `safe_repr` reads `str.__str__`, never the subclass's methods, so what the subclass
+    # overrides can neither raise out of the message nor lengthen it. On `main` the first
+    # escaped as a bare RuntimeError and the second put 100 000 characters in the message.
+    c = _client(handler)
+    try:
+        with pytest.raises(error) as exc_info:
+            c.get_json(kind(url))
+        assert type(exc_info.value) is error
+        message = str(exc_info.value)
+        assert message == f"{leading}{url!r}"
+        assert len(message) < MAX_MESSAGE
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize("kind", [_RaisesOnFormat, _LongOnFormat])
+def test_a_str_subclass_url_is_refused_by_the_guard_itself_and_by_get_bytes(kind: type) -> None:
+    c = _client()
+    try:
+        for exc in _refusals(c, kind(f"http://{HOST}/x")):
+            assert str(exc) == f"non-https URL rejected: 'http://{HOST}/x'"
     finally:
         c.close()
 
