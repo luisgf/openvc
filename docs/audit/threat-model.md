@@ -295,11 +295,25 @@ finite input", with no explicit constant.
   one with the same allow-list keeps what its jar accepts, until #317), sends
   `Accept-Encoding: identity`, and `get_tnl_files` refuses a client whose allow-list is
   anything else, before any request. The helper never fetches the pinned key-list key. **It authenticates
-  nothing**: its result is unauthenticated bytes for the verifier. **Residual, unchanged by
-  #320:** `get_json` still inflates per chunk before its cap (so a gzip body under the
-  5 MiB cap can allocate far more), drains a non-200 body with an uncapped `read()`, and
-  sleeps for an unbounded `Retry-After` when no budget is given (a bare `OverflowError` past
-  about 9.2e9 s). **Residual, shared by both paths:** neither `deadline_s` nor `timeout_s`
+  nothing**: its result is unauthenticated bytes for the verifier. **The two paths share one
+  body reader and one sleep bound** (#335, v1.37.0). Before it, `get_json` read with
+  `iter_bytes`, which yields an already-inflated chunk, and checked its cap after appending
+  (a 260 935-byte gzip body that inflates to 256 MiB peaked at 557 MiB under a 1 MiB cap);
+  it now reads through `get_bytes`'s reader, so the cap holds on the wire and on the
+  decoded size before a chunk is held (about 2 MiB on the same body), a single `gzip` or
+  `deflate` coding is decoded and any other is `HttpUnexpectedEncoding` (the client asks for
+  `gzip, deflate` only; `get_bytes` asks for `identity`). A `Retry-After` was honoured
+  without a bound and read with `str.isdigit` and `float`, so 400 digits became `inf` and
+  reached `time.sleep` as a bare `OverflowError`, and `"²"` was a bare `ValueError`; now the
+  value is one to nine ASCII digits or an HTTP-date and anything else is ignored, and no
+  sleep is longer than `RetryPolicy.retry_after_max_s` (default `backoff_max_s`, 5 s), so a
+  listed node cannot hold the calling thread for the time it asks. **Residual, unchanged
+  by #320 and #335:** the non-200 body read (#321) stops at 16 KiB after decoding, but it
+  decodes with `iter_bytes`, so one small `gzip` error body can still inflate a whole chunk
+  first (measured: a 260 935-byte body that inflates to 256 MiB peaks at 557 MiB on a 403;
+  the 16 KiB check then fires and the connection is dropped). It is the same class as the
+  200 read above and is not yet bounded.
+  **Residual, shared by both paths:** neither `deadline_s` nor `timeout_s`
   bounds the total time of one response's headers: `timeout_s` applies to each socket
   operation, so a compromised allow-listed host that sends header bytes slowly enough can
   hold the calling thread (measured: 8.1 s against `deadline_s=1.0`; the HTTP/1.1 stack's

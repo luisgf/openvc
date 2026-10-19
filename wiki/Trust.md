@@ -292,6 +292,30 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   expect a `urn:ebsi:problems:` slug on every error (the recorded 406 says
   `about:blank`). An error body is read at most 16 KiB; a larger one is dropped
   with its connection.
+- **Bounded body reads and bounded waits** (v1.37.0): `get_json` reads a 200 body through the
+  reader `get_bytes` uses. The size cap (`max_response_bytes`, 5 MiB by default) holds on the
+  wire size **and** on the decoded size before a chunk is held, and one `gzip` or `deflate`
+  coding is decoded with `zlib` asked for no more than the room left, so a 260 KB gzip body
+  that inflates to 256 MiB is refused at a peak of about 2 MiB instead of 557 MiB. The client
+  asks for `Accept-Encoding: gzip, deflate`; any other coding (`br`, `zstd`, a list of
+  codings) is `HttpUnexpectedEncoding`, and bytes after the end of a compressed stream are
+  `MalformedRegistryResponse`. A node's `Retry-After` is read as one to nine ASCII digits or
+  an HTTP date; anything else (`²`, `nan`, `-1`, a 400-digit run) is ignored and your own
+  backoff applies. **No sleep between attempts is longer than `RetryPolicy.retry_after_max_s`**
+  (default: `backoff_max_s`, 5 s), so a listed node cannot hold a walk for the time it asks;
+  with the defaults a node that asks for 60 s is waited for 5 s, and after the last attempt
+  the call fails as `HttpTransientExhausted`. Raise the ceiling when you want to be more
+  patient with a rate-limiting node:
+
+```python
+from openvc_ebsi.http import RetryPolicy
+
+assert RetryPolicy().retry_after_max_s == RetryPolicy().backoff_max_s == 5.0
+patient = RetryPolicy(attempts=4, retry_after_max_s=30.0)    # up to 30 s per sleep
+assert patient.retry_after_max_s == 30.0
+# EbsiHttpClient(allowed_hosts={...}, retry=patient), or for_ebsi(retry=patient)
+```
+
 - **Exact bytes and the Trusted Nodes List host**: `EbsiHttpClient.get_bytes(url)` returns a
   response body verbatim as a `BytesResponse(body, etag)` (no JSON parse, no cache, no text
   decoding), under the same host guard, redirects-off and retry rules as `get_json`. The
