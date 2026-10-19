@@ -541,10 +541,11 @@ All notable changes to **openvc** are documented here. The format follows
     environment these tests ran in resolves exactly `2.13.0`, the floor itself; its default
     registry carries `ES256K` as SHA-256 on `SECP256K1` (a test pins that on the suite's
     private instance, and openvc's own curve pin does not depend on PyJWT's `expected_curve`).
-    CI has no PyJWT floor leg of its own (only pyld and httpx do): it resolves the newest PyJWT
-    (2.15.1 on 2026-10-16), where the signature segment's encoding is judged more strictly than
-    on 2.13.0 (invalid characters and `=` padding are refused); the parity tests assert that
-    ES256K gets what ES256 gets on both.
+    CI had no PyJWT floor leg of its own until #340 (this release adds
+    `test (py3.10, pyjwt 2.13.0)`, next to the pyld and httpx ones); until then it resolved only
+    the newest PyJWT (2.15.1 on 2026-10-16), where the signature segment's encoding is judged
+    more strictly than on 2.13.0 (invalid characters and `=` padding are refused); the parity
+    tests assert that ES256K gets what ES256 gets on both.
   - **Every other lane keeps refusing the algorithm, twice.** SD-JWT VC (issuer JWT and
     KB-JWT, with and without `allow_pq`), VP-JWT, `verify_compact`, the status-list token,
     the OpenID4VCI key proof (also with `allowed_algs=ALLOWED_ALGS | {"ES256K"}`, which stops
@@ -911,6 +912,30 @@ Each is one value or table away from the other option. None changes anything tha
   `UnsafeUrlError` where it used to connect. There is nothing to pass instead: a publicly
   reachable host does not resolve to this prefix; fix the DNS record. Only IPv6 has the
   property, so IPv4 classification is unchanged.
+- **`allow_pq` must be exactly `True` or `False` on both JOSE suites**
+  ([#341](https://github.com/luisgf/openvc/issues/341)). `VcJwtProofSuite(allow_pq=...)` and
+  `SdJwtVcProofSuite(allow_pq=...)` read the flag by truthiness, so any truthy value switched
+  the EXPERIMENTAL ML-DSA algorithms (RFC 9964) on. Measured on `main` at cf6d100 (CPython
+  3.14.8): `allow_pq="false"`, `"0"`, `"x"` and `1` all constructed and put `ML-DSA-44`,
+  `ML-DSA-65` and `ML-DSA-87` in the suite's allow-list, while `""`, `0`, `None` and `[]`
+  silently meant off. A deployment that reads the flag from an environment variable or a
+  configuration file as a string therefore enabled a post-quantum verify path it meant to
+  disable. Anything but the `bool` `True` or `False` is now refused at construction: a
+  `ProofError` on `VcJwtProofSuite`, a `SdJwtError` (a `ProofError`, like that constructor's
+  other checks) on `SdJwtVcProofSuite`, with the message `allow_pq must be True or False, got
+  str`, which names the type and never echoes the value. It is the rule `allow_es256k` has
+  had since #323 (`type()`, not `isinstance()`, so an object whose `__class__` claims `bool`
+  is refused too); on `VcJwtProofSuite` the two flags are checked in signature order, after
+  `leeway_s`. **Who is affected:** a caller that passes a string, a number, `None` or any
+  other non-bool, including the falsy values that used to mean off (`0`, `None`, `""`).
+  **What to pass instead:** `True` or `False`, or leave the argument out (the default is
+  `False`); parse a configuration string yourself before constructing the suite. `True`,
+  `False` and the default behave exactly as before. The grep of every `allow_*` in `src/`
+  found `allow_pq` on the two suites (fixed together, because both guard the same algorithm
+  family), `allow_es256k` (strict since #323) and two private keywords, `allow_scalar` in
+  `rp_registration._str_tuple` and `allow_string` in `status._index.status_index`, which every
+  call site sets with a literal and which guard no algorithm family or trust decision: they are
+  left alone (`allow_nan=False` in `_context_validation` is a `json.dumps` argument).
 - **The TIR adapters check the JSON type of every scalar they copy into the model, and
   `hasAttributes` must be a JSON boolean**
   ([#337](https://github.com/luisgf/openvc/issues/337); found by the review of #332).
@@ -1012,6 +1037,24 @@ Each is one value or table away from the other option. None changes anything tha
   boolean reached the proof suite's `decode` and raised a bare `AttributeError` (`'int'
   object has no attribute 'isascii'`) out of `issuer_record` and `verify_ebsi_badge`; it is
   now `MalformedRegistryResponse`.
+- **`VcJwtProofSuite` turns a JWK that is not an object into a `ProofError`**
+  ([#341](https://github.com/luisgf/openvc/issues/341)). `_jwk_to_key(jwk, alg)` read
+  `jwk.get(...)` before looking at what it held, so a resolver or a caller that handed over
+  `None`, a list, a string or a number got a bare `AttributeError` (`'NoneType' object has
+  no attribute 'get'`) for `ES256`, `ES384`, `EdDSA` and `Ed25519`. That is no `OpenvcError`,
+  so it escaped `verify_many` and `verify_many_async` and aborted the whole batch instead of
+  becoming one item's `error` (measured on `main` at cf6d100, CPython 3.14.8, PyJWT 2.13.0).
+  It is now `ProofError("ES256 requires a JWK object, got NoneType")`: the message names the
+  algorithm and the type and never echoes the value. `ES256K` already did this since #323 and
+  keeps its identical message; the ML-DSA lane never reached this function and was already a
+  `SignatureInvalid` (a `ProofError`), which the tests now pin. A `dict` subclass is still a
+  JWK object, and `{}` still reports the key-type pin ("requires an EC P-256 key"). A
+  `Mapping` that is not a `dict` (`MappingProxyType`, `UserDict`) and an object that only has
+  a `get` method are not JWK objects either: on `main` they were already a `ProofError`, but
+  one that said something else ("Object of type mappingproxy is not JSON serializable", or a
+  key-type pin naming `kty=None`) and, for the wrapper of a valid key, blamed the key; they now
+  meet the same first message as every other non-object (measured at cf6d100). The parameter
+  is typed `dict`, so this was a caller or resolver bug rather than attacker input.
 
 ### Tests
 
@@ -1181,6 +1224,23 @@ Each is one value or table away from the other option. None changes anything tha
   interpreted like signature files), are each killed by at least one test, and by a named
   failing test: the real chain's baseline result is computed on first use, so a verifier
   regression no longer surfaces as one collection error of the whole module.
+- `tests/test_vcjwt_input_hygiene.py` (#341, 255 tests, 36 of them ML-DSA controls that skip
+  where `cryptography` is older than 48 or OpenSSL older than 3.5). `allow_pq` on both suites
+  against twenty-two non-bool values (strings, `1`/`0`/`1.0`/`0.0`, `None`, containers, bytes,
+  `object()`), each an exact class; no echo of a long value; an object whose `__class__` claims
+  `bool`; the signature-order rule; the keyword-only rule; the controls. A non-object JWK on
+  `ES256`, `ES384`, `EdDSA`, `Ed25519` and `ES256K`, both through `_jwk_to_key` and through
+  `verify()` with a token a real key signed, and through `verify_many` and `verify_many_async`
+  with a resolver that returns the bad key for one of three credentials; the allow-list still
+  runs before the key is looked at; an empty object, a dict subclass and a wrong-curve key keep
+  their old behaviour; the ML-DSA lane is pinned as a `SignatureInvalid`; a `MappingProxyType`,
+  a `UserDict` and an object with only a `get` method, each holding a valid key, are refused
+  with the object message (a reviewer's mutant, `hasattr(jwk, "get")` in place of
+  `isinstance(jwk, dict)`, passed the first version of the file because it changes only the
+  message); a fuzz of arbitrary JSON values as the JWK. Run against the sources at cf6d100,
+  186 of the 255 fail and the controls pass; twenty-two targeted mutants of the change were
+  applied to scratch copies, twenty-one killed and one survivor that is equivalent (the object
+  check moved after the `ES256K` branch, which has the identical check of its own).
 
 ### Docs
 
