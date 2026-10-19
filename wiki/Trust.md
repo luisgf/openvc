@@ -296,13 +296,14 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   reader `get_bytes` uses. The size cap (`max_response_bytes`, 5 MiB by default) holds on the
   wire size **and** on the decoded size before a chunk is held, and one `gzip` or `deflate`
   coding is decoded with `zlib` asked for no more than the room left, so a 260 KB gzip body
-  that inflates to 256 MiB is refused at a peak of about 2 MiB instead of 557 MiB. The client
+  that inflates to 256 MiB is refused at a peak of about twice the cap (about 10 MiB at the
+  default 5 MiB, about 2 MiB under a 1 MiB cap) instead of 557 MiB. The client
   asks for `Accept-Encoding: gzip, deflate`; any other coding (`br`, `zstd`, a list of
   codings) is `HttpUnexpectedEncoding`, and bytes after the end of a compressed stream are
   `MalformedRegistryResponse`. A node's `Retry-After` is read as one to nine ASCII digits or
   an HTTP date; anything else (`²`, `nan`, `-1`, a 400-digit run) is ignored and your own
   backoff applies. **No sleep between attempts is longer than `RetryPolicy.retry_after_max_s`**
-  (default: `backoff_max_s`, 5 s), so a listed node cannot hold a walk for the time it asks;
+  (`None`, the default, means `backoff_max_s`: 5 s), so a listed node cannot hold a walk for the time it asks;
   with the defaults a node that asks for 60 s is waited for 5 s, and after the last attempt
   the call fails as `HttpTransientExhausted`. Raise the ceiling when you want to be more
   patient with a rate-limiting node:
@@ -310,7 +311,8 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
 ```python
 from openvc_ebsi.http import RetryPolicy
 
-assert RetryPolicy().retry_after_max_s == RetryPolicy().backoff_max_s == 5.0
+assert RetryPolicy().retry_after_max_s is None       # None: the ceiling is backoff_max_s
+assert RetryPolicy().backoff_max_s == 5.0              # so 5 s by default
 patient = RetryPolicy(attempts=4, retry_after_max_s=30.0)    # up to 30 s per sleep
 assert patient.retry_after_max_s == 30.0
 # EbsiHttpClient(allowed_hosts={...}, retry=patient), or for_ebsi(retry=patient)

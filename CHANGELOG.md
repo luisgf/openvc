@@ -778,13 +778,16 @@ Each is one value or table away from the other option. None changes anything tha
   ([#335](https://github.com/luisgf/openvc/issues/335); it delivers rows (a) and (b) of the
   request-path fixes of [#324](https://github.com/luisgf/openvc/issues/324)). The longest
   ONE sleep between attempts may be, whatever a server asks for with `Retry-After`: every
-  sleep is `min(max(backoff, Retry-After), retry_after_max_s)`, and a caller's `deadline_s`
-  can still only shorten it. `None`, the default, means `backoff_max_s`, so a policy built
-  with defaults has `retry_after_max_s == 5.0` and one built with `backoff_max_s=60` has 60;
-  the attribute reads as that number. It must be `None` or a number of seconds from 0 to one
-  day (`True`, a string, `nan`, `inf`, a negative and `10**400` are a `ValueError` when the
-  policy is built). An add-only field: every existing `RetryPolicy(...)` call still works.
-  See *Changed* for what the default does to a node that asks for a long wait.
+  sleep is `min(max(backoff, Retry-After), ceiling)`, and a caller's `deadline_s` can still
+  only shorten it. `None`, the default, means `backoff_max_s`, looked up when a sleep is
+  taken: a policy built with defaults sleeps at most 5 s, one built with `backoff_max_s=60`
+  at most 60 s, `dataclasses.replace(policy, backoff_max_s=X)` follows `X`, and the attribute
+  itself stays `None`. An explicit value must be a number of seconds from 0 to one day
+  (`True`, a string, `nan`, `inf`, a negative and `10**400` are a `ValueError` when the
+  policy is built); `backoff_max_s` is not validated, as it never was, and no sleep is longer
+  than one day whatever it is. An add-only field: every existing `RetryPolicy(...)` call, and
+  a `dataclasses.replace` of one, still builds. See *Changed* for what the default does to a
+  node that asks for a long wait.
 
 ### Changed
 
@@ -927,14 +930,20 @@ Each is one value or table away from the other option. None changes anything tha
   ([#335](https://github.com/luisgf/openvc/issues/335)). `get_json` and `get_bytes` used to
   sleep as long as a node asked, `attempts - 1` times: `Retry-After: 86400` on a 429 was two
   sleeps of a day. With the default `RetryPolicy` no sleep is longer than 5 s now
-  (`retry_after_max_s`, which defaults to `backoff_max_s`); the call still retries
+  (`retry_after_max_s`, which defaults to `backoff_max_s`, so the same holds for a policy you
+  built: its `backoff_max_s` is its ceiling unless you set `retry_after_max_s`; measured:
+  `RetryPolicy(backoff_base_s=0, backoff_max_s=0)` slept a `Retry-After: 30` for 30 s, twice,
+  and now sleeps 0 s); the call still retries
   `attempts` times and then raises `HttpTransientExhausted` as before, so a rate-limiting node
   is asked again sooner than it said and may answer 429 again. What to pass instead: a policy
   with a higher ceiling, `RetryPolicy(retry_after_max_s=60.0)`, on the client (`retry=`), or
   a larger `attempts`. A `Retry-After` of 0 and the small values are still slept as asked, up
   to the ceiling. The value is also read more strictly (see *Fixed*): ten digits and more are
   ignored, where a value past about 9.2e9 s used to be an `OverflowError` and a smaller one a
-  sleep of up to 292 years.
+  sleep of up to 292 years; and a delta-seconds written with another script's decimal digits
+  (`١٢٣`, Devanagari, fullwidth) or padded with a no-break space or another Unicode space was
+  read as that many seconds (measured: `١٢٣` slept 123 s, `5` and a no-break space slept 5 s)
+  and is ignored now, so the client keeps its own backoff.
 - **`get_json` accepts one `gzip` or one `deflate` coding and nothing else, and asks for
   those** ([#335](https://github.com/luisgf/openvc/issues/335)). It used to hand a 200 body to
   httpx, which decoded whatever it supports. Now a `Content-Encoding` of `br`, `zstd`,
@@ -962,19 +971,27 @@ Each is one value or table away from the other option. None changes anything tha
   - `retry_after_max_s` is a new field although #335's own scope line said "no change to
     `RetryPolicy`'s fields": the design is #324's, because that issue's acceptance needs the
     bound and two changes must not implement `Retry-After` twice. It is add-only;
-  - its default is `backoff_max_s` (5 s), resolved when the policy is built, not a literal 5.0
-    (a literal would clamp the backoff of a policy that raised `backoff_max_s` alone), and a
-    ceiling below `backoff_max_s` lowers the backoff's ceiling too, because the bound is on
-    every sleep (`min(max(backoff, Retry-After), ceiling)`); capping only the `Retry-After`
-    term (`max(backoff, min(Retry-After, ceiling))`) would differ only for such a policy;
+  - its default is `backoff_max_s` (5 s), looked up when a sleep is taken: the field stays
+    `None` and is not filled in when the policy is built, and it is not a literal 5.0. A literal
+    would clamp the backoff of a policy that raised `backoff_max_s` alone, and so did a number
+    filled in at construction for a policy derived with `dataclasses.replace(policy,
+    backoff_max_s=X)` (measured: it kept the old 5 s and cut the backoff at it, and a
+    `replace` of a policy built with `backoff_max_s=1e6` was a `ValueError`). The other option,
+    filling it in at construction, makes the attribute read the effective number (5.0) at those
+    two costs; a read-only property could give the number without them. A ceiling below
+    `backoff_max_s` lowers the backoff's ceiling too, because the bound is on every sleep
+    (`min(max(backoff, Retry-After), ceiling)`); capping only the `Retry-After` term
+    (`max(backoff, min(Retry-After, ceiling))`) would differ only for such a policy;
   - a `Retry-After` that is not one to nine ASCII digits or an HTTP-date (a run of ten digits
     or more, which is 31 years and up) is ignored, so the client keeps its own backoff; clamping
     it to the ceiling instead would differ only when `retry_after_max_s` is above
     `backoff_max_s`, where it would wait longer;
   - only spaces and tabs around the value are dropped (HTTP optional whitespace), where
-    `str.strip()` also dropped other Unicode whitespace; an HTTP-date is tried only on a
+    `str.strip()` also dropped other Unicode whitespace (a no-break space around a number was
+    read as seconds); an HTTP-date is tried only on a
     value of at most 64 ASCII characters (the three forms are 29, 33 at most, and 24);
-  - a ceiling outside 0 to one day is a `ValueError` at construction; and no single sleep is
+  - an explicit ceiling outside 0 to one day is a `ValueError` at construction (one that
+    follows `backoff_max_s` is not checked, as `backoff_max_s` never was); and no single sleep is
     ever above one day (`_MAX_DEADLINE_S`) whatever the policy, because a policy whose
     `backoff_max_s` is huge would otherwise let an HTTP-date in the year 9999 reach
     `time.sleep` as an `OverflowError` (it raises from about 9.2e9 s);
@@ -983,7 +1000,20 @@ Each is one value or table away from the other option. None changes anything tha
     would keep advertising `br` and `zstd` when installed, which are then refused;
   - the codings above are refused rather than decoded: decoding `br` or `zstd`, a chain of
     codings, or a raw deflate stream inside the cap would need a decoder per coding that is
-    bounded the way `zlib` is.
+    bounded the way `zlib` is;
+  - a response a test double built with `content=` and a `Content-Encoding` of `gzip` or
+    `deflate` is read as httpx left it (decoded, in memory) under the same cap, by `get_json`
+    and by `get_bytes`. `get_json` served it before this change, and `get_bytes` has raised a
+    bare `httpx.StreamConsumed` on it since it was added (#331). Refusing it with a typed
+    `HttpError` instead would have kept `get_bytes`'s outcome and turned every such downstream
+    double into an error. No socket hands over a consumed stream, so nothing on the wire
+    reaches this;
+  - the sleep is not clamped to zero from below (`time.sleep(delay)`, not
+    `time.sleep(max(0.0, delay))`): no wire path makes the delay negative (a parsed
+    `Retry-After` is never negative, the caller's budget is already clamped at 0, and an
+    explicit ceiling is validated from 0), and a negative `backoff_max_s` is construction
+    misuse that raised from `time.sleep` before this change too. The other option, keeping the
+    clamp, would make "a negative `backoff_max_s` sleeps 0 s" a contract to pin with a test.
   - **Not changed, a finding:** the read of a non-200 body (#321) still decodes with
     `iter_bytes`, so one small `gzip` error body inflates a whole chunk before its 16 KiB
     check fires (measured: a 260 935-byte body that inflates to 256 MiB peaks at 557 MiB on a
@@ -1041,14 +1071,19 @@ Each is one value or table away from the other option. None changes anything tha
   `_sleep_before_retry` passed `max(delay, secs)` to `time.sleep`. Measured on `main`:
   `Retry-After: 99999999999` was `OverflowError: timestamp out of range for C PyTime_t`; 400
   digits parsed to `inf` and raised the same; `"²"`, which is a digit to `isdigit()`, was
-  `ValueError: could not convert string to float` out of `get_json`; and a 429 asking for
-  86 400 s slept it, `attempts - 1` times. Delta-seconds is now one to nine ASCII digits
+  `ValueError: could not convert string to float` out of `get_json`, while `"١٢٣"` and
+  fullwidth digits, which are digits to `isdigit()` and numbers to `float()`, were slept as
+  123 s and 5 s; and a 429 asking for 86 400 s slept it, `attempts - 1` times. Delta-seconds is now one to nine ASCII digits
   (`isascii()` and `isdigit()`, so `²`, `٣`, `١٢٣` and fullwidth digits are not numbers, and a
   5 000-digit run never reaches `int()` and its conversion limit); the HTTP-date form is tried
-  on a value of at most 64 ASCII characters, with every stdlib failure caught (`ValueError`
-  on CPython 3.13 to 3.15 for 300 000 generated date-like strings each; CPython 3.9, which the
-  package does not support, also raised `TypeError`, `OverflowError` and `IndexError`, so the
-  three are caught for the releases that could not be measured here); anything else (`nan`,
+  on a value of at most 64 ASCII characters, with every stdlib failure caught: for 300 000
+  generated date-like strings `parsedate_to_datetime` raises only `ValueError` on CPython 3.13
+  to 3.15 and `ValueError` or `OverflowError` on 3.10 to 3.12 (for example
+  `01 Jan 99999999999 00:00:00 GMT`, measured on 3.10.20, 3.11.15 and 3.12.13), where the
+  `(TypeError, ValueError)` the client caught before let a bare `OverflowError` out of
+  `get_json`; CPython 3.9, which the package does not support, also raised `TypeError` and
+  `IndexError`, which stay in the tuple. Two such dates are in the parametrized parser test,
+  so the 3.10 to 3.12 lanes pin the `OverflowError` catch; anything else (`nan`,
   `inf`, `-1`, `+5`, `1e400`, a fraction, two numbers, the empty value) is ignored and the
   client keeps its own backoff. The result is `None` or a finite number of seconds, never
   negative, and the sleep is capped as described under *Added* and *Changed*, so `time.sleep`
@@ -1235,7 +1270,8 @@ Each is one value or table away from the other option. None changes anything tha
   every sleep at most the ceiling, `0` and small values still honoured; Hypothesis for the
   sleep (finite, in `[0, retry_after_max_s]`, and exactly `min(max(backoff, Retry-After),
   ceiling)` for a digit run), for the parser and for arbitrary bytes under a coding; the
-  policy's default and its validation. Six existing tests changed with the behaviour: four
+  policy's default, a `dataclasses.replace` of it and its validation; a `gzip` or `deflate`
+  body that a test double has already read into memory. Six existing tests changed with the behaviour: four
   in `test_ebsi_http_bytes.py` relied on an unbounded `Retry-After` (they now build a policy
   with a ceiling, and the one that used a 400-digit value uses the longest readable one),
   `test_ebsi_http.py` expects the `zlib` error as the cause of a corrupt 200 body, and

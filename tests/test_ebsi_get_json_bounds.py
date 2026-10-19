@@ -317,6 +317,34 @@ def test_a_body_the_transport_has_already_read_is_still_served():
         client.close()
 
 
+@pytest.mark.parametrize("label,compress", [("gzip", gzip.compress), ("deflate", zlib.compress)])
+def test_a_coded_body_the_transport_has_already_read_is_still_served(label, compress):
+    """``httpx.Response(content=<gzip bytes>, headers={"Content-Encoding": "gzip"})`` is decoded
+    and read when it is built, so a raw read of it is ``StreamConsumed`` (not an ``OpenvcError``
+    and not what ``get_json`` served before this change). The decoded content is what is left to
+    read; no socket hands over such a response."""
+    client = bare_client(lambda req: httpx.Response(
+        200, content=compress(b'{"ok": 1}'), headers={"Content-Encoding": label}))
+    try:
+        assert client.get_json(NODE_URL) == {"ok": 1}
+        assert client.get_bytes(NODE_URL).body == b'{"ok": 1}'
+    finally:
+        client.close()
+
+
+def test_the_cap_holds_on_a_coded_body_the_transport_has_already_read():
+    big = b'{"k": "' + b"a" * 400 + b'"}'
+    client = bare_client(
+        lambda req: httpx.Response(
+            200, content=gzip.compress(big), headers={"Content-Encoding": "gzip"}),
+        max_response_bytes=100, retry=H.RetryPolicy(attempts=1))
+    try:
+        exc = expect(H.HttpError, client.get_json, NODE_URL)
+        assert exc.status == 200 and "exceeds 100 bytes" in str(exc)
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize("coding", ["br", "zstd", "x-gzip", "compress", "gzip, gzip", "gzip, br",
                                     "identity, gzip", "deflate, gzip", "gzip,deflate", "gzipp",
                                     "\x00", "gzip;q=1"])
@@ -489,6 +517,10 @@ def test_delta_seconds_is_a_short_run_of_ascii_digits(value, expected):
     pytest.param(None, id="absent"),
     pytest.param("not-a-date", id="words"),
     pytest.param("\x00", id="nul"),
+    # Longer than any HTTP-date form, so not one. The stdlib date parser ignores the trailing
+    # text and reads this as a date (CPython 3.10 to 3.15, measured), so only the length bound
+    # turns it into None.
+    pytest.param("Sun, 06 Nov 1994 08:49:37 GMT" + "x" * 100, id="date-then-junk"),
 ])
 def test_anything_that_is_not_ascii_digits_or_a_date_is_ignored(value):
     assert H._parse_retry_after(value) is None
@@ -684,7 +716,7 @@ def test_a_backoff_ceiling_above_a_day_cannot_reach_time_sleep(build, fake_time)
     can ask for more than 9.2e9 s."""
     far = format_datetime(datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc), usegmt=True)
     policy = H.RetryPolicy(attempts=2, backoff_base_s=0.0, backoff_max_s=1e12)
-    assert policy.retry_after_max_s == 1e12           # follows backoff_max_s, unvalidated
+    assert policy.retry_after_max_s is None           # follows backoff_max_s, unvalidated
     script = Script(reply(503, headers={"Retry-After": far}))
     expect(H.HttpTransientExhausted, build(script, retry=policy).get_json, NODE_URL)
     assert fake_time.sleeps == [86400.0]
@@ -742,20 +774,54 @@ def test_fuzz_the_sleep_is_min_of_max_of_backoff_and_retry_after_and_the_ceiling
 # 4. The policy
 # --------------------------------------------------------------------------- #
 
-def test_the_ceiling_defaults_to_the_backoff_ceiling_and_follows_it():
-    assert H.RetryPolicy().retry_after_max_s == 5.0
-    assert H.RetryPolicy(backoff_max_s=60.0).retry_after_max_s == 60.0
-    assert H.RetryPolicy(backoff_max_s=0.0).retry_after_max_s == 0.0
+def test_the_ceiling_is_none_by_default_and_none_means_the_backoff_ceiling():
+    assert H.RetryPolicy().retry_after_max_s is None
     assert H.RetryPolicy(retry_after_max_s=None) == H.RetryPolicy()
-    assert H.RetryPolicy(retry_after_max_s=5.0) == H.RetryPolicy()
 
 
-def test_replace_copies_the_resolved_ceiling_unless_it_is_reset_to_none():
+@pytest.mark.parametrize("backoff_max_s,asked,slept", [
+    (5.0, "30", 5.0),
+    (60.0, "45", 45.0),
+    (60.0, "90", 60.0),
+    (0.0, "30", 0.0),
+])
+def test_without_an_explicit_ceiling_a_retry_after_is_cut_at_backoff_max_s(
+        build, fake_time, backoff_max_s, asked, slept):
+    policy = H.RetryPolicy(attempts=3, backoff_base_s=0.0, backoff_max_s=backoff_max_s)
+    script = Script(reply(429, headers={"Retry-After": asked}))
+    expect(H.HttpTransientExhausted, build(script, retry=policy).get_json, NODE_URL)
+    assert fake_time.sleeps == [slept, slept]
+
+
+def test_replace_of_backoff_max_s_moves_the_ceiling_with_it(build, fake_time, monkeypatch):
+    """A policy derived with ``dataclasses.replace`` is the policy built directly: the ceiling
+    is not copied at the old value, so it neither caps the backoff nor the ``Retry-After`` at
+    the 5 s the original had."""
     import dataclasses
-    base = H.RetryPolicy()
-    assert dataclasses.replace(base, backoff_max_s=60.0).retry_after_max_s == 5.0
-    assert dataclasses.replace(
-        base, backoff_max_s=60.0, retry_after_max_s=None).retry_after_max_s == 60.0
+    monkeypatch.setattr(H.random, "uniform", lambda a, b: b)          # the backoff's top
+    base = H.RetryPolicy(attempts=3, backoff_base_s=100.0)
+    derived = dataclasses.replace(base, backoff_max_s=60.0)
+    assert derived == H.RetryPolicy(attempts=3, backoff_base_s=100.0, backoff_max_s=60.0)
+    script = Script(reply(503, headers={"Retry-After": "45"}))
+    expect(H.HttpTransientExhausted, build(script, retry=derived).get_json, NODE_URL)
+    assert fake_time.sleeps == [60.0, 60.0]           # the backoff at its new ceiling
+
+
+@pytest.mark.parametrize("backoff_max_s", [1e6, -1.0, float("nan"), 1e300])
+def test_replace_of_a_policy_with_an_odd_backoff_max_s_does_not_raise(backoff_max_s):
+    """Nothing validated ``backoff_max_s`` before this change, so a policy that could be built
+    and copied still can: only an explicit ``retry_after_max_s`` is checked."""
+    import dataclasses
+    odd = H.RetryPolicy(backoff_max_s=backoff_max_s)
+    assert dataclasses.replace(odd, attempts=5).attempts == 5
+
+
+def test_replace_keeps_an_explicit_ceiling_and_still_validates_one():
+    import dataclasses
+    kept = dataclasses.replace(H.RetryPolicy(retry_after_max_s=7.0), backoff_max_s=60.0)
+    assert kept.retry_after_max_s == 7.0
+    with pytest.raises(ValueError):
+        dataclasses.replace(H.RetryPolicy(), retry_after_max_s=-1)
 
 
 @pytest.mark.parametrize("ceiling", [0, 0.0, 1, 2.5, 30, 86400, 86400.0])

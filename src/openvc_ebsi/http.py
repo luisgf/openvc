@@ -180,15 +180,17 @@ class RetryPolicy:
 
     ``retry_after_max_s`` is the longest ONE sleep between attempts may be, whatever the
     server asks for with ``Retry-After``: every sleep is
-    ``min(max(backoff, Retry-After), retry_after_max_s)``, and a caller's ``deadline_s`` can
-    only shorten it further. An allow-listed host (a listed node, say) therefore cannot hold a
-    walk for the time it asks. ``None``, the default, means ``backoff_max_s``, so by default a
-    server cannot make the client wait longer than its own backoff would; the attribute then
-    reads as that number. The bound applies to every sleep, the backoff included, so a value
-    below ``backoff_max_s`` lowers that ceiling too. It must be a number from 0 to one day;
-    anything else is a ``ValueError`` when the policy is built (construction-time misuse,
-    not wire input). ``dataclasses.replace`` copies the resolved number: to change
-    ``backoff_max_s`` and let the ceiling follow it, pass ``retry_after_max_s=None`` too."""
+    ``min(max(backoff, Retry-After), ceiling)``, and a caller's ``deadline_s`` can only shorten
+    it further. An allow-listed host (a listed node, say) therefore cannot hold a walk for the
+    time it asks. ``None``, the default, means ``backoff_max_s``: the ceiling is looked up
+    when a sleep is taken, so a policy derived with ``dataclasses.replace(policy,
+    backoff_max_s=X)`` follows ``X`` and the attribute keeps reading ``None``. By default a
+    server therefore cannot make the client wait longer than its own backoff would. The bound
+    applies to every sleep, the backoff included, so a ceiling below ``backoff_max_s`` lowers
+    that ceiling too. An explicit value must be a number from 0 to one day; anything else is a
+    ``ValueError`` when the policy is built (construction-time misuse, not wire input).
+    ``backoff_max_s`` is not validated, as it never was, and a value that follows it is not
+    either: whatever the policy, no sleep is longer than one day."""
 
     attempts: int = 3
     backoff_base_s: float = 0.25
@@ -199,8 +201,8 @@ class RetryPolicy:
     def __post_init__(self) -> None:
         cap = self.retry_after_max_s
         if cap is None:
-            object.__setattr__(self, "retry_after_max_s", self.backoff_max_s)
-        elif (not isinstance(cap, (int, float)) or isinstance(cap, bool)
+            return                            # `backoff_max_s`, looked up when a sleep is taken
+        if (not isinstance(cap, (int, float)) or isinstance(cap, bool)
                 or not 0 <= cap <= _MAX_DEADLINE_S):
             # Compared, never converted: `0 <= nan` is False, and `10**400` compares without
             # becoming a float (`float(10**400)` raises OverflowError).
@@ -370,8 +372,9 @@ def _parse_retry_after(value: str | None) -> float | None:
 
     The value comes from an allow-listed but not trusted host, so this never raises and the
     result is either ``None`` or a finite number of seconds, never negative. Delta-seconds is
-    a run of ASCII digits only (``str.isdigit`` alone also accepts superscripts and other
-    scripts' digits, which ``float`` then rejects), at most
+    a run of ASCII digits only (``str.isdigit`` alone also accepts a superscript, which
+    ``float`` rejects with a bare ``ValueError``, and other scripts' decimal digits, which
+    ``float`` reads as a number of seconds: ``"١٢٣"`` was 123 s), at most
     :data:`_RETRY_AFTER_MAX_DIGITS` long; ``-1``, ``nan``, ``1e400``, a sign or a blank are
     not it. Spaces and tabs around the value are optional whitespace and are dropped. Anything
     else is read as an HTTP-date, which may be far in the future: the caller bounds the sleep,
@@ -731,12 +734,19 @@ class EbsiHttpClient:
         A coded body is read with ``iter_raw``, which hands over the wire bytes undecoded, so
         httpx never inflates anything. A body with no coding has nothing to inflate and is
         read with ``iter_bytes`` (``_decoder_for`` returns ``None`` only for no coding or
-        ``identity``, and httpx then applies no decoder), which also serves a body a test
-        double has already read into memory. The wire total and the decoded total are both
-        checked BEFORE a chunk is appended, and ``zlib`` is asked for at most ``room + 1``
-        bytes, so a decompression bomb is refused inside the stdlib, before the allocation,
-        not after it."""
+        ``identity``, and httpx then applies no decoder), as is a body a test double has
+        already read into memory, a coded one too (httpx decoded it when it was built). The
+        wire total and the decoded total are both checked BEFORE a chunk is appended, and
+        ``zlib`` is asked for at most ``room + 1`` bytes, so a decompression bomb is refused
+        inside the stdlib, before the allocation, not after it."""
         decoder = _decoder_for(resp.headers.get("content-encoding"), url)
+        if decoder is not None and resp.is_stream_consumed:
+            # A response a test double built from `content=` is read into memory when it is
+            # made, and httpx has already decoded it: `iter_raw` would raise `StreamConsumed`
+            # and there is nothing left to inflate. No socket hands one over (a stream is
+            # consumed only by reading it), so this is not reachable from the wire; the cap
+            # still holds on what is read.
+            decoder = None
         declared = _declared_length(resp.headers.get("content-length"))
         if declared is not None and declared > cap:
             raise HttpError(f"response exceeds {cap} bytes", status=200, url=url)
@@ -843,15 +853,15 @@ class EbsiHttpClient:
             if secs is not None:
                 delay = max(delay, secs)
         # A server decides what it asks for, never how long this client waits: no sleep is
-        # longer than the policy's ceiling (`__post_init__` sets it, `backoff_max_s` by
-        # default), and none is longer than one day, which `time.sleep` always takes (it
-        # raises OverflowError from about 9.2e9 s).
+        # longer than the policy's ceiling (`retry_after_max_s`, `backoff_max_s` when that is
+        # None), and none is longer than one day, which `time.sleep` always takes (it raises
+        # OverflowError from about 9.2e9 s).
         ceiling = self._retry.retry_after_max_s
         delay = min(delay, self._retry.backoff_max_s if ceiling is None else ceiling,
                     _MAX_DEADLINE_S)
         if until is not None:                 # never sleep past the caller's budget
             delay = min(delay, max(0.0, until - time.monotonic()))
-        time.sleep(max(0.0, delay))
+        time.sleep(delay)
 
     # -- lifecycle --------------------------------------------------------- #
 

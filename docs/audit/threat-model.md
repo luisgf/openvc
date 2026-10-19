@@ -300,7 +300,7 @@ finite input", with no explicit constant.
   `iter_bytes`, which yields an already-inflated chunk, and checked its cap after appending
   (a 260 935-byte gzip body that inflates to 256 MiB peaked at 557 MiB under a 1 MiB cap);
   it now reads through `get_bytes`'s reader, so the cap holds on the wire and on the
-  decoded size before a chunk is held (about 2 MiB on the same body), a single `gzip` or
+  decoded size before a chunk is held (about 2 MiB on the same body and cap, about twice the cap in general), a single `gzip` or
   `deflate` coding is decoded and any other is `HttpUnexpectedEncoding` (the client asks for
   `gzip, deflate` only; `get_bytes` asks for `identity`). A `Retry-After` was honoured
   without a bound and read with `str.isdigit` and `float`, so 400 digits became `inf` and
