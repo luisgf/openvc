@@ -774,6 +774,131 @@ Each is one value or table away from the other option. None changes anything tha
 9. **Open question 7 (qualified seal)** is not decided: the `Anchor` seam is where a second
    kind of root would attach, as a new class.
 
+- **`openvc_ebsi.node_client.for_nodes`: a client bound to a verified Trusted Nodes List, with a
+  health check and single-node failover**
+  ([#324](https://github.com/luisgf/openvc/issues/324), ADR-0009 D5; refs
+  [#113](https://github.com/luisgf/openvc/issues/113)). `verify_node_list` (#319) answers "which
+  nodes, until when" once, and nothing made the answer last: a service that verified once kept
+  trusting that node set indefinitely, and a registry walk that lost its node had nowhere to go.
+  `for_nodes(result, *, clock, decode_jwt, ...)` returns an `EbsiNodeClient` for the result's one
+  environment (a context manager that owns one pooled `EbsiHttpClient`):
+
+  - **The allow-list is exactly the result's hosts.** There is no `extra_hosts`, no
+    `allowed_hosts` (a `TypeError`), no way to merge two results, no `verify_tls`, and
+    `EBSI_HOSTS` is never read; the environment label is the verifier's. The result is
+    re-validated first, because a `VerifiedNodeList` can be built by hand: a non-empty tuple of
+    bare ASCII `https://host` origins of its environment, none twice, each host the origin's,
+    checked with the verifier's own rule (`nodes.check_node_origin`, new, which `verify_node_list`
+    now calls too), else `NodeClientConfigError` before any `httpx.Client` exists. The client then
+    admits `https` at port 443 of those hosts only (#318).
+  - **The list's lifetime travels with the client.** The client carries the result's `expires`
+    and an injected wall `clock`; at or after it every read raises `NodeListExpired` before the
+    host guard, the cache lookup and any socket, and again before every retry (a backoff sleep can
+    cross the instant). There is no grace and no refresh: rebuild the client before `expires`.
+    A result already expired at the clock's reading is `NodeListExpired` at construction. The
+    clock is read through `utc_instant` (a naive value is UTC; a `datetime` subclass cannot change
+    the reading, #286), and a clock that returns `None`, a non-`datetime` or raises is
+    `NodeClientConfigError`, never "now". The same gate is a general feature of
+    `EbsiHttpClient(valid_until=..., clock=...)` (both or neither); without the pair a client is
+    unbounded, as before.
+  - **Single-node walks.** `run(walk)` calls `walk(session)` on one node from start to end and,
+    when that node fails, calls it again, from its first read, on the next candidate. A
+    `NodeSession` carries a fresh `DidEbsiResolver` on `base=origin` (adapters `"core-v1"` by
+    default) whose only fetch refuses (`HttpForbiddenHost`, before any socket) a URL whose origin
+    is not the session's node, with the TIR pin's own comparison (an absent port is 443), so a
+    body served by node A cannot steer a read to node B whatever an adapter does with a link. A
+    walk must be re-runnable. An attempt during which the session saw a node failure is discarded
+    even if the walk caught the exception and returned a value; a swallowed expiry or off-node
+    refusal is raised at the end.
+  - **What fails over, in one table (`classify`, `node_client._FAILOVER`).** A transport error or
+    timeout, a 429 or 5xx once retries are used up, a 403 whatever its body, a 3xx (never
+    followed), a body past the size cap or the read deadline, and a failed health check go on to
+    the next node, each recorded as a `NodeFailure(origin, kind, status)` with `kind` in
+    `unreachable`, `unavailable`, `forbidden`, `redirect`, `limits`, `unhealthy` and nothing else
+    (never a body, a header value, a `Location` or an exception message, in the object, the error
+    or the log line: one `WARNING` on the `openvc` logger per failover). A node that *answers*
+    does not fail over: a 404 is that node's answer (`HttpNotFound` naming it; it does not mark
+    the node unhealthy, and confirming it on a second node is not built, ADR-0009 open question
+    5), nor does any other 4xx, a malformed 200, an expired list, a configuration error, or an
+    error about the content (`AccreditationInvalid`, `NoTrustedAnchor`, `IssuerNotTrusted`, ...).
+    When every candidate fails, `NoHealthyNode` carries one `NodeFailure` per node examined.
+  - **Health and selection.** `check_health(origin)` is `GET {origin}/v1/alive` through the new
+    `EbsiHttpClient.probe(url)`: one attempt, no backoff, never read from or written to the
+    response cache, every status returned instead of raised, the body of a non-200 not read,
+    capped at 1 KiB. Healthy only on a 200 whose body is a JSON object with `health_global` the
+    `int` 1 (not `true`, `1.0` or `"1"`); everything else is unhealthy. `run` probes a candidate
+    lazily, one at a time, in the order `policy(origins)` gives (default `random_order`; its output
+    is untrusted: a name not in the result, a case or slash variant, a duplicate, an empty
+    answer, a non-iterable, a raising policy or a never-ending one is `NodeClientConfigError`
+    before any request), remembers the verdict for `health_ttl_s` (a node that failed a real read
+    is remembered unhealthy for as long), and lets at most `max_nodes` candidates cost a request
+    per `run`; a node is tried at most once per `run`.
+  - **`address_guard` is on by default** and `address_guard=None` opts out. The allow-list matches
+    host *names*, and these are node operators' own domains (threat model R4), so each request
+    resolves the name, refuses a node with any non-public address and connects to the validated
+    one. A node whose name points at a private address is failed over from (`unreachable`). The
+    guard cannot work behind an environment proxy: `for_nodes` then raises
+    `HttpAddressGuardUnavailable` (the existing error of `EbsiHttpClient`) instead of quietly
+    dropping the control; unset the proxy, or pass `address_guard=None` to go through it.
+
+  New names: `openvc_ebsi.node_client` (`for_nodes`, `EbsiNodeClient`, `NodeSession`, `NodeFailure`,
+  `NoHealthyNode`, `NodePolicy`, `random_order`, `classify`, `FAILURE_KINDS`, `NODE_RETRY`),
+  `openvc_ebsi.errors.NodeClientConfigError` (an `EbsiError` and a `ValueError`),
+  `EbsiHttpClient.probe` and `ProbeResponse`, `EbsiHttpClient.valid_until`,
+  `openvc_ebsi.http.read_clock` and `openvc_ebsi.nodes.check_node_origin`.
+  `NodeListExpired` is the existing class of the verifier, reused as its docstring said it would
+  be. The issue's module name `nodes.py` is taken by the verifier, so the client is
+  `node_client.py`.
+
+  **What was measured** (on the code in this tree, with a virtual clock and the connect timeout
+  at its 10 s default, jitter at its ceiling; `test_the_worst_case_walk_time_is_bounded_and_recorded`):
+  with `for_ebsi`'s `RetryPolicy()` (3 attempts) a node that never answers costs a walk 30.75 s
+  (3 x 10 s plus 0.25 s and 0.5 s of backoff), so a `run` over three dead nodes costs up to
+  92.25 s; with `NODE_RETRY` (2 attempts, the `for_nodes` default) 20.25 s and 60.75 s; and a node
+  that fails its probe costs one 10 s attempt, 30 s for three. `/v1/alive` was read once on
+  2026-10-19 from `api.ebsi.iti.gr` and `api.ebsi.edelivery.lt`: both 200,
+  `application/json; charset=utf-8`, the 19-byte body `{"health_global":1}`, no cache validators
+  (`tests/fixtures/ebsi/alive/`); a third request, to `api-preprod.ebsi.grnet.gr`, got no
+  connection in 20 s and was not repeated. The 503 `{"health_global":0}` the hub documents was
+  not seen, so it is a synthetic input in the tests, labelled so.
+
+  **Defaults taken, pending maintainer confirmation** (the issue left each to the
+  implementation; each is one line to change):
+  1. *The module is `node_client.py`.* The issue's `nodes.py` is the verifier (#319).
+  2. *`address_guard` is on by default in `for_nodes`, with `address_guard=None` as the opt-out*
+     (#322's recommendation for list-derived hosts). The other option, off by default, would
+     leave the DNS-rebinding exposure of operator-run names to the caller's care. Behind an
+     environment proxy `for_nodes` **raises** `HttpAddressGuardUnavailable` rather than build
+     without the guard; the other option is to fall back silently, which this does not do.
+  3. *`HttpForbiddenAddress` (a listed name resolving to a private address) is a failover*, kind
+     `unreachable`, not a propagated `HttpForbiddenHost`. The issue's table lists
+     `HttpForbiddenHost` as propagating, and an off-node URL still does; an address refusal is
+     about one operator's DNS, and propagating it would let that operator's zone fail a `run`
+     whenever the policy picks the node. The other option propagates it.
+  4. *`for_nodes` retries twice, not three times* (`NODE_RETRY`, the measurement above);
+     `for_ebsi`'s defaults are unchanged. `max_nodes=3`, `health_ttl_s=60` and the 1 KiB probe cap
+     are the issue's proposals, not facts about EBSI.
+  5. *Only a failure the session saw is the node's.* A walk's own fetches through some other client
+     are not blamed on the node. Any `EbsiError` raised after the session saw a node failure fails
+     over (the verdict was built on a failure), and a swallowed terminal error is re-raised.
+  6. *`classify` also calls an unretried 429 or 5xx (a 501, a 507) `unavailable`*; every other 1xx,
+     2xx and 4xx status propagates.
+  7. *`check_health` always sends a fresh probe* and updates the verdict `run` reuses; a node
+     failing a real read is memoised unhealthy only through `run`, not through a bare `session`.
+  8. *A candidate known unhealthy inside its TTL is a free skip* and is listed in `NoHealthyNode`,
+     so when every node is known bad the error costs no request until the TTL passes.
+  9. *`NodeClientConfigError` is also a `ValueError`*, like `UnknownEbsiEnvironment`, so the
+     issue's "`ValueError` for exactly one of the pair" and its "`NodeClientConfigError` for a
+     bad clock" are one class.
+  10. *The shipped client still reads a 403's body* (bounded, #321) for `HttpError.problem_type`;
+      the node client never carries it. The issue's "the body is never parsed" row is therefore
+      met at the node-client layer (nothing of a body reaches a `NodeFailure`, an error or a
+      log), not by changing the shared error path.
+  11. *Not done here, on purpose:* the issue's three request-path fixes. The `Retry-After` bound
+      and parsing (a, b) are #335's; the unbounded error-body read (c) already landed with #321.
+      `docs/audit/assurance.md` section 4 gets its entry after the adversarial review, and ADR-0009
+      is not edited.
+
 ### Changed
 
 - **A URL on an allow-listed host with a port other than 443 is now `HttpForbiddenHost`**
@@ -911,6 +1036,19 @@ Each is one value or table away from the other option. None changes anything tha
   `UnsafeUrlError` where it used to connect. There is nothing to pass instead: a publicly
   reachable host does not resolve to this prefix; fix the DNS record. Only IPv6 has the
   property, so IPv4 classification is unchanged.
+
+- **`HttpTransientExhausted.status` can now be set** (#324). It was always `None`; it is now the
+  last attempt's HTTP status (a 429 or a 5xx) and is still `None` when that attempt never got an
+  answer (a transport error, a timeout, an address the guard could not resolve), which is how the
+  node client tells `unavailable` from `unreachable`. Who is affected: code that read
+  `exc.status is None` to mean "retries exhausted" must compare the class instead. Nothing else
+  of `get_json` or `get_bytes` changes for a caller that does not pass `valid_until` and `clock`
+  (no gate, no clock read); `probe` is a new method on the shared request loop, not a change to
+  the other two. An exhausted probe says "gave up after 1 attempts".
+- **`openvc_ebsi.nodes` has a public origin rule** (#324): `check_node_origin(url, environment)`
+  is what `verify_node_list` applied to every node, now named. `_node` calls it with the
+  messages it always had (the Trusted Nodes List suites pass untouched). The issue asked for exactly this: a client built from a result that may be hand-built
+  re-checks the nodes with the verifier's own rule instead of a copy of it.
 
 ### Fixed
 
@@ -1109,6 +1247,33 @@ Each is one value or table away from the other option. None changes anything tha
   failing test: the real chain's baseline result is computed on first use, so a verifier
   regression no longer surfaces as one collection error of the whole module.
 
+- **`tests/test_ebsi_node_client.py`** (293 tests, new) and **86 new rows in
+  `tests/test_ebsi_http.py`** (the file had 84): offline (`httpx.MockTransport` injected into the
+  `httpx.Client` the real constructor builds, a fixed wall clock, a fake `time`), negatives first,
+  exact classes, zero-request assertions. The expiry gate at every entry point (`run`, `session`,
+  `check_health`, `session.get_json`, `get_json`, `get_bytes`, `probe`), at, a microsecond after
+  and ten years after `expires`, a microsecond before, a cached success, a backoff sleep that
+  crosses the instant, a clock that returns `None` / an `int` / a string / a date or raises, a
+  naive clock, a `datetime` subclass that lies; the result re-validation (30 shapes), the
+  allow-list (six foreign hosts, another environment's hosts, `extra_hosts` / `allowed_hosts` /
+  `verify_tls` as `TypeError`); 15 hostile policy outputs and a Hypothesis property; the health
+  matrix (31 unhealthy answers in one request, no sleep, cache untouched), the memo with an
+  injected monotonic clock, two recorded healthy answers; every failover row twice (one node
+  down, then all nodes down with the failures listed and the sentinel body, `problem+json` type
+  and `Location` absent from the error, the failures and the log); 11 no-failover answers; a
+  real signed three-hop `verify_ebsi_badge` walk that loses node A at each of its nine reads in
+  turn; a session pin test through an adapter with no pin; the recorded preprod RootTAO through
+  `run` with and without `allow_es256k`; the recorded Trusted Nodes List through `for_nodes`;
+  the address guard (default on, opt-out, a proxy, a private address, a rebinding resolver); eight
+  threads on one client; the worst-case walk time on a virtual clock.
+- **`tests/fixtures/ebsi/alive/`** (new, recorded 2026-10-19): the `GET /v1/alive` answers of
+  `api.ebsi.iti.gr` and `api.ebsi.edelivery.lt`, body and head byte for byte, with a manifest and
+  provenance. The test hashes every file. The 503 `{"health_global":0}` the hub documents and the
+  firewall's 403 page are synthetic inputs, labelled so.
+- **Mutation check** (the list is in the PR for #324): each mutant of the change fails at least
+  one of these tests; the base commit `cf6d100` with the new tests laid over it fails to import
+  them, and its own tests still pass.
+
 ### Docs
 
 - `wiki/Trust.md` says what each environment name means, from what ADR-0009 measured on
@@ -1208,6 +1373,17 @@ Each is one value or table away from the other option. None changes anything tha
   `SECURITY.md` ("Signature verification") name the opt-in next to the allow-list, with the
   braces list unchanged; the fixtures README says that the DEFAULT allow-list refuses the
   RootTAO tokens; the wiki and the threat model (I23) carry the flag rule and the JWK members.
+
+- `wiki/EBSI-Node-Trust.md`: "Keep using the nodes: `for_nodes`" (the lifetime gate and "rebuild
+  before `expires`", single-node walks, what fails over, "a 404 is one node's answer", health,
+  the address guard and its proxy limit, the measured worst case, and what the list still does
+  not authenticate); two sentences of the page say the same where they used to say "open".
+  `wiki/Trust.md`: a pointer and a `no-run` snippet (verify, `for_nodes`, `run`) under "Which node?
+  Verifying the Trusted Nodes List". `docs/audit/threat-model.md` (the EBSI client paragraph:
+  an allow-list built from external data, the per-walk origin pin, the expiry gate, the
+  residuals) and `docs/audit/assurance.md` section 3 (the new tests); section 4 gets its entry
+  after the adversarial review. ADR-0009 is not edited: after the merge the maintainer records
+  the answer to open question 5 and accepts D5.
 
 ### Documentation
 

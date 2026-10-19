@@ -273,6 +273,41 @@ Example-based, but broad. Representative anchors:
   the validated literal with the name kept for SNI and `Host`, and a loopback TLS server
   shows the certificate is checked against the name and a connection is never reused for
   a second name (`test_ebsi_address_guard.py`).
+- **EBSI node client (plugin)** — `for_nodes` over a verified Trusted Nodes List (#324, v1.37.0).
+  A result is re-validated before it becomes an allow-list (empty or list-typed nodes, a path,
+  port, userinfo, query, fragment, trailing slash or newline, `http://`, upper case, a non-ASCII
+  host, a bad label, another environment's prefix, a host that is not its origin's, a
+  duplicate, an expiry that is `None`, a string or an int, a dict or a namespace standing in for
+  the result): `NodeClientConfigError` with no `httpx.Client` built. At and after `expires`
+  (and a microsecond after, and ten years after) `run`, `session`, `check_health`,
+  `session.get_json`, `get_json`, `get_bytes` and `probe` raise `NodeListExpired` with zero
+  requests, a cached success is not served, a backoff sleep that crosses the instant stops the
+  next attempt, `run` raises it rather than `NoHealthyNode` and tries no second node, and a walk
+  that swallows it still gets it; a clock returning `None`, an `int`, a string, a date, or raising
+  is `NodeClientConfigError`, a naive clock is UTC and a `datetime` subclass that lies about
+  `utcoffset` / `astimezone` / `>=` cannot move the reading
+  (`test_ebsi_node_client.py`, `test_ebsi_http.py`). A policy's output is untrusted (a
+  non-member, a case or slash variant, a duplicate, empty, `None`, an `int`, a `str` subclass, a
+  never-ending iterator, a raising policy: `NodeClientConfigError` before any request; a
+  Hypothesis property over lists of members, variants, text, integers and `None`). `check_health`
+  is healthy for the two recorded production answers (`tests/fixtures/ebsi/alive/`, 19 bytes
+  each) and unhealthy, in exactly one request and with no sleep, for 31 other answers (the
+  `true`, `1.0`, `"1"` and `2` spellings of the value, a missing key, arrays, non-JSON, a
+  body past the cap, 503/429/500/403/404/204/206/301/304, three transport errors), with the cache
+  untouched; a Hypothesis property over arbitrary bytes and statuses gives a `bool` or an
+  `EbsiError`. Every failover row (transport errors, 429, 5xx, an unretried 501/507, a 403 with an
+  HTML or a `problem+json` body, 301/302/303/307/308, a body past the cap, a read past the
+  deadline) reruns the walk on the next node and, when every node fails, gives one
+  `NodeFailure` per node with no body, header, `Location` or exception text in the error, the
+  failures or the log; the answers (404, 400/401/405/406/410/418, 204, malformed 200) and the
+  content errors propagate with the second node never contacted. A real three-hop signed walk
+  loses its node at each of its nine reads in turn and the attempt that succeeds is the next
+  node's alone, from hop 1; a session refuses another node of the set, its own port in other
+  spellings, a scheme change and userinfo before any socket, including through an adapter with
+  no origin pin. The recorded preprod RootTAO is refused through `run` without
+  `VcJwtProofSuite(allow_es256k=True)` (no failover) and verifies with it; the real list
+  fixture goes through `verify_node_list`, `for_nodes`, `check_health` and `run`. Eight threads
+  against a flaky node raise only documented errors. Mutation check in the PR for #324.
 - **OpenID4VP `vp_token` (W3C lanes)** — a victim's credential re-wrapped in another
   holder's correctly bound `jwt_vc_json` / `ldp_vc` VP, including a KB-stripped
   SD-JWT VC, enveloped or over the DC API; a nested SD-JWT VC whose KB-JWT names

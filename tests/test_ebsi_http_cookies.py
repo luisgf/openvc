@@ -206,7 +206,8 @@ def test_error_classes_are_unchanged_with_and_without_a_set_cookie(
         with pytest.raises(HttpError) as info:
             client.get_json(URL_A)
     assert type(info.value) is expected
-    assert info.value.status == (None if expected is HttpTransientExhausted else status)
+    # an exhausted retry carries the last attempt's status since #324 (it was always None)
+    assert info.value.status == status
     assert len(rig.requests) == requests                  # a 302 is not followed
     assert {r.url.path for r in rig.requests} == {"/a"}
     assert rig.cookie_headers == [None] * requests

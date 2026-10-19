@@ -348,6 +348,34 @@ finite input", with no explicit constant.
   is the single anchor key, and a caller that persists nothing is bounded only by the two
   shipped version floors, `max_age` and `min_threshold`. The parser surface is in §6; the
   host-name allow-list itself, and R4, are unchanged.
+  **An allow-list may now be built from a verified list** (#324, v1.37.0,
+  `openvc_ebsi.node_client.for_nodes`), which makes external data the source of an SSRF
+  allow-list, so the client re-validates the result before it uses it (a result can be built by
+  hand: a non-empty tuple of bare ASCII `https://host` origins of its environment, none twice,
+  by the verifier's own `check_node_origin`, else `NodeClientConfigError` before any
+  `httpx.Client` exists), allow-lists exactly its hosts for that one environment (no
+  `extra_hosts`, no merge of two results, no `verify_tls`, `EBSI_HOSTS` never read), has the
+  resolved-address guard **on by default** (opt out with `address_guard=None`; behind an
+  environment proxy it refuses to build instead of dropping the control), and binds the client
+  to the list's lifetime: `EbsiHttpClient(valid_until=, clock=)` raises `NodeListExpired` at or
+  after `expires` before the host guard, the cache lookup and any socket, and again before every
+  retry, with the clock read through `utc_instant` (a naive value is UTC, a `datetime` subclass
+  cannot change the reading, a clock that returns `None`, a non-`datetime` or raises is
+  `NodeClientConfigError`, never "now"). Without the pair a client is unbounded, as before, and
+  a hand-built allow-list stays the consumer's to rebuild. A registry walk runs on **one node**
+  per attempt: a `NodeSession` refuses (`HttpForbiddenHost`, before any socket) a URL whose
+  origin is not its node's, so a body served by node A cannot steer a read to node B whatever an
+  adapter does with a link (the allow-list covers every node of the environment; the TIR pin
+  covers only the adapters that have one). A node failure restarts the walk on the next node
+  (one table, `node_client._FAILOVER`); an attempt during which the session saw a node failure is
+  discarded even if the walk caught it, and a swallowed expiry or off-node refusal is raised at
+  the end. A node answer (a 404, any other 4xx, a malformed 200) and every content error propagate
+  unchanged. Bodies never reach an error or a log line: a `NodeFailure` is `origin`, a closed
+  `kind` and `status`. **Residual:** the list authenticates the operator, not the content (R12);
+  a node that answers 404 for a DID another node holds is believed (ADR-0009 open question 5);
+  `timeout_s` bounds each socket operation, not a response's headers (above), so a listed node
+  that drips headers can hold a walk; a request in flight when the list expires finishes; the
+  other residuals of the shared request path, listed above, are not changed by this.
 
 ## 8. Fail-closed invariants catalog
 

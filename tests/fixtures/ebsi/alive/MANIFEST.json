@@ -1,0 +1,43 @@
+{
+  "about": "Recorded responses of GET /v1/alive on two EBSI Core API v1 production nodes. Bodies and heads are byte-for-byte what the node sent (the head as curl -D wrote it), never edited. See README.md.",
+  "files": {
+    "api.ebsi.edelivery.lt.body": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 19,
+      "content_type": "application/json; charset=utf-8",
+      "date_header": "Mon, 19 Oct 2026 06:29:42 GMT",
+      "headers_file": "api.ebsi.edelivery.lt.headers",
+      "node": "api.ebsi.edelivery.lt",
+      "request_url": "https://api.ebsi.edelivery.lt/v1/alive",
+      "retrieved": "2026-10-19T06:29:41Z",
+      "sha256": "f2f79b0c42fd76c78f5fb94881dfb6a44ec69874e1d351afb0bbb888f5238587",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "api.ebsi.edelivery.lt.headers": {
+      "bytes": 961,
+      "node": "api.ebsi.edelivery.lt",
+      "sha256": "a4b7f2661fdaeaafa64d05dce38d439b41e714bb9994537a8e2b8630f8b7099d",
+      "what": "the response head exactly as curl -D wrote it (status line, header lines, CRLF)"
+    },
+    "api.ebsi.iti.gr.body": {
+      "accept": "application/json, application/did+ld+json, */*;q=0.1",
+      "bytes": 19,
+      "content_type": "application/json; charset=utf-8",
+      "date_header": "Mon, 19 Oct 2026 06:29:40 GMT",
+      "headers_file": "api.ebsi.iti.gr.headers",
+      "node": "api.ebsi.iti.gr",
+      "request_url": "https://api.ebsi.iti.gr/v1/alive",
+      "retrieved": "2026-10-19T06:29:40Z",
+      "sha256": "f2f79b0c42fd76c78f5fb94881dfb6a44ec69874e1d351afb0bbb888f5238587",
+      "status": 200,
+      "user_agent": "openvc-core/1.36.0"
+    },
+    "api.ebsi.iti.gr.headers": {
+      "bytes": 913,
+      "node": "api.ebsi.iti.gr",
+      "sha256": "f6dbb5fbbf9e5a99b120287707316e0feb7b6be7c30935457b7f4d613c531df4",
+      "what": "the response head exactly as curl -D wrote it (status line, header lines, CRLF)"
+    }
+  }
+}
