@@ -459,7 +459,8 @@ All notable changes to **openvc** are documented here. The format follows
     budget is given, which is a bare `OverflowError` once the header is longer than
     `time.sleep` takes (about 9.2e9 s, so any 11-digit value; measured; `get_bytes` without a
     `deadline_s` has it too, and `get_tnl_files` always passes one). They are outside this
-    change and are tracked separately.
+    change and are tracked separately (the drain was bounded by #321, the other two by #335;
+    see *Fixed*).
 - **`openvc.fetch.ip_is_forbidden(address)`**
   ([#322](https://github.com/luisgf/openvc/issues/322)), the address rule `openvc.fetch`
   applies to `did:web`, public and in `__all__` so a caller with its own HTTP client applies
@@ -774,6 +775,20 @@ Each is one value or table away from the other option. None changes anything tha
    forges a signature.
 9. **Open question 7 (qualified seal)** is not decided: the `Anchor` seam is where a second
    kind of root would attach, as a new class.
+- **`RetryPolicy.retry_after_max_s`**
+  ([#335](https://github.com/luisgf/openvc/issues/335); it delivers rows (a) and (b) of the
+  request-path fixes of [#324](https://github.com/luisgf/openvc/issues/324)). The longest
+  ONE sleep between attempts may be, whatever a server asks for with `Retry-After`: every
+  sleep is `min(max(backoff, Retry-After), ceiling)`, and a caller's `deadline_s` can still
+  only shorten it. `None`, the default, means `backoff_max_s`, looked up when a sleep is
+  taken: a policy built with defaults sleeps at most 5 s, one built with `backoff_max_s=60`
+  at most 60 s, `dataclasses.replace(policy, backoff_max_s=X)` follows `X`, and the attribute
+  itself stays `None`. An explicit value must be a number of seconds from 0 to one day
+  (`True`, a string, `nan`, `inf`, a negative and `10**400` are a `ValueError` when the
+  policy is built); `backoff_max_s` is not validated, as it never was, and no sleep is longer
+  than one day whatever it is, nor negative (a negative `backoff_max_s` sleeps 0 s). An
+  add-only field: every existing `RetryPolicy(...)` call, and a `dataclasses.replace` of one,
+  still builds. See *Changed* for what the default does to a node that asks for a long wait.
 
 ### Changed
 
@@ -1041,6 +1056,107 @@ Each is one value or table away from the other option. None changes anything tha
   [#74](https://github.com/luisgf/openvc/issues/74)) `pilot` changes meaning. A caller who
   ignored the warning would then read a different ledger, where ADR-0009 measured the legacy DID
   to be a 404. Use `legacy-pilot` today to say which one you mean.
+- **A `Retry-After` above the policy's ceiling is no longer honoured in full**
+  ([#335](https://github.com/luisgf/openvc/issues/335)). `get_json` and `get_bytes` used to
+  sleep as long as a node asked, `attempts - 1` times: `Retry-After: 86400` on a 429 was two
+  sleeps of a day. With the default `RetryPolicy` no sleep is longer than 5 s now
+  (`retry_after_max_s`, which defaults to `backoff_max_s`, so the same holds for a policy you
+  built: its `backoff_max_s` is its ceiling unless you set `retry_after_max_s`; measured:
+  `RetryPolicy(backoff_base_s=0, backoff_max_s=0)` slept a `Retry-After: 30` for 30 s, twice,
+  and now sleeps 0 s); the call still retries
+  `attempts` times and then raises `HttpTransientExhausted` as before, so a rate-limiting node
+  is asked again sooner than it said and may answer 429 again. What to pass instead: a policy
+  with a higher ceiling, `RetryPolicy(retry_after_max_s=60.0)`, on the client (`retry=`), or
+  a larger `attempts`. A `Retry-After` of 0 and the small values are still slept as asked, up
+  to the ceiling. The value is also read more strictly (see *Fixed*): ten digits and more are
+  ignored, where a value past about 9.2e9 s used to be an `OverflowError` and a smaller one a
+  sleep of up to 292 years; and a delta-seconds written with another script's decimal digits
+  (`١٢٣`, Devanagari, fullwidth) or padded with a no-break space or another Unicode space was
+  read as that many seconds (measured: `١٢٣` slept 123 s, `5` and a no-break space slept 5 s)
+  and is ignored now, so the client keeps its own backoff.
+- **`get_json` accepts one `gzip` or one `deflate` coding and nothing else, and asks for
+  those** ([#335](https://github.com/luisgf/openvc/issues/335)). It used to hand a 200 body to
+  httpx, which decoded whatever it supports. Now a `Content-Encoding` of `br`, `zstd`,
+  `x-gzip`, `compress`, a list of codings (`gzip, gzip`, `identity, gzip`) or anything else
+  that is not `identity`, `gzip` or `deflate` is `HttpUnexpectedEncoding` (an `HttpError`,
+  status 200, not retried, the body unread), as it already was for `get_bytes`; a `deflate`
+  body must be the zlib format, what `zlib.compress` writes (httpx fell back to a raw deflate
+  stream, which was accepted and is now `MalformedRegistryResponse`); and bytes after the end of a compressed stream (a
+  trailing byte, a second gzip member) and a truncated stream are `MalformedRegistryResponse`
+  where httpx dropped the bytes or accepted the body (measured: a gzip body missing its
+  trailer, and `gzip.compress(b'{"ok": 1}' * 50)[:20]`, a stream cut after 20 bytes, came
+  back as `{"ok": 1}`). The client now sends `Accept-Encoding: gzip, deflate`
+  by default (httpx added `br` and `zstd` when their packages were installed, which this
+  client cannot read inside a cap); `get_bytes` still sends `identity`. A corrupt 200 body is
+  `MalformedRegistryResponse` with the `zlib.error` as its `__cause__` (it was an
+  `httpx.DecodingError`; an error body still reports that one). The messages changed too:
+  `response exceeds N bytes once decoded` for the decoded size and `read exceeded its deadline`.
+  A compressed body whose wire size alone is over `max_response_bytes` is refused even if it
+  would decode under it (only an incompressible body within a few bytes of the cap is
+  affected). If a registry you read sends a coding other than these, the call now fails with
+  `HttpUnexpectedEncoding`; there is no opt-in, so ask the operator to serve `gzip` or no
+  coding.
+- **Defaults pending maintainer confirmation** ([#335](https://github.com/luisgf/openvc/issues/335);
+  for each, what the other option would change):
+  - `retry_after_max_s` is a new field although #335's own scope line said "no change to
+    `RetryPolicy`'s fields": the design is #324's, because that issue's acceptance needs the
+    bound and two changes must not implement `Retry-After` twice. It is add-only;
+  - its default is `backoff_max_s` (5 s), looked up when a sleep is taken: the field stays
+    `None` and is not filled in when the policy is built, and it is not a literal 5.0. A literal
+    would clamp the backoff of a policy that raised `backoff_max_s` alone, and so did a number
+    filled in at construction for a policy derived with `dataclasses.replace(policy,
+    backoff_max_s=X)` (measured: it kept the old 5 s and cut the backoff at it, and a
+    `replace` of a policy built with `backoff_max_s=1e6` was a `ValueError`). The other option,
+    filling it in at construction, makes the attribute read the effective number (5.0) at those
+    two costs; a read-only property could give the number without them. A ceiling below
+    `backoff_max_s` lowers the backoff's ceiling too, because the bound is on every sleep
+    (`min(max(backoff, Retry-After), ceiling)`); capping only the `Retry-After` term
+    (`max(backoff, min(Retry-After, ceiling))`) would differ only for such a policy;
+  - a `Retry-After` that is not one to nine ASCII digits or an HTTP-date (a run of ten digits
+    or more, which is 31 years and up) is ignored, so the client keeps its own backoff; clamping
+    it to the ceiling instead would differ only when `retry_after_max_s` is above
+    `backoff_max_s`, where it would wait longer;
+  - only spaces and tabs around the value are dropped (HTTP optional whitespace), where
+    `str.strip()` also dropped other Unicode whitespace (a no-break space around a number was
+    read as seconds); an HTTP-date is tried only on a
+    value of at most 64 ASCII characters (the three forms are 29, 33 at most, and 24);
+  - an explicit ceiling outside 0 to one day is a `ValueError` at construction (one that
+    follows `backoff_max_s` is not checked, as `backoff_max_s` never was); and no single sleep is
+    ever above one day (`_MAX_DEADLINE_S`) whatever the policy, because a policy whose
+    `backoff_max_s` is huge would otherwise let an HTTP-date in the year 9999 reach
+    `time.sleep` as an `OverflowError` (it raises from about 9.2e9 s);
+  - the default `Accept-Encoding` is `gzip, deflate`; `identity` (no compression at all) would
+    be simpler and would cost bandwidth on large registry pages, and httpx's own default
+    would keep advertising `br` and `zstd` when installed, which are then refused;
+  - the codings above are refused rather than decoded: decoding `br` or `zstd`, a chain of
+    codings, or a raw deflate stream inside the cap would need a decoder per coding that is
+    bounded the way `zlib` is;
+  - a response a test double built with `content=` and a `Content-Encoding` of `gzip` or
+    `deflate` is read as httpx left it (decoded, in memory) under the same cap, by `get_json`
+    and by `get_bytes`. `get_json` served it before this change, and `get_bytes` has raised a
+    bare `httpx.StreamConsumed` on it since it was added (#331). Refusing it with a typed
+    `HttpError` instead would have kept `get_bytes`'s outcome and turned every such downstream
+    double into an error. No socket hands over a consumed stream, so nothing on the wire
+    reaches this;
+  - a negative ceiling sleeps 0 s (it raised from `time.sleep` before): `backoff_max_s` is
+    not validated, so `RetryPolicy(backoff_max_s=-1)` can be built, and its ceiling bounds
+    every sleep, which `time.sleep` refuses with a `ValueError` below zero. The sleep is
+    `time.sleep(max(0.0, delay))`. Measured on `main` at cf6d100 (a 503, three attempts, the
+    default `backoff_base_s`): with no `Retry-After` that policy was a bare `ValueError` out of
+    `get_json`; with `Retry-After: 30` it slept 30 s twice and ended in
+    `HttpTransientExhausted`, there being no ceiling, and it now sleeps 0 s twice and ends in
+    the same exception. No wire value makes the delay negative (a parsed `Retry-After` is
+    never negative and the caller's budget is clamped at 0), and an explicit
+    `retry_after_max_s` is validated from 0, so only `backoff_max_s` reaches this. The other
+    option, refusing a negative `backoff_max_s` with a `ValueError` when the policy is built,
+    would make a policy that builds today fail at construction, and would validate a field
+    that never was.
+  - **Not changed, a finding:** the read of a non-200 body (#321) still decodes with
+    `iter_bytes`, so one small `gzip` error body inflates a whole chunk before its 16 KiB
+    check fires (measured: a 260 935-byte body that inflates to 256 MiB peaks at 557 MiB on a
+    403). It is the same class as the 200 read fixed below and needs its own change: it must
+    keep returning `None` for a body it cannot use and `HttpNotFound` for a 404 whatever the
+    coding.
 
 ### Deprecated
 
@@ -1122,6 +1238,47 @@ Each is one value or table away from the other option. None changes anything tha
   key-type pin naming `kty=None`) and, for the wrapper of a valid key, blamed the key; they now
   meet the same first message as every other non-object (measured at cf6d100). The parameter
   is typed `dict`, so this was a caller or resolver bug rather than attacker input.
+- **`EbsiHttpClient.get_json` no longer materialises an inflated chunk larger than its cap**
+  ([#335](https://github.com/luisgf/openvc/issues/335); found by the review of
+  [#331](https://github.com/luisgf/openvc/issues/331), which bounded the new `get_bytes` and
+  left this path alone). Hardening against an allow-listed host; no wrong-accept. `get_json`
+  read a 200 body with `iter_bytes` and checked `len(body) > max_response_bytes` after
+  appending, but `iter_bytes` yields a chunk httpx has already inflated, so one small
+  `Content-Encoding: gzip` chunk could allocate its expansion ratio before the check: measured
+  on `main` at cf6d100 (CPython 3.14.8, httpx 0.28.1), a 260 935-byte gzip body that inflates
+  to 256 MiB, as one chunk, under a 1 MiB cap, peaked at **557 MiB** under `tracemalloc` before
+  the `HttpError`. It now reads through the reader `get_bytes` has: the wire is read raw, the
+  wire size and the decoded size are checked **before** a chunk is held, and one `gzip` or
+  `deflate` coding is decoded with `zlib` asked for at most the room left plus one byte, so
+  the same body is refused as the same `HttpError` ("response exceeds N bytes", status 200)
+  at a peak of about **2 MiB**. A declared `Content-Length` over the cap is refused before the
+  body is read. A well-formed answer, compressed or not, is returned exactly as before; see
+  *Changed* for what else a body now has to be.
+- **A hostile `Retry-After` no longer escapes as a bare exception or holds a walk**
+  ([#335](https://github.com/luisgf/openvc/issues/335); rows (a) and (b) of
+  [#324](https://github.com/luisgf/openvc/issues/324); the same class as #246 and #248).
+  `_parse_retry_after` returned `float(value)` for any `str.isdigit()` value and
+  `_sleep_before_retry` passed `max(delay, secs)` to `time.sleep`. Measured on `main`:
+  `Retry-After: 99999999999` was `OverflowError: timestamp out of range for C PyTime_t`; 400
+  digits parsed to `inf` and raised the same; `"²"`, which is a digit to `isdigit()`, was
+  `ValueError: could not convert string to float` out of `get_json`, while `"١٢٣"` and
+  fullwidth digits, which are digits to `isdigit()` and numbers to `float()`, were slept as
+  123 s and 5 s; and a 429 asking for 86 400 s slept it, `attempts - 1` times. Delta-seconds is now one to nine ASCII digits
+  (`isascii()` and `isdigit()`, so `²`, `٣`, `١٢٣` and fullwidth digits are not numbers, and a
+  5 000-digit run never reaches `int()` and its conversion limit); the HTTP-date form is tried
+  on a value of at most 64 ASCII characters, with every stdlib failure caught: for 300 000
+  generated date-like strings `parsedate_to_datetime` raises only `ValueError` on CPython 3.13
+  to 3.15 and `ValueError` or `OverflowError` on 3.10 to 3.12 (for example
+  `01 Jan 99999999999 00:00:00 GMT`, measured on 3.10.20, 3.11.15 and 3.12.13), where the
+  `(TypeError, ValueError)` the client caught before let a bare `OverflowError` out of
+  `get_json`; CPython 3.9, which the package does not support, also raised `TypeError` and
+  `IndexError`, which stay in the tuple. Two such dates are in the parametrized parser test,
+  so the 3.10 to 3.12 lanes pin the `OverflowError` catch; anything else (`nan`,
+  `inf`, `-1`, `+5`, `1e400`, a fraction, two numbers, the empty value) is ignored and the
+  client keeps its own backoff. The result is `None` or a finite number of seconds, never
+  negative, and the sleep is capped as described under *Added* and *Changed*, so `time.sleep`
+  is never handed more than a day whatever the policy. Pinned by `test_ebsi_get_json_bounds.py`
+  on the 429 path and on every retried 5xx.
 
 ### Tests
 
@@ -1322,6 +1479,29 @@ Each is one value or table away from the other option. None changes anything tha
   186 of the 255 fail and the controls pass; twenty-two targeted mutants of the change were
   applied to scratch copies, twenty-one killed and one survivor that is equivalent (the object
   check moved after the `ES256K` branch, which has the identical check of its own).
+- `tests/test_ebsi_get_json_bounds.py` (#335): the bomb that inflates to 256 MiB, as one
+  chunk and split over many, in `gzip` and `zlib`, is `HttpError` with status 200 at a
+  `tracemalloc` peak under 16 MiB (557 MiB before); a decoded size at the cap passes and one
+  over fails; a declared length over the cap is refused with the body unread; twelve codings
+  `get_json` must refuse are `HttpUnexpectedEncoding` with the body unread; corrupt,
+  truncated and over-long streams are `MalformedRegistryResponse`; a body the transport has
+  already read (`httpx.Response(json=...)`) is still served; `Retry-After` through
+  `_parse_retry_after` and through the client (429 and every retried 5xx, raw UTF-8 header
+  bytes, a day-out date, the year 9999, a date with a huge offset): never a bare exception,
+  every sleep at most the ceiling, `0` and small values still honoured; Hypothesis for the
+  sleep (finite, in `[0, ceiling]`, where the ceiling is `retry_after_max_s`, or
+  `backoff_max_s` when that is `None`, and exactly `min(max(backoff, Retry-After), ceiling)`
+  for a digit run), for the parser and for arbitrary bytes under a coding; a negative
+  `backoff_max_s` (with and without a `Retry-After`, after a transport error, under an
+  explicit ceiling and under a caller's budget) sleeps exactly 0 s and ends in
+  `HttpTransientExhausted`, never a bare `ValueError`, with the fake clock refusing a negative
+  sleep as `time.sleep` does; the policy's default, a `dataclasses.replace` of it and its
+  validation; a `gzip` or `deflate` body that a test double has already read into memory. Six
+  existing tests changed with the behaviour: four
+  in `test_ebsi_http_bytes.py` relied on an unbounded `Retry-After` (they now build a policy
+  with a ceiling, and the one that used a 400-digit value uses the longest readable one),
+  `test_ebsi_http.py` expects the `zlib` error as the cause of a corrupt 200 body, and
+  `test_ebsi_http_cookies.py` pins the constructor headers with `Accept-Encoding` added.
 
 ### Docs
 
@@ -1434,6 +1614,11 @@ Each is one value or table away from the other option. None changes anything tha
   4 recorded as decided by the maintainer on 2026-10-19, with its Status line, the environment
   table paragraph of D6, Stage 3 and the follow-up list). The examples that said
   `for_ebsi("pilot", ...)` say `legacy-pilot`.
+- `wiki/Trust.md` (EBSI section): "Bounded body reads and bounded waits", with the one-line
+  recipe for a higher `retry_after_max_s`. `docs/audit/threat-model.md` (EBSI client
+  paragraph: the residual of #320 is closed for the 200 read and the sleep, and the non-200
+  decode is recorded as the one that remains) and `docs/audit/assurance.md` (section 3 row and
+  section 4 entry).
 
 ### Documentation
 

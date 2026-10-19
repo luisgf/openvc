@@ -9,6 +9,7 @@ loop's logic and the size-cap test here.
 from __future__ import annotations
 
 import json
+import zlib
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
@@ -179,7 +180,9 @@ def test_corrupt_compressed_body_is_typed_and_not_retried(status, encoding):
     c = _client(handler, retry=FAST_RETRY)
     with pytest.raises(MalformedRegistryResponse) as exc_info:
         c.get_json(URL)
-    assert isinstance(exc_info.value.__cause__, httpx.DecodingError)
+    # A 200 body is decoded by the bounded reader (zlib, #335); an error body still by httpx.
+    expected = zlib.error if status == 200 else httpx.DecodingError
+    assert isinstance(exc_info.value.__cause__, expected)
     assert calls["n"] == 1                        # terminal, not retried
 
 
