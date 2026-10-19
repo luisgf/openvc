@@ -337,6 +337,11 @@ finite input", with no explicit constant.
   matching `id` or `did` with its own key. What the checks close is a misrouted or
   steered response (a registry bug, a wrong `base`, a cache keyed on less than the URL, an
   unsigned token's `iss`) being accepted as the requested DID's document or record.
+  **So are the scalars the adapters copy** (#337, v1.37.0): `hasAttributes` must be a JSON
+  boolean and `id`, `hash`, `issuerType`, `tao`, `rootTao` and `body` the string (or, for
+  the last three, `null`) the model declares, else `MalformedRegistryResponse` on every
+  lane, so a wrong-typed member is no longer stored as sent nor read by truth (the string
+  `"false"` was `has_attributes=True`).
   **Residual:** the TIR `attributes` URL and each revision `href` are pinned to the
   listing's origin (#172), not to `.../issuers/{did}/`, and a revision's own `did` is not
   read; both are outside #266 and #267.

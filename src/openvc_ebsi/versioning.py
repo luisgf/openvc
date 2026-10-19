@@ -40,7 +40,9 @@ Principles baked in below
 3. Pin, don't float: the client is constructed with an explicit version; upgrades
    are a deliberate choice, not silent.
 4. Tolerant reads: ignore unknown/extra fields (additive changes don't break),
-   be strict only about the fields you depend on.
+   be strict only about the fields you depend on, and about the JSON type of every
+   scalar an adapter copies into the model (a wrong type is a typed
+   ``MalformedRegistryResponse``, #337); an absent member keeps its default.
 5. Per-version golden fixtures (recorded real responses) prove each adapter maps
    to the same domain model — the drift alarm.
 6. Method-level policy lives in the resolver, once, for every version: the DID is
@@ -139,6 +141,47 @@ def _require_object(value: Any, what: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise MalformedRegistryResponse(
             f"expected a JSON object for {what}, got {type(value).__name__}")
+    return value
+
+
+# The scalar wire fields an adapter copies into the domain model (#337). The model declares
+# a type for each (``Accreditation``: ``str`` for ``attribute_id`` and ``issuer_type``,
+# ``str | None`` for ``tao``, ``root_tao`` and ``credential_jwt``; ``IssuerRecord``: ``bool``
+# for ``has_attributes``) and a registry body is attacker-shaped JSON, so each copy is checked
+# against the declared type: a wrong one is a typed :class:`MalformedRegistryResponse`, never a
+# value that has a type in the annotation and another on the wire. Three readings, one per
+# declared type. An ABSENT member keeps the default the adapters always gave it (``""``,
+# ``None``, ``False``); a member that IS sent must have the declared JSON type, ``null``
+# included where the model says ``str`` or ``bool``. ``bool`` is an ``int`` subclass, which
+# is why ``hasAttributes`` is tested with ``isinstance(value, bool)`` and not read by truth:
+# ``"false"``, ``0`` and ``[]`` are wrong values, not falsy ones. A value in a message goes
+# through ``safe_repr`` (it is attacker-sized).
+
+def _wire_str(obj: dict[str, Any], key: str, what: str) -> str:
+    """``obj[key]`` for a field the model declares ``str``: ``""`` when absent, else a
+    ``str`` or :class:`MalformedRegistryResponse` (``null`` is not a string)."""
+    value = obj.get(key, "")
+    if not isinstance(value, str):
+        raise MalformedRegistryResponse(f"{what} {key} is not a string: {safe_repr(value)}")
+    return value
+
+
+def _wire_opt_str(obj: dict[str, Any], key: str, what: str) -> str | None:
+    """``obj[key]`` for a field the model declares ``str | None``: ``None`` when absent or
+    ``null``, else a ``str`` or :class:`MalformedRegistryResponse`."""
+    value = obj.get(key)
+    if value is not None and not isinstance(value, str):
+        raise MalformedRegistryResponse(f"{what} {key} is not a string: {safe_repr(value)}")
+    return value
+
+
+def _wire_bool(obj: dict[str, Any], key: str, what: str) -> bool:
+    """``obj[key]`` for a field the model declares ``bool``: ``False`` when absent, else a
+    JSON boolean or :class:`MalformedRegistryResponse`. Never ``bool(value)``: that reads
+    the string ``"false"`` as ``True``."""
+    value = obj.get(key, False)
+    if not isinstance(value, bool):
+        raise MalformedRegistryResponse(f"{what} {key} is not a boolean: {safe_repr(value)}")
     return value
 
 
@@ -366,17 +409,17 @@ class TirV4(TirAdapter):
 
     def parse_issuer(self, raw: Any, *, base: str, did: str, fetch: Any,
                      decode: Any) -> IssuerRecord:
-        accs = [
-            Accreditation(
-                attribute_id=a.get("hash", ""),
-                issuer_type=a.get("issuerType", ""),
-                tao=a.get("tao"),
-                root_tao=a.get("rootTao"),
-                credential_types=self._types_from_body(a.get("body"), decode),
-                credential_jwt=a.get("body"),
-            )
-            for a in raw.get("attributes", [])
-        ]
+        accs = []
+        for a in raw.get("attributes", []):
+            body = _wire_opt_str(a, "body", "TIR attribute")     # typed before `decode` sees it
+            accs.append(Accreditation(
+                attribute_id=_wire_str(a, "hash", "TIR attribute"),
+                issuer_type=_wire_str(a, "issuerType", "TIR attribute"),
+                tao=_wire_opt_str(a, "tao", "TIR attribute"),
+                root_tao=_wire_opt_str(a, "rootTao", "TIR attribute"),
+                credential_types=self._types_from_body(body, decode),
+                credential_jwt=body,
+            ))
         return IssuerRecord(did=did, has_attributes=bool(accs), accreditations=tuple(accs))
 
     @staticmethod
@@ -463,7 +506,7 @@ class _TirAttributeWalk(TirAdapter):
     def parse_issuer(self, raw: Any, *, base: str, did: str, fetch: Any,
                      decode: Any) -> IssuerRecord:
         raw = _require_object(raw, "TIR issuer response")
-        has_attrs = bool(raw.get("hasAttributes", False))
+        has_attrs = _wire_bool(raw, "hasAttributes", "TIR issuer response")
         accs: list[Accreditation] = []
         if has_attrs:
             # ADR-0001 D6: the v5 issuer response carries the attributes URL in its
@@ -506,20 +549,26 @@ class _TirAttributeWalk(TirAdapter):
                     # recursive trust refuses it unless a verifiable token backs it
                     raise MalformedRegistryResponse(
                         "TIR attribute revision has no attribute object")
-                body = attribute.get("body")
-                if body is not None and not isinstance(body, str):
-                    # the proof suite's `decode` takes a token; a number or an array would
-                    # leave it as a bare AttributeError
-                    raise MalformedRegistryResponse("TIR attribute body is not a string")
+                # every scalar the record copies is typed (#337) before `decode` runs: the
+                # proof suite's `decode` takes a token, and a number or an array would
+                # leave it as a bare AttributeError. The listing item's `id` is read first
+                # and falls back to the attribute's `hash` only when it is absent or empty:
+                # a wrong-typed `id` raises rather than falling through to the `hash`.
+                body = _wire_opt_str(attribute, "body", "TIR attribute")
+                attribute_id = (_wire_str(item, "id", "TIR attributes listing item")
+                                or _wire_str(attribute, "hash", "TIR attribute"))
+                issuer_type = _wire_str(attribute, "issuerType", "TIR attribute")
+                tao = _wire_opt_str(attribute, "tao", "TIR attribute")
+                root_tao = _wire_opt_str(attribute, "rootTao", "TIR attribute")
                 claims = decode(body) if body else {}
                 vc = claims.get("vc") if isinstance(claims, dict) else None
                 subject = vc.get("credentialSubject") if isinstance(vc, dict) else None
                 subject = subject if isinstance(subject, dict) else {}
                 accs.append(Accreditation(
-                    attribute_id=item.get("id", "") or attribute.get("hash", ""),
-                    issuer_type=attribute.get("issuerType", ""),
-                    tao=attribute.get("tao"),
-                    root_tao=attribute.get("rootTao"),
+                    attribute_id=attribute_id,
+                    issuer_type=issuer_type,
+                    tao=tao,
+                    root_tao=root_tao,
                     credential_types=_flatten_accredited_for(subject.get("accreditedFor")),
                     credential_jwt=body,
                 ))
