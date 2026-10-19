@@ -478,6 +478,109 @@ def test_other_arguments_are_checked_before_any_client_exists(rig, kwargs):
     rig.refuse(NodeClientConfigError, make_result(), **kwargs)
 
 
+BAD_SECONDS = {
+    "negative": -1, "zero": 0, "zero-float": 0.0, "nan": float("nan"), "inf": float("inf"),
+    "-inf": float("-inf"), "bool": True, "string": "10", "None": None,
+    "huge-int": 10**400, "past-the-cap": 10**10,
+}
+
+
+@pytest.mark.parametrize("name", ["timeout_s", "cache_ttl_s", "health_ttl_s"])
+@pytest.mark.parametrize("label", sorted(BAD_SECONDS))
+def test_a_duration_that_is_not_a_sane_number_of_seconds_is_a_config_error(rig, name, label):
+    # every one of these used to be built, and then reported as an outage (NoHealthyNode) or as
+    # a bare OverflowError / TypeError from the middle of a request
+    rig.refuse(NodeClientConfigError, make_result(), **{name: BAD_SECONDS[label]})
+
+
+@pytest.mark.parametrize("bad", [
+    pytest.param(0, id="zero"), pytest.param(-5, id="negative"), pytest.param(True, id="bool"),
+    pytest.param(1.5, id="float"), pytest.param("1024", id="string"), pytest.param(None, id="None"),
+])
+def test_max_response_bytes_is_a_positive_int(rig, bad):
+    rig.refuse(NodeClientConfigError, make_result(), max_response_bytes=bad)
+
+
+BAD_RETRIES = [
+    pytest.param(5, id="int"), pytest.param("RetryPolicy()", id="string"),
+    pytest.param({"attempts": 2}, id="dict"),
+    pytest.param(RetryPolicy(attempts=0), id="no-attempt"),
+    pytest.param(RetryPolicy(attempts=-1), id="negative-attempts"),
+    pytest.param(RetryPolicy(attempts=True), id="bool-attempts"),
+    pytest.param(RetryPolicy(attempts=1.5), id="float-attempts"),
+    pytest.param(RetryPolicy(backoff_base_s=-1.0), id="negative-backoff"),
+    pytest.param(RetryPolicy(backoff_max_s=-1.0), id="negative-backoff-max"),
+    pytest.param(RetryPolicy(backoff_base_s=float("nan")), id="nan-backoff"),
+    pytest.param(RetryPolicy(backoff_max_s=float("inf")), id="inf-backoff-max"),
+    pytest.param(RetryPolicy(backoff_base_s="1"), id="string-backoff"),
+    pytest.param(RetryPolicy(retry_statuses=503), id="int-statuses"),
+    pytest.param(RetryPolicy(retry_statuses=frozenset({"503"})), id="string-status"),
+    pytest.param(RetryPolicy(retry_statuses=frozenset({True})), id="bool-status"),
+]
+
+
+@pytest.mark.parametrize("retry", BAD_RETRIES)
+def test_a_retry_policy_the_request_loop_cannot_run_is_a_config_error_not_an_outage(rig, retry):
+    # RetryPolicy(attempts=0) made no request at all and was reported as "no healthy node"
+    rig.refuse(NodeClientConfigError, make_result(), retry=retry)
+
+
+@pytest.mark.parametrize("kwargs", [
+    pytest.param({"health_clock": 5}, id="health_clock-int"),
+    pytest.param({"health_clock": None}, id="health_clock-None"),
+    pytest.param({"health_clock": lambda: "x"}, id="health_clock-string"),
+    pytest.param({"health_clock": lambda: None}, id="health_clock-None-reading"),
+    pytest.param({"health_clock": lambda: True}, id="health_clock-bool"),
+    pytest.param({"health_clock": lambda: float("nan")}, id="health_clock-nan"),
+    pytest.param({"health_clock": lambda: float("inf")}, id="health_clock-inf"),
+    pytest.param({"health_clock": lambda: 10**400}, id="health_clock-huge-int"),
+    pytest.param({"health_clock": lambda: (_ for _ in ()).throw(RuntimeError("boom"))},
+                 id="health_clock-raises"),
+    pytest.param({"user_agent": ""}, id="user_agent-empty"),
+    pytest.param({"user_agent": None}, id="user_agent-None"),
+    pytest.param({"user_agent": b"openvc"}, id="user_agent-bytes"),
+    pytest.param({"user_agent": "openvc\r\nX-Evil: 1"}, id="user_agent-crlf"),
+    pytest.param({"user_agent": "openvc\x00"}, id="user_agent-nul"),
+    pytest.param({"user_agent": "openvc-\u00e9"}, id="user_agent-non-ascii"),
+    pytest.param({"user_agent": "x" * 257}, id="user_agent-too-long"),
+    pytest.param({"cache": object()}, id="cache-object"),
+    pytest.param({"cache": SimpleNamespace(get=None, set=None)}, id="cache-no-methods"),
+    pytest.param({"cache": SimpleNamespace(get=lambda k: None)}, id="cache-no-set"),
+    pytest.param({"address_guard": object()}, id="address_guard-object"),
+    pytest.param({"address_guard": True}, id="address_guard-bool"),
+    pytest.param({"address_guard": "on"}, id="address_guard-string"),
+])
+def test_every_other_argument_is_checked_before_any_client_exists(rig, kwargs):
+    rig.refuse(NodeClientConfigError, make_result(), **kwargs)
+
+
+def test_the_reasonable_values_of_those_arguments_are_accepted(rig):
+    client = rig.build(
+        Net(), timeout_s=1, cache_ttl_s=1, max_response_bytes=1024, health_ttl_s=1,
+        retry=RetryPolicy(attempts=1, backoff_base_s=0, backoff_max_s=0, retry_statuses=set()),
+        health_clock=lambda: 5, user_agent="my-service/1.0 (+https://example.org)",
+        cache=NoCache(), address_guard=AddressGuard(resolver=lambda h, p: ["93.184.216.34"]))
+    assert client.run(walk_tagged) == host_of(A)
+    assert rig.net is not None and len(rig.net.requests) == 2           # the probe and the read
+
+
+def test_a_health_clock_that_goes_bad_later_is_a_config_error_never_a_bare_exception(rig):
+    readings: list[Any] = [5000.0]
+
+    def health_clock() -> Any:
+        return readings[-1]
+    net = Net()
+    client = rig.build(net, health_clock=health_clock)
+    assert client.run(walk_tagged) == host_of(A)
+    before = len(net.requests)
+    for bad in ("x", None, float("nan"), 10**400):
+        readings.append(bad)
+        expect(NodeClientConfigError, client.run, walk_tagged)
+        assert len(net.requests) == before                 # no request on a clock it cannot read
+        expect(NodeClientConfigError, client.check_health, A)  # (the verdict cannot be recorded)
+        before = len(net.requests)
+
+
 def test_the_adapters_default_to_the_core_v1_names_and_the_walk_uses_them(rig):
     net = Net()
     client = rig.build(net)
@@ -648,6 +751,51 @@ def test_a_swallowed_expiry_still_reaches_the_caller(rig):
     assert len(net.walks(A)) == 1 and net.to(B) == []
 
 
+def test_run_is_gated_before_its_own_walk_even_when_no_probe_is_due(rig):
+    # A fresh healthy verdict means `run` sends no probe, and a walk that reads nothing sends no
+    # request, so nothing downstream would ever notice that the list is dead: only run's own
+    # gate stops it, and the walk is never called.
+    net = Net()
+    client = rig.build(net)
+    assert client.check_health(A) is True
+    sent = len(net.requests)
+    rig.clock.now = EXPIRES
+    ran: list[Any] = []
+    expect(NodeListExpired, client.run, lambda session: ran.append(session) or "value")
+    assert ran == [] and len(net.requests) == sent
+
+
+def test_a_session_read_of_an_off_node_url_after_expiry_is_node_list_expired(rig):
+    # The session's own gate runs before its origin pin: an expired list is expired on every
+    # node, and a refusal of the URL must not hide that. (The client's gate would not catch it:
+    # the pin refuses an off-node URL before the client is asked.)
+    net = Net()
+    client = rig.build(net)
+    session = client.session(A)                       # made while the list was valid
+    rig.clock.now = EXPIRES
+    expect(NodeListExpired, session.get_json, f"{B}/v1/x")
+    expect(NodeListExpired, session.get_json, 5)      # not even a str
+    assert net.requests == []
+
+
+def test_a_config_error_the_walk_swallowed_still_reaches_the_caller(rig):
+    # The wall clock goes bad in the middle of a walk, the walk catches the EbsiError that
+    # follows and returns a value: run must raise the configuration error, never that value.
+    net = Net()
+    client = rig.build(net)
+
+    def walk(session: Any) -> str:
+        session.get_json(f"{session.origin}/v1/walk")
+        rig.clock.now = None                         # the clock goes bad
+        try:
+            session.get_json(f"{session.origin}/v1/walk2")
+        except EbsiError:
+            return "sentinel"
+        return "not reached"
+    expect(NodeClientConfigError, client.run, walk)
+    assert len(net.walks(A)) == 1 and net.to(B) == []
+
+
 # --------------------------------------------------------------------------- #
 # 4. The selection policy's output is untrusted
 # --------------------------------------------------------------------------- #
@@ -671,6 +819,11 @@ BAD_POLICIES = [
     pytest.param(lambda o: [StrSub(A)], id="str-subclass"),
     pytest.param(lambda o: [list(o)], id="nested"),
     pytest.param(lambda o: itertools.repeat(A), id="never-ending"),
+    # the two that only the bound pins: both are cut at len(origins) + 1 items, and a bound of
+    # len(origins) would hand `run` a valid order (the cycle truncated, the stray name unseen)
+    pytest.param(lambda o: itertools.cycle(o), id="never-ending-cycle"),
+    pytest.param(lambda o: list(o) + ["https://api.ebsi.node-d.example"],
+                 id="non-member-after-every-member"),
     pytest.param(lambda o: (_ for _ in ()).throw(RuntimeError("boom")), id="raises"),
 ]
 
@@ -1719,6 +1872,30 @@ def test_the_walk_level_address_refusal_is_a_failover_too(rig):
     assert sent == [(host_of(A), "93.184.216.34", "/v1/alive"),        # A's probe, public
                     (host_of(B), "1.1.1.1", "/v1/alive"),
                     (host_of(B), "1.1.1.1", "/v1/walk")]               # A's walk was refused
+
+
+def test_the_probe_reaches_only_the_first_validated_address_while_a_read_retries_on(rig):
+    # What for_nodes and EbsiHttpClient.probe document: the guard hands out one address per
+    # attempt, in the resolver's order, a read has several attempts and a probe has one. A node
+    # whose first address cannot be reached is therefore unhealthy for the probe (and for
+    # health_ttl_s) although a read reaches its second address. Pinned so that the day it is
+    # changed, the three docstrings and the wiki are changed with it.
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.host)
+        if request.url.host == "9.9.9.9":
+            raise httpx.ConnectTimeout("no route", request=request)
+        return node()(request)
+    guard = AddressGuard(resolver=lambda h, p: ["9.9.9.9", "1.1.1.1"])
+    client = rig.build(Net(default=handler), address_guard=guard, policy=lambda o: [A])
+    assert client.check_health(A) is False
+    assert seen == ["9.9.9.9"]                          # one attempt: the second address untried
+    exc = expect(NoHealthyNode, client.run, walk_tagged)
+    assert exc.failures == (NodeFailure(A, "unhealthy", None),) and seen == ["9.9.9.9"]
+    session = client.session(A)                         # a read of the same node gets through
+    assert session.get_json(f"{A}/v1/walk") == {"node": host_of(A)}
+    assert seen == ["9.9.9.9", "9.9.9.9", "1.1.1.1"]
 
 
 # --------------------------------------------------------------------------- #

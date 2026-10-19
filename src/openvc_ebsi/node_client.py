@@ -50,14 +50,13 @@ in-memory health verdict per node and the client's response cache.
 """
 from __future__ import annotations
 
-import math
 import random
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import islice
-from typing import Any, Literal, TypeVar, get_args
+from typing import Any, Literal, TypeVar, cast, get_args
 
 from openvc import __version__, _json
 from openvc.cache import TtlCache
@@ -310,9 +309,11 @@ class EbsiNodeClient:
     ``expires`` by the injected clock) every session shares. A context manager: leaving it
     closes the pool.
 
-    **Rebuild before ``expires``.** At or after it every method raises
+    **Rebuild before ``expires``.** At or after it every read (:meth:`run`, :meth:`session`,
+    :meth:`check_health` and a session's ``get_json``) raises
     :class:`~openvc_ebsi.errors.NodeListExpired` and no request is sent; there is no grace and no
-    refresh."""
+    refresh. ``close`` and the context-manager methods only release the pool, and work at any
+    time."""
 
     def __init__(
         self, *, environment: str, expires: datetime, origins: tuple[str, ...],
@@ -339,9 +340,10 @@ class EbsiNodeClient:
         ``health_global`` the ``int`` 1; everything else (another status, a body that is not
         that, a redirect, a firewall page, a timeout, a body past the cap) is unhealthy, fail
         closed. Always sends a fresh probe and records the verdict, which :meth:`run` then
-        reuses for ``health_ttl_s``. Raises :class:`NodeListExpired` (never ``False``) once the
-        list has expired, and :class:`NodeClientConfigError` for an *origin* that is not one of
-        :attr:`origins`."""
+        reuses for ``health_ttl_s``. With an address guard (the default) the one attempt reaches
+        the node's FIRST validated address only (see :func:`for_nodes`). Raises
+        :class:`NodeListExpired` (never ``False``) once the list has expired, and
+        :class:`NodeClientConfigError` for an *origin* that is not one of :attr:`origins`."""
         origin = self._member(origin)
         failure = self._probe(origin)
         self._health.set(origin, _Verdict(failure))
@@ -523,6 +525,82 @@ def _checked_int(value: object, name: str, low: int, high: int) -> int:
     return value
 
 
+#: The longest span (seconds) any duration argument takes: about 31 years. It only keeps every
+#: later conversion to ``float`` and every socket timeout in range (``10**400`` is an ``int`` that
+#: ``float()`` and ``math.isfinite`` both refuse with an ``OverflowError``).
+_MAX_SECONDS = 10**9
+
+#: The widest reading the health memo's monotonic clock may give, either way.
+_MAX_MONOTONIC = 2**63
+
+
+def _checked_seconds(value: object, name: str, *, zero_ok: bool = False) -> float:
+    """*value* as a float number of seconds: a real ``int`` or ``float`` (not a ``bool``),
+    above 0 (from 0 when *zero_ok*) and at most :data:`_MAX_SECONDS`, else
+    :class:`NodeClientConfigError`. Compared before it is converted, so an ``int`` too large for
+    a float, ``nan`` and ``inf`` are refused and never raise anything else."""
+    if type(value) in (int, float):
+        number = cast(float, value)
+        if (0 <= number if zero_ok else 0 < number) and number <= _MAX_SECONDS:
+            return float(number)
+    raise NodeClientConfigError(
+        f"{name} must be a number of seconds {'from 0' if zero_ok else 'above 0'} and at most "
+        f"{_MAX_SECONDS}, not {safe_repr(value)}")
+
+
+def _checked_retry(retry: object) -> RetryPolicy:
+    """*retry* when it is a :class:`RetryPolicy` a request loop can run: at least one attempt and
+    backoff bounds that ``time.sleep`` accepts. ``attempts=0`` would otherwise be reported as
+    an outage (no request is ever made), and a negative or ``nan`` backoff would raise a bare
+    ``ValueError`` from ``time.sleep`` in the middle of a walk."""
+    if not isinstance(retry, RetryPolicy):
+        raise NodeClientConfigError(
+            f"retry must be a RetryPolicy or None, not {type(retry).__name__}")
+    attempts, statuses = retry.attempts, retry.retry_statuses                   # read once
+    if type(attempts) is not int or attempts < 1:
+        raise NodeClientConfigError(
+            f"retry.attempts must be an int of at least 1, not {safe_repr(attempts)}")
+    if type(statuses) not in (set, frozenset) or any(type(s) is not int for s in statuses):
+        raise NodeClientConfigError("retry.retry_statuses must be a set of int statuses")
+    _checked_seconds(retry.backoff_base_s, "retry.backoff_base_s", zero_ok=True)
+    _checked_seconds(retry.backoff_max_s, "retry.backoff_max_s", zero_ok=True)
+    return retry
+
+
+def _checked_monotonic(clock: Callable[[], float]) -> Callable[[], float]:
+    """The health memo's monotonic clock, read through a check at EVERY reading (the wall clock's
+    own rule, :func:`~openvc_ebsi.http.read_clock`): a clock that raises (an object that is not
+    callable included), or returns anything but a finite ``int`` or ``float``, is
+    :class:`NodeClientConfigError` and never a bare ``TypeError`` out of the cache. A reading
+    must be inside ``+-2**63``, so the cache's own arithmetic cannot overflow."""
+    def read() -> float:
+        try:
+            reading = clock()
+        except Exception as exc:             # a caller's clock may raise anything
+            raise NodeClientConfigError(
+                f"health_clock raised {type(exc).__name__}") from exc
+        if type(reading) not in (int, float) or not -_MAX_MONOTONIC < reading < _MAX_MONOTONIC:
+            raise NodeClientConfigError(
+                f"health_clock must return a finite number, not {safe_repr(reading)}")
+        return float(reading)
+    return read
+
+
+def _checked_user_agent(value: object) -> str:
+    """A ``User-Agent`` value: a ``str`` of visible ASCII and spaces, 1 to 256 characters.
+
+    Measured with httpx on a loopback connection: a CR, LF or NUL is a ``LocalProtocolError`` (a
+    ``TransportError``) on every request, which a walk reads as an outage; a non-ASCII value is a
+    bare ``UnicodeEncodeError`` and a non-``str`` a bare ``TypeError`` out of the ``httpx.Client``
+    constructor. The length bound, and the refusal of an empty value, are this function's own:
+    httpx sends both."""
+    if (type(value) is not str or not 1 <= len(value) <= 256
+            or not all(" " <= ch <= "~" for ch in value)):
+        raise NodeClientConfigError(
+            f"user_agent must be 1 to 256 characters of visible ASCII, not {safe_repr(value)}")
+    return value
+
+
 def for_nodes(
     result: VerifiedNodeList,
     *,
@@ -573,10 +651,26 @@ def for_nodes(
       guard cannot work behind an environment proxy (``HTTPS_PROXY`` / ``ALL_PROXY``, or the
       system proxy on macOS and Windows): ``for_nodes`` then raises
       :class:`~openvc_ebsi.http.HttpAddressGuardUnavailable` instead of silently dropping the
-      control. Unset the proxy, or pass ``address_guard=None`` to go through it.
-    * *health_clock*: the monotonic clock of the health memo (a test seam).
+      control. Unset the proxy, or pass ``address_guard=None`` to go through it. **The health
+      probe reaches only a node's FIRST validated address**: the guard hands out one address per
+      attempt, in the resolver's order, and a probe is one attempt, while a read retries on to the
+      next address. A node whose first address this host cannot reach (an AAAA record first, on a
+      host with no IPv6 route) is therefore reported unhealthy, and remembered so for
+      *health_ttl_s*, although its reads would succeed. Fix it where it happens: have the
+      resolver answer an address this host can reach first (``AddressGuard(resolver=...)``).
+    * *timeout_s*, *cache_ttl_s*, *max_response_bytes*, *user_agent*, *cache*: passed to
+      :class:`~openvc_ebsi.http.EbsiHttpClient`. *health_clock*: the monotonic clock of the
+      health memo (a test seam); a reading that is not a finite number is
+      :class:`NodeClientConfigError`, now and at every later read.
 
-    Everything is checked before an ``httpx.Client`` is built."""
+    Every argument is checked before an ``httpx.Client`` is built, and one that is out of range
+    (a duration that is not above 0, a *retry* with no attempt or a negative backoff, a
+    *max_response_bytes* below 1, a *user_agent* that is not 1 to 256 characters of visible
+    ASCII, a *cache* without
+    ``get`` and ``set``, an *address_guard* that is not an :class:`~openvc_ebsi.http.AddressGuard`,
+    a *health_clock* that is not a clock) is :class:`NodeClientConfigError`: never an outage
+    reported by :class:`NoHealthyNode`, and never a bare exception from the middle of a walk.
+    Durations are at most 10**9 seconds."""
     if not callable(clock):
         raise NodeClientConfigError(f"clock must be a callable, not {type(clock).__name__}")
     if not callable(decode_jwt):
@@ -585,11 +679,23 @@ def for_nodes(
     if not callable(policy):
         raise NodeClientConfigError(f"policy must be a callable, not {type(policy).__name__}")
     _checked_int(max_nodes, "max_nodes", 1, MAX_NODES)
-    if (type(health_ttl_s) not in (int, float) or not math.isfinite(health_ttl_s)
-            or health_ttl_s <= 0):
+    health_ttl = _checked_seconds(health_ttl_s, "health_ttl_s")
+    timeout = _checked_seconds(timeout_s, "timeout_s")
+    cache_ttl = _checked_seconds(cache_ttl_s, "cache_ttl_s")
+    if type(max_response_bytes) is not int or max_response_bytes < 1:
         raise NodeClientConfigError(
-            f"health_ttl_s must be a finite number of seconds above 0, not "
-            f"{safe_repr(health_ttl_s)}")
+            f"max_response_bytes must be an int of at least 1, not {safe_repr(max_response_bytes)}")
+    policy_retry = NODE_RETRY if retry is None else _checked_retry(retry)
+    _checked_user_agent(user_agent)
+    if cache is not None and not (
+            callable(getattr(cache, "get", None)) and callable(getattr(cache, "set", None))):
+        raise NodeClientConfigError(
+            f"cache must be None or have callable get and set, not {type(cache).__name__}")
+    if address_guard is not None and not isinstance(address_guard, AddressGuard):
+        raise NodeClientConfigError(
+            f"address_guard must be an AddressGuard or None, not {type(address_guard).__name__}")
+    monotonic = _checked_monotonic(health_clock)
+    monotonic()                         # a clock that is not one (not callable included) fails now
     environment, expires, origins = _checked_result(result)
     try:                                        # the adapter names are checked once, up front
         did_registry_adapter(didr)
@@ -602,12 +708,12 @@ def for_nodes(
 
     http = EbsiHttpClient(
         allowed_hosts={origin[len("https://"):] for origin in origins},
-        timeout_s=timeout_s, cache=cache, cache_ttl_s=cache_ttl_s,
-        retry=NODE_RETRY if retry is None else retry, user_agent=user_agent,
+        timeout_s=timeout, cache=cache, cache_ttl_s=cache_ttl,
+        retry=policy_retry, user_agent=user_agent,
         max_response_bytes=max_response_bytes, address_guard=address_guard,
         valid_until=expires, clock=clock)
     return EbsiNodeClient(
         environment=environment, expires=expires, origins=origins, http=http, policy=policy,
         max_nodes=max_nodes,
-        health=TtlCache(ttl_s=float(health_ttl_s), max_entries=MAX_NODES, clock=health_clock),
+        health=TtlCache(ttl_s=health_ttl, max_entries=MAX_NODES, clock=monotonic),
         decode_jwt=decode_jwt, didr=didr, tir=tir)

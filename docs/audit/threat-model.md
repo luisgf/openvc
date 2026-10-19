@@ -375,6 +375,8 @@ finite input", with no explicit constant.
   a node that answers 404 for a DID another node holds is believed (ADR-0009 open question 5);
   `timeout_s` bounds each socket operation, not a response's headers (above), so a listed node
   that drips headers can hold a walk; a request in flight when the list expires finishes; the
+  health probe reaches only a node's first validated address, so a dual-stack node whose first
+  address is unreachable from here is passed over (availability, not safety); the
   other residuals of the shared request path, listed above, are not changed by this.
 
 ## 8. Fail-closed invariants catalog

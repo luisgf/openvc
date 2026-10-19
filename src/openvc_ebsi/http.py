@@ -623,7 +623,11 @@ class EbsiHttpClient:
         deadline overrun still raise, with the same classes as :meth:`get_bytes`
         (:class:`HttpTransientExhausted` with ``status=None`` for a transport failure). Same
         host guard, address guard, redirect and cookie rules as every other read, and the same
-        expiry gate (:class:`~openvc_ebsi.errors.NodeListExpired` before any I/O)."""
+        expiry gate (:class:`~openvc_ebsi.errors.NodeListExpired` before any I/O). With an
+        ``address_guard`` the single attempt reaches the FIRST validated address of the host
+        only: the guard moves to the next address on a retry, and a probe has none, so a host
+        whose first address cannot be reached from here probes as down even if a read, which
+        retries, would get through on its next one."""
         self._check_valid()
         cap = min(_checked_cap(max_bytes), self._max_bytes)
         status, body, _ = self._request(

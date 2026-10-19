@@ -839,7 +839,24 @@ Each is one value or table away from the other option. None changes anything tha
     one. A node whose name points at a private address is failed over from (`unreachable`). The
     guard cannot work behind an environment proxy: `for_nodes` then raises
     `HttpAddressGuardUnavailable` (the existing error of `EbsiHttpClient`) instead of quietly
-    dropping the control; unset the proxy, or pass `address_guard=None` to go through it.
+    dropping the control; unset the proxy, or pass `address_guard=None` to go through it. The
+    health probe is one attempt and the guard gives a request one address per attempt, so the
+    probe reaches only a node's **first** validated address: a node whose first address this host
+    cannot reach (an `AAAA` first, with no IPv6 route) is unhealthy for `health_ttl_s` although
+    its reads, which retry, would use the second. It costs availability, not safety; it is said
+    in `for_nodes`, `check_health`, `EbsiHttpClient.probe` and the wiki, and pinned by a test.
+  - **Every argument is checked before a pooled client is built**, and one out of range is
+    `NodeClientConfigError`: never `NoHealthyNode` for what is a configuration error
+    (`RetryPolicy(attempts=0)` made no request and read as an outage; so did a negative
+    `timeout_s` or `max_response_bytes`), and never a bare exception from the middle of a walk
+    (a non-callable or non-numeric `health_clock` was a `TypeError` out of the health memo, a
+    negative or `nan` backoff a `ValueError` from `time.sleep`, a `10**400` duration an
+    `OverflowError`). `timeout_s`, `cache_ttl_s` and `health_ttl_s` are numbers of seconds above
+    0 and at most 10**9; `max_response_bytes` an `int` of at least 1; `retry` a `RetryPolicy`
+    with at least one attempt, backoffs of 0 or more and `retry_statuses` a set of `int`s;
+    `user_agent` 1 to 256 characters of visible ASCII; `cache` something with `get` and `set`;
+    `address_guard` an `AddressGuard` or `None`; `health_clock` a clock that returns a finite
+    number, read once at construction and checked at every reading.
 
   New names: `openvc_ebsi.node_client` (`for_nodes`, `EbsiNodeClient`, `NodeSession`, `NodeFailure`,
   `NoHealthyNode`, `NodePolicy`, `random_order`, `classify`, `FAILURE_KINDS`, `NODE_RETRY`),
@@ -898,6 +915,24 @@ Each is one value or table away from the other option. None changes anything tha
       and parsing (a, b) are #335's; the unbounded error-body read (c) already landed with #321.
       `docs/audit/assurance.md` section 4 gets its entry after the adversarial review, and ADR-0009
       is not edited.
+  12. *`for_nodes` checks every argument, with bounds of its own* (review round). The bounds are
+      mine: durations at most 10**9 s (about 31 years; it only keeps `float()` and a socket
+      timeout in range), a `user_agent` of 1 to 256 characters of visible ASCII (measured with
+      httpx on loopback: a CR, LF or NUL is a `LocalProtocolError` on every request, an outage to
+      a walk, and a non-ASCII value a `UnicodeEncodeError` out of the constructor; the length
+      bound and the refusal of an empty value are mine, httpx sends both), a
+      `health_clock` reading within +-2**63, and `cache_ttl_s` above 0 (a `TtlCache` does not
+      give a TTL of 0 the meaning "no caching": an entry read at the same instant is still
+      fresh). The checks live in `for_nodes`, not in `RetryPolicy` (#335's), so a
+      `RetryPolicy(attempts=0)` handed straight to an `EbsiHttpClient` is unchanged. The other
+      option is to pass these through unchecked and narrow the docstring's "every argument is
+      checked": a bad value is then an outage report or a bare exception, as before.
+  13. *The health probe tests a node's first validated address only* (documented, not changed;
+      review round). The other option lets a probe try the next validated address after a
+      transport error, within one request per address: it changes "one attempt" and the shape of
+      `_request`'s loop, which #335 also edits, and makes a dead dual-stack node cost
+      `timeout_s` once per address. This takes the cheaper, documented option; how often it bites
+      in practice is not measured.
 
 ### Changed
 
@@ -1247,7 +1282,7 @@ Each is one value or table away from the other option. None changes anything tha
   failing test: the real chain's baseline result is computed on first use, so a verifier
   regression no longer surfaces as one collection error of the whole module.
 
-- **`tests/test_ebsi_node_client.py`** (293 tests, new) and **86 new rows in
+- **`tests/test_ebsi_node_client.py`** (377 tests, new) and **86 new rows in
   `tests/test_ebsi_http.py`** (the file had 84): offline (`httpx.MockTransport` injected into the
   `httpx.Client` the real constructor builds, a fixed wall clock, a fake `time`), negatives first,
   exact classes, zero-request assertions. The expiry gate at every entry point (`run`, `session`,
@@ -1264,7 +1299,10 @@ Each is one value or table away from the other option. None changes anything tha
   real signed three-hop `verify_ebsi_badge` walk that loses node A at each of its nine reads in
   turn; a session pin test through an adapter with no pin; the recorded preprod RootTAO through
   `run` with and without `allow_es256k`; the recorded Trusted Nodes List through `for_nodes`;
-  the address guard (default on, opt-out, a proxy, a private address, a rebinding resolver); eight
+  the address guard (default on, opt-out, a proxy, a private address, a rebinding resolver, a
+  probe that reaches the first address only); every argument out of range; the two
+  expiry gates a fresh healthy verdict and an off-node URL would otherwise hide; a configuration
+  error the walk swallowed; a cycling policy and a stray name after every member; eight
   threads on one client; the worst-case walk time on a virtual clock.
 - **`tests/fixtures/ebsi/alive/`** (new, recorded 2026-10-19): the `GET /v1/alive` answers of
   `api.ebsi.iti.gr` and `api.ebsi.edelivery.lt`, body and head byte for byte, with a manifest and

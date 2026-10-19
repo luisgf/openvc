@@ -282,14 +282,21 @@ Example-based, but broad. Representative anchors:
   (and a microsecond after, and ten years after) `run`, `session`, `check_health`,
   `session.get_json`, `get_json`, `get_bytes` and `probe` raise `NodeListExpired` with zero
   requests, a cached success is not served, a backoff sleep that crosses the instant stops the
-  next attempt, `run` raises it rather than `NoHealthyNode` and tries no second node, and a walk
-  that swallows it still gets it; a clock returning `None`, an `int`, a string, a date, or raising
+  next attempt, `run` raises it rather than `NoHealthyNode` and tries no second node (even when a
+  fresh healthy verdict means no probe is due), a session refuses an off-node URL with
+  `NodeListExpired` rather than the pin's refusal, and a walk that swallows it, or a
+  configuration error, still gets it; a clock returning `None`, an `int`, a string, a date, or raising
   is `NodeClientConfigError`, a naive clock is UTC and a `datetime` subclass that lies about
   `utcoffset` / `astimezone` / `>=` cannot move the reading
   (`test_ebsi_node_client.py`, `test_ebsi_http.py`). A policy's output is untrusted (a
   non-member, a case or slash variant, a duplicate, empty, `None`, an `int`, a `str` subclass, a
-  never-ending iterator, a raising policy: `NodeClientConfigError` before any request; a
-  Hypothesis property over lists of members, variants, text, integers and `None`). `check_health`
+  never-ending iterator or cycle, a stray name after every member, a raising policy:
+  `NodeClientConfigError` before any request; a Hypothesis property over lists of members,
+  variants, text, integers and `None`). Every other argument of `for_nodes` out of range (a
+  duration that is not above 0 or is `nan`, `inf` or `10**400`, a `RetryPolicy` with no attempt or
+  a negative backoff, `max_response_bytes` below 1, a `User-Agent` with a CR LF, a `cache`
+  without `get` and `set`, an `address_guard` that is not one, a `health_clock` that is not a
+  clock or goes bad later) is `NodeClientConfigError` with no `httpx.Client` built. `check_health`
   is healthy for the two recorded production answers (`tests/fixtures/ebsi/alive/`, 19 bytes
   each) and unhealthy, in exactly one request and with no sleep, for 31 other answers (the
   `true`, `1.0`, `"1"` and `2` spellings of the value, a missing key, arrays, non-JSON, a

@@ -384,11 +384,16 @@ with for_nodes(result, clock=clock, decode_jwt=suite.peek_claims) as nodes:
   own is run again too. A walk that caught a node failure and returned a value is discarded
   anyway.
 - **What fails over, and what does not.** A transport error or timeout, a 429 or 5xx once the
-  retries are used up, a 403 (a node's firewall may refuse a client on its User-Agent, and its
-  body is never parsed), a 3xx (redirects are never followed), a body past the size cap or the
-  deadline, and a failed health check go on to the next node. A node that *answers* does not: a
-  404, any other 4xx, a malformed 200, an expired list, and every error about the content
-  (`AccreditationInvalid`, `NoTrustedAnchor`, `IssuerNotTrusted`) propagate at once.
+  retries are used up, a 403 (a node's firewall may refuse a client on its User-Agent), a 3xx
+  (redirects are never followed), a body past the size cap or the deadline, and a failed health
+  check go on to the next node. Nothing of a failing node's answer, a 403's body included, reaches
+  a `NodeFailure`, a `NoHealthyNode` or the log line (one `WARNING` per failover: origin, kind and
+  status). The shared client still reads up to 16 KiB of an error answer to put a Problem Details
+  `type` on `HttpError.problem_type`, an opaque string: `run` does not surface it for a node it
+  fails over from, and does for a node's *answer* (a 404 or another 4xx), as does a bare
+  `session.get_json`. A node that *answers* does not fail over: a 404, any other 4xx, a
+  malformed 200, an expired list, and every error about the content (`AccreditationInvalid`,
+  `NoTrustedAnchor`, `IssuerNotTrusted`) propagate at once.
 - **A 404 is one node's answer.** It is `HttpNotFound` naming that node, does not mark the node
   unhealthy and does not fail over, so a lagging node can say "not found" about a brand-new DID
   (`NoTrustedAnchor` in the trust walk) until you retry. Confirming it on a second node is not
@@ -400,12 +405,26 @@ with for_nodes(result, clock=clock, decode_jwt=suite.peek_claims) as nodes:
   skips a node that failed a real read for as long. At most `max_nodes` (default 3) candidates
   cost a request per `run`. `policy(origins)` orders them (default: random); what it returns is
   checked, and a name that is not in the result is `NodeClientConfigError`.
+- **Arguments are checked up front.** Every argument of `for_nodes` is checked before a pooled
+  client is built, and one that is out of range is `NodeClientConfigError`, never an outage in
+  `NoHealthyNode` and never a bare exception from the middle of a walk: `timeout_s`,
+  `cache_ttl_s` and `health_ttl_s` are numbers of seconds above 0 and at most 10**9;
+  `max_response_bytes` an `int` of at least 1; `retry` a `RetryPolicy` with at least one attempt
+  and backoffs of 0 or more; `user_agent` 1 to 256 characters of visible ASCII; `cache` something
+  with `get` and `set`; `address_guard` an `AddressGuard` or `None`; `health_clock` a clock that
+  returns a finite number, at construction and at every reading.
 - **The address guard is on by default** (`AddressGuard`; pass `address_guard=None` to switch it
   off): the allow-list matches host *names*, and these are node operators' own domains, so each
   request resolves the name, refuses a node with any non-public address and connects to the
   validated one. It cannot work behind an environment proxy (`HTTPS_PROXY` / `ALL_PROXY`, or the
   system proxy on macOS and Windows): `for_nodes` then raises `HttpAddressGuardUnavailable`
-  rather than quietly dropping the control. Unset the proxy, or opt out explicitly.
+  rather than quietly dropping the control. Unset the proxy, or opt out explicitly. **The health
+  probe tests only a node's first address.** The guard gives a request one address per attempt,
+  in the resolver's order; a read has several attempts and a probe has one, so a node whose first
+  address this host cannot reach (an `AAAA` record first, on a host with no IPv6 route) is
+  reported unhealthy, and remembered so for `health_ttl_s`, although its reads would get through
+  on the second address. It costs availability, not safety. Where it happens, give
+  `AddressGuard(resolver=...)` an answer with a reachable address first.
 - **Two attempts per request by default** (`retry` defaults to `RetryPolicy(attempts=2)`, not the
   three of `for_ebsi`): with another node to try, a second retry buys little and costs a dead
   node its timeout. A node that never accepts a connection costs a walk up to 20.25 s with the
