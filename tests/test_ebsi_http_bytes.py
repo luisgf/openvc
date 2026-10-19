@@ -229,7 +229,7 @@ def test_tnl_client_refuses_any_other_host_before_any_request(build, method, url
 @pytest.mark.parametrize("method", ["get_json", "get_bytes"])
 def test_node_client_refuses_the_list_host(build, method):
     script = Script(reply(200, b'{"ok": true}'))
-    client = build(script, factory=lambda **kw: H.for_ebsi("pilot", **kw), retry=FAST)
+    client = build(script, factory=lambda **kw: H.for_ebsi("legacy-pilot", **kw), retry=FAST)
     expect(H.HttpForbiddenHost, getattr(client, method), TNL_URL)
     assert script.n == 0
 
@@ -270,7 +270,7 @@ def test_get_tnl_files_refuses_a_client_that_is_not_the_list_host_alone(build, h
 
 def test_get_tnl_files_refuses_a_pilot_environment_client(build):
     script = Script(reply(200, b"x"))
-    client = build(script, factory=lambda **kw: H.for_ebsi("pilot", **kw))
+    client = build(script, factory=lambda **kw: H.for_ebsi("legacy-pilot", **kw))
     expect(H.HttpForbiddenHost, H.get_tnl_files, client)
     assert script.n == 0
 

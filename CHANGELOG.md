@@ -1009,6 +1009,73 @@ Each is one value or table away from the other option. None changes anything tha
   left as it was: a v4 `attributes` member that is not an array, or an entry of it that is not
   an object, is a bare `TypeError` / `AttributeError` (measured on `cf6d100`; v4 only, since
   the shared walk skips non-object items). It is a shape check and not a scalar.
+- **The maintainer's decisions on #325's three switches, taken on 2026-10-19**
+  ([#325](https://github.com/luisgf/openvc/issues/325), Part 2; recorded in ADR-0009 as the
+  answer to open question 4). Part 1 had taken the non-breaking option on switches 2 and 3 as
+  defaults pending this answer; the answer replaces them:
+  1. *Switch 1, add `legacy-pilot`:* done, as above.
+  2. *Switch 2, `pilot`: 2b.* `for_ebsi("pilot")` emits a `DeprecationWarning` naming
+     `legacy-pilot` and keeps seeding the same allow-list; see **Deprecated** below. A bare
+     `for_ebsi()` and `for_ebsi("legacy-pilot")` warn nothing. It is a MINOR: the versioning
+     policy's steps 1 to 3 are followed (the name keeps working, the warning names the
+     replacement, the entry below gives the earliest change). The alternative, 2a (leave
+     `pilot` silent and re-mean it at 2.0), is not taken.
+  3. *Switch 3, `production` and `conformance`: 3a.* Both rows are kept, unchanged, with the
+     same allow-list rule, and documented plainly (`wiki/Trust.md`, `wiki/EBSI-Node-Trust.md`,
+     `for_ebsi`'s docstring, `environments.py`). **No warning and no refusal.** A test pins that
+     both are silent and still build a client. The alternatives are not taken: 3b, a
+     `DeprecationWarning` (there is no replacement to name for either until the node-based
+     client of #324); 3c, `for_ebsi` refuses, keeping the keys (a documented, pinned call that
+     built a client would raise, which the versioning policy reads as MAJOR unless the CHANGELOG
+     records a narrow decision, as 1.35.0 did for `did:key`); 3d, remove the keys (MAJOR, and
+     `test_for_ebsi_production_environment_is_registered` pins them). So `for_ebsi("production")`
+     does not raise `ValueError`; a request through it still fails closed, late, as
+     `HttpTransientExhausted` when the connection fails (pinned with a stubbed `httpx.ConnectError`
+     in `test_ebsi_environments.py`).
+
+  **Migration notes.** (i) In 1.x the Core API pilot that the Trusted Nodes List calls `pilot`
+  has no `for_ebsi` spelling, because `pilot` stays the legacy lane until the MAJOR release.
+  The node-based constructor planned in #324 takes the list's own spelling, so `for_ebsi` need
+  not carry it; a 1.x spelling would be a new name for the maintainer to choose (ADR-0009's end
+  state calls it `pilot`). (ii) At that MAJOR (the 2.0 window,
+  [#74](https://github.com/luisgf/openvc/issues/74)) `pilot` changes meaning. A caller who
+  ignored the warning would then read a different ledger, where ADR-0009 measured the legacy DID
+  to be a 404. Use `legacy-pilot` today to say which one you mean.
+
+### Deprecated
+
+- **`for_ebsi("pilot")`: use `for_ebsi("legacy-pilot")`**
+  ([#325](https://github.com/luisgf/openvc/issues/325), Part 2; decided by the maintainer on
+  2026-10-19). Calling `for_ebsi("pilot")` now emits a `DeprecationWarning`
+  (`stacklevel=2`, so it names the caller's own line). The message names the replacement,
+  `legacy-pilot`, and says `pilot` will change meaning at the next MAJOR release, to the EBSI
+  Core API pilot, a different ledger. It still builds exactly the client it built before, an
+  allow-list of `{"api-pilot.ebsi.eu"}`, so nothing breaks in 1.x. **Earliest change: 2.0**
+  ([#74](https://github.com/luisgf/openvc/issues/74)): the name is not removed but re-meant,
+  and `wiki/Versioning-and-Deprecation.md` lists it under "Currently deprecated". The warning is
+  raised before the client is built, so under `-W error::DeprecationWarning` no client is left
+  open.
+  - **What warns.** Only the call `for_ebsi("pilot")`, whether the name is a literal, a `str`
+    subclass or a `(str, Enum)` member holding it. `for_ebsi()`, `for_ebsi("legacy-pilot")`,
+    `"conformance"` and `"production"` are silent.
+  - **What cannot warn.** `EBSI_HOSTS["pilot"]`, `EBSI_BASE["pilot"]` and
+    `ENVIRONMENTS["pilot"]` are plain lookups on a `dict` and a read-only mapping; they keep
+    working, silently, and are re-meant at the same time. Move them to `"legacy-pilot"` too.
+  - **`OPENVC_EBSI_ENV`.** No code in openvc reads it. The opt-in weekly smoke test
+    (`test_live_resolve`) reads it, defaulting to `legacy-pilot`, and passes the value to
+    `for_ebsi`; a value of `pilot` warns there, in `for_ebsi`, like any other source of the
+    name. There is no second code path to keep in step.
+  - **Visibility.** Python shows a `DeprecationWarning` by default only when it is raised from
+    `__main__` (measured: a call from `__main__` prints it, the same call from an imported
+    module prints nothing, and `python -W default` prints it). Run your tests with
+    `-W error::DeprecationWarning`, `-W default` or `-X dev` to find the calls.
+  - **Migration.** `for_ebsi("pilot")` to `for_ebsi("legacy-pilot")` (the identical
+    allow-list and the identical lane); an `OPENVC_EBSI_ENV=pilot` to `legacy-pilot`;
+    `EBSI_HOSTS["pilot"]` and `EBSI_BASE["pilot"]` to `["legacy-pilot"]`. In this repository the
+    tests that built `pilot` only to get a client (`test_ebsi_address_guard.py`,
+    `test_ebsi_http_bytes.py`, `test_ebsi_guard_origin.py`) now say `legacy-pilot`; the ones
+    that pin the old name, in `test_ebsi_environments.py`, assert the warning.
+  - `conformance` and `production` are **not** deprecated (switch 3a above).
 
 ### Fixed
 
@@ -1093,10 +1160,24 @@ Each is one value or table away from the other option. None changes anything tha
   `HttpTransientExhausted`, measured), written and green on v1.36.0; then the refusals
   (`UnknownEbsiEnvironment`, exact class, for seven inputs and twelve more shapes, a
   bounded message, a hostile `repr` and a hostile `str` subclass), the controls (`legacy-pilot`
-  seeds the same allow-list, the default is pinned by the signature, every known name is silent
-  under `warnings.simplefilter("error")`), the table (read-only, bare lower-case hosts, a row
+  seeds the same allow-list, the default is pinned by the signature, the default,
+  `legacy-pilot`, `conformance` and `production` are each silent under
+  `warnings.simplefilter("error")`), the table (read-only, bare lower-case hosts, a row
   with no fixed host is not projected) and an import of `environments`, `errors` and
-  `versioning` with `httpx` blocked.
+  `versioning` with `httpx` blocked. Part 2 adds the deprecation: the exact
+  `DeprecationWarning` class (`category is`, not a subclass) naming `legacy-pilot`; the
+  warning attributed to the calling file and line (`stacklevel=2`); the message saying that
+  `pilot` changes meaning at the next MAJOR release; the same allow-list as `legacy-pilot`;
+  the warning raised before any `EbsiHttpClient` exists; one warning per call; a hostile `str`
+  subclass and a `(str, Enum)` member holding `pilot` warn by their characters; a refused name
+  warns nothing; the tables cannot warn; a name read from `OPENVC_EBSI_ENV` warns like the
+  literal. The tests that only needed a client moved to `legacy-pilot`; the ones that must
+  still build `pilot` assert the warning through a helper that also makes every other name
+  silent. Mutants killed by a named test: the warning removed, `stacklevel` 1 and 3, a warning
+  on the default, on `legacy-pilot`, on `production`, on `conformance`, the check made on the
+  caller's object instead of its characters, the warning after the client is built, the wrong
+  category (`FutureWarning`), a message that does not name `legacy-pilot` or drops the MAJOR
+  sentence.
 - **`tests/test_ebsi_core_v1.py`** (426 tests): the manifest hashes every recorded file; the
   registry names and the defaults; the exact URLs; the `contract_address` bound (negatives
   first, a `str` subclass included) and the cache; hostile DIDs on the Core v1 pair with zero
@@ -1255,7 +1336,8 @@ Each is one value or table away from the other option. None changes anything tha
   names; `docs/audit/assurance.md` has the row for the typed error. The stale docstring and
   heading in `tests/test_ebsi_verifier.py` that called the live smoke a "conformance" test,
   and the weekly workflow's job name, now say it resolves a DID on the legacy pilot lane.
-  Recording the outcome of ADR-0009's open question 4 waits for the maintainer.
+  The outcome of ADR-0009's open question 4 is recorded since 2026-10-19 (see **Deprecated**
+  and the Status line of the ADR).
 - `wiki/Trust.md` (EBSI section), `README.md`, the `versioning.py` module docstring and its
   closing "adding a new version" comment name both lanes and the Core v1 footgun (select
   `base`, `didr` and `tir` together).
@@ -1266,7 +1348,8 @@ Each is one value or table away from the other option. None changes anything tha
   `*.ebsi.eu`).
 - `docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md`: this issue is listed under
   "Proposed follow-up issues" and the recorded 400 and 406 results (and the 405 gap) are in
-  the appendix. The Status line is left to the maintainer.
+  the appendix. The Status line was left to the maintainer; it records the answer to open
+  question 4 since 2026-10-19.
 - `wiki/Trust.md` (EBSI section) documents `get_bytes`, `for_tnl` and `get_tnl_files` and says
   the list host is a second, separate allow-list; `docs/audit/threat-model.md` §7 and
   `docs/audit/assurance.md` §§1, 3 and 4 record the separate one-host client, the bounded
@@ -1319,8 +1402,9 @@ Each is one value or table away from the other option. None changes anything tha
   that a wiki page is not a channel to trust it from (the alternative is to omit the value and
   point to the TNL repository); the `src/` comment edit stays in this change (the alternative
   moves it to #325); the page describes what each environment name is today and prescribes
-  nothing about renaming, multi-node agreement or the qualified-seal switch (ADR-0009 open
-  questions 4, 5 and 7).
+  nothing about multi-node agreement or the qualified-seal switch (ADR-0009 open questions 5
+  and 7); on renaming it carries the maintainer's decision of 2026-10-19 (question 4, see
+  **Deprecated**).
 - **Not done here:** the `gpg` command sequence for the two detached signatures. The issue asked
   for the commands to be run against the then-live list, but also forbade a network request, so
   the page publishes only the two commands ADR-0009's appendix gives and marks the rest *to be
@@ -1341,6 +1425,15 @@ Each is one value or table away from the other option. None changes anything tha
   `SECURITY.md` ("Signature verification") name the opt-in next to the allow-list, with the
   braces list unchanged; the fixtures README says that the DEFAULT allow-list refuses the
   RootTAO tokens; the wiki and the threat model (I23) carry the flag rule and the JWK members.
+- **#325 Part 2, the deprecation of `pilot`**: `wiki/Trust.md` (the `pilot` bullet says it is
+  deprecated, what changes at the MAJOR and why a `DeprecationWarning` may not be seen;
+  `conformance` and `production` are documented as kept, without a warning),
+  `wiki/EBSI-Node-Trust.md` (the names table and the paragraph that left the question open),
+  `wiki/Versioning-and-Deprecation.md` ("Currently deprecated"), `docs/audit/threat-model.md`
+  (the EBSI client bullet), `docs/audit/assurance.md` (the #325 row), and ADR-0009 (open question
+  4 recorded as decided by the maintainer on 2026-10-19, with its Status line, the environment
+  table paragraph of D6, Stage 3 and the follow-up list). The examples that said
+  `for_ebsi("pilot", ...)` say `legacy-pilot`.
 
 ### Documentation
 
