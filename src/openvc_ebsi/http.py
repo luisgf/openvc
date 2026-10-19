@@ -615,10 +615,10 @@ class EbsiHttpClient:
             data = _json.loads(body or b"")
         except (ValueError, RecursionError) as exc:   # non-JSON or hostile-depth body
             raise MalformedRegistryResponse(
-                f"registry returned a 200 with a non-JSON body: {url}") from exc
+                f"registry returned a 200 with a non-JSON body: {safe_repr(url)}") from exc
         if not isinstance(data, dict):           # null / array / string / number
             raise MalformedRegistryResponse(
-                f"registry returned a 200 that is not a JSON object: {url}")
+                f"registry returned a 200 that is not a JSON object: {safe_repr(url)}")
         self._cache.set(url, data)           # only cache successes
         return data
 
@@ -786,7 +786,7 @@ class EbsiHttpClient:
             except httpx.DecodingError as exc:       # not a TransportError: never retried
                 # A corrupt gzip/deflate body, on the capped read or the error drain (#248).
                 raise MalformedRegistryResponse(
-                    f"registry returned a body that does not decode: {url}") from exc
+                    f"registry returned a body that does not decode: {safe_repr(url)}") from exc
             except httpx.TransportError as exc:      # network error / timeout
                 last_exc = exc
                 self._sleep_before_retry(attempt, until=until)
@@ -980,10 +980,14 @@ class EbsiHttpClient:
             raise HttpForbiddenHost("URL rejected: not visible ASCII", url=url) from None
         except UrlDoesNotParse as exc:
             raise HttpForbiddenHost("URL rejected: does not parse", url=url) from exc.__cause__
+        # The URL and the host in the next two messages are the caller's and, in practice, a
+        # remote party's (a DID document, a registry link, a list entry): `safe_repr` cuts them
+        # (#338). `.url` keeps the whole URL.
         if scheme != "https":
-            raise HttpForbiddenHost(f"non-https URL rejected: {url}", url=url)
+            raise HttpForbiddenHost(f"non-https URL rejected: {safe_repr(url)}", url=url)
         if not host or host not in self._allowed:
-            raise HttpForbiddenHost(f"host not in allow-list: {host or None}", url=url)
+            raise HttpForbiddenHost(
+                f"host not in allow-list: {safe_repr(host or None)}", url=url)
         # `read_origin` fills in 443 for an absent https port and only for an absent one,
         # so `:0` stays 0 here and is refused with every other port.
         if port != HTTPS_PORT:

@@ -1452,6 +1452,62 @@ Each is one value or table away from the other option. None changes anything tha
   negative, and the sleep is capped as described under *Added* and *Changed*, so `time.sleep`
   is never handed more than a day whatever the policy. Pinned by `test_ebsi_get_json_bounds.py`
   on the 429 path and on every retried 5xx.
+- **The EBSI client no longer echoes an unbounded URL or host in an error message**
+  ([#338](https://github.com/luisgf/openvc/issues/338); pre-existing, found by the review of
+  the origin allow-list PR #330). `_guard_host` formatted the offending value straight into
+  its message, against the rule that a value a remote party can influence goes through
+  `safe_repr`. Measured on `main` at cf6d100 with `allowed_hosts={"api-pilot.ebsi.eu"}`: a
+  70 000-character host gave a 70 032-character `host not in allow-list` message and a
+  70 000-character `http://` URL a 70 033-character `non-https URL rejected` message; both
+  are 243 characters now. The value is the caller's and, in practice, a DID document's, a
+  registry link's or a Trusted Nodes List entry's. Five messages of `openvc_ebsi/http.py`
+  echoed a URL or a host, and now cut it through `safe_repr` (the first 200 characters, then
+  `... (N chars)`): `non-https URL rejected: …` and `host not in allow-list: …`
+  (`_guard_host`), `registry returned a 200 with a non-JSON body: …` and `registry returned
+  a 200 that is not a JSON object: …` (`get_json`; the URL's path and query are unbounded
+  past the guard) and `registry returned a body that does not decode: …` (`_request`). The
+  rest needed nothing: `URL rejected: not visible ASCII`, `does not parse` and `carries
+  userinfo` echo nothing; `port N not allowed` prints a number `urlparse` has range-checked;
+  the bytes path's messages (a body that does not decode, a truncated compressed stream,
+  bytes after its end) and the unsupported `Content-Encoding` one already went through
+  `safe_repr`, as do the address guard's; no message formats a `Location` (redirects are
+  off).
+
+  Only the text changed. Every exception class, the leading words of every message (so every
+  `match=` keeps matching), and `.url` are as before, with one exception: a `str` subclass
+  whose `__format__` raises, passed as the URL, escaped as that error from the four messages
+  that format the URL (the non-https rule and the three refusals of a 200) and is now the typed
+  `HttpForbiddenHost` or `MalformedRegistryResponse`, because `safe_repr` reads `str.__str__`
+  and never the subclass's methods (one whose `__format__` returned 100 000 characters put
+  them all in the message). A value now appears quoted, as the module's other `safe_repr`
+  messages show theirs (`host not in allow-list: 'evil.example'`), so a caller that matched
+  the bare host after the colon must match the quoted one, or read `.url`; an empty host is
+  still `None`. Nothing that succeeded now raises.
+
+  **Defaults pending maintainer confirmation.** Each is the smallest change that meets the
+  issue; the other option is what would change.
+
+  - **The bound is `safe_repr`'s 200 characters**, the helper this module's bytes path
+    already uses for the same URL. A URL-specific bound (256 or 512, say) needs a
+    module-local helper, because that constant is shared by every message in the library.
+  - **A value is shown quoted**, because `safe_repr` returns the `repr`. An unquoted cut
+    needs a new helper and differs from the module's other messages.
+  - **`.url` is not bounded.** It holds the whole URL as given (`None` for the userinfo
+    refusal), because callers may read it and the issue is about messages. Bounding it too
+    would break a consumer that reads the whole URL back.
+  - **`gave up after N attempts: …` is not touched.** It formats the last transport error's
+    own text and is not a URL, host or `Location`. Measured through httpx 0.28.1 and h11
+    0.16.0 against a local socket, a 5 000-byte malformed status line makes a 5 044-character
+    `RemoteProtocolError`; a bound there is its own change. Two messages of
+    `openvc_ebsi/verify.py` repeat an issuer-controlled value unbounded as well, and are not
+    touched either (neither is a URL or host): `IssuerNotTrusted` formats the credential's
+    type list (a 70 000-character `type` entry gave a 70 107-character message) and
+    `CredentialRevoked` its `id`. The other option is a `safe_repr` on each, in its own change.
+  - **The #318 entry is superseded, not rewritten.** Its sentence that the non-https
+    message "quotes it as before" is superseded by this entry: the message quotes the URL,
+    cut past 200 characters.
+  - **No wiki page is edited**: `wiki/Trust.md` and `wiki/EBSI-Node-Trust.md` describe the
+    refusals by exception class, never by message wording.
 
 ### Tests
 
@@ -1704,6 +1760,16 @@ Each is one value or table away from the other option. None changes anything tha
 - **Mutation check** (the list is in the PR for #324): each mutant of the change fails at least
   one of these tests; the base commit `cf6d100` with the new tests laid over it fails to import
   them, and its own tests still pass.
+- `tests/test_ebsi_guard_bounded_messages.py` (#338): every guard rule with a 70 000-character
+  component (host, URL, path, userinfo, port), each through `_guard_host`, `get_json` and
+  `get_bytes`, asserting the exact class, a message under 300 characters, the leading words,
+  the start of the value still shown, its size reported and `.url` still the whole URL
+  (`None` for userinfo); a short value shown whole and quoted, and an empty host still
+  `None`; the three `get_json` refusals of a 200 and the `get_bytes` ones (controls: those
+  already passed) with a 50 000-character path; a `str` subclass URL whose `__format__`
+  raises, or returns 100 000 characters, through the four messages that format the URL
+  (the typed refusal, the message equal to the quoted URL); and a Hypothesis property that no
+  refusal of `_guard_host` reaches 500 characters.
 
 ### Docs
 
