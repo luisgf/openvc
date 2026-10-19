@@ -947,16 +947,30 @@ Each is one value or table away from the other option. None changes anything tha
   off).
 
   Only the text changed. Every exception class, the leading words of every message (so every
-  `match=` keeps matching), and `.url` are as before: `.url` still holds the whole URL as
-  given (`None` for the userinfo refusal), because it is data a caller may use and not a log
-  line. A value now appears quoted, as the module's other `safe_repr` messages show theirs
-  (`host not in allow-list: 'evil.example'`), so a caller that matched the bare host after
-  the colon must match the quoted one; an empty host is still `None`. This supersedes the
-  #318 entry's sentence that the non-https message "quotes it as before": it quotes it,
-  cut past 200 characters. Not changed here: `gave up after N attempts: …`, which formats
-  the last transport error's own text and is not a URL, host or `Location` (measured through
-  httpx 0.28.1 and h11 0.16.0 against a local socket: a 5 000-byte malformed status line
-  makes a 5 044-character `RemoteProtocolError`).
+  `match=` keeps matching), and `.url` are as before. A value now appears quoted, as the
+  module's other `safe_repr` messages show theirs (`host not in allow-list: 'evil.example'`),
+  so a caller that matched the bare host after the colon must match the quoted one, or read
+  `.url`; an empty host is still `None`. Nothing that succeeded now raises.
+
+  **Defaults pending maintainer confirmation.** Each is the smallest change that meets the
+  issue; the other option is what would change.
+
+  - **The bound is `safe_repr`'s 200 characters**, the helper this module's bytes path
+    already uses for the same URL. A URL-specific bound (256 or 512, say) needs a
+    module-local helper, because that constant is shared by every message in the library.
+  - **A value is shown quoted**, because `safe_repr` returns the `repr`. An unquoted cut
+    needs a new helper and differs from the module's other messages.
+  - **`.url` is not bounded.** It holds the whole URL as given (`None` for the userinfo
+    refusal), because callers may read it and the issue is about messages. Bounding it too
+    would break a consumer that reads the whole URL back.
+  - **`gave up after N attempts: …` is not touched.** It formats the last transport error's
+    own text and is not a URL, host or `Location`. Measured through httpx 0.28.1 and h11
+    0.16.0 against a local socket, a 5 000-byte malformed status line makes a 5 044-character
+    `RemoteProtocolError`; a bound there is its own change.
+  - **The #318 entry is superseded, not rewritten.** Its sentence that the non-https
+    message "quotes it as before" now reads: it quotes it, cut past 200 characters.
+  - **No wiki page is edited**: `wiki/Trust.md` and `wiki/EBSI-Node-Trust.md` describe the
+    refusals by exception class, never by message wording.
 - **`EbsiHttpClient.get_json` no longer drains an error body unbounded**
   ([#321](https://github.com/luisgf/openvc/issues/321); it predates ADR-0009). The non-200
   branch called `resp.read()`: no size cap and no wall-clock deadline, where the 200 branch
