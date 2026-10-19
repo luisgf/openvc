@@ -159,7 +159,7 @@ def test_the_port_rule_does_not_depend_on_how_the_host_is_listed(port: str) -> N
 
 def test_extra_hosts_take_port_443_only() -> None:
     # `for_ebsi(extra_hosts=...)`: a status-list host is host NAME in, port 443 out.
-    c = for_ebsi("pilot", extra_hosts={"status.example.org"})
+    c = for_ebsi("legacy-pilot", extra_hosts={"status.example.org"})
     try:
         assert _admits(c, "https://status.example.org/list/1")
         assert _admits(c, "https://status.example.org:443/list/1")

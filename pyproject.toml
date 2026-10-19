@@ -42,7 +42,7 @@ dependencies = [
     "cryptography>=45",
     # >=2.13: security floor — the PyJWT 2.13.0 advisory batch (CVE-2026-32597
     # `crit` handling among them); the advisory-by-advisory reachability audit
-    # lives in docs/audit/assurance.md §5 (#125)
+    # lives in docs/audit/assurance.md §5 (#125); a CI leg pins this floor (#340)
     "pyjwt>=2.13",
 ]
 

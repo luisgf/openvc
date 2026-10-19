@@ -6,7 +6,15 @@ It is deliberately small but covers the production concerns a verifier needs:
   * timeouts        : never block forever (connect + read).
   * retries         : bounded, only on idempotent GET and transient failures
                       (network errors, 429, 5xx), with exponential backoff + jitter
-                      and Retry-After support — no thundering herd.
+                      and Retry-After support — no thundering herd. No single sleep is
+                      longer than ``RetryPolicy.retry_after_max_s`` (default: the backoff
+                      ceiling), whatever a server asks for, and a ``Retry-After`` that is not
+                      a short run of ASCII digits or an HTTP-date is ignored.
+  * body reads      : ``get_json`` and ``get_bytes`` read a 200 body through ONE bounded
+                      reader. The wire size and the DECODED size are both held to the cap
+                      before a chunk is appended; a single ``gzip`` or ``deflate`` coding is
+                      decoded with zlib asked for at most the room left, so a decompression
+                      bomb is refused inside the stdlib and never allocated.
   * caching         : TTL + bounded size. EBSI registry reads (DID docs, TIR
                       entries, schemas) change rarely and are hit on every verify.
   * SSRF guard      : the TIR v5 flow follows `href` values taken from registry
@@ -31,6 +39,14 @@ It is deliberately small but covers the production concerns a verifier needs:
                       not stop an attacker who holds a valid certificate for a public
                       address, and it needs the local resolver, so it refuses to be built
                       behind an environment proxy. See :class:`AddressGuard`.
+  * lifetime gate   : OPT-IN (``valid_until=`` with ``clock=``, both or neither). Once the
+                      injected wall clock reads ``valid_until`` or later every reader raises
+                      ``NodeListExpired`` before the host guard, the cache and any socket, and
+                      again before each retry. ``for_nodes`` (``openvc_ebsi.node_client``)
+                      passes the pair for a client built from a verified node list.
+  * probe           : ``probe`` is one GET with no retry, no cache and every status returned
+                      instead of raised: the health check's read. It runs through the same
+                      request loop as the other two readers.
 
 Pass ``client.get_json`` wherever a ``Fetch`` is expected (e.g. into the resolver).
 """
@@ -44,6 +60,7 @@ import socket
 import sys
 import time
 import urllib.request
+import warnings
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -62,11 +79,17 @@ from openvc import _json
 from openvc import __version__
 from openvc.cache import TtlCache
 from openvc.fetch import ip_is_forbidden
-from openvc.proof._verify_common import safe_repr
+from openvc.proof._verify_common import safe_repr, utc_instant
 
 from ._url import HTTPS_PORT, UrlDoesNotParse, UrlNotVisibleAscii, carries_userinfo, read_origin
 from .environments import fixed_hosts
-from .errors import EbsiError, MalformedRegistryResponse, UnknownEbsiEnvironment
+from .errors import (
+    EbsiError,
+    MalformedRegistryResponse,
+    NodeClientConfigError,
+    NodeListExpired,
+    UnknownEbsiEnvironment,
+)
 
 # EBSI registry reads (DID docs, TIR entries, schemas) are small; bound the memory an
 # attacker-influenced (or compromised) allow-listed host can force. The general fetch caps
@@ -111,7 +134,14 @@ class HttpError(EbsiError):
 
 class HttpNotFound(HttpError): ...          # 404 — maps to DidNotFound upstream
 class HttpForbiddenHost(HttpError): ...     # SSRF guard tripped
-class HttpTransientExhausted(HttpError): ...  # retries used up
+
+
+class HttpTransientExhausted(HttpError):
+    """Retries used up. ``status`` is the LAST attempt's HTTP status (a 429 or a 5xx), or
+    ``None`` when that attempt never got an answer (a transport error or timeout, or an
+    address the guard could not resolve): the two are told apart by it."""
+
+
 class HttpUnexpectedEncoding(HttpError): ...  # Content-Encoding the bytes path does not decode
 
 
@@ -162,16 +192,61 @@ class BytesResponse:
         return self.body is None
 
 
+# The most a health probe reads. ``/v1/alive`` answered a 19-byte object on two nodes
+# (tests/fixtures/ebsi/alive/, 2026-10-19); this is a bound on what a listed node can make a probe
+# cost, not a prediction of the body.
+PROBE_MAX_BYTES = 1024
+
+
+@dataclass(frozen=True)
+class ProbeResponse:
+    """What :meth:`EbsiHttpClient.probe` returns: the status of the one answer, and its body
+    when the status is 200. **Unauthenticated, like every body this client returns.**"""
+
+    status: int
+    body: bytes            # b"" unless status == 200: the body of any other answer is not read
+
+
 # --------------------------------------------------------------------------- #
 # Retry policy
 # --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
 class RetryPolicy:
+    """How a read is retried.
+
+    ``retry_after_max_s`` is the longest ONE sleep between attempts may be, whatever the
+    server asks for with ``Retry-After``: every sleep is
+    ``min(max(backoff, Retry-After), ceiling)``, and a caller's ``deadline_s`` can only shorten
+    it further. An allow-listed host (a listed node, say) therefore cannot hold a walk for the
+    time it asks. ``None``, the default, means ``backoff_max_s``: the ceiling is looked up
+    when a sleep is taken, so a policy derived with ``dataclasses.replace(policy,
+    backoff_max_s=X)`` follows ``X`` and the attribute keeps reading ``None``. By default a
+    server therefore cannot make the client wait longer than its own backoff would. The bound
+    applies to every sleep, the backoff included, so a ceiling below ``backoff_max_s`` lowers
+    that ceiling too. An explicit value must be a number from 0 to one day; anything else is a
+    ``ValueError`` when the policy is built (construction-time misuse, not wire input).
+    ``backoff_max_s`` is not validated, as it never was, and a value that follows it is not
+    either: whatever the policy, no sleep is longer than one day, and none is negative (a
+    negative ``backoff_max_s`` is a ceiling that sleeps 0 s)."""
+
     attempts: int = 3
     backoff_base_s: float = 0.25
     backoff_max_s: float = 5.0
     retry_statuses: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+    retry_after_max_s: float | None = None
+
+    def __post_init__(self) -> None:
+        cap = self.retry_after_max_s
+        if cap is None:
+            return                            # `backoff_max_s`, looked up when a sleep is taken
+        if (not isinstance(cap, (int, float)) or isinstance(cap, bool)
+                or not 0 <= cap <= _MAX_DEADLINE_S):
+            # Compared, never converted: `0 <= nan` is False, and `10**400` compares without
+            # becoming a float (`float(10**400)` raises OverflowError).
+            raise ValueError(
+                f"retry_after_max_s must be None or a number of seconds from 0 to "
+                f"{_MAX_DEADLINE_S}, not {safe_repr(cap)}")
 
     def backoff(self, attempt: int) -> float:
         # exponential with equal jitter: half fixed, half random.
@@ -320,17 +395,41 @@ def _refuse_environment_proxy() -> None:
 # Client
 # --------------------------------------------------------------------------- #
 
+# The delta-seconds form of `Retry-After` is a short run of ASCII digits. Nine digits reach 31
+# years, far past any wait a client honours (every sleep is cut to the policy's ceiling,
+# `retry_after_max_s` or `backoff_max_s` when that is None, anyway), and keep `float()` of a
+# hostile value finite. A longer run is not read as a number.
+_RETRY_AFTER_MAX_DIGITS = 9
+# An HTTP-date is 29 characters (IMF-fixdate) and at most 33 in the obsolete forms (RFC 850 with
+# the longest day name). A longer value is not one, and is not handed to the stdlib's date parser.
+_RETRY_AFTER_MAX_DATE_CHARS = 64
+
+
 def _parse_retry_after(value: str | None) -> float | None:
     """`Retry-After` as seconds, supporting both the delta-seconds and the HTTP-date forms
-    (RFC 9110 §10.2.3). Returns None when absent or unparseable (caller keeps its backoff)."""
-    if not value:
+    (RFC 9110 §10.2.3). Returns None when absent or unparseable (caller keeps its backoff).
+
+    The value comes from an allow-listed but not trusted host, so this never raises and the
+    result is either ``None`` or a finite number of seconds, never negative. Delta-seconds is
+    a run of ASCII digits only (``str.isdigit`` alone also accepts a superscript, which
+    ``float`` rejects with a bare ``ValueError``, and other scripts' decimal digits, which
+    ``float`` reads as a number of seconds: ``"١٢٣"`` was 123 s), at most
+    :data:`_RETRY_AFTER_MAX_DIGITS` long; ``-1``, ``nan``, ``1e400``, a sign or a blank are
+    not it. Spaces and tabs around the value are optional whitespace and are dropped. Anything
+    else is read as an HTTP-date, which may be far in the future: the caller bounds the sleep,
+    not this function."""
+    if not isinstance(value, str):
         return None
-    value = value.strip()
-    if value.isdigit():
-        return float(value)
+    text = value.strip(" \t")
+    if not text or not text.isascii():
+        return None
+    if text.isdigit():                        # ASCII digits only: `isascii` held above
+        return float(text) if len(text) <= _RETRY_AFTER_MAX_DIGITS else None
+    if len(text) > _RETRY_AFTER_MAX_DATE_CHARS:
+        return None
     try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError, OverflowError, IndexError):
         return None
     if when is None:
         return None
@@ -361,6 +460,29 @@ def _problem_type(content_type: str | None, body: bytes) -> str | None:
     if isinstance(value, str) and _PROBLEM_TYPE.fullmatch(value):
         return value
     return None
+
+
+def _as_utc(value: object, name: str) -> datetime:
+    """*value* as an aware UTC ``datetime`` (a naive one is UTC; a ``datetime`` subclass is read
+    as the plain value it holds, #286), or :class:`NodeClientConfigError`. ``None`` is refused
+    here, before ``utc_instant`` could read it as "the current time": a clock that returns
+    nothing must never be read as now."""
+    if not isinstance(value, datetime):
+        raise NodeClientConfigError(
+            f"{name} must be a datetime, not {type(value).__name__}")
+    return utc_instant(value, error=NodeClientConfigError, name=name)
+
+
+def read_clock(clock: Callable[[], datetime]) -> datetime:
+    """One reading of an injected wall clock, as an aware UTC ``datetime``.
+
+    A clock that raises, returns ``None``, an ``int``, a string or any other non-``datetime`` is
+    a :class:`NodeClientConfigError` (never "now", never a bare ``TypeError``)."""
+    try:
+        reading = clock()
+    except Exception as exc:               # a caller's clock may raise anything
+        raise NodeClientConfigError(f"the clock raised {type(exc).__name__}") from exc
+    return _as_utc(reading, "the clock's reading")
 
 
 class _NoCookiePolicy(CookiePolicy):
@@ -400,7 +522,16 @@ class EbsiHttpClient:
     only if it is ``https`` on one of those hosts at port 443 (an absent or empty port is
     443; ``:0443`` reads as 443 too) and carries no userinfo: any other port of an
     allow-listed host is :class:`HttpForbiddenHost`, before any request (#318). Port 443 is
-    implied; an entry that spells a scheme or a port never matches. Redirects are off."""
+    implied; an entry that spells a scheme or a port never matches. Redirects are off.
+
+    ``valid_until`` and ``clock`` (both or neither) bind the client to a lifetime (ADR-0009
+    D5): once ``clock()`` reads ``valid_until`` or later, every entry point raises
+    :class:`~openvc_ebsi.errors.NodeListExpired` before the cache is consulted and before a
+    socket is opened, and the check runs again before every retry (a backoff sleep can cross
+    the instant). Without the pair there is no bound at all and no grace either way: a client
+    built from a hand-written allow-list trusts it until its owner rebuilds it. A request
+    already on the wire is not interrupted. :func:`openvc_ebsi.node_client.for_nodes` passes
+    the pair for you."""
 
     def __init__(
         self,
@@ -414,7 +545,22 @@ class EbsiHttpClient:
         user_agent: str = f"openvc-core/{__version__}",
         max_response_bytes: int = MAX_RESPONSE_BYTES,
         address_guard: AddressGuard | None = None,
+        valid_until: datetime | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
+        # Misuse is refused first, before anything is built (nothing to close). The pair is
+        # checked as a pair: a bound with no clock cannot be enforced, and a clock with no
+        # bound would be silently inert.
+        if (valid_until is None) != (clock is None):
+            raise NodeClientConfigError(
+                "valid_until and clock go together: pass both or neither")
+        self._valid_until: datetime | None = None
+        self._clock = clock
+        if valid_until is not None:
+            if not callable(clock):
+                raise NodeClientConfigError(
+                    f"clock must be a callable returning a datetime, not {type(clock).__name__}")
+            self._valid_until = _as_utc(valid_until, "valid_until")
         self._allowed = {h.lower() for h in allowed_hosts}
         self._timeout_s = timeout_s
         self._max_bytes = max_response_bytes
@@ -438,6 +584,10 @@ class EbsiHttpClient:
             headers={
                 "User-Agent": user_agent,
                 "Accept": "application/json, application/did+ld+json, */*;q=0.1",
+                # Ask only for the codings the bounded reader decodes (httpx would add `br`
+                # and `zstd` when their packages are installed, and a body in either is
+                # refused). `get_bytes` overrides this per request with `identity`.
+                "Accept-Encoding": "gzip, deflate",
             },
             # No cookie jar (#317): a bare CookieJar is the only form httpx keeps as given
             # (an httpx.Cookies, a dict or a list is rebuilt with the default policy).
@@ -447,6 +597,9 @@ class EbsiHttpClient:
     # -- the Fetch capability --------------------------------------------- #
 
     def get_json(self, url: str) -> dict[str, Any]:
+        # First of all, before the host guard and before the cache: a cached success is not
+        # served past the end of the list's life (ADR-0009 D5).
+        self._check_valid()
         self._guard_host(url)
 
         cached = self._cache.get(url)
@@ -506,6 +659,7 @@ class EbsiHttpClient:
         asked for, any other 3xx, a 204, a 206 and a 403 are :class:`HttpError`, and the
         body of a non-200 response is never read. A 404 is :class:`HttpNotFound`.
         """
+        self._check_valid()                   # before the arguments, the guard and any I/O
         cap = self._max_bytes
         if max_bytes is not None:
             cap = min(_checked_cap(max_bytes), cap)         # can only lower the client's cap
@@ -524,10 +678,55 @@ class EbsiHttpClient:
             return BytesResponse(None, sent)
         return BytesResponse(body, _plausible_etag(reply.get("etag")))
 
+    def probe(self, url: str, *, max_bytes: int = PROBE_MAX_BYTES) -> ProbeResponse:
+        """GET *url* once and return its status, and its body when the status is 200.
+
+        The health check's read (``/v1/alive``): **one attempt, never retried** (no backoff
+        sleep, whatever the status or the failure), **never read from or written to the
+        response cache**, and **every status is returned** instead of raised, so the caller
+        decides what a 503, a 403 or a 301 means. The body of a non-200 answer is not read
+        (the connection is dropped, not drained). A transport failure, a body over *max_bytes*
+        (which can only lower the client's own cap), a body that does not decode or a
+        deadline overrun still raise, with the same classes as :meth:`get_bytes`
+        (:class:`HttpTransientExhausted` with ``status=None`` for a transport failure). Same
+        host guard, address guard, redirect and cookie rules as every other read, and the same
+        expiry gate (:class:`~openvc_ebsi.errors.NodeListExpired` before any I/O). With an
+        ``address_guard`` the single attempt reaches the FIRST validated address of the host
+        only: the guard moves to the next address on a retry, and a probe has none, so a host
+        whose first address cannot be reached from here probes as down even if a read, which
+        retries, would get through on its next one."""
+        self._check_valid()
+        cap = min(_checked_cap(max_bytes), self._max_bytes)
+        status, body, _ = self._request(
+            url, headers={"Accept-Encoding": "identity"}, probe=True, drain_error_body=False,
+            read_body=lambda resp: self._read_verbatim(resp, url, cap, None))
+        return ProbeResponse(status, body)
+
     @property
     def allowed_hosts(self) -> frozenset[str]:
         """The host allow-list this client was built with (lower-cased, read-only)."""
         return frozenset(self._allowed)
+
+    @property
+    def valid_until(self) -> datetime | None:
+        """The instant (aware UTC) at which this client stops working, or ``None`` when it is
+        bound to no lifetime."""
+        return self._valid_until
+
+    def _check_valid(self) -> None:
+        """Raise :class:`~openvc_ebsi.errors.NodeListExpired` when the injected clock reads
+        ``valid_until`` or later; a no-op for a client built without the pair. Read through
+        :func:`read_clock`, so a clock that misbehaves is :class:`NodeClientConfigError` and
+        never "now". The injected clock is the wall clock that decides the list's validity;
+        the response cache keeps its own monotonic clock for freshness."""
+        until = self._valid_until
+        if until is None:
+            return
+        assert self._clock is not None            # both or neither, checked at construction
+        if read_clock(self._clock) >= until:
+            raise NodeListExpired(
+                f"the node list expired at {until.isoformat()}: build a new client from a "
+                "freshly verified list")
 
     def _request(
         self,
@@ -538,19 +737,33 @@ class EbsiHttpClient:
         headers: Mapping[str, str] | None = None,
         accept_not_modified: bool = False,
         until: float | None = None,
+        probe: bool = False,
     ) -> tuple[int, bytes, httpx.Headers]:
-        """The one request loop under :meth:`get_json` and :meth:`get_bytes`: host guard,
-        stream, the ``InvalidURL`` / ``DecodingError`` / ``TransportError`` mapping (#246,
-        #248) and retry on 429 / 5xx with ``Retry-After``, so the two paths cannot drift.
+        """The one request loop under :meth:`get_json`, :meth:`get_bytes` and :meth:`probe`:
+        expiry gate, host guard, stream, the ``InvalidURL`` / ``DecodingError`` /
+        ``TransportError`` mapping (#246, #248) and retry on 429 / 5xx with ``Retry-After``,
+        so the paths cannot drift.
 
         Returns ``(200, body, headers)``, or ``(304, b"", headers)`` when
         *accept_not_modified*; every other outcome raises. *until* is a ``time.monotonic``
-        instant that bounds the attempts and the sleeps between them."""
+        instant that bounds the attempts and the sleeps between them.
+
+        *probe* makes it one attempt that returns every status instead of raising it: the loop
+        runs only the LAST attempt index, which :meth:`_sleep_before_retry` already treats as
+        "nothing left to wait for", so there is exactly one request and no sleep through this
+        same loop. Nothing else about the attempt changes.
+
+        The expiry gate runs at the top of EVERY attempt, the first included, so a retry after
+        a sleep that crossed the end of the list's life is stopped, and a reader that forgot to
+        gate before calling this is still caught; the public readers also gate first, before
+        their arguments, the host guard and the cache."""
         self._guard_host(url)
 
         last_exc: Exception | None = None
         tried: list[str] = []          # validated addresses already used by this call
-        for attempt in range(self._retry.attempts):
+        first = max(self._retry.attempts - 1, 0) if probe else 0
+        for attempt in range(first, self._retry.attempts):
+            self._check_valid()
             if until is not None and until - time.monotonic() <= 0:
                 raise HttpError("deadline exceeded", url=url)
             body: bytes = b""
@@ -588,6 +801,8 @@ class EbsiHttpClient:
                 return status, body, resp.headers
             if status == 304 and accept_not_modified:
                 return status, b"", resp.headers
+            if probe:                      # the caller reads the status: nothing raised, no retry
+                return status, b"", resp.headers
             if status == 404:
                 raise HttpNotFound("not found", status=404, url=url, problem_type=problem_type)
             if status in self._retry.retry_statuses:
@@ -599,22 +814,21 @@ class EbsiHttpClient:
                             problem_type=problem_type)
 
         raise HttpTransientExhausted(
-            f"gave up after {self._retry.attempts} attempts: {last_exc}", url=url,
+            f"gave up after {self._retry.attempts - first} attempts: {last_exc}", url=url,
+            # the last attempt's status; None when it never got one (a transport failure)
+            status=last_exc.status if isinstance(last_exc, HttpError) else None,
             problem_type=last_exc.problem_type if isinstance(last_exc, HttpError) else None,
         )
 
     def _read_capped(self, resp: httpx.Response, url: str) -> bytes:
-        """Read the streamed body against the size cap and a total wall-clock deadline."""
-        deadline = time.monotonic() + self._timeout_s
-        body = bytearray()
-        for chunk in resp.iter_bytes():
-            if time.monotonic() > deadline:
-                raise HttpError(f"read exceeded {self._timeout_s:g}s deadline", url=url)
-            body += chunk
-            if len(body) > self._max_bytes:
-                raise HttpError(
-                    f"response exceeds {self._max_bytes} bytes", status=200, url=url)
-        return bytes(body)
+        """Read the streamed body of :meth:`get_json` against the client's size cap and a total
+        wall-clock deadline: the reader :meth:`get_bytes` uses, at the client's cap and with no
+        overall budget. The cap holds on the wire size and on the DECODED size, checked before
+        a chunk is appended (``iter_bytes`` would hand over a whole inflated chunk first, so
+        one small ``gzip`` chunk could allocate the expansion ratio times itself). Only
+        ``identity``, one ``gzip`` or one ``deflate`` coding is read; any other
+        ``Content-Encoding`` is :class:`HttpUnexpectedEncoding`."""
+        return self._read_verbatim(resp, url, self._max_bytes, None)
 
     def _open_stream(
         self, url: str, tried: list[str], headers: Mapping[str, str] | None = None
@@ -666,14 +880,26 @@ class EbsiHttpClient:
     def _read_verbatim(
         self, resp: httpx.Response, url: str, cap: int, until: float | None
     ) -> bytes:
-        """Read a 200 body for :meth:`get_bytes`: the raw wire bytes, or the result of
-        decoding ONE ``gzip`` / ``deflate`` coding, never more than *cap* bytes of either.
+        """Read a 200 body for :meth:`get_bytes` and :meth:`get_json`: the wire bytes, or the
+        result of decoding ONE ``gzip`` / ``deflate`` coding, never more than *cap* bytes of
+        either.
 
-        ``iter_raw`` hands over the wire bytes undecoded, so httpx never inflates anything.
-        The wire total and the decoded total are both checked BEFORE a chunk is appended,
-        and ``zlib`` is asked for at most ``room + 1`` bytes, so a decompression bomb is
-        refused inside the stdlib, before the allocation, not after it."""
+        A coded body is read with ``iter_raw``, which hands over the wire bytes undecoded, so
+        httpx never inflates anything. A body with no coding has nothing to inflate and is
+        read with ``iter_bytes`` (``_decoder_for`` returns ``None`` only for no coding or
+        ``identity``, and httpx then applies no decoder), as is a body a test double has
+        already read into memory, a coded one too (httpx decoded it when it was built). The
+        wire total and the decoded total are both checked BEFORE a chunk is appended, and
+        ``zlib`` is asked for at most ``room + 1`` bytes, so a decompression bomb is refused
+        inside the stdlib, before the allocation, not after it."""
         decoder = _decoder_for(resp.headers.get("content-encoding"), url)
+        if decoder is not None and resp.is_stream_consumed:
+            # A response a test double built from `content=` is read into memory when it is
+            # made, and httpx has already decoded it: `iter_raw` would raise `StreamConsumed`
+            # and there is nothing left to inflate. No socket hands one over (a stream is
+            # consumed only by reading it), so this is not reachable from the wire; the cap
+            # still holds on what is read.
+            decoder = None
         declared = _declared_length(resp.headers.get("content-length"))
         if declared is not None and declared > cap:
             raise HttpError(f"response exceeds {cap} bytes", status=200, url=url)
@@ -683,7 +909,7 @@ class EbsiHttpClient:
             deadline = min(deadline, until)
         wire = 0
         body = bytearray()
-        for chunk in resp.iter_raw():
+        for chunk in (resp.iter_bytes() if decoder is None else resp.iter_raw()):
             if time.monotonic() > deadline:
                 raise HttpError("read exceeded its deadline", url=url)
             wire += len(chunk)
@@ -783,9 +1009,18 @@ class EbsiHttpClient:
             secs = _parse_retry_after(resp.headers.get("Retry-After"))
             if secs is not None:
                 delay = max(delay, secs)
+        # A server decides what it asks for, never how long this client waits: no sleep is
+        # longer than the policy's ceiling (`retry_after_max_s`, `backoff_max_s` when that is
+        # None), and none is longer than one day, which `time.sleep` always takes (it raises
+        # OverflowError from about 9.2e9 s). Nor is one negative, which `time.sleep` refuses
+        # with a ValueError: `backoff_max_s` is not validated, so a negative one is a ceiling
+        # of every sleep, and it sleeps 0 s.
+        ceiling = self._retry.retry_after_max_s
+        delay = min(delay, self._retry.backoff_max_s if ceiling is None else ceiling,
+                    _MAX_DEADLINE_S)
         if until is not None:                 # never sleep past the caller's budget
             delay = min(delay, max(0.0, until - time.monotonic()))
-        time.sleep(delay)
+        time.sleep(max(0.0, delay))
 
     # -- lifecycle --------------------------------------------------------- #
 
@@ -971,6 +1206,13 @@ def get_tnl_files(
 # Factory
 # --------------------------------------------------------------------------- #
 
+_PILOT_DEPRECATION = (
+    "for_ebsi('pilot') is deprecated: use 'legacy-pilot', which seeds the same allow-list "
+    "(api-pilot.ebsi.eu, the legacy per-service lane). 'pilot' will change meaning at the next "
+    "MAJOR release, to the EBSI Core API pilot, which is a different ledger "
+    "(https://github.com/luisgf/openvc/issues/74)")
+
+
 def for_ebsi(
     environment: str = "legacy-pilot",
     *,
@@ -981,8 +1223,13 @@ def for_ebsi(
 
     * ``"legacy-pilot"`` (the default): ``api-pilot.ebsi.eu``, the legacy per-service lane
       (the v5 adapters), the only place the recorded fixtures and the weekly smoke are valid.
-    * ``"pilot"``: the same host and lane as ``"legacy-pilot"``, kept for compatibility. It
-      is not the Core API pilot that EBSI now also calls "pilot".
+    * ``"pilot"``: the same host and lane as ``"legacy-pilot"``, **deprecated** since 1.37.0.
+      It emits a :class:`DeprecationWarning` that names ``"legacy-pilot"``, and seeds exactly
+      the same allow-list. EBSI now also calls its Core API pilot "pilot", a different ledger
+      that this name does not reach; the name will change meaning at the next MAJOR release
+      (2.0, #74), so use ``"legacy-pilot"``. The warning is raised here, so a name read from
+      configuration (an environment variable, say) and passed on to this function warns the
+      same way.
     * ``"conformance"``: ``api-conformance.ebsi.eu``. A measurement on 2026-10-16 completed
       no connection in 12 s (ADR-0009).
     * ``"production"``: ``api.ebsi.eu``. The certificate that host presented on 2026-10-16
@@ -1014,5 +1261,10 @@ def for_ebsi(
         raise UnknownEbsiEnvironment(
             f"unknown EBSI environment: {safe_repr(environment)} "
             f"(known: {', '.join(sorted(map(str, EBSI_HOSTS)))})")
+    if name == "pilot":
+        # `name` is the plain `str` read above, never the caller's object, so a `str` subclass
+        # holding "pilot" is compared by its characters. Before the client is built, so a
+        # warning turned into an error leaves no client open.
+        warnings.warn(_PILOT_DEPRECATION, DeprecationWarning, stacklevel=2)
     hosts = {EBSI_HOSTS[name]} | (extra_hosts or set())
     return EbsiHttpClient(allowed_hosts=hosts, **kwargs)

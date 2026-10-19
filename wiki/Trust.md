@@ -158,7 +158,8 @@ with for_ebsi("legacy-pilot") as http:
     print(result.trusted, result.issuer)
 ```
 
-`for_ebsi()` (the default `legacy-pilot`, and its alias `"pilot"`) is the **legacy pilot lane**
+`for_ebsi()` (the default `legacy-pilot`; the older spelling `"pilot"` is deprecated, see
+below) is the **legacy pilot lane**
 (`api-pilot.ebsi.eu`, the per-service `v5` paths): the lane the recorded fixtures and the weekly live
 smoke test cover. On EBSI Core API v1 the recursive walk (`trust_anchors=`) needs one more
 argument, as of 2026-10-16: the prod and preprod RootTAO accreditations are signed `ES256K`, which
@@ -227,7 +228,7 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   It does not stop an attacker who also holds a valid certificate for a public address, a
   dishonest listed node, or anything about registry content. There are no exemptions: to
   reach an internal mirror, build a second client without the guard. Use it as
-  `for_ebsi("pilot", address_guard=AddressGuard())`, with `AddressGuard` from
+  `for_ebsi("legacy-pilot", address_guard=AddressGuard())`, with `AddressGuard` from
   `openvc_ebsi.http`.
 - **The document must be for the DID asked**: `DidEbsiResolver.resolve(did)` raises
   `DidResolutionError` unless the registry document's `id` is exactly `did`, as `did:web`
@@ -238,25 +239,45 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   every API version), before any `attributes` page or revision is fetched, so
   `IssuerRecord.did` is the DID the registry answered for. The `attributes` / `href` path
   is still pinned to the registry's origin, not to the issuer.
+- **The scalars it copies are typed**: the TIR adapters (v4, v5 and Core v1) check the JSON
+  type of every scalar they copy into `Accreditation` and `IssuerRecord`, and a wrong one
+  raises `MalformedRegistryResponse`, with the value shown bounded. `hasAttributes` must be
+  `true` or `false` (the string `"false"` is not read as `true`, nor `0` as `false`); `id`
+  and `issuerType` must be strings (`null` is wrong), and so must `hash` where it is the
+  value copied: always on v4, and on v5 and Core v1 only when the listing item's `id` is
+  absent or empty (otherwise the `id` is the attribute id and the `hash` is not read);
+  `tao`, `rootTao` and `body` a string or `null`. An absent member keeps its default (`""`,
+  `None`, `false`), and one bad accreditation rejects the whole record. A node that sends
+  what its schema says is unaffected.
 - **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
   named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
   recorded on 2026-10-16
   ([ADR-0009](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)):
   - `legacy-pilot` is `api-pilot.ebsi.eu`, the legacy per-service lane (the v5 adapters), and
     the only place the recorded fixtures and the weekly smoke test are valid.
-  - `pilot` is the same host and the same lane, kept as it was and not deprecated. EBSI now
-    also uses "pilot" for its Core API pilot, which is a different ledger that this name does
-    not reach; `legacy-pilot` says which one you mean. ADR-0009's planned end state gives
-    `pilot` the Core API meaning, at the earliest in the 2.0 window
-    ([#74](https://github.com/luisgf/openvc/issues/74); not decided yet), so prefer
-    `legacy-pilot` in code that will outlive a major upgrade.
+  - `pilot` is the same host and the same lane, **deprecated since 1.37.0**:
+    `for_ebsi("pilot")` emits a `DeprecationWarning` that names `legacy-pilot`, and builds the
+    same client (the identical allow-list), so nothing breaks today. EBSI now also uses "pilot"
+    for its Core API pilot, which is a different ledger that this name does not reach (the
+    legacy DID answered 404 on the two nodes of it that ADR-0009 tried on 2026-10-16).
+    **`pilot` will change meaning at the next MAJOR release**
+    (2.0, [#74](https://github.com/luisgf/openvc/issues/74)), so a caller that keeps the name
+    would then read the other ledger. Use `legacy-pilot`, which says which one you mean. Only
+    `for_ebsi` warns: a lookup of `EBSI_HOSTS["pilot"]` or `EBSI_BASE["pilot"]` cannot, so move
+    those too. A name you read from your own configuration (an environment variable, say) and
+    pass to `for_ebsi` warns the same way. Python hides a `DeprecationWarning` raised outside
+    `__main__` unless you ask (`python -W default`, `-X dev`, or pytest), so run your tests
+    with one of them.
   - `conformance` (`api-conformance.ebsi.eu`) and `production` (`api.ebsi.eu`) are kept as
-    they were, with the same allow-list rule, but a client built from either is not known to
-    complete a request today. One 12-second probe of the conformance host (a single attempt
-    from one place, so possibly transient) completed no TCP connection; the certificate the
-    production host presented did not cover its name, and none of the 45 node URLs in version
-    4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a client fails
-    closed. `api.ebsi.eu` is not a node: no HTTP response could be obtained from it.
+    they were, with the same allow-list rule, and without a warning or a refusal (the
+    maintainer's decision of 2026-10-19: documentation only). There is no replacement to
+    name for either until the node-based client (#324). A client built from either is not
+    known to complete a request today. One 12-second probe of the conformance host (a single
+    attempt from one place, so possibly transient) completed no TCP connection; the
+    certificate the production host presented did not cover its name, and none of the 45 node
+    URLs in version 4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a
+    client fails closed. `api.ebsi.eu` is not a node: no HTTP response could be obtained from
+    it.
   - Any other name (another case, an empty string, a value that is not a string) raises
     `UnknownEbsiEnvironment`, which is also a `ValueError`.
 
@@ -292,6 +313,32 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   expect a `urn:ebsi:problems:` slug on every error (the recorded 406 says
   `about:blank`). An error body is read at most 16 KiB; a larger one is dropped
   with its connection.
+- **Bounded body reads and bounded waits** (v1.37.0): `get_json` reads a 200 body through the
+  reader `get_bytes` uses. The size cap (`max_response_bytes`, 5 MiB by default) holds on the
+  wire size **and** on the decoded size before a chunk is held, and one `gzip` or `deflate`
+  coding is decoded with `zlib` asked for no more than the room left, so a 260 KB gzip body
+  that inflates to 256 MiB is refused at a peak of about twice the cap (about 10 MiB at the
+  default 5 MiB, about 2 MiB under a 1 MiB cap) instead of 557 MiB. The client
+  asks for `Accept-Encoding: gzip, deflate`; any other coding (`br`, `zstd`, a list of
+  codings) is `HttpUnexpectedEncoding`, and bytes after the end of a compressed stream are
+  `MalformedRegistryResponse`. A node's `Retry-After` is read as one to nine ASCII digits or
+  an HTTP date; anything else (`²`, `nan`, `-1`, a 400-digit run) is ignored and your own
+  backoff applies. **No sleep between attempts is longer than `RetryPolicy.retry_after_max_s`**
+  (`None`, the default, means `backoff_max_s`: 5 s), so a listed node cannot hold a walk for the time it asks;
+  with the defaults a node that asks for 60 s is waited for 5 s, and after the last attempt
+  the call fails as `HttpTransientExhausted`. Raise the ceiling when you want to be more
+  patient with a rate-limiting node:
+
+```python
+from openvc_ebsi.http import RetryPolicy
+
+assert RetryPolicy().retry_after_max_s is None       # None: the ceiling is backoff_max_s
+assert RetryPolicy().backoff_max_s == 5.0              # so 5 s by default
+patient = RetryPolicy(attempts=4, retry_after_max_s=30.0)    # up to 30 s per sleep
+assert patient.retry_after_max_s == 30.0
+# EbsiHttpClient(allowed_hosts={...}, retry=patient), or for_ebsi(retry=patient)
+```
+
 - **Exact bytes and the Trusted Nodes List host**: `EbsiHttpClient.get_bytes(url)` returns a
   response body verbatim as a `BytesResponse(body, etag)` (no JSON parse, no cache, no text
   decoding), under the same host guard, redirects-off and retry rules as `get_json`. The
@@ -367,6 +414,28 @@ saved_list, saved_keys = result.accepted_list, result.accepted_keys   # persist 
 print(result.version, result.expires, [node.origin for node in result.nodes])
 with EbsiHttpClient(allowed_hosts=set(result.hosts)) as http:   # lower-case hosts, ONE environment
     ...
+```
+
+A client built that way has no lifetime of its own: it keeps trusting that node set after the
+list's `expires`. `openvc_ebsi.node_client.for_nodes` builds the client from the result instead,
+binds it to `result.expires` with a clock you inject (a read at or after it is
+`NodeListExpired`, before any socket), checks `GET /v1/alive`, and runs a registry walk on **one**
+node from start to end, restarting it on the next node when that one fails (a 404 is one node's
+answer, not a reason to move on). Rebuild it before `expires`: there is no grace and no refresh.
+[EBSI node trust](EBSI-Node-Trust#keep-using-the-nodes-for_nodes) has the rules and the failure
+table.
+
+<!-- docs: no-run -->
+```python
+from openvc.proof.vc_jwt import VcJwtProofSuite
+from openvc_ebsi.node_client import for_nodes
+from openvc_ebsi.verify import verify_ebsi_badge
+
+suite = VcJwtProofSuite(allow_es256k=True)       # a Core v1 root is signed ES256K
+with for_nodes(result, clock=lambda: datetime.now(timezone.utc),
+               decode_jwt=suite.peek_claims) as nodes:      # `result` from verify_node_list above
+    badge = nodes.run(lambda session: verify_ebsi_badge(
+        token, resolver=session.resolver, proof_suite=suite, trust_anchors={ROOT_TAO}))
 ```
 
 The chain, in the order it is checked (a stage never reads bytes the previous one did not
