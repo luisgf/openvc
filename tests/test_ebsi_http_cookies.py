@@ -206,7 +206,8 @@ def test_error_classes_are_unchanged_with_and_without_a_set_cookie(
         with pytest.raises(HttpError) as info:
             client.get_json(URL_A)
     assert type(info.value) is expected
-    assert info.value.status == (None if expected is HttpTransientExhausted else status)
+    # an exhausted retry carries the last attempt's status since #324 (it was always None)
+    assert info.value.status == status
     assert len(rig.requests) == requests                  # a 302 is not followed
     assert {r.url.path for r in rig.requests} == {"/a"}
     assert rig.cookie_headers == [None] * requests
@@ -330,6 +331,8 @@ def test_the_constructor_passes_the_old_kwargs_plus_a_bare_cookiejar():
     assert recorded["headers"] == {
         "User-Agent": f"openvc-core/{__version__}",
         "Accept": "application/json, application/did+ld+json, */*;q=0.1",
+        # only the codings the bounded body reader decodes (#335); `get_bytes` sends identity
+        "Accept-Encoding": "gzip, deflate",
     }
     # A bare CookieJar: httpx keeps only that as given (an httpx.Cookies, a dict or a list
     # is rebuilt with the default policy, which would silently lose ours).

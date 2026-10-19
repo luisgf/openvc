@@ -472,7 +472,12 @@ class SdJwtVcProofSuite:
             raise SdJwtError(f"unsupported hash {hash_name!r}")
         self._hash_name = hash_name
         # allow_pq merges the EXPERIMENTAL ML-DSA algs into this suite's allow-list; the
-        # default suite rejects ML-DSA at the allow-list, before any crypto (ADR-0004).
+        # default suite rejects ML-DSA at the allow-list, before any crypto (ADR-0004). It is
+        # exactly True or exactly False: `if allow_pq:` would read the strings "false" and "0"
+        # (a config or environment value) as True. type(), never isinstance(): a __class__
+        # property fools isinstance. The same rule as VcJwtProofSuite's two flags (#341).
+        if type(allow_pq) is not bool:
+            raise SdJwtError(f"allow_pq must be True or False, got {type(allow_pq).__name__}")
         self._algs = ALLOWED_ALGS | ALLOWED_ALGS_PQ if allow_pq else ALLOWED_ALGS
 
     # -- untrusted inspection --------------------------------------------- #

@@ -788,7 +788,7 @@ def test_a_guard_behind_an_environment_proxy_is_refused_at_construction(monkeypa
 def test_for_ebsi_forwards_the_guard_and_is_refused_behind_a_proxy_too(monkeypatch):
     monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://p.invalid:3128"})
     with pytest.raises(HttpAddressGuardUnavailable):
-        for_ebsi("pilot", address_guard=AddressGuard())
+        for_ebsi("legacy-pilot", address_guard=AddressGuard())
 
 
 def test_the_real_proxy_variables_are_read(monkeypatch):
@@ -815,12 +815,12 @@ def test_no_proxy_is_not_an_exemption(monkeypatch, no_proxy):
 def test_without_the_guard_a_proxy_changes_nothing(monkeypatch):
     monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://p.invalid:3128"})
     EbsiHttpClient(allowed_hosts={HOST}).close()
-    for_ebsi("pilot").close()
+    for_ebsi("legacy-pilot").close()
 
 
 def test_no_proxy_means_the_guard_is_built():
     EbsiHttpClient(allowed_hosts={HOST}, address_guard=AddressGuard()).close()
-    for_ebsi("pilot", address_guard=AddressGuard()).close()
+    for_ebsi("legacy-pilot", address_guard=AddressGuard()).close()
 
 
 # --------------------------------------------------------------------------- #

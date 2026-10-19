@@ -18,11 +18,19 @@ mypy                          # type check (strict-ish; the code is fully typed)
 gitlint                       # commit-message convention (see below)
 ```
 
-CI runs the same on Python 3.10–3.15, with `[all]` installed on every leg, plus a
-leg pinning the oldest supported `pyld`. Python 3.10 is end-of-life and deprecated
-— importing openvc there emits a `FutureWarning` — but stays in CI until 2.0 raises
-the floor to 3.11 (#74). Code must still run on 3.10 until then: no `tomllib`,
-`ExceptionGroup`, `typing.Self` or other 3.11-only features.
+CI runs the same on Python 3.10–3.15, with `[all]` installed on every leg, plus three
+floor legs on Python 3.10, each pinning the oldest supported release of one
+dependency: `pyld` 2.0.4, `httpx` 0.27.0 and `PyJWT` 2.13.0 (the `pyjwt>=2.13`
+security floor). The other legs resolve the newest release of each, so a test must
+not pin how one release treats an input: assert parity with a sibling case or an
+allowed set of outcomes instead (the signature-segment cases in
+`tests/test_es256k_opt_in.py`). To reproduce a floor leg locally, install the pin
+after the editable install (`pip install "pyjwt==2.13.0"`) and run `pytest`.
+
+Python 3.10 is end-of-life and deprecated — importing openvc there emits a
+`FutureWarning` — but stays in CI until 2.0 raises the floor to 3.11 (#74). Code must
+still run on 3.10 until then: no `tomllib`, `ExceptionGroup`, `typing.Self` or other
+3.11-only features.
 
 Working without an extra installed is supported: those test suites
 `importorskip`, and `mypy` ignores the missing optional imports.
