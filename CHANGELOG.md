@@ -974,8 +974,13 @@ Each is one value or table away from the other option. None changes anything tha
   algorithm and the type and never echoes the value. `ES256K` already did this since #323 and
   keeps its identical message; the ML-DSA lane never reached this function and was already a
   `SignatureInvalid` (a `ProofError`), which the tests now pin. A `dict` subclass is still a
-  JWK object, and `{}` still reports the key-type pin ("requires an EC P-256 key"). The
-  parameter is typed `dict`, so this was a caller or resolver bug rather than attacker input.
+  JWK object, and `{}` still reports the key-type pin ("requires an EC P-256 key"). A
+  `Mapping` that is not a `dict` (`MappingProxyType`, `UserDict`) and an object that only has
+  a `get` method are not JWK objects either: on `main` they were already a `ProofError`, but
+  one that said something else ("Object of type mappingproxy is not JSON serializable", or a
+  key-type pin naming `kty=None`) and, for the wrapper of a valid key, blamed the key; they now
+  meet the same first message as every other non-object (measured at cf6d100). The parameter
+  is typed `dict`, so this was a caller or resolver bug rather than attacker input.
 
 ### Tests
 
@@ -1145,7 +1150,7 @@ Each is one value or table away from the other option. None changes anything tha
   interpreted like signature files), are each killed by at least one test, and by a named
   failing test: the real chain's baseline result is computed on first use, so a verifier
   regression no longer surfaces as one collection error of the whole module.
-- `tests/test_vcjwt_input_hygiene.py` (#341, 232 tests, 36 of them ML-DSA controls that skip
+- `tests/test_vcjwt_input_hygiene.py` (#341, 255 tests, 36 of them ML-DSA controls that skip
   where `cryptography` is older than 48 or OpenSSL older than 3.5). `allow_pq` on both suites
   against twenty-two non-bool values (strings, `1`/`0`/`1.0`/`0.0`, `None`, containers, bytes,
   `object()`), each an exact class; no echo of a long value; an object whose `__class__` claims
@@ -1154,11 +1159,14 @@ Each is one value or table away from the other option. None changes anything tha
   `verify()` with a token a real key signed, and through `verify_many` and `verify_many_async`
   with a resolver that returns the bad key for one of three credentials; the allow-list still
   runs before the key is looked at; an empty object, a dict subclass and a wrong-curve key keep
-  their old behaviour; the ML-DSA lane is pinned as a `SignatureInvalid`; a fuzz of arbitrary
-  JSON values as the JWK. Run against the sources at cf6d100, 166 of the 232 fail and the
-  controls pass; nineteen targeted mutants of the change were applied to scratch copies, eighteen
-  killed and one survivor that is equivalent (the object check moved after the `ES256K`
-  branch, which has the identical check of its own).
+  their old behaviour; the ML-DSA lane is pinned as a `SignatureInvalid`; a `MappingProxyType`,
+  a `UserDict` and an object with only a `get` method, each holding a valid key, are refused
+  with the object message (a reviewer's mutant, `hasattr(jwk, "get")` in place of
+  `isinstance(jwk, dict)`, passed the first version of the file because it changes only the
+  message); a fuzz of arbitrary JSON values as the JWK. Run against the sources at cf6d100,
+  186 of the 255 fail and the controls pass; twenty-two targeted mutants of the change were
+  applied to scratch copies, twenty-one killed and one survivor that is equivalent (the object
+  check moved after the `ES256K` branch, which has the identical check of its own).
 
 ### Docs
 

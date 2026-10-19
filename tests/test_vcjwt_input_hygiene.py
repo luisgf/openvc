@@ -23,7 +23,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from collections import OrderedDict
+from collections import OrderedDict, UserDict
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -250,6 +251,54 @@ def test_the_allow_list_still_runs_before_the_key_is_looked_at():
     header = b64(json.dumps({"alg": "ES256K", "typ": "JWT"}).encode())
     with pytest.raises(UnsupportedAlgorithm):             # ES256K is not on by default
         VcJwtProofSuite().verify(f"{header}.{payload}.AAAA", public_key_jwk=no_key)
+
+
+# -- a Mapping that is not a dict is not a JWK object either ----------------- #
+# The check is `isinstance(jwk, dict)` (PR default 5): a `dict` subclass is an object, a
+# read-only or custom Mapping is not, and nor is anything that merely has a `get` method. A
+# check written `hasattr(jwk, "get")` or `isinstance(jwk, Mapping)` would let these through to
+# the key-type pin or to json.dumps, which answer with a different message (or, for a valid
+# key in a wrapper, a different reason) and no longer say what is wrong. Every such object
+# was already a ProofError before this change; this pins which one, and that it is the first.
+
+class _OnlyGet:
+    """Not a mapping at all: it has a ``get`` method and nothing else."""
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return default
+
+
+MAPPING_LIKES = {
+    "mappingproxy": lambda jwk: MappingProxyType(dict(jwk)),
+    "UserDict": lambda jwk: UserDict(jwk),
+    "_OnlyGet": lambda jwk: _OnlyGet(),
+}
+
+
+@pytest.mark.parametrize("alg", ALGS)
+@pytest.mark.parametrize("kind", MAPPING_LIKES)
+def test_a_mapping_that_is_not_a_dict_is_not_a_jwk_object(kind, alg):
+    # the content is a VALID key for the algorithm (ES256K: a P-256 one, the check is first)
+    valid = (CLASSIC[alg]() if alg in CLASSIC else CLASSIC["ES256"]()).public_jwk()
+    shape = MAPPING_LIKES[kind](valid)
+    with pytest.raises(ProofError, match="requires a JWK object") as exc:
+        VcJwtProofSuite._jwk_to_key(shape, alg)           # type: ignore[arg-type]
+    assert type(exc.value) is ProofError
+    assert alg in str(exc.value) and type(shape).__name__ in str(exc.value)
+
+
+@pytest.mark.parametrize("alg", list(CLASSIC))
+@pytest.mark.parametrize("kind", ["mappingproxy", "UserDict"])
+def test_verify_with_the_right_key_in_a_mapping_wrapper_is_a_proof_error(kind, alg):
+    # the token verifies against the bare key (the control), and is refused for the wrapper
+    # with the object message: not signature-invalid, not a key-load failure
+    key = CLASSIC[alg]()
+    token = VcJwtProofSuite().sign(CRED, signing_key=key)
+    assert VcJwtProofSuite().verify(token, public_key_jwk=key.public_jwk()).issuer == ISSUER
+    wrapped: Any = MAPPING_LIKES[kind](key.public_jwk())
+    with pytest.raises(ProofError, match="requires a JWK object") as exc:
+        VcJwtProofSuite().verify(token, public_key_jwk=wrapped)
+    assert type(exc.value) is ProofError
 
 
 # -- the controls: what the new check must not touch ------------------------ #
