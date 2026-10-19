@@ -648,3 +648,10 @@ signature segment. Non-ASCII tokens are now refused before decoding, and any
 `TypeError`/`ValueError`/`RecursionError` from the decode maps to `ClaimsInvalid`. `cryptography` 49.0.0
 (2026-06-12, stricter X.509 parsing) confirmed compatible: full suite green, and CI
 resolves the newest `cryptography` on every run.
+
+The floor itself is exercised, not just declared (#340): next to the `pyld` 2.0.4 and
+`httpx` 0.27.0 floor legs, a CI leg on Python 3.10 installs `pyjwt==2.13.0` after the
+editable install, prints the resolved version and fails if it is not the pinned one;
+every other leg resolves the newest PyJWT. A change that works on the newest PyJWT and
+breaks on the floor therefore fails a named job, `test (py3.10, pyjwt 2.13.0)`, instead
+of passing every job and being found by whoever develops on an old venv.
