@@ -179,7 +179,10 @@ token = VcJwtProofSuite(allow_pq=True).sign(credential, signing_key=key)
 result = VcJwtProofSuite(allow_pq=True).verify(token, public_key_jwk=key.public_jwk())
 ```
 
-Opting in adds **only** the three ML-DSA names, never the classic weak algs. An HSM/Vault
+Opting in adds **only** the three ML-DSA names, never the classic weak algs. `allow_pq` is
+exactly `True` or `False` on both suites: any other value, a configuration string such as
+`"false"` included, is refused at construction (a `ProofError`; a `SdJwtError` on the
+SD-JWT VC suite) instead of being read as true. An HSM/Vault
 backend uses external-mu (`sign_mu`) so the message never reaches the device in the clear —
 the same private-key-never-in-process posture as the EC/Ed backends. Signatures are large
 (ML-DSA-65 ≈ 3.3 KB) — a caveat for SD-JWT VC and QR transport, not a blocker. Data

@@ -25,10 +25,10 @@ Security posture
   ``allow_es256k=True`` the single name ``ES256K`` (RFC 8812, ECDSA over secp256k1 with
   SHA-256), which EBSI Core API v1 uses for its RootTAO accreditations. ``ES256K`` is
   VERIFY-ONLY (this module never signs it) and never in :data:`ALLOWED_ALGS`; neither
-  opt-in implies the other. ``allow_es256k`` must be exactly ``True`` or ``False`` (a string
-  such as ``"false"`` from a configuration file is refused, not read as true), and an ES256K
-  JWK is held to RFC 8812 section 3.2: ``alg``, ``use`` and ``key_ops``, when present, must be
-  ``ES256K``, ``sig`` and an array including ``verify``.
+  opt-in implies the other. ``allow_pq`` and ``allow_es256k`` must each be exactly ``True``
+  or ``False`` (a string such as ``"false"`` from a configuration file is refused, not read
+  as true), and an ES256K JWK is held to RFC 8812 section 3.2: ``alg``, ``use`` and
+  ``key_ops``, when present, must be ``ES256K``, ``sig`` and an array including ``verify``.
 * The verification algorithm is taken from the token header ONLY after checking it
   against the allow-list, and is then pinned when calling the verifier.
 * peek_issuer never influences verification; it exists solely to select a key.
@@ -304,6 +304,9 @@ class VcJwtProofSuite:
         # A flag that widens the allow-list is exactly True or exactly False. `if flag:` would
         # read the strings "false" and "0" (a config or environment value) as True. type() is
         # used, never isinstance(): a __class__ property fools isinstance (see _plain_int).
+        # Both flags, in signature order, so the two refusals read alike.
+        if type(allow_pq) is not bool:
+            raise ProofError(f"allow_pq must be True or False, got {type(allow_pq).__name__}")
         if type(allow_es256k) is not bool:
             raise ProofError(
                 f"allow_es256k must be True or False, got {type(allow_es256k).__name__}")
@@ -590,6 +593,12 @@ class VcJwtProofSuite:
 
     @staticmethod
     def _jwk_to_key(jwk: dict[str, Any], alg: str) -> Any:
+        # Before any branch reads a member: a resolver or a caller that hands over a non-object
+        # (None, a list, a string, a number) must meet a typed ProofError, not the bare
+        # AttributeError of `.get`, which is no OpenvcError and so escapes verify_many.
+        # The message names the type and never echoes the value.
+        if not isinstance(jwk, dict):
+            raise ProofError(f"{alg} requires a JWK object, got {type(jwk).__name__}")
         if alg == "ES256K":                  # its own loader: width, canonical form, on-curve
             return _es256k_public_key(jwk)
         # openvc's OKP support is Ed25519-only: pin the curve BEFORE loading so

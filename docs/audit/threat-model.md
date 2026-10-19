@@ -107,8 +107,9 @@ boundary is attacker-controlled until a signature verifies.
   precedes key load (`:206`) and decode (`:208`); alg pinned to the resolved
   key's `(kty, crv)` (`:341-351`) blocking cross-curve/OKP confusion; envelope↔
   `vc` reconciliation (`:360-381`); temporal defence-in-depth on the body
-  (`:237`). ML-DSA (RFC 9964) is **opt-in only** (`allow_pq=True`, `:135`),
-  never in the default allow-list. ES256K (RFC 8812) is a second, independent opt-in
+  (`:237`). ML-DSA (RFC 9964) is **opt-in only** (`allow_pq=True`, `:135`; exactly `True` or
+  `False`, like `allow_es256k`: a string such as `"false"` is a `ProofError` at construction on
+  both JOSE suites, #341), never in the default allow-list. ES256K (RFC 8812) is a second, independent opt-in
   (`allow_es256k=True`, `ALLOWED_ALGS_ES256K`, verification only, invariant I23): the flag
   is exactly `True` or `False` (a string such as `"false"` is a `ProofError` at construction,
   not a truthy value), a key-type pin (`_es256k_public_key`) runs before PyJWT loads the key
@@ -359,7 +360,7 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 |---|---|---|---|
 | I1 | Alg allow-list `{ES256, ES384, EdDSA, Ed25519}` runs **before any crypto**; `alg:none`/RS\*/HS\* rejected; the value is type-checked first, so a JSON array/object `alg` is a typed `UnsupportedAlgorithm`, not a bare `TypeError`. The list is the default: `ES256K` and the ML-DSA names join a suite's set only through `allow_es256k=True` / `allow_pq=True` (I3, I23) | `proof/vc_jwt.py:65,243`; `proof/_jws.py:89` | `test_hostile_input.py`, `test_cose.py:94`, `test_typed_error_unhashable_header.py`, `test_typed_error_deep_headers.py` |
 | I2 | ES256/384 JOSE signature is raw R‖S (64/96 bytes), never DER; so is an opted-in ES256K signature (64 octets) | `keys.py:575-589`; `proof/vc_jwt.py` (PyJWT's `ECAlgorithm` for ES256K) | `test_vc_jwt.py`; `test_es256k_opt_in.py` (`SIGNATURES`, `test_a_signature_is_exactly_64_octets_of_r_then_s`) |
-| I3 | PQ (ML-DSA) never in the default allow-list — opt-in only | `proof/vc_jwt.py:135` | `test_mldsa.py` |
+| I3 | PQ (ML-DSA) never in the default allow-list — opt-in only, switched on by exactly `True` (any other value, a configuration string `"false"` included, is a `ProofError` at construction on `VcJwtProofSuite` and a `SdJwtError` on `SdJwtVcProofSuite`, never read as truthy; #341). A non-object JWK handed to `VcJwtProofSuite` is a `ProofError`, not a bare `AttributeError` that would escape `verify_many` | `proof/vc_jwt.py:135` (`VcJwtProofSuite.__init__`, `_jwk_to_key`); `proof/sd_jwt.py` (`SdJwtVcProofSuite.__init__`) | `test_mldsa.py`, `test_vcjwt_input_hygiene.py` |
 | I4 | DI `verificationMethod` bound to the credential `issuer` DID | `verify.py:628-641` | `test_di_*` |
 | I5 | VC-JWT, and a W3C SD-JWT (a payload that names a VCDM base context, whatever its issuer `typ`), reconcile the JWT envelope with the credential (`iss`/`sub`/`jti`); every identifier a present `issuer` carries must be `iss`; with no `iss` member and a W3C `typ` (or none), the body `issuer` stands in for it (#290) | `proof/vc_jwt.py:360-381`; `issuer_identifiers` (`proof/_verify_common.py`); `_vcdm_issuer` (`proof/sd_jwt.py`) | `test_vc_jwt.py`, `test_sd_jwt_vcdm_consistency.py`, `test_sd_jwt_issuer_fallback.py` |
 | I6 | x5c leaf SAN bound to `iss`; binding after path-validation; a `dNSName` binds only an unambiguous https `iss` | `x5c.py:56-70,151-154`; `_parse_https_issuer` (`jwt_vc_issuer.py`) | `test_x5c*`, `test_sd_jwt.py:425`, `test_https_issuer_identifier.py` |
