@@ -936,6 +936,79 @@ Each is one value or table away from the other option. None changes anything tha
   `rp_registration._str_tuple` and `allow_string` in `status._index.status_index`, which every
   call site sets with a literal and which guard no algorithm family or trust decision: they are
   left alone (`allow_nan=False` in `_context_validation` is a `json.dumps` argument).
+- **The TIR adapters check the JSON type of every scalar they copy into the model, and
+  `hasAttributes` must be a JSON boolean**
+  ([#337](https://github.com/luisgf/openvc/issues/337); found by the review of #332).
+  Hardening; no wrong-accept was found against a node that follows its published schema.
+  The adapters in `openvc_ebsi.versioning` copied registry members into `Accreditation` and
+  `IssuerRecord` as sent. Measured on `cf6d100` (CPython 3.14.8) through
+  `DidEbsiResolver.issuer_record`: `"hasAttributes": "false"` (and `"0"`, `"true"`, `1`) read
+  as `has_attributes=True`, so the walk went on to fetch the listing and every revision,
+  while `""`, `0`, `[]`, `{}` and `null` read as `False`; an `issuerType`, `tao`, `rootTao`
+  or `hash` that was an object, an array, a number, a boolean or `null` was stored in the
+  record as sent, on v4, v5 and Core v1 (a `hash` only where it was the value copied: always
+  on v4, and on v5 and Core v1 only when the listing item had no usable `id`); a listing
+  item `id` that was an object, an array, a
+  number or `true` was stored as sent, while `0`, `false`, `[]`, `{}` and `null` fell through
+  to the attribute's `hash`; and a v4 attribute `body` that was not a string reached the
+  proof suite's `decode` and raised a bare `AttributeError` (v5 and Core v1 had typed it in
+  #321). The consumers are few: the trust walk compares `tao` with the token's `iss` and
+  fails with `AccreditationInvalid`, nothing in the library reads `rootTao` or `attribute_id`, and
+  `is_revoked` is `issuer_type == "revoked"`, which is false for any value that is not that
+  string, so an `issuerType` of the wrong type read as "not revoked".
+
+  Each field is now checked against the type the model declares, and a wrong one is
+  `MalformedRegistryResponse` (`TIR attribute tao is not a string: 7`; the value goes through
+  `safe_repr`, so an attacker-sized one is bounded):
+
+  | member | where | accepted | absent | `null` |
+  | --- | --- | --- | --- | --- |
+  | `hasAttributes` | v5, Core v1 issuer response | `true`, `false` only | `false` | raises |
+  | `id` | v5, Core v1 listing item | string | `""` | raises |
+  | `issuerType` | v4 attribute; v5, Core v1 `attribute` | string | `""` | raises |
+  | `hash` | v4 attribute, always; v5, Core v1 `attribute`, only when the listing item's `id` is absent or empty | string | `""` | raises |
+  | `tao`, `rootTao`, `body` | v4 attribute; v5, Core v1 `attribute` | string | `None` | `None` |
+
+  `hasAttributes` is tested with `isinstance(value, bool)`, not by truth, so `"false"`, `0`
+  and `[]` are wrong values and not falsy ones; a non-boolean raises after the one request
+  for the issuer response, before the listing is fetched. A listing item's `id` is typed
+  before it can fall back to the attribute's `hash`, so `0`, `false`, `[]` and `null` no
+  longer fall through; on v5 and Core v1 the `hash` is read only when the `id` is absent or
+  empty, which is the only case in which it is copied (a `hash` of any type next to a usable
+  `id` parses, and the `id` is the attribute id; on v4, which has no listing, it is always the
+  attribute id and always typed). Every scalar of an entry is typed before the proof suite's
+  `decode` is handed its token, and one bad entry rejects the whole record, as a revision with
+  no `attribute` object already did (a partial record would be a trust decision made on part
+  of the registry's answer). The `body` message of v5 and Core v1 keeps its text and gains
+  the value (`TIR attribute body is not a string: 7`).
+
+  Who is affected: a node that sends what its schema says is not, and there is nothing to
+  migrate. A differential over the four recorded walks (the pilot's v5 response, the two
+  preprod Core v1 nodes and the production seed) gives the same `IssuerRecord`, as canonical
+  JSON, on `cf6d100` and on this change (the script was a one-off and is not kept), and every
+  existing EBSI test passes unchanged. What changes is a registry or a hand-written `Fetch`
+  that sent a member with the wrong JSON type: `hasAttributes` as a number or a string, a
+  number as the `hash` that is copied (see the table), `null` as `issuerType`. It used to be carried through (or, for
+  `hasAttributes`, read by truth) and is now `MalformedRegistryResponse`; send the type the
+  real registry sends (`true`, a string). There is no recorded TIR v4 response in this
+  repository, so the v4 cases are synthetic, around a recorded accreditation token.
+
+  SemVer: a wire value that used to be carried through now raises, so the entry is recorded
+  as a change and not only as a fix; it rides in the unreleased 1.37.0 (a minor), so it needs
+  no bump of its own. Alone it would be a patch: it narrows what the adapters accept to what
+  the model already declared, and no shipped path turned the old behaviour into an accept.
+
+  Defaults taken, for the maintainer to confirm: (1) `null` is wrong for the `str` and `bool`
+  members and is `None` for the `str | None` ones, following the model; reading `null` as
+  absent instead would carry `""` / `False` through for the first group. (2) An absent
+  `hasAttributes` stays `false`, as before; making it a required member would turn a response
+  without it into `MalformedRegistryResponse`. (3) A `hash` that is not copied is not read
+  (v5 and Core v1 next to a usable `id`; on v4 it is always copied, so always typed); typing
+  it always would reject a record for a member nothing uses. (4) One bad entry rejects
+  the record; skipping it would hide an accreditation without saying so. (5) Not covered, and
+  left as it was: a v4 `attributes` member that is not an array, or an entry of it that is not
+  an object, is a bare `TypeError` / `AttributeError` (measured on `cf6d100`; v4 only, since
+  the shared walk skips non-object items). It is a shape check and not a scalar.
 
 ### Fixed
 
