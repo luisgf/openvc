@@ -91,3 +91,16 @@ class NodeListStale(NodeListError):
 
 class NodeListEnvironmentMissing(NodeListError):
     """The verified list holds no node for the requested environment."""
+
+
+class NodeClientConfigError(EbsiError, ValueError):
+    """A node-bound client cannot be built or used as asked: a result that is not the
+    verifier's (or whose nodes are not bare origins of its environment), an injected clock that
+    does not return a ``datetime``, a selection policy whose output names a node that is not
+    in the result, a ``valid_until`` / ``clock`` pair with only one half, or an argument of
+    :func:`openvc_ebsi.node_client.for_nodes` that is out of range.
+
+    It is also a :class:`ValueError`, like :class:`UnknownEbsiEnvironment`: this is
+    construction-time misuse (or an injected callable misbehaving), never wire input, and
+    ``except ValueError`` keeps working. Code that compares the exact class must compare this
+    one. It is raised before any socket is opened and before any ``httpx.Client`` exists."""

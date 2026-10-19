@@ -60,7 +60,7 @@ from openvc_ebsi.errors import (
 __all__ = [
     "Accepted", "Anchor", "DEFAULT_MIN_THRESHOLD", "EUROPEUM_KEY_LIST_ANCHOR",
     "KEYS_VERSION_FLOOR", "LIST_VERSION_FLOOR", "Node", "VerifiedNodeList",
-    "verify_node_list",
+    "check_node_origin", "verify_node_list",
 ]
 
 # ---- shipped constants (raised at each release; see the wiki) -----------------------------
@@ -297,17 +297,39 @@ def _check_host(host: str, what: str) -> None:
         raise NodeListMalformed(f"{what}: {safe_repr(host)} is not a DNS name")
 
 
+def check_node_origin(url: Any, environment: str, what: str = "url") -> str:
+    """*url* if it is a node origin the list's rules allow for *environment*, else
+    :class:`~openvc_ebsi.errors.NodeListMalformed` naming *what*.
+
+    The publisher's rule, in one place: a bare ``https://`` origin (no path, port, query,
+    fragment or credentials; lower-case ASCII letters, digits, ``.`` and ``-`` only) whose
+    host is a DNS name and which starts with the environment's prefix
+    (``https://api-pilot.ebsi.``, ``https://api-preprod.ebsi.``, ``https://api.ebsi.``).
+    :func:`verify_node_list` applies it to every node it returns; a client built from a
+    :class:`VerifiedNodeList` (which a caller can also build by hand) applies the same function
+    again before it turns the nodes into an allow-list, so the two cannot disagree. It does
+    not check for duplicates: that is a property of a whole list.
+
+    Raises :class:`~openvc_ebsi.errors.NodeListConfigError` for an *environment* that is not
+    one of ``pilot``, ``preprod`` and ``prod``."""
+    if type(environment) is not str or environment not in _PREFIX:
+        raise NodeListConfigError(
+            f"environment must be one of pilot, preprod, prod, not {safe_repr(environment)}")
+    if type(url) is not str or _URL.fullmatch(url) is None:
+        raise NodeListMalformed(f"{what} is not a bare https origin: {safe_repr(url)}")
+    if not url.startswith(_PREFIX[environment]):
+        raise NodeListMalformed(f"{what} does not start with {_PREFIX[environment]}")
+    _check_host(url[len("https://"):], what)
+    return url
+
+
 def _node(entry: Any, environment: str, seen: set[str], what: str) -> Node:
     if type(entry) is not dict:
         raise NodeListMalformed(f"{what} must be a JSON object")
     _members(entry, frozenset({"url", "country", "organisation"}), what)
     url, country, organisation = entry["url"], entry["country"], entry["organisation"]
-    if type(url) is not str or _URL.fullmatch(url) is None:
-        raise NodeListMalformed(f"{what}.url is not a bare https origin: {safe_repr(url)}")
-    if not url.startswith(_PREFIX[environment]):
-        raise NodeListMalformed(f"{what}.url does not start with {_PREFIX[environment]}")
+    check_node_origin(url, environment, f"{what}.url")
     host = url[len("https://"):]
-    _check_host(host, f"{what}.url")
     if url in seen:
         raise NodeListMalformed(f"{what}.url is listed twice: {safe_repr(url)}")
     seen.add(url)

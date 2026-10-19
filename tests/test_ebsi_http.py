@@ -17,13 +17,20 @@ import pytest
 
 httpx = pytest.importorskip("httpx")
 
-from openvc_ebsi.errors import MalformedRegistryResponse  # noqa: E402
+import openvc_ebsi.http as ebsi_http  # noqa: E402
+from openvc.errors import OpenvcError  # noqa: E402
+from openvc_ebsi.errors import (  # noqa: E402
+    MalformedRegistryResponse,
+    NodeClientConfigError,
+    NodeListExpired,
+)
 from openvc_ebsi.http import (  # noqa: E402
     EbsiHttpClient,
     HttpError,
     HttpForbiddenHost,
     HttpNotFound,
     HttpTransientExhausted,
+    ProbeResponse,
     RetryPolicy,
     _parse_retry_after,
 )
@@ -364,3 +371,341 @@ def test_parity_corrupt_compressed_200_is_typed_and_not_retried(method, encoding
     assert type(exc_info.value) is MalformedRegistryResponse
     assert exc_info.value.__cause__ is not None
     assert calls["n"] == 1
+
+
+# --- the lifetime gate: valid_until + clock (#324, ADR-0009 D5) ----------------------- #
+# A client built from a verified node list stops at the list's `expires`: `get_json`,
+# `get_bytes` and `probe` raise NodeListExpired BEFORE the host guard, the cache and any socket,
+# and again before every retry (a backoff sleep can cross the instant). The wall clock is
+# injected; the cache keeps its own monotonic one. Without the pair nothing changes (every
+# test above is that control).
+
+UNTIL = datetime(2027, 1, 4, 13, 33, 18, tzinfo=timezone.utc)
+TICK = timedelta(microseconds=1)
+GATED = ["get_json", "get_bytes", "probe"]
+
+
+class WallClock:
+    def __init__(self, now):
+        self.now = now
+        self.reads = 0
+
+    def __call__(self):
+        self.reads += 1
+        return self.now
+
+
+class SleepyTime:
+    """Stands in for the ``time`` module of openvc_ebsi.http: a sleep advances the wall clock."""
+
+    def __init__(self, wall):
+        self.now = 1000.0
+        self.sleeps = []
+        self.wall = wall
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+        self.wall.now += timedelta(seconds=seconds)
+
+
+def _gated(handler, wall, **kwargs):
+    return _client(handler, valid_until=UNTIL, clock=wall, **kwargs)
+
+
+def _call(client, method, url=URL):
+    return getattr(client, method)(url)
+
+
+def _exact(cls, fn, *args):
+    with pytest.raises(OpenvcError) as info:
+        fn(*args)
+    assert type(info.value) is cls, f"expected {cls.__name__}, got {type(info.value).__name__}"
+    return info.value
+
+
+@pytest.mark.parametrize("kwargs", [
+    pytest.param({"valid_until": UNTIL}, id="only-valid_until"),
+    pytest.param({"clock": lambda: UNTIL}, id="only-clock"),
+])
+def test_valid_until_and_clock_go_together(kwargs):
+    exc = _exact(NodeClientConfigError, lambda: EbsiHttpClient(allowed_hosts={HOST}, **kwargs))
+    assert isinstance(exc, ValueError)
+
+
+@pytest.mark.parametrize("valid_until", [
+    "2027-01-04T13:33:18Z", 1798680000, 1798680000.0, UNTIL.date(), object(), [UNTIL]])
+def test_valid_until_must_be_a_datetime(valid_until):
+    _exact(NodeClientConfigError, lambda: EbsiHttpClient(
+        allowed_hosts={HOST}, valid_until=valid_until, clock=lambda: UNTIL))
+
+
+@pytest.mark.parametrize("clock", ["now", 5, UNTIL, [UNTIL]])
+def test_the_clock_must_be_callable(clock):
+    _exact(NodeClientConfigError, lambda: EbsiHttpClient(
+        allowed_hosts={HOST}, valid_until=UNTIL, clock=clock))
+
+
+@pytest.mark.parametrize("method", GATED)
+@pytest.mark.parametrize("moment", [
+    pytest.param(UNTIL, id="at-valid_until"),
+    pytest.param(UNTIL + TICK, id="one-microsecond-after"),
+    pytest.param(UNTIL + timedelta(days=4000), id="far-past"),
+])
+def test_at_or_after_valid_until_every_reader_raises_with_zero_requests(method, moment):
+    handler, calls = _play(_ok)
+    c = _gated(handler, WallClock(moment), retry=FAST_RETRY)
+    exc = _exact(NodeListExpired, _call, c, method)
+    assert UNTIL.isoformat() in str(exc)
+    assert calls["n"] == 0
+
+
+@pytest.mark.parametrize("method", GATED)
+def test_one_microsecond_before_valid_until_the_reader_works(method):
+    handler, calls = _play(_ok)
+    c = _gated(handler, WallClock(UNTIL - TICK), retry=FAST_RETRY)
+    _call(c, method)
+    assert calls["n"] == 1
+
+
+@pytest.mark.parametrize("method", GATED)
+def test_the_gate_comes_before_the_host_guard(method):
+    # an expired client names expiry, not the host: nothing about the URL is looked at first
+    handler, calls = _play(_ok)
+    c = _gated(handler, WallClock(UNTIL), retry=FAST_RETRY)
+    _exact(NodeListExpired, _call, c, method, "https://api.ebsi.iti.gr/x")
+    _exact(NodeListExpired, _call, c, method, "not a url")
+    assert calls["n"] == 0
+
+
+def test_a_cached_success_is_not_served_past_valid_until():
+    handler, calls = _play(_ok)
+    wall = WallClock(UNTIL - timedelta(seconds=5))
+    c = _gated(handler, wall, retry=FAST_RETRY)
+    assert c.get_json(URL) == {"ok": 1}
+    assert c.get_json(URL) == {"ok": 1} and calls["n"] == 1        # served from the cache
+    wall.now = UNTIL
+    _exact(NodeListExpired, c.get_json, URL)
+    assert calls["n"] == 1
+
+
+@pytest.mark.parametrize("method", ["get_json", "get_bytes"])
+def test_a_backoff_sleep_that_crosses_valid_until_stops_the_next_attempt(monkeypatch, method):
+    wall = WallClock(UNTIL - timedelta(seconds=1))
+    monkeypatch.setattr(ebsi_http, "time", SleepyTime(wall))
+    handler, calls = _play(lambda r: _resp(503))
+    c = _gated(handler, wall, retry=RetryPolicy(attempts=3, backoff_base_s=4.0,
+                                                backoff_max_s=4.0))
+    _exact(NodeListExpired, _call, c, method)
+    assert calls["n"] == 1                       # the first attempt only; the second never left
+
+
+def test_a_transport_failure_retry_that_crosses_valid_until_stops_too(monkeypatch):
+    wall = WallClock(UNTIL - timedelta(seconds=1))
+    monkeypatch.setattr(ebsi_http, "time", SleepyTime(wall))
+    handler, calls = _play(httpx.ConnectError("refused"))
+    c = _gated(handler, wall, retry=RetryPolicy(attempts=3, backoff_base_s=4.0,
+                                                backoff_max_s=4.0))
+    _exact(NodeListExpired, c.get_json, URL)
+    assert calls["n"] == 1
+
+
+def test_the_gate_reads_the_clock_for_every_attempt_not_once():
+    wall = WallClock(UNTIL - timedelta(days=1))
+    handler, calls = _play(lambda r: _resp(503))
+    c = _gated(handler, wall, retry=FAST_RETRY)
+    _exact(HttpTransientExhausted, c.get_json, URL)
+    assert calls["n"] == 3 and wall.reads >= 3
+
+
+class Boom(Exception):
+    pass
+
+
+BAD_CLOCKS = [
+    pytest.param(lambda: None, id="None"),
+    pytest.param(lambda: 1798680000, id="int"),
+    pytest.param(lambda: 1798680000.5, id="float"),
+    pytest.param(lambda: "2026-10-16T12:00:00Z", id="string"),
+    pytest.param(lambda: UNTIL.date(), id="date"),
+    pytest.param(lambda: (_ for _ in ()).throw(RuntimeError("boom")), id="raises"),
+    pytest.param(lambda: (_ for _ in ()).throw(Boom()), id="raises-custom"),
+]
+
+
+@pytest.mark.parametrize("method", GATED)
+@pytest.mark.parametrize("clock", BAD_CLOCKS)
+def test_a_clock_that_returns_no_datetime_is_a_config_error_never_now(method, clock):
+    handler, calls = _play(_ok)
+    c = _client(handler, valid_until=UNTIL, clock=clock, retry=FAST_RETRY)
+    _exact(NodeClientConfigError, _call, c, method)
+    assert calls["n"] == 0
+
+
+def test_a_naive_clock_is_read_as_utc():
+    handler, calls = _play(_ok)
+    wall = WallClock((UNTIL - TICK).replace(tzinfo=None))
+    c = _gated(handler, wall, retry=FAST_RETRY)
+    assert c.get_json(URL) == {"ok": 1}
+    wall.now = UNTIL.replace(tzinfo=None)
+    _exact(NodeListExpired, c.get_json, "https://api-pilot.ebsi.eu/y")
+    assert calls["n"] == 1
+
+
+def test_a_naive_valid_until_is_read_as_utc():
+    handler, _ = _play(_ok)
+    c = _client(handler, valid_until=UNTIL.replace(tzinfo=None), clock=WallClock(UNTIL),
+                retry=FAST_RETRY)
+    assert c.valid_until == UNTIL and c.valid_until.tzinfo is timezone.utc
+    _exact(NodeListExpired, c.get_json, URL)
+
+
+def test_a_clock_in_another_zone_is_compared_as_the_instant_it_is():
+    tz = timezone(timedelta(hours=5))
+    handler, _ = _play(_ok)
+    inside = (UNTIL - TICK).astimezone(tz)
+    c = _client(handler, valid_until=UNTIL, clock=lambda: inside, retry=FAST_RETRY)
+    assert c.get_json(URL) == {"ok": 1}
+    at = _client(handler, valid_until=UNTIL, clock=lambda: UNTIL.astimezone(tz),
+                 retry=FAST_RETRY)
+    _exact(NodeListExpired, at.get_json, URL)
+
+
+class LyingInstant(datetime):
+    """A datetime whose own methods lie: only its fields and ``tzinfo`` are true (#286)."""
+
+    def utcoffset(self):
+        return timedelta(hours=-12)
+
+    def astimezone(self, tz=None):
+        return datetime(1999, 1, 1, tzinfo=timezone.utc)
+
+    def __ge__(self, other):
+        return False
+
+    def __lt__(self, other):
+        return True
+
+
+@pytest.mark.parametrize("delta,expired", [(-TICK, False), (timedelta(0), True)])
+def test_a_datetime_subclass_cannot_change_the_reading(delta, expired):
+    moment = UNTIL + delta
+    lying = LyingInstant(moment.year, moment.month, moment.day, moment.hour, moment.minute,
+                         moment.second, moment.microsecond, tzinfo=timezone.utc)
+    handler, calls = _play(_ok)
+    c = _gated(handler, WallClock(lying), retry=FAST_RETRY)
+    if expired:
+        _exact(NodeListExpired, c.get_json, URL)
+        assert calls["n"] == 0
+    else:
+        assert c.get_json(URL) == {"ok": 1}
+
+
+def test_without_the_pair_the_client_is_unbounded_and_reads_no_clock():
+    handler, calls = _play(_ok)
+    c = _client(handler, retry=FAST_RETRY)
+    assert c.valid_until is None
+    for method in GATED:
+        _call(c, method)
+    assert calls["n"] == 3
+
+
+# --- probe: one attempt, every status returned, never cached (#324) ------------------- #
+
+def test_probe_returns_the_status_and_the_body_of_a_200():
+    handler, calls = _play(lambda r: _resp(200, b'{"health_global":1}'))
+    c = _client(handler, retry=FAST_RETRY)
+    assert c.probe(URL) == ProbeResponse(200, b'{"health_global":1}')
+    assert calls["n"] == 1
+
+
+@pytest.mark.parametrize("status", [201, 204, 301, 302, 304, 400, 403, 404, 429, 500, 503])
+def test_probe_returns_every_other_status_without_its_body_and_without_a_retry(
+        monkeypatch, status):
+    slept = SleepyTime(WallClock(UNTIL))
+    monkeypatch.setattr(ebsi_http, "time", slept)
+    handler, calls = _play(lambda r: _resp(status, b"SECRET-BODY", {"Location": "/elsewhere"}))
+    c = _client(handler, retry=RetryPolicy(attempts=5, backoff_base_s=1.0, backoff_max_s=1.0))
+    assert c.probe(URL) == ProbeResponse(status, b"")
+    assert calls["n"] == 1 and slept.sleeps == []
+
+
+@pytest.mark.parametrize("exc", [
+    httpx.ConnectError("refused"), httpx.ConnectTimeout("t"), httpx.ReadTimeout("t")])
+def test_probe_does_not_retry_a_transport_failure_and_does_not_sleep(monkeypatch, exc):
+    slept = SleepyTime(WallClock(UNTIL))
+    monkeypatch.setattr(ebsi_http, "time", slept)
+    handler, calls = _play(exc)
+    c = _client(handler, retry=RetryPolicy(attempts=5, backoff_base_s=1.0, backoff_max_s=1.0))
+    err = _exact(HttpTransientExhausted, c.probe, URL)
+    assert err.status is None
+    assert calls["n"] == 1 and slept.sleeps == []
+    assert str(err).startswith("gave up after 1 attempts")
+
+
+def test_probe_is_not_read_from_nor_written_to_the_cache():
+    handler, calls = _play(lambda r: _resp(200, b'{"health_global":1}'))
+    c = _client(handler, retry=FAST_RETRY)
+    c._cache.set(URL, {"poison": True})
+    assert c.probe(URL).body == b'{"health_global":1}'
+    assert c._cache.get(URL) == {"poison": True}                 # untouched
+    c._cache.clear()
+    c.probe(URL)
+    assert len(c._cache) == 0 and calls["n"] == 2
+
+
+def test_probe_applies_the_host_guard_and_the_cap():
+    handler, calls = _play(lambda r: _resp(200, b"x" * 5000))
+    c = _client(handler, retry=FAST_RETRY, max_response_bytes=1024)
+    _exact(HttpForbiddenHost, c.probe, "https://api.ebsi.iti.gr/x")
+    assert calls["n"] == 0
+    err = _exact(HttpError, c.probe, URL)                        # body past the client cap
+    assert err.status == 200
+
+
+def test_probe_never_follows_a_redirect():
+    handler, calls = _play(lambda r: _resp(302, b"", {"Location": "https://attacker.example/"}),
+                           lambda r: _resp(200, b'{"health_global":1}'))
+    c = _client(handler, retry=FAST_RETRY)
+    assert c.probe(URL) == ProbeResponse(302, b"")
+    assert calls["n"] == 1
+
+
+def test_probe_max_bytes_can_only_lower_the_clients_cap():
+    handler, _ = _play(lambda r: _resp(200, b"x" * 200))
+    c = _client(handler, retry=FAST_RETRY, max_response_bytes=1024)
+    assert len(c.probe(URL).body) == 200
+    err = _exact(HttpError, lambda: c.probe(URL, max_bytes=100))
+    assert err.status == 200
+    c2 = _client(handler, retry=FAST_RETRY, max_response_bytes=100)
+    _exact(HttpError, lambda: c2.probe(URL, max_bytes=10**9))     # cannot raise the client's cap
+    for bad in (-1, True, 1.5, "10", None):
+        _exact(HttpError, lambda bad=bad: c.probe(URL, max_bytes=bad))
+
+
+# --- HttpTransientExhausted.status (#324) ---------------------------------------------- #
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_exhausted_retries_carry_the_last_status(status):
+    handler, calls = _play(lambda r: _resp(status))
+    c = _client(handler, retry=FAST_RETRY)
+    err = _exact(HttpTransientExhausted, c.get_json, URL)
+    assert err.status == status and calls["n"] == 3
+
+
+@pytest.mark.parametrize("method", READERS)
+def test_exhausted_retries_after_transport_errors_carry_no_status(method):
+    handler, _ = _play(httpx.ConnectError("refused"))
+    c = _client(handler, retry=FAST_RETRY)
+    err = _exact(HttpTransientExhausted, getattr(c, method), URL)
+    assert err.status is None
+
+
+def test_the_status_is_the_last_attempts_not_the_first():
+    handler, _ = _play(lambda r: _resp(503), httpx.ConnectError("refused"),
+                       lambda r: _resp(429))
+    c = _client(handler, retry=FAST_RETRY)
+    assert _exact(HttpTransientExhausted, c.get_json, URL).status == 429

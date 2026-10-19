@@ -295,6 +295,48 @@ Example-based, but broad. Representative anchors:
   5xx, and the ceiling bounds a transport-error backoff too; a response a test double has
   already read into memory is served, a `gzip` or `deflate` one too, under the same cap
   (`test_ebsi_get_json_bounds.py`).
+- **EBSI node client (plugin)** — `for_nodes` over a verified Trusted Nodes List (#324, v1.37.0).
+  A result is re-validated before it becomes an allow-list (empty or list-typed nodes, a path,
+  port, userinfo, query, fragment, trailing slash or newline, `http://`, upper case, a non-ASCII
+  host, a bad label, another environment's prefix, a host that is not its origin's, a
+  duplicate, an expiry that is `None`, a string or an int, a dict or a namespace standing in for
+  the result): `NodeClientConfigError` with no `httpx.Client` built. At and after `expires`
+  (and a microsecond after, and ten years after) `run`, `session`, `check_health`,
+  `session.get_json`, `get_json`, `get_bytes` and `probe` raise `NodeListExpired` with zero
+  requests, a cached success is not served, a backoff sleep that crosses the instant stops the
+  next attempt, `run` raises it rather than `NoHealthyNode` and tries no second node (even when a
+  fresh healthy verdict means no probe is due), a session refuses an off-node URL with
+  `NodeListExpired` rather than the pin's refusal, and a walk that swallows it, or a
+  configuration error, still gets it; a clock returning `None`, an `int`, a string, a date, or raising
+  is `NodeClientConfigError`, a naive clock is UTC and a `datetime` subclass that lies about
+  `utcoffset` / `astimezone` / `>=` cannot move the reading
+  (`test_ebsi_node_client.py`, `test_ebsi_http.py`). A policy's output is untrusted (a
+  non-member, a case or slash variant, a duplicate, empty, `None`, an `int`, a `str` subclass, a
+  never-ending iterator or cycle, a stray name after every member, a raising policy:
+  `NodeClientConfigError` before any request; a Hypothesis property over lists of members,
+  variants, text, integers and `None`). Every other argument of `for_nodes` out of range (a
+  duration that is not above 0 or is `nan`, `inf` or `10**400`, a `RetryPolicy` with no attempt or
+  a negative backoff, `max_response_bytes` below 1, a `User-Agent` with a CR LF, a `cache`
+  without `get` and `set`, an `address_guard` that is not one, a `health_clock` that is not a
+  clock or goes bad later) is `NodeClientConfigError` with no `httpx.Client` built. `check_health`
+  is healthy for the two recorded production answers (`tests/fixtures/ebsi/alive/`, 19 bytes
+  each) and unhealthy, in exactly one request and with no sleep, for 31 other answers (the
+  `true`, `1.0`, `"1"` and `2` spellings of the value, a missing key, arrays, non-JSON, a
+  body past the cap, 503/429/500/403/404/204/206/301/304, three transport errors), with the cache
+  untouched; a Hypothesis property over arbitrary bytes and statuses gives a `bool` or an
+  `EbsiError`. Every failover row (transport errors, 429, 5xx, an unretried 501/507, a 403 with an
+  HTML or a `problem+json` body, 301/302/303/307/308, a body past the cap, a read past the
+  deadline) reruns the walk on the next node and, when every node fails, gives one
+  `NodeFailure` per node with no body, header, `Location` or exception text in the error, the
+  failures or the log; the answers (404, 400/401/405/406/410/418, 204, malformed 200) and the
+  content errors propagate with the second node never contacted. A real three-hop signed walk
+  loses its node at each of its nine reads in turn and the attempt that succeeds is the next
+  node's alone, from hop 1; a session refuses another node of the set, its own port in other
+  spellings, a scheme change and userinfo before any socket, including through an adapter with
+  no origin pin. The recorded preprod RootTAO is refused through `run` without
+  `VcJwtProofSuite(allow_es256k=True)` (no failover) and verifies with it; the real list
+  fixture goes through `verify_node_list`, `for_nodes`, `check_health` and `run`. Eight threads
+  against a flaky node raise only documented errors. Mutation check in the PR for #324.
 - **OpenID4VP `vp_token` (W3C lanes)** — a victim's credential re-wrapped in another
   holder's correctly bound `jwt_vc_json` / `ldp_vc` VP, including a KB-stripped
   SD-JWT VC, enveloped or over the DC API; a nested SD-JWT VC whose KB-JWT names

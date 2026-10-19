@@ -416,6 +416,28 @@ with EbsiHttpClient(allowed_hosts=set(result.hosts)) as http:   # lower-case hos
     ...
 ```
 
+A client built that way has no lifetime of its own: it keeps trusting that node set after the
+list's `expires`. `openvc_ebsi.node_client.for_nodes` builds the client from the result instead,
+binds it to `result.expires` with a clock you inject (a read at or after it is
+`NodeListExpired`, before any socket), checks `GET /v1/alive`, and runs a registry walk on **one**
+node from start to end, restarting it on the next node when that one fails (a 404 is one node's
+answer, not a reason to move on). Rebuild it before `expires`: there is no grace and no refresh.
+[EBSI node trust](EBSI-Node-Trust#keep-using-the-nodes-for_nodes) has the rules and the failure
+table.
+
+<!-- docs: no-run -->
+```python
+from openvc.proof.vc_jwt import VcJwtProofSuite
+from openvc_ebsi.node_client import for_nodes
+from openvc_ebsi.verify import verify_ebsi_badge
+
+suite = VcJwtProofSuite(allow_es256k=True)       # a Core v1 root is signed ES256K
+with for_nodes(result, clock=lambda: datetime.now(timezone.utc),
+               decode_jwt=suite.peek_claims) as nodes:      # `result` from verify_node_list above
+    badge = nodes.run(lambda session: verify_ebsi_badge(
+        token, resolver=session.resolver, proof_suite=suite, trust_anchors={ROOT_TAO}))
+```
+
 The chain, in the order it is checked (a stage never reads bytes the previous one did not
 authenticate):
 

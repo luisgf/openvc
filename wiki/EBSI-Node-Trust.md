@@ -220,7 +220,8 @@ from a list you have **already verified**, with these rules:
   The publisher's rules forbid a port or credentials in a node URL, so a list that contains one
   fails the checklist above; refuse it rather than strip it.
 - **Rebuild before the list's `expires`.** A client built by hand has no expiry bound and the
-  library offers no grace past it; re-verifying is entirely your job.
+  library offers no grace past it; re-verifying is entirely your job. (`for_nodes`, in the next
+  section, binds the client to `expires` for you.)
 - **Pass `DidEbsiResolver(..., base=…, didr=DidRegistryCoreV1(), tir=TirCoreV1())` per node.** The
   default base is `api-pilot.ebsi.eu`, the legacy lane, with the v5 adapters.
 
@@ -333,6 +334,115 @@ with EbsiHttpClient(allowed_hosts=set(hosts)) as http:
 assert hosts == {"api.ebsi.node-a.example", "api.ebsi.node-b.example"}
 ```
 
+## Keep using the nodes: `for_nodes`
+
+The previous section builds an allow-list by hand. `openvc_ebsi.node_client.for_nodes`
+([#324](https://github.com/luisgf/openvc/issues/324)) does that work from the result of
+`verify_node_list` and adds what a service that keeps its client needs. It needs the `ebsi`
+extra (`httpx`); the verifier does not. Build the result as in
+[Trust anchors](Trust#which-node-verifying-the-trusted-nodes-list):
+
+<!-- docs: no-run -->
+```python
+from datetime import datetime, timezone
+
+from openvc.proof.vc_jwt import VcJwtProofSuite
+from openvc_ebsi.errors import NodeListExpired
+from openvc_ebsi.node_client import NoHealthyNode, for_nodes
+from openvc_ebsi.verify import verify_ebsi_badge
+
+suite = VcJwtProofSuite(allow_es256k=True)        # a Core v1 root is signed ES256K
+
+
+def clock() -> datetime:                          # the wall clock that decides the list's validity
+    return datetime.now(timezone.utc)
+
+
+# result = verify_node_list(..., environment="preprod", now=clock(), ...)   (see Trust anchors)
+with for_nodes(result, clock=clock, decode_jwt=suite.peek_claims) as nodes:
+    try:
+        # the walk runs on ONE node from start to end; if that node fails it runs again, from
+        # its first read, on the next one
+        badge = nodes.run(lambda session: verify_ebsi_badge(
+            token, resolver=session.resolver, proof_suite=suite, trust_anchors={ROOT_TAO}))
+    except NodeListExpired:
+        ...    # verify a newer list and build a new client: there is no grace and no refresh
+    except NoHealthyNode as exc:
+        ...    # exc.failures: one NodeFailure(origin, kind, status) per node examined
+```
+
+- **The allow-list is exactly the result's hosts**, for the result's one environment. There is no
+  `extra_hosts`, no `allowed_hosts` (a `TypeError`), no way to merge two results, and
+  `verify_tls` is not exposed. The result is re-validated first (a result can be built by hand):
+  a non-empty tuple of bare ASCII `https://host` origins of its environment, none twice, with the
+  verifier's own origin rule, else `NodeClientConfigError`. The client then admits `https` at
+  port 443 of those hosts only.
+- **The list's lifetime travels with the client.** The client carries the result's `expires` and
+  the `clock` you inject, and at or after that instant every read raises `NodeListExpired`
+  before the cache is consulted and before a socket is opened; the check runs again before every
+  retry. **Rebuild the client before `expires`**: the library offers no grace and no refresh. A
+  request already on the wire is not interrupted. A `clock` that raises, or returns anything
+  but a `datetime`, is `NodeClientConfigError`, never "now".
+- **Single-node walks.** `run(walk)` calls `walk(session)`; `session.resolver` is a fresh
+  `DidEbsiResolver` on that node whose only fetch refuses (`HttpForbiddenHost`, before any
+  socket) a URL that is not on the session's node, whatever an adapter does with a link in a
+  body. `self` and `links` carry the answering node's own host, and a node is not known to agree
+  with another, so a walk never mixes nodes. **A walk must be re-runnable**, because it is run
+  again on the next node: the library's walks are (EBSI is read-only); a walk with effects of its
+  own is run again too. A walk that caught a node failure and returned a value is discarded
+  anyway.
+- **What fails over, and what does not.** A transport error or timeout, a 429 or 5xx once the
+  retries are used up, a 403 (a node's firewall may refuse a client on its User-Agent), a 3xx
+  (redirects are never followed), a body past the size cap or the deadline, and a failed health
+  check go on to the next node. Nothing of a failing node's answer, a 403's body included, reaches
+  a `NodeFailure`, a `NoHealthyNode` or the log line (one `WARNING` per failover: origin, kind and
+  status). The shared client still reads up to 16 KiB of an error answer to put a Problem Details
+  `type` on `HttpError.problem_type`, an opaque string: `run` does not surface it for a node it
+  fails over from, and does for a node's *answer* (a 404 or another 4xx), as does a bare
+  `session.get_json`. A node that *answers* does not fail over: a 404, any other 4xx, a
+  malformed 200, an expired list, and every error about the content (`AccreditationInvalid`,
+  `NoTrustedAnchor`, `IssuerNotTrusted`) propagate at once.
+- **A 404 is one node's answer.** It is `HttpNotFound` naming that node, does not mark the node
+  unhealthy and does not fail over, so a lagging node can say "not found" about a brand-new DID
+  (`NoTrustedAnchor` in the trust walk) until you retry. Confirming it on a second node is not
+  built (ADR-0009, open question 5).
+- **Health.** `check_health(origin)` is `GET {origin}/v1/alive`: one attempt, never retried,
+  never cached; healthy only on a 200 whose body is a JSON object with `health_global` the
+  integer `1`. `run` probes a candidate lazily, one at a time, never all of them (EBSI's limit is
+  20 requests per second per IP), remembers the verdict for `health_ttl_s` (default 60 s) and
+  skips a node that failed a real read for as long. At most `max_nodes` (default 3) candidates
+  cost a request per `run`. `policy(origins)` orders them (default: random); what it returns is
+  checked, and a name that is not in the result is `NodeClientConfigError`.
+- **Arguments are checked up front.** Every argument of `for_nodes` is checked before a pooled
+  client is built, and one that is out of range is `NodeClientConfigError`, never an outage in
+  `NoHealthyNode` and never a bare exception from the middle of a walk: `timeout_s`,
+  `cache_ttl_s` and `health_ttl_s` are numbers of seconds above 0 and at most 10**9;
+  `max_response_bytes` an `int` of at least 1; `retry` a `RetryPolicy` with at least one attempt
+  and backoffs of 0 or more; `user_agent` 1 to 256 characters of visible ASCII; `cache` something
+  with `get` and `set`; `address_guard` an `AddressGuard` or `None`; `health_clock` a clock that
+  returns a finite number, at construction and at every reading.
+- **The address guard is on by default** (`AddressGuard`; pass `address_guard=None` to switch it
+  off): the allow-list matches host *names*, and these are node operators' own domains, so each
+  request resolves the name, refuses a node with any non-public address and connects to the
+  validated one. It cannot work behind an environment proxy (`HTTPS_PROXY` / `ALL_PROXY`, or the
+  system proxy on macOS and Windows): `for_nodes` then raises `HttpAddressGuardUnavailable`
+  rather than quietly dropping the control. Unset the proxy, or opt out explicitly. **The health
+  probe tests only a node's first address.** The guard gives a request one address per attempt,
+  in the resolver's order; a read has several attempts and a probe has one, so a node whose first
+  address this host cannot reach (an `AAAA` record first, on a host with no IPv6 route) is
+  reported unhealthy, and remembered so for `health_ttl_s`, although its reads would get through
+  on the second address. It costs availability, not safety. Where it happens, give
+  `AddressGuard(resolver=...)` an answer with a reachable address first.
+- **Two attempts per request by default** (`retry` defaults to `RetryPolicy(attempts=2)`, not the
+  three of `for_ebsi`): with another node to try, a second retry buys little and costs a dead
+  node its timeout. A node that never accepts a connection costs a walk up to 20.25 s with the
+  default 10 s timeout, and a `run` over three such nodes up to 60.75 s (virtual-clock
+  measurement, backoff at its ceiling; with the three attempts of `for_ebsi` it would be 30.75 s
+  and 92.25 s). A node that fails its probe costs one 10 s attempt. `timeout_s` bounds each
+  socket operation, not a response's headers, so a node that answers slowly is not covered.
+- **It does not give** what the list does not: the list authenticates the *operator* of each
+  node, not the content it serves (below).
+
 ## What a signed list does not authenticate
 
 The list authenticates the **operator**, not the **data**.
@@ -341,8 +451,9 @@ The list authenticates the **operator**, not the **data**.
   serve another key for a DID, or forged accreditations, and `openvc_ebsi` would verify them.
 - The mitigation that exists is comparing the trust-critical reads across nodes. That is a policy
   with a cost (twice the requests, against EBSI's 20 requests per second per IP), and it belongs
-  to you. This page prescribes neither a pattern nor a helper, and whether a 404 on one node is
-  authoritative is an open question (ADR-0009, open question 5).
+  to you. This page prescribes neither a pattern nor a helper: `for_nodes` reads from one node at
+  a time and treats a 404 as that node's answer, and whether to confirm one on a second node is
+  an open question (ADR-0009, open question 5).
 - The chain's real root is the single key-list key. With it an attacker can substitute
   `trusted-keys.json` (the custodians and the threshold) and then sign any list; the two-custodian
   threshold only protects against compromise of the custodians.
