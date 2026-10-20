@@ -248,7 +248,12 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   absent or empty (otherwise the `id` is the attribute id and the `hash` is not read);
   `tao`, `rootTao` and `body` a string or `null`. An absent member keeps its default (`""`,
   `None`, `false`), and one bad accreditation rejects the whole record. A node that sends
-  what its schema says is unaffected.
+  what its schema says is unaffected. The v4 adapter checks the shape as well: `attributes`,
+  when present, must be a list of objects (an absent one means no attributes), and a `vc` or
+  `credentialSubject` that an accreditation token sends must be an object, and its
+  `accreditedFor` a list of type strings or objects with a list of strings as `types` (an
+  absent one still means no types); one entry that is not rejects the record rather than being
+  skipped or widened to an unrestricted accreditation.
 - **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
   named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
   recorded on 2026-10-16
@@ -311,8 +316,8 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   `text/html` firewall page included, and for a `type` that is not 1 to 256 visible
   ASCII characters). It is opaque: match on it, never on a message, and do not
   expect a `urn:ebsi:problems:` slug on every error (the recorded 406 says
-  `about:blank`). An error body is read at most 16 KiB; a larger one is dropped
-  with its connection.
+  `about:blank`). An error body is read at most 16 KiB, on the wire and once decoded (one `gzip` or
+  `deflate` coding; any other is not read); a larger one is dropped with its connection.
 - **Bounded body reads and bounded waits** (v1.37.0): `get_json` reads a 200 body through the
   reader `get_bytes` uses. The size cap (`max_response_bytes`, 5 MiB by default) holds on the
   wire size **and** on the decoded size before a chunk is held, and one `gzip` or `deflate`

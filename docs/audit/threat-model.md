@@ -273,10 +273,10 @@ finite input", with no explicit constant.
   unsigned token whose `iss` held a control character escaped `verify_ebsi_badge` as
   a bare `httpx.InvalidURL` (#246). A body httpx cannot decompress is a
   `MalformedRegistryResponse`; before v1.32.1 it escaped as a bare
-  `httpx.DecodingError` (#248). An error answer's body is read at most 16 KiB, within the
-  client's deadline, and the connection is dropped past either; before v1.37.0 it was
-  drained with no cap and no deadline (#321), and the Problem Details `type` it carries
-  is kept only from an `application/problem+json` body. The allow-list says which host answers, not which path
+  `httpx.DecodingError` (#248). An error answer's body is read at most 16 KiB (on the wire
+  and once decoded, #350), within the client's deadline, and the connection is dropped past
+  either; before v1.37.0 it was drained with no cap and no deadline (#321), and the Problem
+  Details `type` it carries is kept only from an `application/problem+json` body. The allow-list says which host answers, not which path
   or which document, and the rest of this paragraph is what stands behind it.
   **The exact-bytes path and the list host** (#320, v1.37.0): `get_bytes` returns a body
   verbatim, for the Trusted Nodes List documents, which are signed and two of them binary.
@@ -309,12 +309,16 @@ finite input", with no explicit constant.
   reached `time.sleep` as a bare `OverflowError`, and `"²"` was a bare `ValueError`; now the
   value is one to nine ASCII digits or an HTTP-date and anything else is ignored, and no
   sleep is longer than `RetryPolicy.retry_after_max_s` (default `backoff_max_s`, 5 s), so a
-  listed node cannot hold the calling thread for the time it asks. **Residual, unchanged
-  by #320 and #335:** the non-200 body read (#321) stops at 16 KiB after decoding, but it
-  decodes with `iter_bytes`, so one small `gzip` error body can still inflate a whole chunk
-  first (measured: a 260 935-byte body that inflates to 256 MiB peaks at 557 MiB on a 403;
-  the 16 KiB check then fires and the connection is dropped). It is the same class as the
-  200 read above and is not yet bounded.
+  listed node cannot hold the calling thread for the time it asks. **The non-200 body
+  read has the same bound** (#350, v1.37.0). #321 stopped it at 16 KiB but decoded with
+  `iter_bytes`, so one small `gzip` error body inflated a whole chunk first (a 260 935-byte
+  body that inflates to 256 MiB peaked at 557 MiB on a 403), and a coded body that decodes to
+  nothing never reached the cap or the deadline (4 MiB read under the 16 KiB cap). It now
+  reads the raw stream with the 200 path's decoder: the cap holds on the wire and on the
+  decoded size before a chunk is held (about 0.1 MiB on an 8 MiB bomb), the deadline is
+  checked for every wire chunk, and a coding other than one `gzip` or `deflate` is not
+  read. The status still decides the class, and a stream that does not decode is still
+  `MalformedRegistryResponse`.
   **Residual, shared by both paths:** neither `deadline_s` nor `timeout_s`
   bounds the total time of one response's headers: `timeout_s` applies to each socket
   operation, so a compromised allow-listed host that sends header bytes slowly enough can
