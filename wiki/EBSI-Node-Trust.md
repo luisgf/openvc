@@ -70,7 +70,7 @@ The TNL's `pilot` environment is **not** the legacy pilot. On 2026-10-16 the leg
 TNL pilot nodes tried, while `api-pilot.ebsi.eu` answered 200 for it. They behave as different
 ledgers, so the recorded fixtures say nothing about them.
 
-## The three names today
+## The names today
 
 `for_ebsi(environment)` seeds the allow-list from one fixed host per name, `legacy-pilot` by
 default. As of 2026-10-16:
@@ -81,6 +81,7 @@ default. As of 2026-10-16:
 | `pilot` | `api-pilot.ebsi.eu` | The same host and lane as `legacy-pilot`, **deprecated since 1.37.0**: `for_ebsi("pilot")` warns (`DeprecationWarning`, naming `legacy-pilot`) and builds the same client. Not the TNL's `pilot` environment, and it will change meaning at the next MAJOR release (2.0, [#74](https://github.com/luisgf/openvc/issues/74)). |
 | `conformance` | `api-conformance.ebsi.eu` | The name resolves, but no TCP connection completed within 12 s (curl exit 28). It is outside the TNL's scope. |
 | `production` | `api.ebsi.eu` | **Not a node.** No HTTP response was obtained: of four addresses, two did not accept a connection in about 3 s and 6 s, and the one that answered presented a certificate for an Amazon Lightsail wildcard that does not cover `api.ebsi.eu`, so verification stops at the handshake (curl exit 60). Whether any address serves a certificate valid for the name is not established. |
+| `preprod`, `prod` | none | The TNL's own names for Core API v1: **no fixed host**, so `for_ebsi("preprod")` and `for_ebsi("prod")` raise `NodeDerivedEnvironment` (an `UnknownEbsiEnvironment`) and point at `verify_node_list` and `for_nodes`, below. `prod` is not `production`. |
 
 Production nodes are `api.ebsi.<operator domain>` hosts taken from the TNL: 10 of them in list
 version 4. The names stay as they are for now (an unknown name is `UnknownEbsiEnvironment`), by

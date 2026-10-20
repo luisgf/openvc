@@ -310,6 +310,51 @@ All notable changes to **openvc** are documented here. The format follows
   value that is not a `str` (`None`, a number, `[]`, `{}`, `bytes`). It is the smallest typed
   form that keeps `except ValueError` working. The message names the accepted names and shows
   the offending value through the bounded `safe_repr`.
+- **`preprod` and `prod`, the two node-derived EBSI environments, are in the name table, and
+  `for_ebsi` refuses them with `NodeDerivedEnvironment`**
+  ([#325](https://github.com/luisgf/openvc/issues/325), Part 3 of 3; refs
+  [#113](https://github.com/luisgf/openvc/issues/113),
+  [#324](https://github.com/luisgf/openvc/issues/324)). `openvc_ebsi.environments.ENVIRONMENTS`
+  now names every environment: `EbsiEnvironment("preprod", None)` and
+  `EbsiEnvironment("prod", None)` join the four fixed-host rows. They are the Trusted Nodes
+  List's own spellings for EBSI Core API v1, whose hosts are the nodes of a signed list and not
+  a name, so they have no fixed host (`fixed_host is None`, `.base is None`). `EBSI_HOSTS` and
+  `EBSI_BASE` are **unchanged**: exactly their four keys, values and order, because
+  `fixed_hosts()` filters out a row with no host (and `prod` is not `production`, `api.ebsi.eu`).
+  `for_ebsi("preprod")` and `for_ebsi("prod")` raise the new
+  **`NodeDerivedEnvironment(UnknownEbsiEnvironment)`** (so also an `EbsiError` and a
+  `ValueError`) before any `httpx.Client` exists. Its message says the name has no fixed host
+  and names `verify_node_list`, `for_nodes` and the wiki page "EBSI-Node-Trust", where a caller
+  used to read "unknown EBSI environment". The match is the exact name, as for every row:
+  `"Prod"`, `" prod"` or `UserString("prod")` is still a plain `UnknownEbsiEnvironment`, whose
+  "known:" list names the four fixed-host names only. Which host each of the six names seeds:
+  `legacy-pilot` and `pilot` `api-pilot.ebsi.eu` (`pilot` with its warning), `conformance`
+  `api-conformance.ebsi.eu`, `production` `api.ebsi.eu`; `preprod` and `prod` none, they refuse.
+  - **Behaviour change.** `for_ebsi("preprod")` and `for_ebsi("prod")` raised
+    `UnknownEbsiEnvironment`; they raise its subclass. `except UnknownEbsiEnvironment`,
+    `except EbsiError` and `except ValueError` keep catching them; code that compares the exact
+    class (`type(exc) is UnknownEbsiEnvironment`) for these two names must compare
+    `NodeDerivedEnvironment`. Nothing that built a client stops building one.
+  - **The adapter pairing is not in the table.** The issue text proposed `didr_adapter` /
+    `tir_adapter` fields on the row. They are dropped: `for_nodes(result, ..., didr="core-v1",
+    tir="core-v1")` already takes both and validates them against `DID_REGISTRY_ADAPTERS` /
+    `TIR_ADAPTERS`, and a second copy in `environments.py` would be a second source of truth
+    for the same fact. The row stays a name and a `fixed_host`, and
+    `openvc_ebsi.nodes._ENVIRONMENTS` (`pilot`, `preprod`, `prod`, the list's own spelling) stays
+    where it is: the list's `pilot` is the node-derived ledger and the table's `pilot` is the
+    deprecated alias of `legacy-pilot`, so the two cannot share one tuple before the MAJOR.
+    `nodes.py` and `node_client.py` are untouched.
+  - **There is no node-derived `pilot` row.** The name stays the deprecated alias of
+    `legacy-pilot` until the next MAJOR release (2.0,
+    [#74](https://github.com/luisgf/openvc/issues/74)). The 2.0 end state, recorded on #74:
+    `pilot` changes meaning to the node-derived environment, so `for_ebsi("pilot")` refuses like
+    `preprod` and `prod` do and the two tables can share one spelling; the `production` and
+    `conformance` rows, kept in 1.x by decision 3a, leave `EBSI_HOSTS` / `EBSI_BASE` unless a
+    measurement by then shows a host that completes a request. A caller who ignored the
+    `pilot` warning then reads a different ledger (the legacy DID answers 404 there, ADR-0009).
+  - Additive: no parser or verify path is touched, `environments.py` still imports no HTTP
+    library, and there is no new dependency. `for_ebsi()` and `for_ebsi("legacy-pilot")` still
+    warn nothing.
 - **EBSI Core API v1 adapters: `DidRegistryCoreV1` and `TirCoreV1`**
   ([#321](https://github.com/luisgf/openvc/issues/321); design:
   [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)). `openvc_ebsi` could

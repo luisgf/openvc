@@ -1,5 +1,5 @@
 """
-tests/test_ebsi_environments.py — the EBSI environment-name table (#325, Parts 1 and 2).
+tests/test_ebsi_environments.py — the EBSI environment-name table (#325, Parts 1 to 3).
 
 ``for_ebsi(environment)`` seeds the https-only host allow-list of an ``EbsiHttpClient`` from
 a name. These tests pin what each name means, what the default is, and how a name the table
@@ -12,7 +12,10 @@ before the implementation), so a later change to a name, a host or the default i
 edit of a pin. The two baseline pins #325 had to move are marked. Section B is the new
 behaviour, refusals first, then the controls. Section C is Part 2, the maintainer's decisions of
 2026-10-19 on ADR-0009's open question 4: ``for_ebsi("pilot")`` is deprecated (switch 2b) and
-``production`` and ``conformance`` are kept, documented, silent (switch 3a).
+``production`` and ``conformance`` are kept, documented, silent (switch 3a). Section D is
+Part 3, scoped on 2026-10-20: ``preprod`` and ``prod`` are table rows with no fixed host, and
+``for_ebsi`` refuses them with ``NodeDerivedEnvironment`` (a subclass of
+``UnknownEbsiEnvironment``) because their hosts come from a verified Trusted Nodes List.
 """
 from __future__ import annotations
 
@@ -39,7 +42,11 @@ from openvc_ebsi.environments import (  # noqa: E402
     EbsiEnvironment,
     fixed_hosts,
 )
-from openvc_ebsi.errors import EbsiError, UnknownEbsiEnvironment  # noqa: E402
+from openvc_ebsi.errors import (  # noqa: E402
+    EbsiError,
+    NodeDerivedEnvironment,
+    UnknownEbsiEnvironment,
+)
 from openvc_ebsi.http import (  # noqa: E402
     EBSI_BASE,
     EBSI_HOSTS,
@@ -102,6 +109,8 @@ def test_the_host_and_base_tables_hold_exactly_the_current_names():
         "legacy-pilot": f"https://{PILOT_HOST}",
     }
     assert type(EBSI_HOSTS) is dict and type(EBSI_BASE) is dict      # same type as before
+    # Part 3: the two node-derived rows are in the table and in neither projection.
+    assert not {"preprod", "prod"} & (set(EBSI_HOSTS) | set(EBSI_BASE))
 
 
 @pytest.mark.parametrize("call", [
@@ -259,7 +268,9 @@ def test_a_name_the_table_does_not_hold_is_unknown_ebsi_environment(bad):
     assert isinstance(exc, OpenvcError)
     assert not isinstance(exc, TypeError)
     assert str(exc).startswith("unknown EBSI environment: ")
-    for name in ENVIRONMENTS:                         # the message lists what is accepted
+    # The message lists what `for_ebsi` accepts: the fixed-host names (`EBSI_HOSTS`), not every
+    # row of the table, which since Part 3 also holds two names `for_ebsi` refuses.
+    for name in EBSI_HOSTS:
         assert name in str(exc)
 
 
@@ -410,8 +421,11 @@ def test_the_resolver_default_base_is_the_table_row():
 # B. The table itself
 # --------------------------------------------------------------------------- #
 
-def test_the_table_holds_the_four_names_and_is_read_only():
-    assert list(ENVIRONMENTS) == ["pilot", "conformance", "production", "legacy-pilot"]
+def test_the_table_holds_the_six_names_and_is_read_only():
+    # MOVED by #325 Part 3: the four fixed-host names, in the order they came, then the two
+    # node-derived ones.
+    assert list(ENVIRONMENTS) == ["pilot", "conformance", "production", "legacy-pilot",
+                                  "preprod", "prod"]
     assert all(name == env.name for name, env in ENVIRONMENTS.items())
     assert ENVIRONMENTS["pilot"].fixed_host == ENVIRONMENTS["legacy-pilot"].fixed_host
     with pytest.raises(TypeError):
@@ -421,9 +435,11 @@ def test_the_table_holds_the_four_names_and_is_read_only():
 
 
 def test_every_fixed_host_is_a_bare_lower_case_host_name():
-    for env in ENVIRONMENTS.values():
+    # MOVED by #325 Part 3: the two node-derived rows have no host to check (section D).
+    fixed = [env for env in ENVIRONMENTS.values() if env.fixed_host is not None]
+    assert [env.name for env in fixed] == list(EBSI_HOSTS)
+    for env in fixed:
         host = env.fixed_host
-        assert host is not None
         assert host == host.lower()
         assert host.endswith(".ebsi.eu")
         assert not any(c in host for c in ":/@?#\\ ")
@@ -457,13 +473,18 @@ def test_the_name_table_imports_with_httpx_blocked(module, tmp_path):
         "sys.modules['httpx'] = None\n"                  # `import httpx` now raises ImportError
         f"import {module}\n"
         "from openvc_ebsi.environments import ENVIRONMENTS\n"
+        "from openvc_ebsi.errors import NodeDerivedEnvironment, UnknownEbsiEnvironment\n"
+        "assert issubclass(NodeDerivedEnvironment, UnknownEbsiEnvironment)\n"
+        "assert ENVIRONMENTS['preprod'].fixed_host is None\n"
+        "assert ENVIRONMENTS['prod'].fixed_host is None\n"
         "print(','.join(ENVIRONMENTS))\n"
     )
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
     done = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=env,
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == "pilot,conformance,production,legacy-pilot"
+    # MOVED by #325 Part 3: the two node-derived rows are read without httpx too.
+    assert done.stdout.strip() == "pilot,conformance,production,legacy-pilot,preprod,prod"
 
 
 # --------------------------------------------------------------------------- #
@@ -593,3 +614,253 @@ def test_a_name_read_from_OPENVC_EBSI_ENV_warns_exactly_like_the_literal(monkeyp
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         for_ebsi(os.getenv("OPENVC_EBSI_ENV", "legacy-pilot")).close()
+
+
+# --------------------------------------------------------------------------- #
+# D. Part 3: ``preprod`` and ``prod`` are node-derived (scoped 2026-10-20)
+# --------------------------------------------------------------------------- #
+# The two names are the Trusted Nodes List's own spellings. Their hosts are the nodes of a
+# signed list, so the table holds them with ``fixed_host=None`` and ``for_ebsi`` refuses them
+# with ``NodeDerivedEnvironment`` (an ``UnknownEbsiEnvironment``), whose message says where to
+# go instead. The row holds no adapter names: ``for_nodes`` owns ``didr`` / ``tir``.
+
+NODE_DERIVED = ["preprod", "prod"]
+
+
+@pytest.mark.parametrize("name", NODE_DERIVED)
+def test_a_node_derived_name_is_refused_with_exactly_node_derived_environment(name):
+    with pytest.raises(Exception) as info:
+        for_ebsi(name)
+    exc = info.value
+    assert type(exc) is NodeDerivedEnvironment                # the exact class, not a parent
+    assert isinstance(exc, UnknownEbsiEnvironment)
+    assert isinstance(exc, EbsiError)
+    assert isinstance(exc, OpenvcError)
+    assert isinstance(exc, ValueError)                        # `except ValueError` still works
+    assert not isinstance(exc, TypeError)
+
+
+@pytest.mark.parametrize("name", NODE_DERIVED)
+def test_the_refusal_says_there_is_no_fixed_host_and_names_the_way_in(name):
+    with pytest.raises(NodeDerivedEnvironment) as info:
+        for_ebsi(name)
+    message = str(info.value)
+    assert "no fixed host" in message
+    assert "for_nodes" in message                             # the constructor to use
+    assert "verify_node_list" in message                      # the verifier that feeds it
+    assert "EBSI-Node-Trust" in message                       # the wiki page
+    assert repr(name) in message                              # the name it was given
+    assert "unknown" not in message.lower()                   # not the unknown-name message
+
+
+@pytest.mark.parametrize("name", NODE_DERIVED)
+def test_the_node_derived_refusal_is_caught_where_an_unknown_name_is(name):
+    # A handler written for a name `for_ebsi` does not accept keeps catching these two.
+    for handler in (UnknownEbsiEnvironment, EbsiError, ValueError):
+        with pytest.raises(handler) as info:
+            for_ebsi(name)
+        assert type(info.value) is NodeDerivedEnvironment
+
+
+@pytest.mark.parametrize("name", NODE_DERIVED)
+def test_a_node_derived_name_is_refused_before_any_client_exists(name, monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("an httpx.Client was constructed for a node-derived name")
+
+    monkeypatch.setattr(httpx, "Client", boom)
+    monkeypatch.setattr(ebsi_http, "EbsiHttpClient", boom)
+    with pytest.raises(NodeDerivedEnvironment):
+        for_ebsi(name, extra_hosts={"status.example.org"})
+
+
+def test_the_no_client_check_would_notice_a_client(monkeypatch):
+    # Control for the test above: the same patch makes a name that does seed a host fail, so
+    # the refusal is proven to come first and not by a patch that never fires.
+    def boom(*args, **kwargs):
+        raise AssertionError("an httpx.Client was constructed")
+
+    monkeypatch.setattr(httpx, "Client", boom)
+    with pytest.raises(AssertionError, match="constructed"):
+        for_ebsi("legacy-pilot")
+
+
+@pytest.mark.parametrize("name", NODE_DERIVED)
+def test_a_node_derived_name_warns_nothing(name):
+    # Not "pilot": no DeprecationWarning, just the error (an error filter would raise it instead).
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(NodeDerivedEnvironment):
+            for_ebsi(name)
+
+
+@pytest.mark.parametrize("name", NODE_DERIVED)
+def test_the_refusal_does_not_depend_on_extra_hosts(name):
+    # `extra_hosts` cannot turn a node-derived name into a client with a host list of its own.
+    with pytest.raises(NodeDerivedEnvironment):
+        for_ebsi(name, extra_hosts={"api.ebsi.example.org"})
+    with pytest.raises(NodeDerivedEnvironment):
+        for_ebsi(name, extra_hosts=set())
+
+
+@pytest.mark.parametrize("bad", [
+    pytest.param("Prod", id="prod-capitalised"),
+    pytest.param("PROD", id="prod-upper"),
+    pytest.param("PREPROD", id="preprod-upper"),
+    pytest.param("Preprod", id="preprod-capitalised"),
+    pytest.param(" prod", id="prod-leading-space"),
+    pytest.param("prod ", id="prod-trailing-space"),
+    pytest.param("preprod\x00", id="preprod-nul"),
+    pytest.param("pre-prod", id="preprod-hyphen"),
+    pytest.param("prod\n", id="prod-newline"),
+    pytest.param(b"prod", id="prod-bytes"),
+    # Not a `str`, but hashes and compares equal to the name: refused by the type check, and
+    # since the type check comes first it is a plain unknown name, not a node-derived one.
+    pytest.param(collections.UserString("prod"), id="user-string-holding-prod"),
+])
+def test_only_the_exact_node_derived_names_get_the_node_derived_refusal(bad):
+    # The match is the exact name, as it is for every other row: anything else is an unknown
+    # name, whose exact class is the parent's.
+    with pytest.raises(Exception) as info:
+        for_ebsi(bad)
+    assert type(info.value) is UnknownEbsiEnvironment
+    assert not isinstance(info.value, NodeDerivedEnvironment)
+
+
+def test_a_str_subclass_holding_a_node_derived_name_is_read_by_its_characters():
+    # `__hash__` / `__eq__` / `__repr__` of the subclass all raise: a bare RuntimeError would
+    # escape if the name were looked up or shown through them.
+    for value in (_HostileStr("prod"), _HostileStr("preprod"), _StrClaimingToBeInt("prod")):
+        with pytest.raises(Exception) as info:
+            for_ebsi(value)
+        assert type(info.value) is NodeDerivedEnvironment
+
+
+def test_a_str_enum_member_holding_a_node_derived_name_is_refused_like_the_string():
+    class Env(str, enum.Enum):
+        PREPROD = "preprod"
+        PROD = "prod"
+
+    for member in Env:
+        with pytest.raises(Exception) as info:
+            for_ebsi(member)
+        assert type(info.value) is NodeDerivedEnvironment
+        assert repr(member.value) in str(info.value)          # the plain characters, not Env.PROD
+
+
+@pytest.mark.parametrize("bad", ["nope", "Prod", "PREPROD", "", None, 5, [], {}])
+def test_the_known_list_of_the_unknown_name_message_names_only_fixed_host_names(bad):
+    with pytest.raises(Exception) as info:
+        for_ebsi(bad)
+    exc = info.value
+    assert type(exc) is UnknownEbsiEnvironment                # the parent, never the subclass
+    message = str(exc)
+    assert message.startswith("unknown EBSI environment: ")
+    listed = message.rsplit("(known: ", 1)[1].rstrip(")").split(", ")
+    assert listed == sorted(EBSI_HOSTS)
+    assert listed == ["conformance", "legacy-pilot", "pilot", "production"]
+    assert "preprod" not in listed and "prod" not in listed   # whole entries, not substrings
+    assert "for_nodes" not in message                         # the node-derived advice is not here
+
+
+def test_the_unknown_name_path_is_unchanged_for_a_name_the_table_does_not_hold():
+    # The shapes of the unknown-name message that section B pins, read again with the six-row
+    # table in place: the same prefix, the same bounded echo of the value.
+    with pytest.raises(UnknownEbsiEnvironment) as info:
+        for_ebsi("x" * 10_000)
+    assert type(info.value) is UnknownEbsiEnvironment
+    assert "10000 chars" in str(info.value) and len(str(info.value)) < 600
+
+
+@pytest.mark.parametrize("name", NODE_DERIVED)
+def test_the_node_derived_rows_have_no_host_and_no_base(name):
+    env = ENVIRONMENTS[name]
+    assert env == EbsiEnvironment(name, None)
+    assert env.name == name
+    assert env.fixed_host is None
+    assert env.base is None
+
+
+def test_the_row_holds_a_name_and_a_host_and_nothing_about_adapters():
+    # Part 3 dropped the adapter pairing the issue text proposed: `for_nodes` takes `didr` and
+    # `tir` and validates them against the adapter registries, so a second copy here would be a
+    # second source of truth. A field added to the record is a conscious edit of this test.
+    assert [f.name for f in dataclasses.fields(EbsiEnvironment)] == ["name", "fixed_host"]
+    assert not any("adapter" in f.name or f.name in ("didr", "tir")
+                   for f in dataclasses.fields(EbsiEnvironment))
+
+
+def test_the_node_derived_names_are_in_neither_projection():
+    node_derived = {name for name, env in ENVIRONMENTS.items() if env.fixed_host is None}
+    assert node_derived == set(NODE_DERIVED)
+    assert not node_derived & set(EBSI_HOSTS)
+    assert not node_derived & set(EBSI_BASE)
+    assert not node_derived & set(fixed_hosts())
+    assert set(ENVIRONMENTS) - set(EBSI_HOSTS) == node_derived
+    assert len(EBSI_HOSTS) == len(EBSI_BASE) == 4             # exactly the four fixed-host keys
+
+
+def test_the_node_derived_names_are_the_spellings_the_node_list_verifier_accepts():
+    # The refusal tells the caller to pass the name to `verify_node_list(environment=...)`: a
+    # row the verifier would reject would send them to an error. (The verifier's own tuple is
+    # the Trusted Nodes List's spelling; it also holds `pilot`, which this table cannot, see
+    # `environments.py`.)
+    from openvc_ebsi import nodes
+
+    assert set(NODE_DERIVED) <= set(nodes._ENVIRONMENTS)
+
+
+# The six names, host by host: which one seeds what, and which one is refused.
+SIX = [
+    pytest.param("legacy-pilot", {PILOT_HOST}, id="legacy-pilot"),
+    pytest.param("pilot", {PILOT_HOST}, id="pilot"),
+    pytest.param("conformance", {CONFORMANCE_HOST}, id="conformance"),
+    pytest.param("production", {PRODUCTION_HOST}, id="production"),
+    pytest.param("preprod", None, id="preprod"),
+    pytest.param("prod", None, id="prod"),
+]
+
+
+@pytest.mark.parametrize("name,seeds", SIX)
+def test_each_of_the_six_names_seeds_its_host_or_is_refused(name, seeds):
+    if seeds is None:
+        with pytest.raises(NodeDerivedEnvironment):
+            for_ebsi(name)
+        assert ENVIRONMENTS[name].fixed_host is None
+    else:
+        with _build(name) as http:
+            assert http._allowed == seeds
+        assert {ENVIRONMENTS[name].fixed_host} == seeds
+
+
+def test_the_default_and_the_silent_names_stay_silent_with_the_new_rows():
+    # The Part 2 pin (`test_building_a_client_from_these_names_is_silent`) read again with the
+    # table at six rows: a bare `for_ebsi()` and `for_ebsi("legacy-pilot")` warn nothing.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for_ebsi().close()
+        for_ebsi("legacy-pilot").close()
+
+
+# -- The refusal is driven by the table, not by a list of names in ``for_ebsi`` -- #
+
+def test_the_refusal_is_driven_by_a_row_with_no_fixed_host(monkeypatch):
+    # A row added to the table with `fixed_host=None` is refused as node-derived with no change
+    # to `for_ebsi`: the branch reads the row, not the two names. (Removing the branch makes this
+    # name, and `preprod` / `prod`, plain unknown names: the exact-class checks above fail.)
+    table = MappingProxyType({**ENVIRONMENTS, "regional": EbsiEnvironment("regional", None)})
+    monkeypatch.setattr(ebsi_http, "ENVIRONMENTS", table)
+    with pytest.raises(NodeDerivedEnvironment) as info:
+        for_ebsi("regional")
+    assert "'regional'" in str(info.value)
+
+
+def test_a_name_missing_from_the_table_is_an_unknown_name_not_a_node_derived_one(monkeypatch):
+    # The other direction: take `prod` out of the table and the same call is an unknown name
+    # (the exact parent class), so the node-derived refusal is a fact about the row.
+    table = MappingProxyType({n: e for n, e in ENVIRONMENTS.items() if n != "prod"})
+    monkeypatch.setattr(ebsi_http, "ENVIRONMENTS", table)
+    with pytest.raises(UnknownEbsiEnvironment) as info:
+        for_ebsi("prod")
+    assert type(info.value) is UnknownEbsiEnvironment
+    with pytest.raises(NodeDerivedEnvironment):
+        for_ebsi("preprod")                                   # the other row is untouched
