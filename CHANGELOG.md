@@ -1508,6 +1508,44 @@ Each is one value or table away from the other option. None changes anything tha
     cut past 200 characters.
   - **No wiki page is edited**: `wiki/Trust.md` and `wiki/EBSI-Node-Trust.md` describe the
     refusals by exception class, never by message wording.
+- **The TIR v4 adapter types the shape it reads, not only its scalars**
+  ([#352](https://github.com/luisgf/openvc/issues/352); legacy v4 lane only, it predates
+  1.37.0). `TirV4.parse_issuer` iterated `raw.get("attributes", [])` and called `.get` on
+  each entry, so a registry body whose `attributes` was `null` or a number escaped as a bare
+  `TypeError`, and one whose `attributes` was a string or an object, or whose entry was not
+  an object (`[1]`), as a bare `AttributeError`; none is an `EbsiError`, so none reached the
+  handlers #248 and #337 describe for the other shapes (measured on `main` at 3bd9e59,
+  `tir_adapter("v4").parse_issuer({"did": did, "attributes": X}, ...)`, all five rows of the
+  issue's table). The same method read the decoded accreditation token as
+  `decode(body).get("vc", {}).get("credentialSubject", {})`, the same bare `AttributeError`
+  for a `vc` or `credentialSubject` that is sent and is a list, a string, a number or `null`
+  (six shapes measured), a second gap found while checking this one.
+
+  `attributes` **absent** keeps meaning "no attributes" (`has_attributes` false, no
+  accreditations, as before), and so does `[]`. **Present**, it must be a list, and each entry
+  an object: `null`, `0`, `""`, `false` and `{}` are present and are not lists, so they are
+  wrong whatever their truth value. Anything else is `MalformedRegistryResponse` (an
+  `EbsiError`), shown through `safe_repr` (a 100 000-character string comes back as a message
+  under 300 characters, and a value whose `repr()` raises does not raise from the `raise`).
+  The entry's message carries its index (`attributes[1] is not an object`). Inside the token,
+  `vc` and `credentialSubject` absent still read as "no types", and sent they must be objects.
+  `parse_issuer` also checks that the response it is handed is an object, as the v5 one does
+  (the resolver already did, so this only types a direct call).
+
+  **Decision, taken by the maintainer on 2026-10-20: one bad entry rejects the whole record**,
+  `MalformedRegistryResponse` and not a skip, the rule #337 applies to scalars in the same
+  adapter: a response whose shape is wrong is not a record to trust in part, and the good
+  entries beside the bad one are not returned. The v5 and Core v1 walk skips a listing item
+  that is not an object, and a `vc` or `credentialSubject` that is not one reads there as an
+  accreditation with no type restriction; v4 does neither, because a skip here would turn a
+  crash into the widest accreditation there is.
+
+  Not changed: v5 and Core v1 (their walk is untouched); `has_attributes` is still
+  `bool(accreditations)`, so an `{}` entry, which is an object, is still an accreditation of
+  defaults (#337); `issuerType` is not checked against the trust roles (a separate question,
+  not part of this fix). There is no recorded TIR v4 response in the repository: the v4 tests
+  are synthetic bodies around the recorded v5 accreditation tokens, and the recorded
+  responses of the other lanes parse as before.
 
 ### Tests
 

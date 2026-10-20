@@ -185,6 +185,16 @@ def _wire_bool(obj: dict[str, Any], key: str, what: str) -> bool:
     return value
 
 
+def _wire_object(obj: dict[str, Any], key: str, what: str) -> dict[str, Any]:
+    """``obj[key]`` for a member read as an object: ``{}`` when absent, else a ``dict`` or
+    :class:`MalformedRegistryResponse` (``null`` is not an object). The v4 lane reads the
+    ``vc`` and ``credentialSubject`` of an accreditation token this way."""
+    value = obj.get(key, {})
+    if not isinstance(value, dict):
+        raise MalformedRegistryResponse(f"{what} {key} is not an object: {safe_repr(value)}")
+    return value
+
+
 def _require_did_ebsi(did: object) -> str:
     """*did*, if it is a ``did:ebsi`` identifier; else :class:`DidResolutionError`.
 
@@ -401,7 +411,14 @@ class TirAdapter(ABC):
 
 
 class TirV4(TirAdapter):
-    """v4: attributes are inline, one call. issuerType/tao/rootTao sit on each."""
+    """v4: attributes are inline, one call. issuerType/tao/rootTao sit on each.
+
+    The shape is checked before it is read: ``attributes`` absent means no attributes, and
+    when present it must be a list of objects, else :class:`MalformedRegistryResponse`.
+    One entry that is not an object rejects the whole record, as one entry with a wrong
+    scalar does (#337): a response whose shape is wrong is not a record to trust in part
+    (#352). The same holds inside an accreditation token: a ``vc`` or ``credentialSubject``
+    that is sent and is not an object rejects the record, never reads as "no types"."""
     version = "v4"
 
     def issuer_url(self, base: str, did: str) -> str:
@@ -409,8 +426,16 @@ class TirV4(TirAdapter):
 
     def parse_issuer(self, raw: Any, *, base: str, did: str, fetch: Any,
                      decode: Any) -> IssuerRecord:
+        raw = _require_object(raw, "TIR issuer response")
+        attributes = raw.get("attributes", [])
+        if not isinstance(attributes, list):
+            raise MalformedRegistryResponse(
+                f"TIR issuer response attributes is not a list: {safe_repr(attributes)}")
         accs = []
-        for a in raw.get("attributes", []):
+        for index, a in enumerate(attributes):
+            if not isinstance(a, dict):
+                raise MalformedRegistryResponse(
+                    f"TIR issuer response attributes[{index}] is not an object: {safe_repr(a)}")
             body = _wire_opt_str(a, "body", "TIR attribute")     # typed before `decode` sees it
             accs.append(Accreditation(
                 attribute_id=_wire_str(a, "hash", "TIR attribute"),
@@ -426,7 +451,9 @@ class TirV4(TirAdapter):
     def _types_from_body(body: str | None, decode: DecodeJwt) -> tuple[str, ...]:
         if not body:
             return ()
-        subject = decode(body).get("vc", {}).get("credentialSubject", {})
+        claims = _require_object(decode(body), "TIR attribute token claims")
+        vc = _wire_object(claims, "vc", "TIR attribute token")
+        subject = _wire_object(vc, "credentialSubject", "TIR attribute token vc")
         return _flatten_accredited_for(subject.get("accreditedFor"))
 
 
