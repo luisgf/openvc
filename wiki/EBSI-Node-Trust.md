@@ -91,9 +91,8 @@ the maintainer's decision of 2026-10-19 on
 warning, no refusal). The reasons are #325's reading, not part of the decision. EBSI now also
 calls its Core API pilot "pilot", and the name will mean that ledger at the next MAJOR release;
 a warning can name `legacy-pilot` as the replacement. `for_ebsi` has no name to point
-`conformance` and `production` at: the node-based client that would take its nodes from the
-verified list does not exist yet (#324), and until it does the recipe below is how to reach a
-node. A request through a client built from `production` or `conformance` is not known to
+`conformance` and `production` at: the node-based client, `for_nodes` (#324, below), takes its
+nodes from the verified list instead, and the recipe below is how to reach a node by hand. A request through a client built from `production` or `conformance` is not known to
 complete today, as the table says.
 
 ## Getting the nodes
@@ -135,8 +134,9 @@ max-age=300, must-revalidate` and an `etag`.
 and the file served at `tnl.ebsi.eu` all agreed on it. **Read that as a dated observation, not as
 a value to copy from here.** All three channels are Europeum's: their agreement shows the
 publisher is consistent, not that the key is genuine. An out-of-band confirmation from
-Europeum would be stronger. Whether and how openvc itself pins the key is undecided
-(ADR-0009, open question 2), and a wiki page is not a channel to trust a fingerprint from.
+Europeum would be stronger. openvc ships this key as `EUROPEUM_KEY_LIST_ANCHOR`
+(`openvc_ebsi.nodes`), pinned on the consistency of Europeum's channels only; whether that
+ceremony suffices is ADR-0009 open question 2, and a wiki page is not a channel to trust a fingerprint from.
 Never download the pinned key at verification time. The TNL README calls this key a stopgap
 until Europeum's qualified electronic seal replaces it.
 
@@ -392,7 +392,8 @@ with for_nodes(result, clock=clock, decode_jwt=suite.peek_claims) as nodes:
   again on the next node: the library's walks are (EBSI is read-only); a walk with effects of its
   own is run again too. A walk that caught a node failure and returned a value is discarded
   anyway.
-- **What fails over, and what does not.** A transport error or timeout, a 429 or 5xx once the
+- **What fails over, and what does not.** A transport error or timeout, a listed name that resolves
+  to an address the guard refuses (`HttpForbiddenAddress`), a 429 or 5xx once the
   retries are used up, a 403 (a node's firewall may refuse a client on its User-Agent), a 3xx
   (redirects are never followed), a body past the size cap or the deadline, and a failed health
   check go on to the next node. Nothing of a failing node's answer, a 403's body included, reaches
@@ -458,9 +459,10 @@ The list authenticates the **operator**, not the **data**.
 - The chain's real root is the single key-list key. With it an attacker can substitute
   `trusted-keys.json` (the custodians and the threshold) and then sign any list; the two-custodian
   threshold only protects against compromise of the custodians.
-- DNS or certificate compromise of one listed host is not defended. The opt-in
-  `address_guard=AddressGuard()` refuses a listed name that resolves to a non-public address and
-  connects to the validated address (off by default, refused behind an environment proxy); it
+- DNS or certificate compromise of one listed host is not defended. The
+  `address_guard=AddressGuard()` guard (opt-in on `EbsiHttpClient` and `for_ebsi`, on by default
+  in `for_nodes`) refuses a listed name that resolves to a non-public address and
+  connects to the validated address (refused behind an environment proxy); it
   does not stop an attacker who holds a valid certificate for a public address.
 - A node that is revoked between two list versions stays trusted until you next refresh. The
   outside bound is the list's `expires` (at most 90 days after `issued`), but a hand-built

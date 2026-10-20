@@ -32,7 +32,9 @@ What it adds to a hand-built allow-list (ADR-0009 D1):
     random). A policy's output is untrusted: a name that is not in the result is refused.
 
 **What fails over and what does not** (one table, :data:`_FAILOVER`, independent of the API
-version): a transport error or timeout, a 429 or a 5xx once retries are used up, a 403 (a node's
+version): a transport error or timeout, a listed name that resolves to an address the guard
+refuses (:class:`~openvc_ebsi.http.HttpForbiddenAddress`), a 429 or a 5xx once retries are used
+up, a 403 (a node's
 firewall may refuse a client on its User-Agent), a 3xx (redirects are never followed), a body
 past the size cap or the deadline, and a failed ``/v1/alive`` move on to the next node. A node
 that *answers* does not: a 404 is that node's answer (it is :class:`~openvc_ebsi.http.HttpNotFound`

@@ -17,7 +17,7 @@ It is deliberately small but covers the production concerns a verifier needs:
                       bomb is refused inside the stdlib and never allocated.
   * caching         : TTL + bounded size. EBSI registry reads (DID docs, TIR
                       entries, schemas) change rarely and are hit on every verify.
-  * SSRF guard      : the TIR v5 flow follows `href` values taken from registry
+  * SSRF guard      : the TIR v5 and Core v1 walks follow `href` values taken from registry
                       responses; those hrefs are only fetched if their ORIGIN is on
                       the allow-list: https, a host derived from the configured EBSI
                       base, and port 443 (an absent port is 443); a URL with userinfo

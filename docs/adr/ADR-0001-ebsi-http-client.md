@@ -118,10 +118,12 @@ unchanged and the text above is not rewritten.
   do send `ETag` and `Cache-Control`; that matters to fetching the list (#320), not to the
   registry client.
 - **D7 (problem+json)**: Core v1 errors now carry a stable `type` of the form
-  `urn:ebsi:problems:<slug>`. `openvc_ebsi.http` still maps by status alone; acting on the
-  `type` belongs to the Core v1 adapters (#321).
+  `urn:ebsi:problems:<slug>`. `openvc_ebsi.http` still decides the class by status and surfaces the
+  `type` as `HttpError.problem_type`, an opaque string (#321).
 - **D8 (SSRF allow-list)**: the hosts can now come from a signed source, the Trusted Nodes
-  List. The allow-list stays the primitive, and verifying the list is the consumer's job.
+  List. The allow-list stays the primitive; the plugin verifies the list
+  (`openvc_ebsi.nodes.verify_node_list`) and builds a client from it (`node_client.for_nodes`),
+  while fetching, persisting and refreshing the list stay with the consumer.
 - **D10 (`Accept`) holds on Core v1**: the client's `Accept` got `application/did+ld+json`
   and no 406 on every v1 read in ADR-0009's probe.
 

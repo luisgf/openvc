@@ -20,11 +20,13 @@ landed through its own pull request. Browse it by milestone:
   follows that, and the maintainer accepted part of it on 2026-10-16: a pure, stateless
   list verifier on an ECDSA-only OpenPGP reader (it vendors the anchor, never the list)
   and an explicit ES256K opt-in (`VcJwtProofSuite(allow_es256k=True)`, #323, implemented in
-  1.37.0); the other open questions stay open. The work is filed
+  1.37.0); the other open questions stay open. The work was filed
   as [#321](https://github.com/luisgf/openvc/issues/321) (Core v1 adapters), [#319](https://github.com/luisgf/openvc/issues/319) (the verifier),
-  [#324](https://github.com/luisgf/openvc/issues/324) (a node-based client), [#323](https://github.com/luisgf/openvc/issues/323) (the ES256K opt-in) and
+  [#324](https://github.com/luisgf/openvc/issues/324) (`for_nodes`, the node-based client), [#323](https://github.com/luisgf/openvc/issues/323) (the ES256K opt-in),
+  [#325](https://github.com/luisgf/openvc/issues/325) (the environment table) and
   [#326](https://github.com/luisgf/openvc/issues/326) (the weekly smoke); [#316](https://github.com/luisgf/openvc/issues/316) is the node-trust recipe
-  in the wiki.
+  in the wiki. All of them are implemented in 1.37.0. Still open: the production launch itself
+  ([#113](https://github.com/luisgf/openvc/issues/113)) and ADR-0009 questions 2, 5, 6, 7 and 8.
 - **[Long term — PQ, BBS & 2.0](https://github.com/luisgf/openvc/milestone/8)** —
   the 2027 horizon: the BBS gate re-evaluation, the external security review,
   and the 2.0 breaking-cleanup window keyed to the W3C 2.1/1.1 maintenance
