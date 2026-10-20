@@ -248,7 +248,12 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   absent or empty (otherwise the `id` is the attribute id and the `hash` is not read);
   `tao`, `rootTao` and `body` a string or `null`. An absent member keeps its default (`""`,
   `None`, `false`), and one bad accreditation rejects the whole record. A node that sends
-  what its schema says is unaffected.
+  what its schema says is unaffected. The v4 adapter checks the shape as well: `attributes`,
+  when present, must be a list of objects (an absent one means no attributes), and a `vc` or
+  `credentialSubject` that an accreditation token sends must be an object, and its
+  `accreditedFor` a list of type strings or objects with a list of strings as `types` (an
+  absent one still means no types); one entry that is not rejects the record rather than being
+  skipped or widened to an unrestricted accreditation.
 - **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
   named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
   recorded on 2026-10-16
