@@ -375,9 +375,15 @@ finite input", with no explicit constant.
   DID, at least one of them sent, else `AccreditationInvalid`: a RootTAO- or TAO-signed
   accreditation that names nobody, an empty `sub`, or another DID cannot be replayed into
   another issuer's record by a misrouted, steered or dishonest registry answer (measured as
-  trusted on `main` at b1fd669, on v5 and Core v1, with real P-256 signatures). Single-level
-  trust still verifies no accreditation signature, and an accreditation with no `accreditedFor`
-  is still unrestricted (a policy question, open).
+  trusted on `main` at b1fd669, on v5 and Core v1, with real P-256 signatures). Across DIDs
+  only: single-level trust still verifies no accreditation signature, an accreditation with
+  no `accreditedFor` is still unrestricted (a policy question, open), so a RootTAO- or
+  TAO-signed credential for the *same* DID that is not an accreditation (an onboarding
+  authorisation, say) reads as the unrestricted one, and `vc.type` is not checked against the
+  role; the leaf and hop type matching intersects the credential's whole `type` list with
+  `accreditedFor.types`, which both begin with `VerifiableCredential` on real EBSI data, so
+  that scope is weaker than it reads (both found by the review of the #352 follow-up PR;
+  recorded as open).
   **Residual:** the TIR `attributes` URL and each revision `href` are pinned to the
   listing's origin (#172), not to `.../issuers/{did}/`, and a revision's own `did` is not
   read; both are outside #266 and #267.

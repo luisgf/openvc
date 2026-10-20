@@ -41,11 +41,25 @@ nothing partial is returned), and ``trust.py`` requires the JWT ``sub`` and the 
 ``credentialSubject.id``, each one that is sent, to be exactly the accredited DID, at least one
 of them sent (``AccreditationInvalid``). ``peek_issuer``'s error is ``AccreditationInvalid`` too.
 
+The adversarial review of the PR (Opus, runnable repros) added four small ones, pinned in the
+last sections: ``accreditedFor`` is checked and read in ONE pass (a list from an injected
+``decode`` that iterates differently the second time cannot widen what was checked); every
+scalar the record copies is an exact ``str`` (a ``str`` subclass from an injected ``fetch``
+whose ``.split`` answered with another token made ``peek_claims`` read one token while the
+suite verified another); the binding honours ``credentialSubject.@id`` as it does ``id``; a
+``credentialStatus`` the status module refuses, on a signed accreditation, is
+``AccreditationInvalid`` and not the status module's ``OpenvcError`` out of
+``verify_trust_chain``. And the consequence for ``verify_ebsi_badge(require_trust=False)``:
+``MalformedRegistryResponse`` is not a ``TrustChainError``, so the shapes closed here raise
+there too, where ``main`` returned ``trusted=True`` (the #267 stance).
+
 Not changed, pinned as controls: the four RECORDED walks (the pilot's v5 and three Core v1
 nodes) parse to the record their wire values spell; a listing item the walk cannot follow is
 still skipped (it narrows trust, where a misread token widens it); a ``vc`` with no
 ``credentialSubject`` or no ``accreditedFor`` is still the unrestricted accreditation (a policy
-question, not decided here). Self-contained: ``tests/`` is not a package.
+question, not decided here: a RootTAO-signed credential for the SAME DID that is not an
+accreditation reads as unrestricted, which the review measured and this file does not change).
+Self-contained: ``tests/`` is not a package.
 """
 from __future__ import annotations
 
@@ -66,6 +80,7 @@ from openvc.keys import P256SigningKey
 from openvc.multibase import b58btc_encode
 from openvc.proof.errors import MalformedToken
 from openvc.proof.vc_jwt import VcJwtProofSuite, VerifiedCredential
+from openvc.status import StatusListError, encode_bitstring
 from openvc_ebsi.errors import EbsiError, MalformedRegistryResponse
 from openvc_ebsi.http import HttpNotFound
 from openvc_ebsi.models import Accreditation, IssuerRecord
@@ -77,7 +92,7 @@ from openvc_ebsi.trust import (
     TrustChain,
     verify_trust_chain,
 )
-from openvc_ebsi.verify import evaluate_issuer_trust
+from openvc_ebsi.verify import evaluate_issuer_trust, verify_ebsi_badge
 from openvc_ebsi.versioning import (
     DidEbsiResolver,
     DidRegistryAdapter,
@@ -742,6 +757,163 @@ def test_a_nameless_accreditation_is_refused_through_for_nodes() -> None:
                 LEAF, TYPES, resolver=session.resolver, proof_suite=SUITE, anchors={ROOT}))
     finally:
         client.close()
+
+
+# --------------------------------------------------------------------------- #
+# `verify_ebsi_badge(require_trust=False)`: the record's error is not suppressed
+# --------------------------------------------------------------------------- #
+
+LEAF_SK = P256SigningKey.generate(kid=f"{LEAF}#key-1")
+BADGE = SUITE.sign({"id": "urn:uuid:badge-1",
+                    "type": ["VerifiableCredential", "VerifiableAttestation", TYPES[0]],
+                    "issuer": LEAF, "credentialSubject": {"id": "did:key:z6MkSubject"}},
+                   signing_key=LEAF_SK)
+
+
+def _badge_world(lane: Lane, token: str) -> DidEbsiResolver:
+    fetch, resolver, _ = world(lane, token)
+    fetch.routes[lane.did_url(LEAF)] = _did_doc(LEAF, LEAF_SK)
+    return resolver
+
+
+@pytest.mark.parametrize("lane", WALKS, ids=_lane_id)
+def test_require_trust_false_does_not_suppress_the_records_error(lane: Lane) -> None:
+    # main: `trusted=True` (the array subject read as unrestricted). MalformedRegistryResponse
+    # is not a TrustChainError: malformed input is not an untrusted issuer (#267)
+    resolver = _badge_world(lane, signed([{"id": OTHER, "accreditedFor": [{"types": TYPES}]}]))
+    with pytest.raises(MalformedRegistryResponse) as info:
+        verify_ebsi_badge(BADGE, resolver=resolver, proof_suite=SUITE, require_trust=False)
+    _malformed(info)
+    # the control: a scoped accreditation for another type is untrusted, not an error
+    resolver = _badge_world(lane, signed({"id": LEAF, "accreditedFor": [{"types": OTHER_TYPES}]}))
+    result = verify_ebsi_badge(BADGE, resolver=resolver, proof_suite=SUITE, require_trust=False)
+    assert result.trusted is False
+
+
+# --------------------------------------------------------------------------- #
+# found by the adversarial review of the PR
+# --------------------------------------------------------------------------- #
+
+class Flip(list):                       # type: ignore[type-arg]
+    """A list whose SECOND iteration is empty: a check that iterates once and a reader that
+    iterates again would disagree, and "no types" is the unrestricted accreditation."""
+
+    def __init__(self, first: list[Any]) -> None:
+        super().__init__(first)
+        self.reads = 0
+
+    def __iter__(self) -> Any:
+        self.reads += 1
+        return iter(list.__iter__(self) if self.reads == 1 else [])
+
+
+@pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
+def test_accredited_for_is_checked_and_read_in_one_pass(lane: Lane) -> None:
+    flip = Flip([{"types": OTHER_TYPES}])
+    _, resolver, _ = world(lane, "tok", decode=lambda token: {
+        "vc": {"credentialSubject": {"accreditedFor": flip}}})
+    record = resolver.issuer_record(LEAF)
+    assert record.accreditations[0].credential_types == tuple(OTHER_TYPES)   # what was checked
+    assert flip.reads == 1
+
+
+class SplitsAsAnother(str):
+    """Its characters are one token; its ``.split`` answers with another's segments (what
+    ``peek_claims`` used to call), while ``.encode`` (what the suite verifies) is the first."""
+
+    other: str = ""
+
+    def split(self, *args: Any, **kwargs: Any) -> list[str]:
+        return str.split(self.other, *args, **kwargs)
+
+
+@pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
+def test_a_str_subclass_body_is_read_as_its_characters(lane: Lane) -> None:
+    # main: the record read the UNRESTRICTED token's types while ROOT had signed OtherType,
+    # and the chain was TRUSTED for the credential's type
+    scoped = signed({"id": LEAF, "accreditedFor": [{"types": OTHER_TYPES}]})
+    unrestricted = signed({"id": LEAF})
+    body = SplitsAsAnother(scoped)
+    body.other = unrestricted
+    fetch, resolver, _ = world(lane, scoped)
+    for value in fetch.routes.values():                 # swap every copy of the body
+        for attribute in value.get("attributes", []) if lane is V4 else []:
+            attribute["body"] = body
+        if "attribute" in value:
+            value["attribute"]["body"] = body
+    record = resolver.issuer_record(LEAF)
+    assert type(record.accreditations[0].credential_jwt) is str
+    assert record.accreditations[0].credential_types == tuple(OTHER_TYPES)
+    with pytest.raises(NoTrustedAnchor):
+        chain(resolver)
+
+
+@pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
+def test_the_binding_honours_credential_subject_at_id(lane: Lane) -> None:
+    # `@id` is what `id` aliases in JSON-LD, and the suite honours it for `issuer`
+    _, resolver, _ = world(lane, jws({"sub": LEAF, "vc": _vc(
+        {"@id": OTHER, "accreditedFor": [{"types": TYPES}]})}))
+    with pytest.raises(AccreditationInvalid,
+                       match=r"subject \(credentialSubject.@id\) 'did:ebsi") as info:
+        chain(resolver)
+    assert type(info.value) is AccreditationInvalid
+    # and alone it binds: nothing else names the DID
+    _, resolver, _ = world(lane, jws({"vc": _vc(
+        {"@id": LEAF, "accreditedFor": [{"types": TYPES}]})}))
+    assert chain(resolver).anchor == ROOT
+    # both spellings sent: each must be the DID
+    _, resolver, _ = world(lane, jws({"vc": _vc(
+        {"id": LEAF, "@id": OTHER, "accreditedFor": [{"types": TYPES}]})}))
+    with pytest.raises(AccreditationInvalid, match=r"credentialSubject.@id"):
+        chain(resolver)
+
+
+STATUS_URL = "https://tao.example/acc-status/1"
+
+
+def _status_list(*set_bits: int) -> dict[str, Any]:
+    bits = bytearray(32)
+    for index in set_bits:
+        bits[index // 8] |= 1 << (7 - index % 8)
+    return {"credentialSubject": {"statusPurpose": "revocation",
+                                  "encodedList": encode_bitstring(bytes(bits))}}
+
+
+@pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
+@pytest.mark.parametrize("status", [
+    pytest.param("x", id="string"), pytest.param([1], id="list-of-numbers"),
+    pytest.param({"type": "BitstringStatusListEntry"}, id="entry-without-list"),
+    pytest.param({"type": "BitstringStatusListEntry", "statusPurpose": "revocation",
+                  "statusListCredential": 7, "statusListIndex": "3"}, id="list-url-number"),
+])
+def test_a_credential_status_the_status_module_refuses_is_accreditation_invalid(
+        lane: Lane, status: Any) -> None:
+    # the token is ROOT-signed for LEAF, so only the accreditor can put this shape there; main
+    # let the status module's StatusListError (an OpenvcError, not an EbsiError) escape
+    vc = {**_vc({"id": LEAF, "accreditedFor": [{"types": TYPES}]}), "credentialStatus": status}
+    _, resolver, _ = world(lane, jws({"sub": LEAF, "vc": vc}))
+    with pytest.raises(AccreditationInvalid, match="credentialStatus that cannot be checked"
+                       ) as info:
+        verify_trust_chain(LEAF, TYPES, resolver=resolver, proof_suite=SUITE, anchors={ROOT},
+                           resolve_status_list=lambda url: _status_list())
+    assert type(info.value) is AccreditationInvalid
+    assert isinstance(info.value.__cause__, StatusListError)
+
+
+@pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
+def test_control_a_well_formed_credential_status_is_still_checked(lane: Lane) -> None:
+    entry = {"id": f"{STATUS_URL}#3", "type": "BitstringStatusListEntry",
+             "statusPurpose": "revocation", "statusListIndex": "3",
+             "statusListCredential": STATUS_URL}
+    vc = {**_vc({"id": LEAF, "accreditedFor": [{"types": TYPES}]}), "credentialStatus": entry}
+    _, resolver, _ = world(lane, jws({"sub": LEAF, "vc": vc}))
+    clear = verify_trust_chain(LEAF, TYPES, resolver=resolver, proof_suite=SUITE, anchors={ROOT},
+                               resolve_status_list=lambda url: _status_list())
+    assert clear.anchor == ROOT
+    from openvc_ebsi.trust import AccreditationRevoked
+    with pytest.raises(AccreditationRevoked):
+        verify_trust_chain(LEAF, TYPES, resolver=resolver, proof_suite=SUITE, anchors={ROOT},
+                           resolve_status_list=lambda url: _status_list(3))
 
 
 # --------------------------------------------------------------------------- #

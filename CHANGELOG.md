@@ -53,8 +53,11 @@ All notable changes to **openvc** are documented here. The format follows
   accredited DID (`""`, `null` and a non-string are sent and wrong, never "absent"), at least
   one of the two must be sent, and a sent `credentialSubject` must be an object; anything else
   is `AccreditationInvalid`, the class the mismatch already had (a bad identity on the path),
-  on every lane. `peek_issuer`'s `MalformedToken` is `AccreditationInvalid` with the same
-  `__cause__`. What the suite already refused (a `sub` that is not a string, a non-empty `sub`
+  on every lane; that holds **across DIDs**, which is what a replay is (a RootTAO-signed
+  credential for the *same* DID that carries no `accreditedFor`, an onboarding authorisation
+  say, still reads as the unrestricted accreditation under the policy below). `peek_issuer`'s
+  `MalformedToken` is `AccreditationInvalid` with the same `__cause__`. What the suite already
+  refused (a `sub` that is not a string, a non-empty `sub`
   that disagrees with a non-empty `credentialSubject.id`) is refused as before, and an
   accreditation that names the accredited DID once (`sub` only, as the VCDM 1.1 JWT encoding
   does, or `credentialSubject.id` only) or twice is accepted as before.
@@ -76,6 +79,33 @@ All notable changes to **openvc** are documented here. The format follows
   so every shape this closes now raises out of `verify_ebsi_badge` even with
   `require_trust=False`, where `main` returned `trusted=True`; that is the stance #267 took
   (malformed input is not an untrusted issuer, so `require_trust=False` does not suppress it).
+
+  **Found by the adversarial review of the PR** (Opus, runnable repros; all four are small and
+  inside this change's surface). (1) `accreditedFor` was checked in one pass and then read by
+  the old flattener in a second, so a list handed in by an injected `decode` that iterates
+  differently the second time was checked as scoped and read as unrestricted (new on v5 and
+  Core v1 with this change, on v4 since #354; a hostile `decode` is caller code and could return
+  `{}` anyway): the flattener is gone and `_wire_accredited_for` checks and reads in **one
+  pass**, returning the types. (2) The scalar readers (#337) kept a `str` subclass as sent, so a
+  `body` from an injected `fetch` whose `.split` answered with another token made `peek_claims`
+  read one token while the suite verified another, and a ROOT-signed scoped token read as
+  unrestricted (pre-existing on every lane; moot for a hostile `fetch`, which also serves the
+  DID documents): every scalar is now an exact `str` (`str.__str__`, as `_require_did_ebsi`
+  does), types included. (3) The binding honours `credentialSubject.@id` as it does `id` (what
+  `id` aliases in JSON-LD; the suite honours it for `issuer`): sent, it must be the accredited
+  DID too. (4) A `credentialStatus` the status module refuses, on a ROOT-signed accreditation
+  with `resolve_status_list` given, escaped `verify_trust_chain` as `StatusListError`, an
+  `OpenvcError` that is neither an `EbsiError` nor a `TrustChainError` (pre-existing, every
+  lane); it is now `AccreditationInvalid` with that error as `__cause__`. The review also
+  confirmed, with repros, pre-existing gaps that are **not changed here** because each changes
+  what trust means and is the maintainer's call: the leaf and hop type matching intersects the
+  credential's whole `type` list with `accreditedFor.types`, and every recorded `accreditedFor`
+  starts with `VerifiableCredential`, which every credential also carries, so on real EBSI data
+  the intersection is never empty and the delegated scope collapses to the generic types (an
+  issuer accredited for `TrustedNodesList` only is trusted for an `OpenBadgeCredential`);
+  `issuerType` is compared with the lowercase `revoked` only, never allow-listed against the
+  roles, and does not limit delegation (a `TI` can accredit); an accreditor whose DID document
+  is a 404 is `HttpNotFound`, an `EbsiError` but not a `TrustChainError`.
 
   **Not changed.** The four recorded walks (the pilot's v5 response and the three Core v1
   nodes) parse to the same record. `vc`, `credentialSubject` and `accreditedFor` **absent**, an

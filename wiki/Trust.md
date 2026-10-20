@@ -262,8 +262,12 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   be exactly the accredited DID, and at least one must be sent, else `AccreditationInvalid`. A
   RootTAO's or TAO's accreditation that names nobody, carries an empty `sub`, or names another
   DID is refused however well it is signed, so a registry answer cannot replay it into another
-  issuer's record. Single-level trust (no `trust_anchors`) checks no accreditation signature
-  and no binding: it trusts what the registry says about the issuer.
+  issuer's record. That holds across DIDs: a RootTAO- or TAO-signed credential for the *same*
+  DID that carries no `accreditedFor` (an onboarding authorisation, say) still reads as the
+  unrestricted accreditation, because an absent `accreditedFor` means "no type restriction"
+  (a policy question that is open, not a binding gap). Single-level trust (no
+  `trust_anchors`) checks no accreditation signature and no binding: it trusts what the
+  registry says about the issuer.
 - **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
   named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
   recorded on 2026-10-16

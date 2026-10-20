@@ -164,20 +164,26 @@ def _require_object(value: Any, what: str) -> dict[str, Any]:
 
 def _wire_str(obj: dict[str, Any], key: str, what: str) -> str:
     """``obj[key]`` for a field the model declares ``str``: ``""`` when absent, else a
-    ``str`` or :class:`MalformedRegistryResponse` (``null`` is not a string)."""
+    ``str`` or :class:`MalformedRegistryResponse` (``null`` is not a string). The value
+    returned is an exact ``str`` (``str.__str__``, as :func:`_require_did_ebsi` does): a
+    ``str`` subclass handed in by an injected ``fetch`` could answer ``.split`` with one
+    token and ``.encode`` with another, so the token ``decode`` reads would not be the one the
+    proof suite verifies; read as its characters, it is one value."""
     value = obj.get(key, "")
     if not isinstance(value, str):
         raise MalformedRegistryResponse(f"{what} {key} is not a string: {safe_repr(value)}")
-    return value
+    return str.__str__(value)
 
 
 def _wire_opt_str(obj: dict[str, Any], key: str, what: str) -> str | None:
     """``obj[key]`` for a field the model declares ``str | None``: ``None`` when absent or
     ``null``, else a ``str`` or :class:`MalformedRegistryResponse`."""
     value = obj.get(key)
-    if value is not None and not isinstance(value, str):
+    if value is None:
+        return None
+    if not isinstance(value, str):
         raise MalformedRegistryResponse(f"{what} {key} is not a string: {safe_repr(value)}")
-    return value
+    return str.__str__(value)                     # an exact str, as in _wire_str
 
 
 def _wire_bool(obj: dict[str, Any], key: str, what: str) -> bool:
@@ -201,30 +207,38 @@ def _wire_object(obj: dict[str, Any], key: str, what: str) -> dict[str, Any]:
     return value
 
 
-def _wire_accredited_for(subject: dict[str, Any], what: str) -> list[Any]:
-    """``subject["accreditedFor"]``, checked before :func:`_flatten_accredited_for` reads
-    it, on every lane (:func:`_types_from_token`): ``[]`` when absent, else a list whose entries
-    are each a type string or an object whose ``types``, when sent, is a list of strings,
-    or :class:`MalformedRegistryResponse`. The flattener drops what it does not recognise,
-    and an accreditation with no types is the unrestricted one, so a single object, a bare
-    string or a ``types`` that is not a list would widen a scoped accreditation to every
-    credential type (and a ``types`` that is a number or ``null`` was a bare ``TypeError``,
-    one that is a string was split into characters). An empty list, and an object with no
-    ``types``, are still "no types"."""
+def _wire_accredited_for(subject: dict[str, Any], what: str) -> tuple[str, ...]:
+    """The credential types ``subject["accreditedFor"]`` authorises, on every lane
+    (:func:`_types_from_token`), checked and read in **one pass**: ``()`` when absent, else
+    the deduplicated types, in first-seen order, of a list whose entries are each a type string
+    (older shapes) or an object ``{schemaId, types: [...]}`` (EBSI v5) whose ``types``, when
+    sent, is a list of strings; anything else is :class:`MalformedRegistryResponse`. An
+    accreditation with no types is the unrestricted one, so a reader that dropped what it did
+    not recognise (the flattener this replaces) widened a single object, a bare string or a
+    ``types`` that is not a list to every credential type, and a ``types`` that is a number or
+    ``null`` was a bare ``TypeError``, one that is a string was split into characters. An
+    empty list, an object with no ``types`` and ``"types": []`` are still "no types". One pass,
+    because a list handed in by an injected ``decode`` can iterate differently the second time
+    (the review of PR #365): what is checked is what is read. Each type is returned as an exact
+    ``str``."""
     value = subject.get("accreditedFor", [])
     if not isinstance(value, list):
         raise MalformedRegistryResponse(f"{what} accreditedFor is not a list: {safe_repr(value)}")
+    types: list[str] = []
     for index, entry in enumerate(value):
         if isinstance(entry, str):
+            types.append(str.__str__(entry))
             continue
         if not isinstance(entry, dict):
             raise MalformedRegistryResponse(
                 f"{what} accreditedFor[{index}] is not a string or an object: {safe_repr(entry)}")
-        types = entry.get("types", [])
-        if not isinstance(types, list) or not all(isinstance(t, str) for t in types):
+        members = entry.get("types", [])
+        if not isinstance(members, list) or not all(isinstance(t, str) for t in members):
             raise MalformedRegistryResponse(
-                f"{what} accreditedFor[{index}] types is not a list of strings: {safe_repr(types)}")
-    return value
+                f"{what} accreditedFor[{index}] types is not a list of strings: "
+                f"{safe_repr(members)}")
+        types.extend(str.__str__(t) for t in members)
+    return tuple(dict.fromkeys(types))           # dedupe, preserve first-seen order
 
 
 def _require_did_ebsi(did: object) -> str:
@@ -322,24 +336,6 @@ def _on_contract_address(url: str, address: str) -> str:
     return url
 
 
-def _flatten_accredited_for(accredited_for: Any) -> tuple[str, ...]:
-    """The credential types an accreditation authorises.
-
-    EBSI v5 encodes ``accreditedFor`` as objects ``{schemaId, types: [...]}``;
-    older shapes used a plain list of type strings. Accept both and flatten to a
-    deduped tuple of type strings — the domain model only cares about the types.
-    """
-    if not isinstance(accredited_for, list):
-        return ()
-    types: list[str] = []
-    for entry in accredited_for:
-        if isinstance(entry, str):
-            types.append(entry)
-        elif isinstance(entry, dict):
-            types.extend(t for t in entry.get("types", []) if isinstance(t, str))
-    return tuple(dict.fromkeys(types))           # dedupe, preserve first-seen order
-
-
 def _types_from_token(body: str | None, decode: DecodeJwt) -> tuple[str, ...]:
     """The credential types an accreditation token (a TIR attribute ``body``) authorises,
     read the same way on every lane (v4, v5 and Core v1; #352).
@@ -354,16 +350,19 @@ def _types_from_token(body: str | None, decode: DecodeJwt) -> tuple[str, ...]:
 
     Then the shape. The claims must be an object, ``vc`` and ``credentialSubject`` must be
     objects when sent, and ``accreditedFor``, when sent, a list of type strings or objects
-    whose ``types`` is a list of strings (:func:`_wire_accredited_for`); anything else is
-    :class:`MalformedRegistryResponse`, never "no types". An accreditation with no types is the
-    **unrestricted** one, which single-level and recursive trust both accept for any
-    credential, so a ``vc`` or ``credentialSubject`` read as ``{}`` (what the walk did for a
-    non-object, an array of subjects included) or an ``accreditedFor`` the flattener dropped
-    widened a scoped accreditation to every type, and ``types`` of a number or ``null`` was a
-    bare ``TypeError``. ``vc``, ``credentialSubject`` and ``accreditedFor`` **absent**, an
-    empty ``accreditedFor``, an entry with no ``types`` and ``"types": []`` still read as "no
-    types" (the policy behind that, whether an accreditation without ``accreditedFor`` should
-    deny, is not decided here). Messages go through ``safe_repr`` / ``bounded_text``."""
+    whose ``types`` is a list of strings, checked and read in one pass
+    (:func:`_wire_accredited_for`); anything else is :class:`MalformedRegistryResponse`, never
+    "no types". An accreditation with no types is the **unrestricted** one, which single-level
+    and recursive trust both accept for any credential, so a ``vc`` or ``credentialSubject``
+    read as ``{}`` (what the walk did for a non-object, an array of subjects included) or an
+    ``accreditedFor`` the old flattener dropped widened a scoped accreditation to every type,
+    and ``types`` of a number or ``null`` was a bare ``TypeError``. ``vc``,
+    ``credentialSubject`` and ``accreditedFor`` **absent**, an empty ``accreditedFor``, an
+    entry with no ``types`` and ``"types": []`` still read as "no types": whether an
+    accreditation without ``accreditedFor`` should deny is a policy question not decided here,
+    and its consequence is that a RootTAO- or TAO-signed credential for the *same* DID that is
+    not an accreditation at all (an onboarding authorisation, say) reads as the unrestricted
+    one in that DID's record. Messages go through ``safe_repr`` / ``bounded_text``."""
     if not body:
         return ()
     try:
@@ -374,8 +373,7 @@ def _types_from_token(body: str | None, decode: DecodeJwt) -> tuple[str, ...]:
     claims = _require_object(claims, "TIR attribute token claims")
     vc = _wire_object(claims, "vc", "TIR attribute token")
     subject = _wire_object(vc, "credentialSubject", "TIR attribute token vc")
-    return _flatten_accredited_for(
-        _wire_accredited_for(subject, "TIR attribute token credentialSubject"))
+    return _wire_accredited_for(subject, "TIR attribute token credentialSubject")
 
 
 # --------------------------------------------------------------------------- #
