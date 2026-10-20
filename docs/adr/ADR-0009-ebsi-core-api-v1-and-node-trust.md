@@ -10,16 +10,19 @@ changes nothing under `src/`; the ES256K opt-in it accepted was implemented afte
 **Implemented so far:** D1 (the origin allow-list, #318), D4's fetch half (#320), the
 Core v1 adapters, the `legacy-pilot` name and the deprecation of `pilot` (D6 in part: #321,
 #325 parts 1 to 3; part 3, the node-derived `preprod` and `prod` rows, landed after #324), D8 (#323) and,
-in [#319](https://github.com/luisgf/openvc/issues/319) (unreleased, held), D2 (the pure verifier
+in [#319](https://github.com/luisgf/openvc/issues/319) (merged as #334), D2 (the pure verifier
 `openvc_ebsi.nodes.verify_node_list` over a minimal ECDSA-only OpenPGP reader) and D3's anchor
 and two version floors (the list itself is not vendored). #319's decisions 1 to 4 were taken
 as its stated defaults (P-256 and SHA-256 only; the pin justified by consistency across
 Europeum's channels only; required `last_accepted_*` pairs; `min_threshold` default 2; the
 extra reject rules), each listed under "Defaults pending maintainer confirmation" in the
-CHANGELOG. D5 (the node-bound client) and D7's remaining text are not implemented.
+CHANGELOG. D5 is implemented (#324: `node_client.for_nodes`, `EbsiHttpClient(valid_until=,
+clock=)`, `NodeListExpired`; its acceptance and open question 5 stay with the maintainer), and
+D7's text is written in `wiki/EBSI-Node-Trust.md`, threat-model R12 and the `nodes` /
+`node_client` docstrings.
 **Date:** 2026-10-16 (revised the same day after review: D2, D3, D5 and the measured facts)
-**Context owner:** `openvc_ebsi.http`, `openvc_ebsi.versioning` (and a future
-`openvc_ebsi.nodes`)
+**Context owner:** `openvc_ebsi.http`, `openvc_ebsi.versioning` (and
+`openvc_ebsi.nodes`, `openvc_ebsi.node_client`)
 **Milestone:** [Conformance & production readiness](https://github.com/luisgf/openvc/milestone/11)
 — refs [#113](https://github.com/luisgf/openvc/issues/113)
 **Extends:** ADR-0001 (HTTP client, host allow-list, TTL cache). **Applies:** the splitting
@@ -710,11 +713,12 @@ Golden fixtures are the drift alarm (invariant 6); the data to record exists now
    design the anchor interface now so it can take a second kind of root?
 8. **Scope of the live smoke.** Add Core v1 preprod and TNL verification to the weekly workflow
    now, or after the prod launch? (Preprod is public, read-only and holds 244 issuers; the TNL
-   pilot nodes hold almost nothing.)
+   pilot nodes hold almost nothing.) #347 added both now, as a default pending confirmation.
 
 ## Proposed follow-up issues
 
-Titles with one line each; none have been filed.
+Titles with one line each; filed as #316 to #326 on 2026-10-16 and shipped in 1.37.0 (#319 as
+#334, #324 as #349, #326 as #347).
 
 - `docs(ebsi): correct the #113 checklist and publish the node-trust recipe` — there is no
   production host to add; document the TNL verification for consumers (Option A).

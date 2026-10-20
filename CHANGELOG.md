@@ -366,8 +366,9 @@ All notable changes to **openvc** are documented here. The format follows
   collide with the older per-service `trusted-contracts-registry/v1` vocabulary. The
   defaults stay `"v5"`, so does `DidEbsiResolver`'s default `base`, and `EBSI_HOSTS` /
   `for_ebsi` are untouched: a Core v1 caller passes the node origin as `base`, and `didr`
-  and `tir`, together, over a client that allow-lists that node's host (a node-based
-  constructor is a later issue, #324 and #325). The `/v1` belongs to the adapter, and the
+  and `tir`, together, over a client that allow-lists that node's host (the node-based
+  constructor is `for_nodes`, #324, later in this release; the node-derived names are #325
+  part 3). The `/v1` belongs to the adapter, and the
   path never carries the registry key `core-v1`. The v5 lane (`DidRegistryV5`, `TirV4`,
   `TirV5`) and its fixtures are unchanged.
   - **One shared walk.** The v5 attribute walk (the page and item caps,
@@ -626,7 +627,8 @@ All notable changes to **openvc** are documented here. The format follows
     `ClaimsInvalid`: PyJWT's own `InvalidKeyError` for a P-256 key under `ES256K` would have
     been mapped to `ClaimsInvalid` by `_decode`, the wrong family for a key/alg mismatch. A
     JWK that is not an object is a `ProofError` too (the classic algorithms' branches still
-    raise a bare `AttributeError` for `None` on the direct suite API, as before; untouched), and
+    raised a bare `AttributeError` for `None` on the direct suite API at the time; #341, later in
+    this release, made a JWK that is not an object a `ProofError` on every algorithm), and
     a private `d` member is ignored, never loaded. The reverse direction was already pinned and is now tested: `ES256`, `ES384`,
     `EdDSA` and `Ed25519` headers with a secp256k1 JWK are a `ProofError`. A DID document that
     holds a secp256k1 and a P-256 key (the recorded preprod RootTAO's) fails the same way when
@@ -648,7 +650,8 @@ All notable changes to **openvc** are documented here. The format follows
     silently widens the allow-list. The check is `type(flag) is not bool`, not `isinstance`, and
     the message names the type, never the value. `allow_pq` has the same laxity on
     `VcJwtProofSuite` and `SdJwtVcProofSuite`; it predates this change and tightening it would
-    change what a default caller can pass, so it is left for a separate change.
+    change what a default caller can pass, so it is left for a separate change. That change is
+    #341, later in this release.
   - **One PyJWT path, one claim gate.** Verification runs through the same `_JWT.decode` as
     ES256, so `exp`/`nbf`/`aud`/`sub`/`jti`, the `iss` reconciliation, `crit`, `typ` and the
     SD-JWT-marker gates behave exactly as for ES256 (a 33-case claim matrix and a 15-shape
@@ -1045,8 +1048,8 @@ Each is one value or table away from the other option. None changes anything tha
       changing the shared error path, which still parses it for `type`.
   11. *Not done here, on purpose:* the issue's three request-path fixes. The `Retry-After` bound
       and parsing (a, b) are #335's; the unbounded error-body read (c) already landed with #321.
-      `docs/audit/assurance.md` section 4 gets its entry after the adversarial review, and ADR-0009
-      is not edited.
+      `docs/audit/assurance.md` section 4 got its entry at release time (from the review round of
+      PR #349), and ADR-0009's status now records D5 as implemented.
   12. *`for_nodes` checks every argument, with bounds of its own* (review round). The bounds are
       mine: durations at most 10**9 s (about 31 years; it only keeps `float()` and a socket
       timeout in range), a `user_agent` of 1 to 256 characters of visible ASCII (measured with
@@ -1152,13 +1155,15 @@ Each is one value or table away from the other option. None changes anything tha
   `str` or a `str` subclass (a `(str, Enum)` member, say) that holds a name is unaffected.
 - **Defaults taken, pending maintainer confirmation.** #325 leaves three switches to the
   maintainer; Part 1 ships only the unconditional one and takes the non-breaking option on the
-  other two, so nothing is deprecated or removed here and each can still go either way:
+  other two, so nothing is deprecated or removed here and each can still go either way (Part 2,
+  later in this release, took 2b for `pilot`: see its entry):
   1. *Switch 1, add `legacy-pilot`:* done, as above.
   2. *Switch 2, `pilot`: 2a (taken)* leaves `pilot` silent and documents it as the same lane
      as `legacy-pilot`. The alternative, 2b, would emit a `DeprecationWarning` naming
      `legacy-pilot` from `for_ebsi("pilot")` (MINOR; the versioning policy's steps 1 to 3 would
      apply: `### Deprecated` here with the earliest removal, removal only at a MAJOR).
-     A test pins that `pilot` is silent, so adding the warning later is a conscious edit.
+     A test pins that `pilot` is silent, so adding the warning later is a conscious edit (Part 2
+     made that edit).
   3. *Switch 3, `production` and `conformance`: 3a (taken)* keeps both rows, with the same
      allow-list rule, and documents them plainly (`wiki/Trust.md`, `for_ebsi`'s docstring,
      `environments.py`). The alternatives: 3b, a `DeprecationWarning` from `for_ebsi` (there is
@@ -1171,8 +1176,8 @@ Each is one value or table away from the other option. None changes anything tha
 
   **Migration notes, whichever option is chosen later.** (i) In 1.x the Core API pilot that the
   Trusted Nodes List calls `pilot` has no `for_ebsi` spelling, because `pilot` stays the legacy
-  lane until a MAJOR release. The node-based constructor planned in #324 takes the list's own
-  spelling, so `for_ebsi` need not carry it; a 1.x spelling would be a new name for the
+  lane until a MAJOR release. The node-based constructor, `for_nodes` (#324, this release), takes
+  the list's own spelling, so `for_ebsi` need not carry it; a 1.x spelling would be a new name for the
   maintainer to choose (ADR-0009's end state calls it `pilot`). (ii) At that MAJOR (the 2.0
   window, [#74](https://github.com/luisgf/openvc/issues/74); not decided), `pilot` may change
   meaning. A caller who ignored the warning (2b) or the documentation (2a) would then read a
@@ -1326,8 +1331,8 @@ Each is one value or table away from the other option. None changes anything tha
 
   **Migration notes.** (i) In 1.x the Core API pilot that the Trusted Nodes List calls `pilot`
   has no `for_ebsi` spelling, because `pilot` stays the legacy lane until the MAJOR release.
-  The node-based constructor planned in #324 takes the list's own spelling, so `for_ebsi` need
-  not carry it; a 1.x spelling would be a new name for the maintainer to choose (ADR-0009's end
+  The node-based constructor, `for_nodes` (#324, this release), takes the list's own spelling,
+  so `for_ebsi` need not carry it; a 1.x spelling would be a new name for the maintainer to choose (ADR-0009's end
   state calls it `pilot`). (ii) At that MAJOR (the 2.0 window,
   [#74](https://github.com/luisgf/openvc/issues/74)) `pilot` changes meaning. A caller who
   ignored the warning would then read a different ledger, where ADR-0009 measured the legacy DID
@@ -1617,7 +1622,8 @@ Each is one value or table away from the other option. None changes anything tha
     `openvc_ebsi/verify.py` repeat an issuer-controlled value unbounded as well, and are not
     touched either (neither is a URL or host): `IssuerNotTrusted` formats the credential's
     type list (a 70 000-character `type` entry gave a 70 107-character message) and
-    `CredentialRevoked` its `id`. The other option is a `safe_repr` on each, in its own change.
+    `CredentialRevoked` its `id`. The other option is a `safe_repr` on each, in its own change:
+    that change is #351, later in this release.
   - **The #318 entry is superseded, not rewritten.** Its sentence that the non-https
     message "quotes it as before" is superseded by this entry: the message quotes the URL,
     cut past 200 characters.
@@ -2113,7 +2119,8 @@ Each is one value or table away from the other option. None changes anything tha
 - **`docs/audit/threat-model.md`**: one dated sentence on the EBSI client in section 7 (only
   `api-pilot.ebsi.eu` of the three registered hosts serves a registry as of 2026-10-16), and a
   new residual, **R12**: a signed node list authenticates the operator, not the registry's data
-  (ADR-0009 D7). R4's wording is unchanged (the ADR leaves it to when the adapters land).
+  (ADR-0009 D7). R4's wording was unchanged by this entry; #318 and #322, later in this release,
+  rewrote it.
   `docs/audit/README.md` counts R1–R12. No `assurance.md` line: nothing in `src/` changed.
 - **Maintainer decisions taken as defaults** (recorded here and in the PR; each can be
   reversed without touching the rest): the key-list key's fingerprint is quoted **as a dated
@@ -2165,12 +2172,9 @@ Each is one value or table away from the other option. None changes anything tha
   `wiki/Trust.md`: a pointer and a `no-run` snippet (verify, `for_nodes`, `run`) under "Which node?
   Verifying the Trusted Nodes List". `docs/audit/threat-model.md` (the EBSI client paragraph:
   an allow-list built from external data, the per-walk origin pin, the expiry gate, the
-  residuals) and `docs/audit/assurance.md` section 3 (the new tests); section 4 gets its entry
-  after the adversarial review. ADR-0009 is not edited: after the merge the maintainer records
-  the answer to open question 5 and accepts D5.
-
-### Documentation
-
+  residuals) and `docs/audit/assurance.md` section 3 (the new tests); section 4 got its entry at
+  release time. ADR-0009's status now records D5 as implemented; the answer to open question 5
+  and D5's acceptance stay with the maintainer.
 - `wiki/Trust.md`: "Which node? Verifying the Trusted Nodes List" (the example is
   `no-run`: it needs the four files).
 - `docs/audit/threat-model.md` (section 5 sentence, section 6 parser row) and

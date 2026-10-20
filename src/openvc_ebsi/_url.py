@@ -5,7 +5,7 @@ Two checks in this package look at the same URL and must agree on what it names:
 
   * the HTTP client's SSRF guard (``http.EbsiHttpClient._guard_host``), which refuses a
     request that is not ``https`` on an allow-listed host at port 443 (#318), and
-  * the origin pin of the TIR v5 adapter (``versioning._origin``), which keeps a registry
+  * the origin pin of the TIR walk, v5 and Core v1 (``versioning._origin``), which keeps a registry
     walk on the node it started on (#172, #253).
 
 Both read the URL here, so a rule about scheme, host or port (an absent https port is 443,

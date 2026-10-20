@@ -223,7 +223,9 @@ finite input", with no explicit constant.
   (`for_ebsi` seeds it from one named environment of `src/openvc_ebsi/environments.py`:
   `legacy-pilot`, the default, and its deprecated alias `pilot` (a `DeprecationWarning` from
   `for_ebsi`, same allow-list) are `api-pilot.ebsi.eu`; `conformance` is
-  `api-conformance.ebsi.eu`; `production` is `api.ebsi.eu`; any other name is
+  `api-conformance.ebsi.eu`; `production` is `api.ebsi.eu`; `preprod` and `prod` are
+  node-derived, with no fixed host, so `for_ebsi` refuses them with `NodeDerivedEnvironment`
+  and `for_nodes` builds their client from a verified node list; any other name is
   `UnknownEbsiEnvironment`; port 443 only; a Core API v1 caller supplies the host of each node it
   uses, R4), redirects off, TLS-verify on,
   5 MiB cap, keeps no cookie jar (a `Set-Cookie` is dropped and nothing is sent back, so a
@@ -293,7 +295,7 @@ finite input", with no explicit constant.
   after every chunk. The list is fetched by a **separate**
   client, `for_tnl()`, whose allow-list is the constant `{tnl.ebsi.eu}` and nothing else,
   never a host taken from a list, so a poisoned node list cannot widen where the list itself
-  is fetched and R4's wording is unchanged; it keeps no cookies (that client: a hand-built
+  is fetched (R4, below, covers list-derived hosts); it keeps no cookies (that client: a hand-built
   one with the same allow-list keeps what its jar accepts, until #317), sends
   `Accept-Encoding: identity`, and `get_tnl_files` refuses a client whose allow-list is
   anything else, before any request. The helper never fetches the pinned key-list key. **It authenticates
@@ -374,7 +376,7 @@ finite input", with no explicit constant.
   (D7: a dishonest listed node can still serve another key for a DID), the chain's real root
   is the single anchor key, and a caller that persists nothing is bounded only by the two
   shipped version floors, `max_age` and `min_threshold`. The parser surface is in §6; the
-  host-name allow-list itself, and R4, are unchanged.
+  allow-list itself (an origin allow-list since #318) and R4 are as written below.
   **An allow-list may now be built from a verified list** (#324, v1.37.0,
   `openvc_ebsi.node_client.for_nodes`), which makes external data the source of an SSRF
   allow-list, so the client re-validates the result before it uses it (a result can be built by
@@ -502,8 +504,8 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   address with the TLS server name, the certificate check and `Host` still the host name
   (no window between the check and the connect; `Connection: close` on every pinned
   request, because httpx pools by address and a reused connection would answer for a
-  second name with no certificate check for it). Clients built from a verified node list
-  (#324) are expected to enable it; that is #324's decision. *Residual:* off for a
+  second name with no certificate check for it). `for_nodes` (#324) enables it by
+  default (opt out with `address_guard=None`). *Residual:* off for a
   hand-built allow-list (DNS rebinding of a listed host is out of scope of the default by
   design, and a reviewer should confirm the threat model accepts that); no defence against an attacker who also holds a valid
   certificate for a public address, or a dishonest listed node; it needs the local
@@ -790,7 +792,8 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   the threshold and signs any list, and the two-custodian threshold protects only against
   compromise of the custodians. DNS or certificate compromise of one listed host is not
   defended either (R4), and a hand-built allow-list has no expiry bound. Not a defect in
-  `src/`, which builds no node set from the list yet: a boundary the recipe states, in
+  `src/`, whose `for_nodes` builds a node-bound client from a verified list but compares no
+  reads across nodes (ADR-0009 open question 5): a boundary the recipe states, in
   [EBSI node trust](https://github.com/luisgf/openvc/wiki/EBSI-Node-Trust).
 
 ## 10. Out of scope

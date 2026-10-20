@@ -32,7 +32,7 @@ Areas most relevant to security, and how the library is designed to fail closed:
   explicit, VC-JWT-only `VcJwtProofSuite(allow_es256k=True)` opt-in) — and reconciles the JWT
   envelope with the embedded credential. The Data Integrity suite verifies
   over the RDF (or JCS) canonical form.
-- **SSRF.** The EBSI client enforces an https-only host allow-list. The separate
+- **SSRF.** The EBSI client enforces an https-only origin allow-list (listed host, port 443, no userinfo). The separate
   `did:web` fetch (`openvc.fetch`) is https-only, refuses redirects, blocks
   private/loopback/link-local/reserved/multicast addresses, and pins the
   connection to the validated IP (closing the DNS-rebinding TOCTOU window).

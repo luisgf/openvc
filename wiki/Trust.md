@@ -217,8 +217,9 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   multicast, CGNAT, site-local `fec0::/10`, NAT64, 6to4, Teredo and the rest), and
   connects to one validated
   address while the TLS name, the certificate check and `Host` stay the host name. It is
-  **off by default** (a deployment with split-horizon DNS or a private mirror would
-  break), it sends `Connection: close` (no keep-alive: a reused connection would answer
+  **off by default** on `EbsiHttpClient` and `for_ebsi` (a deployment with split-horizon DNS
+  or a private mirror would break) and **on by default** in `for_nodes` (opt out with
+  `address_guard=None`), it sends `Connection: close` (no keep-alive: a reused connection would answer
   for a second name with no certificate check for it), it rotates through the validated
   addresses on a retry (one address per attempt, so under the default `RetryPolicy` only
   the first three addresses of an answer are ever tried; set `RetryPolicy(attempts=...)`
@@ -275,8 +276,9 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
     with one of them.
   - `conformance` (`api-conformance.ebsi.eu`) and `production` (`api.ebsi.eu`) are kept as
     they were, with the same allow-list rule, and without a warning or a refusal (the
-    maintainer's decision of 2026-10-19: documentation only). There is no replacement to
-    name for either until the node-based client (#324). A client built from either is not
+    maintainer's decision of 2026-10-19: documentation only). There is no replacement
+    name for either: the node-based client, `for_nodes` (#324), takes a verified node list,
+    not an environment name. A client built from either is not
     known to complete a request today. One 12-second probe of the conformance host (a single
     attempt from one place, so possibly transient) completed no TCP connection; the
     certificate the production host presented did not cover its name, and none of the 45 node
