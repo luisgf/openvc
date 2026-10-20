@@ -4,7 +4,7 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.37.0] — unreleased
+## [1.37.0] — 2026-10-21
 
 ### Security
 
@@ -396,6 +396,20 @@ All notable changes to **openvc** are documented here. The format follows
   guard on: the request targets the validated address, carries `Connection: close` and no
   userinfo, and a host that resolves to a non-public address raises `HttpForbiddenAddress`
   where it used to be connected to.
+
+- **Known limitations of EBSI trust evaluation, found by the adversarial review of #365 and
+  NOT fixed in 1.37.0** (pre-existing in every released version; each is an open issue with a
+  measurement step and a policy decision for the maintainer):
+  [#367](https://github.com/luisgf/openvc/issues/367) the type match intersects the
+  credential's whole `type` list with `accreditedFor.types`, and on real EBSI data both carry
+  the generic `VerifiableCredential` / `VerifiableAttestation`, so an accreditation scoped to
+  another type still authorises the credential (single-level and recursive);
+  [#368](https://github.com/luisgf/openvc/issues/368) an accreditation token with no
+  `accreditedFor` is the unrestricted one and `vc.type` is never checked against the role, so
+  a RootTAO- or TAO-signed credential of another kind for the same DID reads as an
+  accreditation; [#358](https://github.com/luisgf/openvc/issues/358) `issuerType` is compared
+  with the lowercase `revoked` only and never limits delegation. Until they land, treat EBSI
+  issuer trust as "accredited by a trusted chain", not as "accredited for this type".
 
 ### Added
 
@@ -991,7 +1005,8 @@ Each is one value or table away from the other option. None changes anything tha
    like a name and an e-mail address; they are covered by the signatures, so they stay, and
    they are not reproduced anywhere in the repository's prose. The upstream repository
    declares **no licence** for these files. Keeping the real chain, or replacing it by a
-   synthetic one, is for the maintainer before release.
+   synthetic one, is for the maintainer before release. 1.37.0 ships with the real chain; the sdist does
+   not carry `tests/fixtures`, so PyPI does not redistribute it.
 8. **Stated divergences from GnuPG** (nothing to decide; the reader is not a keyring). In the
    cases measured the reader accepts and GnuPG 2.5.24 rejects: (a) a signature whose
    creation time is 0 or earlier than the signing key's creation time; (b) a custodian key
@@ -9182,6 +9197,7 @@ optional read-only EBSI plugin.
 - Published on PyPI as the **`openvc-core`** distribution; the import package
   stays `openvc` (`pip install openvc-core`, then `import openvc`).
 
+[1.37.0]: https://github.com/luisgf/openvc/releases/tag/v1.37.0
 [1.36.0]: https://github.com/luisgf/openvc/releases/tag/v1.36.0
 [1.35.1]: https://github.com/luisgf/openvc/releases/tag/v1.35.1
 [1.35.0]: https://github.com/luisgf/openvc/releases/tag/v1.35.0
