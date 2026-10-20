@@ -72,7 +72,10 @@ All notable changes to **openvc** are documented here. The format follows
   OpenvcError` still catches it, and only a caller catching `MalformedToken` around those two
   entry points changes. Under `for_nodes` the class is not a node failure (`classify` returns
   `None` for it), so it reaches the caller and is not failed over, like every other malformed
-  200.
+  200. One consequence worth saying: `MalformedRegistryResponse` is not a `TrustChainError`,
+  so every shape this closes now raises out of `verify_ebsi_badge` even with
+  `require_trust=False`, where `main` returned `trusted=True`; that is the stance #267 took
+  (malformed input is not an untrusted issuer, so `require_trust=False` does not suppress it).
 
   **Not changed.** The four recorded walks (the pilot's v5 response and the three Core v1
   nodes) parse to the same record. `vc`, `credentialSubject` and `accreditedFor` **absent**, an
