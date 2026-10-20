@@ -1519,7 +1519,17 @@ Each is one value or table away from the other option. None changes anything tha
   issue's table). The same method read the decoded accreditation token as
   `decode(body).get("vc", {}).get("credentialSubject", {})`, the same bare `AttributeError`
   for a `vc` or `credentialSubject` that is sent and is a list, a string, a number or `null`
-  (six shapes measured), a second gap found while checking this one.
+  (six shapes measured), a second gap found while checking this one. The adversarial review
+  of this PR found a third, one level deeper, in the same token read: an `accreditedFor` of
+  a shape the flattener does not recognise was dropped, and an accreditation with no types is
+  the **unrestricted** one, which single-level and recursive trust both accept for any
+  credential. Measured with real P-256 signatures through `verify_trust_chain`: a scoped
+  accreditation whose `accreditedFor` was a single object instead of a list of them
+  (`{"schemaId": ..., "types": ["OtherType"]}`), a bare string, or an entry with `"types": ""`
+  read as `types=()` and was **trusted for every type** in recursive mode, where the same
+  accreditation as a list of objects was refused as `NoTrustedAnchor`; an object whose `types`
+  was `7`, `null`, `true` or `1.5` was a bare `TypeError` out of `issuer_record` (past every
+  `except EbsiError`), and a `types` that was a string was split into one-character "types".
 
   `attributes` **absent** keeps meaning "no attributes" (`has_attributes` false, no
   accreditations, as before), and so does `[]`. **Present**, it must be a list, and each entry
@@ -1527,8 +1537,13 @@ Each is one value or table away from the other option. None changes anything tha
   wrong whatever their truth value. Anything else is `MalformedRegistryResponse` (an
   `EbsiError`), shown through `safe_repr` (a 100 000-character string comes back as a message
   under 300 characters, and a value whose `repr()` raises does not raise from the `raise`).
-  The entry's message carries its index (`attributes[1] is not an object`). Inside the token,
-  `vc` and `credentialSubject` absent still read as "no types", and sent they must be objects.
+  The entry's message carries its index (`attributes[1] is not an object`), and the shape of
+  **every** entry is checked before any token is decoded, so a malformed token earlier in the
+  list no longer wins and raises the proof suite's `MalformedToken` (an `OpenvcError`, not an
+  `EbsiError`) in place of the shape error. Inside the token, `vc` and `credentialSubject`
+  absent still read as "no types", and sent they must be objects; `accreditedFor` absent, `[]`,
+  an object with no `types` and `"types": []` still read as "no types", and sent it must be a
+  list whose entries are type strings or objects, an object's `types` a list of strings.
   `parse_issuer` also checks that the response it is handed is an object, as the v5 one does
   (the resolver already did, so this only types a direct call).
 
@@ -1540,10 +1555,13 @@ Each is one value or table away from the other option. None changes anything tha
   accreditation with no type restriction; v4 does neither, because a skip here would turn a
   crash into the widest accreditation there is.
 
-  Not changed: v5 and Core v1 (their walk is untouched); `has_attributes` is still
-  `bool(accreditations)`, so an `{}` entry, which is an object, is still an accreditation of
-  defaults (#337); `issuerType` is not checked against the trust roles (a separate question,
-  not part of this fix). There is no recorded TIR v4 response in the repository: the v4 tests
+  Not changed: v5 and Core v1 (their walk is untouched, and so is the shared
+  `_flatten_accredited_for`, which they call too: v4 checks the shape before calling it, so
+  the same `accreditedFor` gaps stay open on those lanes); an empty `accreditedFor` is still
+  the unrestricted accreditation (whether it should deny is a policy question);
+  `has_attributes` is still `bool(accreditations)`, so an `{}` entry, which is an object, is
+  still an accreditation of defaults (#337); `issuerType` is not checked against the trust
+  roles (a separate question, not part of this fix). There is no recorded TIR v4 response in the repository: the v4 tests
   are synthetic bodies around the recorded v5 accreditation tokens, and the recorded
   responses of the other lanes parse as before.
 

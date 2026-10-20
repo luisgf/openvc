@@ -22,6 +22,17 @@ The readings pinned here:
   value instead (an accreditation with no type restriction); v4 rejects it, because a skip
   here would turn a crash into the widest accreditation there is. That the v5 walk skips is
   NOT touched by this change;
+* ``accreditedFor`` is read the same way (the adversarial review of the PR): ABSENT, ``[]``, an
+  object with no ``types`` and ``types: []`` still read as "no types"; SENT, it must be a list
+  whose entries are type strings or objects, and an object's ``types`` a list of strings. The
+  flattener used to drop what it did not recognise, and "no types" is the UNRESTRICTED
+  accreditation, so a single object, a bare string or ``"types": ""`` widened a scoped
+  accreditation to every credential type; ``types`` of ``7`` or ``null`` was a bare
+  ``TypeError`` and a string ``types`` was split into characters. The shared flattener (v5 and
+  Core v1 call it too) is NOT touched; v4 checks the shape before it is called;
+* every entry's shape is checked before any token is decoded, so a malformed record is
+  ``MalformedRegistryResponse`` whatever precedes the bad entry (a malformed token earlier in
+  the list used to win and raise the proof suite's error);
 * the message shows the value through ``safe_repr``: bounded, and it cannot raise from the
   very ``raise`` meant to report a value whose ``repr()`` raises.
 
@@ -196,7 +207,6 @@ def test_unknown_members_of_the_response_and_of_an_entry_are_ignored() -> None:
     pytest.param({}, id="no-vc"),
     pytest.param({"vc": {}}, id="vc-empty"),
     pytest.param({"vc": {"credentialSubject": {}}}, id="subject-empty"),
-    pytest.param({"vc": {"credentialSubject": {"accreditedFor": 7}}}, id="accreditedFor-7"),
 ])
 def test_an_absent_vc_or_subject_still_reads_as_no_types(claims: dict[str, Any]) -> None:
     record = _parse(_body([{"hash": "h", "issuerType": "TI", "body": "tok"}]),
@@ -251,14 +261,15 @@ def test_an_entry_that_is_not_an_object_is_malformed(entry: Any) -> None:
 
 @pytest.mark.parametrize("entry", NOT_OBJECTS)
 def test_one_bad_entry_rejects_the_whole_record(entry: Any) -> None:
-    # the good entry comes FIRST and parses (its token is decoded); the bad one is second
+    # the good entry comes FIRST; the bad one is second. The shape of every entry is checked
+    # before any token is decoded, so nothing is read and nothing is returned
     good = copy.deepcopy(ATTRIBUTES[0])
     decode = CountingDecode()
     with pytest.raises(MalformedRegistryResponse, match=r"attributes\[1\] is not an object"
                        ) as info:
         _parse(_body([good, entry]), decode=decode)
     assert type(info.value) is MalformedRegistryResponse
-    assert decode.tokens == [good["body"]]       # the first entry WAS read, none is returned
+    assert decode.tokens == []
 
 
 def test_the_bad_entry_is_found_after_many_good_ones() -> None:
@@ -314,6 +325,101 @@ def test_a_bad_token_shape_in_a_later_entry_rejects_the_record() -> None:
     claims = iter([{"vc": {"credentialSubject": {}}}, {"vc": []}])
     with pytest.raises(MalformedRegistryResponse, match="vc is not an object"):
         _parse(_body([_entry(), _entry()]), decode=lambda token: next(claims))
+
+
+# --------------------------------------------------------------------------- #
+# `accreditedFor`: the member whose misreading widens an accreditation
+# --------------------------------------------------------------------------- #
+
+def _types(accredited_for: Any = ...) -> tuple[str, ...]:
+    subject: dict[str, Any] = {} if accredited_for is ... else {"accreditedFor": accredited_for}
+    claims = {"vc": {"credentialSubject": subject}}
+    record = _parse(_body([_entry()]), decode=lambda token: claims)
+    return record.accreditations[0].credential_types
+
+
+@pytest.mark.parametrize("accredited_for, expected", [
+    pytest.param(..., (), id="absent"),
+    pytest.param([], (), id="empty-list"),
+    pytest.param([{}], (), id="object-without-types"),
+    pytest.param([{"schemaId": "s"}], (), id="schema-only"),
+    pytest.param([{"types": []}], (), id="empty-types"),
+    pytest.param(["A", "B"], ("A", "B"), id="plain-strings"),
+    pytest.param([{"schemaId": "s", "types": ["A", "B"]}], ("A", "B"), id="objects"),
+    pytest.param(["A", {"types": ["B", "A"]}, {"types": ["C"]}], ("A", "B", "C"), id="mixed"),
+])
+def test_the_accredited_for_shapes_that_were_read_keep_their_reading(
+        accredited_for: Any, expected: tuple[str, ...]) -> None:
+    assert _types(accredited_for) == expected
+
+
+# a value that is not a list, including the ones that read as "no types" before
+NOT_ACCREDITED_FOR = [_p(v) for v in (
+    None, 7, 0, 1.5, True, False, "A", "", {}, {"schemaId": "s", "types": ["A"]})]
+
+
+@pytest.mark.parametrize("value", NOT_ACCREDITED_FOR)
+def test_an_accredited_for_that_is_not_a_list_is_malformed(value: Any) -> None:
+    with pytest.raises(MalformedRegistryResponse, match="accreditedFor is not a list") as info:
+        _types(value)
+    assert type(info.value) is MalformedRegistryResponse
+
+
+@pytest.mark.parametrize("entry", [_p(v) for v in (None, 7, 0, 1.5, True, False, [], ["A"])])
+def test_an_accredited_for_entry_that_is_not_a_string_or_object_is_malformed(entry: Any) -> None:
+    with pytest.raises(MalformedRegistryResponse,
+                       match=r"accreditedFor\[1\] is not a string or an object") as info:
+        _types(["A", entry])                  # the good entry first: nothing partial comes back
+    assert type(info.value) is MalformedRegistryResponse
+
+
+@pytest.mark.parametrize("types", [_p(v) for v in (
+    None, 7, 0, 1.5, True, False, "A", "", {}, {"A": 1}, [7], [None], ["A", 7], [["A"]],
+    [True])])
+def test_a_types_that_is_not_a_list_of_strings_is_malformed(types: Any) -> None:
+    # 7 / null / true / 1.5 were a bare TypeError; "A" was split into characters; {"A": 1} read
+    # its keys; "" and {} read as "no types", the unrestricted accreditation
+    with pytest.raises(MalformedRegistryResponse,
+                       match=r"accreditedFor\[0\] types is not a list of strings") as info:
+        _types([{"schemaId": "s", "types": types}])
+    assert type(info.value) is MalformedRegistryResponse
+
+
+def test_a_malformed_accredited_for_is_an_ebsi_error_through_the_resolver() -> None:
+    for accredited_for in ({"schemaId": "s", "types": ["Other"]}, "Other",
+                           [{"types": 7}], [{"types": ""}]):
+        claims = {"vc": {"credentialSubject": {"accreditedFor": accredited_for}}}
+        fetch = StubFetch({ISSUER_URL: _body([_entry()])})
+        resolver = DidEbsiResolver(fetch, lambda token: claims, base=BASE, tir=TirV4())
+        with pytest.raises(MalformedRegistryResponse) as info:
+            resolver.issuer_record(DID)
+        assert type(info.value) is MalformedRegistryResponse
+        assert fetch.calls == [ISSUER_URL]
+
+
+def test_a_malformed_accredited_for_in_a_later_entry_rejects_the_record() -> None:
+    claims = iter([{"vc": {"credentialSubject": {"accreditedFor": ["A"]}}},
+                   {"vc": {"credentialSubject": {"accreditedFor": "A"}}}])
+    with pytest.raises(MalformedRegistryResponse, match="accreditedFor is not a list"):
+        _parse(_body([_entry(), _entry()]), decode=lambda token: next(claims))
+
+
+def test_the_shape_of_every_entry_is_checked_before_any_token_is_decoded() -> None:
+    # a malformed TOKEN earlier in the list used to raise the proof suite's MalformedToken
+    # (not an EbsiError) before the later entry's shape was looked at
+    decode = CountingDecode()
+    with pytest.raises(MalformedRegistryResponse, match=r"attributes\[1\] is not an object"):
+        _parse(_body([{"hash": "h", "body": "not-a-jws"}, 7]), decode=decode)
+    assert decode.tokens == []
+
+
+def test_a_long_accredited_for_is_not_echoed_in_full() -> None:
+    for value in ("x" * 100_000, [{"types": "x" * 100_000}], [RaisingRepr()],
+                  [{"types": RaisingRepr()}]):
+        with pytest.raises(MalformedRegistryResponse) as info:
+            _types(value)
+        assert type(info.value) is MalformedRegistryResponse
+        assert "x" * 201 not in str(info.value) and len(str(info.value)) < 400
 
 
 # --------------------------------------------------------------------------- #

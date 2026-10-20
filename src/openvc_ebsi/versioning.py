@@ -195,6 +195,32 @@ def _wire_object(obj: dict[str, Any], key: str, what: str) -> dict[str, Any]:
     return value
 
 
+def _wire_accredited_for(subject: dict[str, Any], what: str) -> list[Any]:
+    """``subject["accreditedFor"]`` for the v4 lane, checked before
+    :func:`_flatten_accredited_for` reads it: ``[]`` when absent, else a list whose entries
+    are each a type string or an object whose ``types``, when sent, is a list of strings,
+    or :class:`MalformedRegistryResponse`. The flattener drops what it does not recognise,
+    and an accreditation with no types is the unrestricted one, so a single object, a bare
+    string or a ``types`` that is not a list would widen a scoped accreditation to every
+    credential type (and a ``types`` that is a number or ``null`` was a bare ``TypeError``,
+    one that is a string was split into characters). An empty list, and an object with no
+    ``types``, are still "no types"."""
+    value = subject.get("accreditedFor", [])
+    if not isinstance(value, list):
+        raise MalformedRegistryResponse(f"{what} accreditedFor is not a list: {safe_repr(value)}")
+    for index, entry in enumerate(value):
+        if isinstance(entry, str):
+            continue
+        if not isinstance(entry, dict):
+            raise MalformedRegistryResponse(
+                f"{what} accreditedFor[{index}] is not a string or an object: {safe_repr(entry)}")
+        types = entry.get("types", [])
+        if not isinstance(types, list) or not all(isinstance(t, str) for t in types):
+            raise MalformedRegistryResponse(
+                f"{what} accreditedFor[{index}] types is not a list of strings: {safe_repr(types)}")
+    return value
+
+
 def _require_did_ebsi(did: object) -> str:
     """*did*, if it is a ``did:ebsi`` identifier; else :class:`DidResolutionError`.
 
@@ -417,8 +443,10 @@ class TirV4(TirAdapter):
     when present it must be a list of objects, else :class:`MalformedRegistryResponse`.
     One entry that is not an object rejects the whole record, as one entry with a wrong
     scalar does (#337): a response whose shape is wrong is not a record to trust in part
-    (#352). The same holds inside an accreditation token: a ``vc`` or ``credentialSubject``
-    that is sent and is not an object rejects the record, never reads as "no types"."""
+    (#352). Every entry's shape is checked before any token is decoded. The same holds
+    inside an accreditation token: a ``vc``, ``credentialSubject`` or ``accreditedFor`` that
+    is sent in a shape the reader does not know rejects the record, never reads as "no
+    types", which single-level and recursive trust both accept for any credential."""
     version = "v4"
 
     def issuer_url(self, base: str, did: str) -> str:
@@ -431,11 +459,12 @@ class TirV4(TirAdapter):
         if not isinstance(attributes, list):
             raise MalformedRegistryResponse(
                 f"TIR issuer response attributes is not a list: {safe_repr(attributes)}")
-        accs = []
-        for index, a in enumerate(attributes):
+        for index, a in enumerate(attributes):       # every entry's shape, before any token is read
             if not isinstance(a, dict):
                 raise MalformedRegistryResponse(
                     f"TIR issuer response attributes[{index}] is not an object: {safe_repr(a)}")
+        accs = []
+        for a in attributes:
             body = _wire_opt_str(a, "body", "TIR attribute")     # typed before `decode` sees it
             accs.append(Accreditation(
                 attribute_id=_wire_str(a, "hash", "TIR attribute"),
@@ -454,7 +483,8 @@ class TirV4(TirAdapter):
         claims = _require_object(decode(body), "TIR attribute token claims")
         vc = _wire_object(claims, "vc", "TIR attribute token")
         subject = _wire_object(vc, "credentialSubject", "TIR attribute token vc")
-        return _flatten_accredited_for(subject.get("accreditedFor"))
+        return _flatten_accredited_for(
+            _wire_accredited_for(subject, "TIR attribute token credentialSubject"))
 
 
 class _TirAttributeWalk(TirAdapter):
