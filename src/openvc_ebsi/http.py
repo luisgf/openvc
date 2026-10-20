@@ -98,9 +98,10 @@ MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
 # An error answer is read for its RFC 9457 Problem Details ``type`` and nothing else. Problem
 # documents are a few hundred bytes (the recorded ones are 150 to 190); a node's firewall page
-# was measured at 35 KB. Past this the read stops and the connection is dropped, so a
-# compromised or flaky allow-listed host cannot make an error answer cost more than the
-# success answer it replaces (the 200 branch has MAX_RESPONSE_BYTES and a deadline).
+# was measured at 35 KB. Past this, on the wire or once decoded (#350), the read stops and the
+# connection is dropped, so a compromised or flaky allow-listed host cannot make an error
+# answer cost more than the success answer it replaces (the 200 branch has MAX_RESPONSE_BYTES
+# and a deadline).
 MAX_ERROR_BODY_BYTES = 16 * 1024
 _PROBLEM_MEDIA_TYPE = "application/problem+json"
 # ``type`` is an opaque URI reference: kept only as 1 to 256 characters of visible ASCII
@@ -121,8 +122,9 @@ class HttpError(EbsiError):
     """An HTTP failure. ``problem_type`` is the RFC 9457 Problem Details ``type`` of an error
     answer, or ``None``: an opaque string (``"about:blank"``, a ``urn:ebsi:problems:...``
     slug, anything the node wrote) that this module never interprets, kept only when the answer
-    was ``application/problem+json``, parsed within :data:`MAX_ERROR_BODY_BYTES` and a
-    visible-ASCII string of at most 256 characters. ``title`` and ``detail`` are not read."""
+    was ``application/problem+json``, parsed within :data:`MAX_ERROR_BODY_BYTES` (of the wire
+    and of the decoded body) and a visible-ASCII string of at most 256 characters. ``title``
+    and ``detail`` are not read."""
 
     def __init__(self, message: str, *, status: int | None = None, url: str | None = None,
                  problem_type: str | None = None):
@@ -948,20 +950,69 @@ class EbsiHttpClient:
     def _read_problem_type(self, resp: httpx.Response) -> str | None:
         """Read an error answer's body, bounded, and return its Problem Details ``type``.
 
-        Reads at most :data:`MAX_ERROR_BODY_BYTES` within the client's wall-clock deadline.
-        Past either, the rest is not read and the response is closed, which drops the
-        connection instead of draining it: the status error is raised as before, with no
+        Reads at most :data:`MAX_ERROR_BODY_BYTES` of the wire AND of the DECODED body, within
+        the client's wall-clock deadline. A coded body is read with ``iter_raw`` and decoded
+        here, one ``gzip`` or ``deflate`` coding, ``zlib`` asked for at most the room left plus
+        one byte (the reader of :meth:`_read_verbatim`): ``iter_bytes`` hands over a whole
+        inflated chunk before any cap can be checked, so one small ``gzip`` error body was an
+        allocation of its expansion ratio (#350). Past either bound, past the deadline, or under
+        a coding this client does not decode (it asks for ``gzip, deflate`` only; ``gzip, gzip``
+        and the rest are not read), the rest is not read and the response is closed, which drops
+        the connection instead of draining it: the status error is raised as before, with no
         ``type``. A body that is small enough is read to the end, so the connection can be
-        reused. Never raises for a body it cannot use; a body that does not decode
-        (``httpx.DecodingError``) and a transport failure propagate to ``get_json`` exactly
-        as they did when this was ``resp.read()`` (#248)."""
+        reused.
+
+        What decodes is what httpx decoded, so the status still decides the class. A truncated
+        stream, bytes after the end of the stream and a raw ``deflate`` stream (httpx's own
+        fallback when the first chunk is not a zlib stream) are read, not refused: unlike the
+        200 reader, which refuses all three, a retried 5xx must stay retried. A stream that does
+        not decode is ``httpx.DecodingError``, which ``_request`` maps to
+        ``MalformedRegistryResponse`` (#248), and a transport failure propagates, as both did
+        when this was ``resp.read()``. Never raises for any other body it cannot use."""
+        cap = MAX_ERROR_BODY_BYTES
+        coding = (resp.headers.get("content-encoding") or "").strip().lower()
+        try:
+            decoder = _decoder_for(coding, "")           # the url only labels an error dropped here
+        except HttpUnexpectedEncoding:
+            resp.close()
+            return None
+        if decoder is not None and resp.is_stream_consumed:
+            # A test double built from `content=` is read when it is made and httpx has already
+            # decoded it: `iter_raw` would raise `StreamConsumed`. Not reachable from a socket.
+            decoder = None
+
         deadline = time.monotonic() + self._timeout_s
+        wire = 0
+        first = True
         body = bytearray()
-        for chunk in resp.iter_bytes():
-            body += chunk
-            if len(body) > MAX_ERROR_BODY_BYTES or time.monotonic() > deadline:
+        for chunk in (resp.iter_bytes() if decoder is None else resp.iter_raw()):
+            wire += len(chunk)
+            if wire > cap or time.monotonic() > deadline:
                 resp.close()
                 return None
+            if decoder is None:
+                body += chunk
+                continue
+            if decoder.eof:                  # bytes after the end of the stream: not an error here
+                continue
+            room = cap - len(body)
+            try:
+                # room + 1 >= 1 (0 would mean unlimited): a call that returns at most `room`
+                # bytes consumed its whole input, one that returns room + 1 is over the cap.
+                piece = decoder.decompress(chunk, room + 1)
+            except zlib.error as exc:
+                if coding != "deflate" or not first:
+                    raise httpx.DecodingError(str(exc)) from exc
+                decoder = zlib.decompressobj(-zlib.MAX_WBITS)    # httpx's retry: raw deflate
+                try:
+                    piece = decoder.decompress(chunk, room + 1)
+                except zlib.error as exc_raw:
+                    raise httpx.DecodingError(str(exc_raw)) from exc_raw
+            first = False
+            if len(piece) > room:
+                resp.close()
+                return None
+            body += piece
         return _problem_type(resp.headers.get("content-type"), bytes(body))
 
     # -- internals --------------------------------------------------------- #

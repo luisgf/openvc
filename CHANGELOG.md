@@ -8,6 +8,64 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
+- **The EBSI client's error-body read is bounded on the decoded size, and its cap and
+  deadline hold for a body that decodes to nothing**
+  ([#350](https://github.com/luisgf/openvc/issues/350); found by the review of
+  [#348](https://github.com/luisgf/openvc/pull/348), which bounded the 200 read and left this
+  one alone). Resource bound against an allow-listed host, the same class as #335; no
+  wrong-accept: the change can lose a Problem Details `type`, never invent one.
+  `EbsiHttpClient._read_problem_type` (#321) reads the body of a non-200 answer for its `type`
+  with `iter_bytes` and checked its 16 KiB cap after appending, but `iter_bytes` yields a chunk
+  httpx has already inflated. Measured on `main` at 3bd9e59 (CPython 3.14.8, httpx 0.28.1,
+  `tracemalloc`): a 260 935-byte `gzip` body that inflates to 256 MiB, served as a 403, a 404
+  or a 503 (retried three times), peaked at **557 MiB** every time, and the 260 923-byte
+  `deflate` one the same; 8 MiB of zeros in about 8 KB, which is under the cap on the wire,
+  peaked at 21 MiB as one chunk and at 2.4 MiB in 1 KiB chunks. The loop had a second gap with
+  the same cause: a coded body that decodes to *nothing* (a gzip header, then empty stored
+  deflate blocks) makes `iter_bytes` yield no chunk, so the loop body that held the cap and the
+  deadline never ran for it. Measured: 4 MiB of it was read to the end under the 16 KiB cap,
+  and 5 001 chunks were pulled past a deadline that had expired at the first, for as long as
+  the host kept sending.
+
+  The body is now read as the 200 path reads it (`_decoder_for` and the raw stream): the wire
+  size and the decoded size are each checked against `MAX_ERROR_BODY_BYTES` before a chunk is
+  held, one `gzip` or `deflate` coding is decoded with `zlib` asked for at most the room left
+  plus one byte, and the deadline is checked for every chunk the wire delivers, whether or not
+  it decodes to anything. Past either bound, or past the deadline, the response is closed
+  instead of drained, as before. After the change the 256 MiB bombs peak at 0.0 MiB (they are
+  over the cap on the wire, so `zlib` never runs), the 8 MiB ones at 0.1 MiB in one chunk or
+  many, a retried 503 does not accumulate (six attempts: the same 0.1 MiB), and the empty-block
+  body is dropped at the cap (4 KiB chunks: after 5 of 1 025) and at the first chunk past the
+  deadline.
+
+  **What did not change**, measured on `main` first (16 `Content-Encoding` / body shapes, each
+  as a 403, a 404 and a 503, 48 outcomes) and pinned by
+  `tests/test_ebsi_error_body_bound.py`: the status decides the class (403 `HttpError`, 404
+  `HttpNotFound`, a retried 503 `HttpTransientExhausted`, three attempts) and a body the reader
+  cannot use gives `problem_type=None`. A stream that does not decode (a body that is not
+  gzip under `gzip`, garbage under `deflate`, a bad CRC trailer) is still
+  `MalformedRegistryResponse`, not retried even as a 503, with `httpx.DecodingError` as its
+  `__cause__` (itself caused by the `zlib` error) and the unchanged message: the new reader
+  raises `httpx.DecodingError` for `_request` to map (#248), so the mapping and its message
+  stay in one place. A truncated stream, bytes after its end, a second gzip member and a raw
+  `deflate` stream (which httpx retried without the zlib wrapper) are read as they were and
+  give the status's class and, when the document is intact, its `type`: the 200 reader refuses
+  all four, and doing the same here would turn a retried 503 into a terminal
+  `MalformedRegistryResponse` that does not fail over. Also unchanged: the 16 KiB cap
+  (inclusive: a body of exactly that size still gives its `type`, one byte more does not), the
+  `application/problem+json`-only rule and the shape of `type`, the wall-clock deadline, the
+  retry and 404 handling, the 200 path, `get_bytes` and `probe` (which never read an error
+  body), the public API and the dependencies. `Content-Length` is not consulted on this path.
+
+  **Two deliberate differences, both losing a `type` and neither changing a class.** A
+  `Content-Encoding` the client does not decode (`gzip, gzip`, `br`, `zstd`, anything but one
+  `gzip` or `deflate`; the request asks for `gzip, deflate` only) is not read at all: the
+  response is closed and `problem_type` is `None`, where `main` decoded `gzip, gzip` twice and
+  ignored an unknown coding, reading a `type` from a plain body labelled `zzz`.
+  `HttpUnexpectedEncoding`, which carries status 200, never reaches an error answer. And the
+  wire is bounded by the cap as well as the decoded body, so a coded body that is no smaller
+  than 16 KiB on the wire (a stored or incompressible one) is refused although `main` read
+  it; the recorded Problem Details answers are 150 to 190 bytes.
 - **The EBSI client's allow-list matches an origin, not a host name**
   ([#318](https://github.com/luisgf/openvc/issues/318), follow-up D1 of
   [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)). Hardening; no
@@ -1317,7 +1375,7 @@ Each is one value or table away from the other option. None changes anything tha
     check fires (measured: a 260 935-byte body that inflates to 256 MiB peaks at 557 MiB on a
     403). It is the same class as the 200 read fixed below and needs its own change: it must
     keep returning `None` for a body it cannot use and `HttpNotFound` for a 404 whatever the
-    coding.
+    coding. Done in #350 (*Security*, above).
 - **`HttpTransientExhausted.status` can now be set** (#324). It was always `None`; it is now the
   last attempt's HTTP status (a 429 or a 5xx) and is still `None` when that attempt never got an
   answer (a transport error, a timeout, an address the guard could not resolve), which is how the
