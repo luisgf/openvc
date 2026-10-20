@@ -31,6 +31,11 @@ class UrlError(Exception):
     forgets to map it fails loudly rather than being caught by an ``except ValueError``."""
 
 
+# What `UrlDoesNotParse.__cause__` says, and what any other reader of an authority that
+# `urlparse` refuses may chain in place of `urlparse`'s own words (#351).
+UNPARSABLE_AUTHORITY = "the authority is not a valid host and port"
+
+
 class UrlNotVisibleAscii(UrlError):
     """Not visible ASCII (a control character, a space, a non-ASCII character)."""
 
@@ -65,7 +70,7 @@ def _split(url: str) -> tuple[ParseResult, int | None]:
         parsed = urlparse(url)            # raises on a broken IPv6 literal
         port = parsed.port                # raises on an out-of-range or non-numeric port
     except ValueError:
-        refusal = "the authority is not a valid host and port"
+        refusal = UNPARSABLE_AUTHORITY
     if refusal is not None:
         raise UrlDoesNotParse() from ValueError(refusal)
     return parsed, port

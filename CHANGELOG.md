@@ -1538,7 +1538,10 @@ Each is one value or table away from the other option. None changes anything tha
   same). The userinfo is everything in the authority up to the last `@` (where `urlparse` and
   httpx both split), the user name included, the empty forms (`https://@host/`) included; a
   percent-encoded `@` (`%40`) counts as a delimiter too; an `@` in a path, query or fragment is
-  not userinfo and stays; a reference with no `//` (`user:pass@host/x`) is read from its first
+  not userinfo and stays; the authority is read after a run of `/` and `\` characters (one slash
+  after a scheme, two without one) because a WHATWG parser reads `http:/u:p@h` and
+  `http:///u:p@h` as `http://u:p@h`, and after an empty scheme (`://u:p@h`, which httpx reads as an
+  authority); a reference with no slashes (`user:pass@host/x`) is read from its first
   character. It is linear in the length of the URL, reads a `str` subclass through `str.__str__`
   and never raises (a value it cannot read is `<url withheld>`). It is applied to every message
   of `openvc_ebsi/` that quotes a URL: the guard's non-https and allow-list rules, `get_json` /
@@ -1552,6 +1555,19 @@ Each is one value or table away from the other option. None changes anything tha
   and the type list through `bounded_text` (296 and 297 characters for the two cases above),
   `CredentialRevoked` the `id` through `url_repr`.
 
+  **Found by the review of this change, and fixed in it.** The first version of the helper looked
+  for the authority after exactly `//`, and left the password showing for `http:/u:p@h`,
+  `http:///u:p@h`, `ws:/\u:p@h` and the like: a WHATWG parser (a browser, Node) reads those as
+  credentialed, urllib and httpx do not, so nothing was ever sent as Basic `Authorization`, but
+  the password reached six messages (1 779 594 generated shapes: 38 940 left the userinfo showing
+  to WHATWG, 0 to urllib and httpx, all with this one cause). Three smaller unbounded echoes
+  were bounded: `for_nodes`'s `unknown adapter name: …` (`didr="x" * 70000` gave 70 052
+  characters), `check_node_origin`'s `what` label in its three messages (70 032), and the
+  address-guard path of `_open_stream`, which still chained `urlparse`'s own error for a `str`
+  subclass that answers differently the second time it is read (it now chains the fixed words
+  too). An object whose `__class__` claims `str` is `an object` in `url_repr`, as `safe_repr`
+  says it.
+
   **Not changed.** Every exception class, the leading words of every message (so every `match=`
   keeps matching), and the text of a message whose value is short and has no userinfo, byte for
   byte (the type list of `IssuerNotTrusted` included). **`.url` keeps the whole URL as given**
@@ -1561,9 +1577,13 @@ Each is one value or table away from the other option. None changes anything tha
   `urlparse`'s words. The userinfo refusal (`URL rejected: carries userinfo`) already named the
   rule only, and the port rule prints a range-checked number: neither moves. A host that
   `urlparse` reads out of a URL (the allow-list rule) is not userinfo and is shown as before,
-  except for the `%40` form above. Not touched, for their own changes: the unbounded DIDs that
-  `openvc_ebsi/trust.py` quotes with `!r` (not URLs, and not the issue's scope), and
-  `versioning.py`, which echoes no URL.
+  except for the `%40` form above. A reference with no slashes loses its scheme in the message
+  (`mailto:a@b` is `***@b`): `user:` in `user:pass@host` cannot be told from a scheme, so
+  keeping it is not safe. A secret in a query string (`?access_token=…`) is still shown, up to
+  200 characters: the rule covers userinfo only. Not touched, for their own changes: the
+  unbounded DIDs that `openvc_ebsi/trust.py` quotes with `!r` (not URLs, and not the issue's
+  scope), and `versioning.py`, which echoes no URL (its `no DID Registry adapter for …`
+  messages quote the adapter name unbounded; `for_nodes` now cuts it).
 
 ### Tests
 

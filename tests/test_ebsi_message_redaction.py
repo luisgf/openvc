@@ -138,6 +138,12 @@ GUARD = [
                  f"non-https URL rejected: '***@{HOST}/x'", id="no-scheme-no-slashes"),
     pytest.param(f"://{USER}:{SECRET}@{HOST}/x",
                  f"non-https URL rejected: '://***@{HOST}/x'", id="empty-scheme"),
+    pytest.param(f"http:/{USER}:{SECRET}@{HOST}/x",
+                 f"non-https URL rejected: 'http:/***@{HOST}/x'", id="one-slash"),
+    pytest.param(f"http:///{USER}:{SECRET}@{HOST}/x",
+                 f"non-https URL rejected: 'http:///***@{HOST}/x'", id="three-slashes"),
+    pytest.param(f"ws:////{USER}:{SECRET}@{HOST}/x",
+                 f"non-https URL rejected: 'ws:////***@{HOST}/x'", id="four-slashes"),
     pytest.param(f"http://{USER}:p%40ss{SECRET}@{HOST}/x",
                  f"non-https URL rejected: 'http://***@{HOST}/x'", id="percent-encoded-at"),
     pytest.param(f"http://{USER}:p@ss{SECRET}@{HOST}/x",
@@ -494,6 +500,12 @@ def _node_refusal(exc_type: type, call: Any, *args: Any) -> BaseException:
                  id="the-other-node"),
     pytest.param(f"https://{USER}:{SECRET}@[::1]/x",
                  "URL is not on this session's node: 'https://***@[::1]/x'", id="ipv6"),
+    pytest.param(f"https:///{USER}:{SECRET}@api.ebsi.node-a.example/x",
+                 "URL is not on this session's node: 'https:///***@api.ebsi.node-a.example/x'",
+                 id="three-slashes"),
+    pytest.param(f"https:/{USER}:{SECRET}@api.ebsi.node-a.example/x",
+                 "URL is not on this session's node: 'https:/***@api.ebsi.node-a.example/x'",
+                 id="one-slash"),
     pytest.param(f"https://{USER}:{SECRET}%40evil.example/x", None, id="password-in-the-port"),
 ])
 def test_a_node_session_url_off_its_node_is_shown_without_the_userinfo(
@@ -714,6 +726,106 @@ def test_credential_revoked_cuts_a_70_000_character_id() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Found by the review of this change
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("url", [
+    f"http:/{USER}:{SECRET}@{HOST}/x",
+    f"http:///{USER}:{SECRET}@{HOST}/x",
+    f"http:////{USER}:{SECRET}@{HOST}/x",
+    f"ws:/\\{USER}:{SECRET}@{HOST}/x",
+    f"http:\\/{USER}:{SECRET}@{HOST}/x",
+    f"http:\\\\{USER}:{SECRET}@{HOST}/x",
+    f"ftp:\\//{USER}:{SECRET}@{HOST}/x",
+    f"///{USER}:{SECRET}@{HOST}/x",
+    f"http:/{USER}:{SECRET}%40{HOST}/x",
+])
+def test_slashes_that_a_browser_reads_as_the_authority_do_not_hide_the_userinfo(url: str) -> None:
+    # A WHATWG parser (a browser, Node) reads `http:/u:p@h` and `http:///u:p@h` as the
+    # credentialed `http://u:p@h`; urllib and httpx do not, and the guard refuses them all as
+    # non-https, but the message is what reaches a log.
+    c = _client()
+    client = _node_client()
+    try:
+        for exc in _refusals(c, url):
+            assert SECRET not in _held(exc) and USER not in _held(exc)
+        exc = _node_refusal(HttpForbiddenHost, client.session(NODE).get_json, url)
+        assert SECRET not in _held(exc) and USER not in _held(exc)
+        exc = _node_refusal(NodeClientConfigError, client.session, url)
+        assert SECRET not in _held(exc) and USER not in _held(exc)
+    finally:
+        c.close()
+        client.close()
+
+
+def test_the_unknown_adapter_name_message_is_bounded() -> None:
+    for keyword in ("didr", "tir"):
+        for name in ("x" * LONG, "https://" + "u" * LONG + "@h/x"):
+            with pytest.raises(NodeClientConfigError) as exc_info:
+                for_nodes(_result(), clock=lambda: NOW, decode_jwt=VcJwtProofSuite().peek_claims,
+                          retry=FAST_RETRY, address_guard=None, **{keyword: name})
+            assert type(exc_info.value) is NodeClientConfigError
+            message = str(exc_info.value)
+            assert message.startswith("unknown adapter name: ")
+            assert len(message) < MAX_MESSAGE, len(message)
+
+
+def test_the_unknown_adapter_name_message_reads_as_before_for_a_short_name() -> None:
+    with pytest.raises(NodeClientConfigError) as exc_info:
+        for_nodes(_result(), clock=lambda: NOW, decode_jwt=VcJwtProofSuite().peek_claims,
+                  retry=FAST_RETRY, address_guard=None, didr="nope")
+    assert str(exc_info.value) == f"unknown adapter name: {exc_info.value.__cause__}"
+    assert "nope" in str(exc_info.value)
+
+
+def test_the_label_of_check_node_origin_is_bounded_in_every_message_that_shows_it() -> None:
+    label = "w" * LONG
+    for url, environment in [("x", "prod"), ("https://other.example", "prod"),
+                             ("https://api.ebsi." + "a" * 64, "prod")]:
+        with pytest.raises(NodeListMalformed) as exc_info:
+            check_node_origin(url, environment, label)
+        assert type(exc_info.value) is NodeListMalformed
+        assert len(str(exc_info.value)) < 500, (url, len(str(exc_info.value)))   # + the host
+        assert str(exc_info.value).startswith("w" * 100)
+
+
+def test_the_label_of_check_node_origin_reads_as_before_when_it_is_short() -> None:
+    with pytest.raises(NodeListMalformed) as exc_info:
+        check_node_origin("x", "prod", "tnl.json url")
+    assert str(exc_info.value) == "tnl.json url is not a bare https origin: 'x'"
+
+
+def test_the_address_guard_path_chains_fixed_words_when_it_cannot_read_a_url() -> None:
+    # `_open_stream` reads the URL again after the guard did, and only a `str` subclass that
+    # answers differently the second time gets there; its `urlparse` error quotes the port.
+    from openvc_ebsi.http import AddressGuard
+    c = _client(retry=RetryPolicy(attempts=1),
+                address_guard=AddressGuard(resolver=lambda host, port: ["93.184.215.14"]))
+    c._client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={})))
+    c._guard_host = lambda url: None                          # type: ignore[method-assign]
+    try:
+        with pytest.raises(HttpForbiddenHost) as exc_info:
+            c.get_json(f"https://{HOST}:{SECRET}/x")
+        exc = exc_info.value
+        assert type(exc) is HttpForbiddenHost and str(exc) == "URL rejected: does not parse"
+        assert type(exc.__cause__) is ValueError
+        assert str(exc.__cause__) == _url.UNPARSABLE_AUTHORITY
+        assert SECRET not in _held(exc)
+    finally:
+        c.close()
+
+
+def test_url_repr_of_an_object_that_claims_to_be_a_str_is_an_object() -> None:
+    class Liar:
+        @property
+        def __class__(self) -> type:                          # type: ignore[override]
+            return str
+    assert isinstance(Liar(), str)
+    assert url_repr(Liar()) == "an object"                    # as safe_repr says it
+
+
+# --------------------------------------------------------------------------- #
 # The helpers
 # --------------------------------------------------------------------------- #
 
@@ -729,6 +841,17 @@ REDACTION = [
     ("http://u:p@[::1]:80/x", "http://***@[::1]:80/x"),
     ("//u:p@h/x", "//***@h/x"),
     ("://u:p@h/x", "://***@h/x"),                           # httpx reads an empty scheme
+    # a WHATWG parser reads one slash, or three, after a special scheme as `//`
+    ("http:/u:p@h/x", "http:/***@h/x"),
+    ("http:///u:p@h/x", "http:///***@h/x"),
+    ("http:////u:p@h/x", "http:////***@h/x"),
+    ("ws:/\\u:p@h/x", "ws:/\\***@h/x"),
+    ("http:\\/u:p@h", "http:\\/***@h"),
+    ("///u:p@h/x", "///***@h/x"),
+    ("/x@y/z", "/x@y/z"),                                    # a lone slash opens a path
+    ("https:/h/a@b", "https:/h/a@b"),
+    ("https:///host/a@b", "https:///host/a@b"),
+    ("file:///etc/a@b", "file:///etc/a@b"),
     ("u:p@h/x", "***@h/x"),
     ("mailto:a@b.example", "***@b.example"),
     ("HTTP://U:P@H", "HTTP://***@H"),

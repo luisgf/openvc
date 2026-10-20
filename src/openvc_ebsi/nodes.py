@@ -44,7 +44,7 @@ from typing import Any
 from openvc import _json
 from openvc.proof._verify_common import safe_repr, utc_instant
 from openvc_ebsi import _openpgp
-from openvc_ebsi._message import url_repr
+from openvc_ebsi._message import bounded_text, url_repr
 from openvc_ebsi.errors import (
     NodeListConfigError,
     NodeListEnvironmentMissing,
@@ -295,7 +295,7 @@ def _check_host(host: str, what: str) -> None:
     labels = host.split(".")
     if len(host) > 253 or any(not 1 <= len(label) <= 63 or label[0] == "-" or label[-1] == "-"
                               for label in labels):
-        raise NodeListMalformed(f"{what}: {safe_repr(host)} is not a DNS name")
+        raise NodeListMalformed(f"{bounded_text(what)}: {safe_repr(host)} is not a DNS name")
 
 
 def check_node_origin(url: Any, environment: str, what: str = "url") -> str:
@@ -317,9 +317,11 @@ def check_node_origin(url: Any, environment: str, what: str = "url") -> str:
         raise NodeListConfigError(
             f"environment must be one of pilot, preprod, prod, not {safe_repr(environment)}")
     if type(url) is not str or _URL.fullmatch(url) is None:
-        raise NodeListMalformed(f"{what} is not a bare https origin: {url_repr(url)}")
+        raise NodeListMalformed(
+            f"{bounded_text(what)} is not a bare https origin: {url_repr(url)}")
     if not url.startswith(_PREFIX[environment]):
-        raise NodeListMalformed(f"{what} does not start with {_PREFIX[environment]}")
+        raise NodeListMalformed(
+            f"{bounded_text(what)} does not start with {_PREFIX[environment]}")
     _check_host(url[len("https://"):], what)
     return url
 

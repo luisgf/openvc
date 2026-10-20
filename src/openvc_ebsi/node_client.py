@@ -63,7 +63,7 @@ from openvc.cache import TtlCache
 from openvc.observability import logger
 from openvc.proof._verify_common import safe_repr
 
-from ._message import url_repr
+from ._message import bounded_text, url_repr
 from .errors import EbsiError, NodeClientConfigError, NodeListError, NodeListExpired
 from .http import (
     MAX_RESPONSE_BYTES,
@@ -702,7 +702,7 @@ def for_nodes(
         did_registry_adapter(didr)
         tir_adapter(tir)
     except (ValueError, TypeError) as exc:
-        raise NodeClientConfigError(f"unknown adapter name: {exc}") from exc
+        raise NodeClientConfigError(f"unknown adapter name: {bounded_text(exc)}") from exc
     if read_clock(clock) >= expires:
         raise NodeListExpired(
             f"the {environment} node list expired at {expires.isoformat()}: verify a newer one")

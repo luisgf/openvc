@@ -32,6 +32,7 @@ _DROPPED = {ord(c): None for c in "\t\r\n"}
 _LEADING = "".join(chr(c) for c in range(0x21))
 # the scheme may be empty: httpx reads `://user:pass@host/` as an authority
 _SCHEME = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.\-]*)?:")
+_SLASHES = re.compile(r"[/\\]*")
 _AUTHORITY_END = re.compile(r"[/?#]")
 _DELIMITER = re.compile(r"@|%40", re.IGNORECASE)
 
@@ -40,17 +41,19 @@ def redact_userinfo(url: str) -> str:
     """*url* with the userinfo of its authority replaced by ``***``, or *url* unchanged when its
     authority holds none.
 
-    The authority is what follows ``//`` (after an optional, possibly empty, ``scheme:``) up to
-    the first ``/``, ``?`` or ``#``, and the userinfo is everything in it up to the LAST ``@``,
-    which is where ``urlparse`` and httpx both split: ``https://u:p@ss@host/`` has the userinfo
+    The authority follows a run of ``/`` and ``\\`` characters, after an optional (possibly
+    empty) ``scheme:``: one slash opens it after a scheme and two do without one, because a
+    WHATWG parser reads ``http:/u:p@h`` and ``http:///u:p@h`` as ``http://u:p@h``. It ends at the
+    first ``/``, ``?`` or ``#``. The userinfo is everything in it up to the LAST ``@``, which is
+    where ``urlparse`` and httpx both split: ``https://u:p@ss@host/`` has the userinfo
     ``u:p@ss``. An ``@`` in a path, query or fragment is not userinfo and stays. The whole
     userinfo is withheld, the user name included, and so are the empty forms
-    (``https://@host/``). A
-    percent-encoded ``@`` (``%40``) counts as a delimiter too, because a URL written
-    ``user:pass%40host`` has no userinfo for a parser and its password still sits in front of
-    the host. A reference with no ``//`` is read the same way from its first character
-    (``user:pass@host/x``, ``mailto:a@b``, where ``user:`` would read as a scheme): it is no URL
-    a client would send, and what it holds before an ``@`` is more likely a credential than not.
+    (``https://@host/``). A percent-encoded ``@`` (``%40``) counts as a delimiter too, because a
+    URL written ``user:pass%40host`` has no userinfo for a parser and its password still sits in
+    front of the host. A reference with no slashes is read the same way from its first
+    character (``user:pass@host/x``, ``mailto:a@b``, where ``user:`` would read as a scheme): it
+    is no URL a client would send, and what it holds before an ``@`` is more likely a credential
+    than not.
 
     Linear in the length of *url*, whatever its shape. Nothing raises: a value that cannot be
     read returns a fixed placeholder, never the input. A ``str`` subclass is read through
@@ -59,8 +62,13 @@ def redact_userinfo(url: str) -> str:
         text = str.__str__(url)
         view = text.translate(_DROPPED).lstrip(_LEADING)
         scheme = _SCHEME.match(view)
-        slashes = scheme.end() if scheme else 0
-        start = slashes + 2 if view.startswith("//", slashes) else 0
+        after = scheme.end() if scheme else 0
+        run = _SLASHES.match(view, after)         # always matches: it may match nothing
+        slashes = run.end() if run else after
+        # A WHATWG parser skips every `/` and `\` after a special scheme, one included
+        # (`http:/u:p@h`, `http:///u:p@h`), and `//` opens an authority with no scheme at all;
+        # a lone `/x@y` is a path.
+        start = slashes if slashes > after + (0 if scheme else 1) else 0
         end = _AUTHORITY_END.search(view, start)
         authority = view[start:end.start() if end else len(view)]
         userinfo_end = 0                      # where the host begins: after the last delimiter
@@ -80,6 +88,8 @@ def url_repr(value: Any) -> str:
     ``safe_repr`` as it is."""
     if isinstance(value, str):
         value = redact_userinfo(value)
+        if value is _WITHHELD:              # not a str at all, whatever it says: as safe_repr does
+            return "an object"
     return safe_repr(value)
 
 

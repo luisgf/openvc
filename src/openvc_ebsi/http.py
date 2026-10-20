@@ -82,7 +82,14 @@ from openvc.fetch import ip_is_forbidden
 from openvc.proof._verify_common import safe_repr, utc_instant
 
 from ._message import bounded_text, url_repr
-from ._url import HTTPS_PORT, UrlDoesNotParse, UrlNotVisibleAscii, carries_userinfo, read_origin
+from ._url import (
+    HTTPS_PORT,
+    UNPARSABLE_AUTHORITY,
+    UrlDoesNotParse,
+    UrlNotVisibleAscii,
+    carries_userinfo,
+    read_origin,
+)
 from .environments import fixed_hosts
 from .errors import (
     EbsiError,
@@ -846,11 +853,18 @@ class EbsiHttpClient:
         guard = self._address_guard
         if guard is None:
             return self._client.stream("GET", url, headers=headers)
+        unreadable = False
         try:
             parsed = urlparse(url)
             host, port = parsed.hostname, parsed.port
-        except ValueError as exc:
-            raise HttpForbiddenHost("URL rejected: does not parse", url=url) from exc
+        except ValueError:
+            unreadable = True
+        if unreadable:
+            # The guard read this URL already, so this is a `str` subclass that answers
+            # differently the second time. `urlparse`'s own error quotes the port (#351): the
+            # cause is the fixed words `_split` chains, raised outside the `except`.
+            raise HttpForbiddenHost("URL rejected: does not parse", url=url) from ValueError(
+                UNPARSABLE_AUTHORITY)
         authority_start = url.find("//") + 2
         if (host is None or authority_start < 2
                 or url[authority_start:authority_start + len(parsed.netloc)] != parsed.netloc):
