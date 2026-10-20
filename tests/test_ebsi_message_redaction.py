@@ -30,6 +30,7 @@ Helpers are self-contained (tests/ is not a package: no cross-import).
 from __future__ import annotations
 
 import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -73,6 +74,14 @@ MAX_MESSAGE = 300
 # --------------------------------------------------------------------------- #
 # Harness
 # --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def _no_environment_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A developer machine may have a system proxy (`getproxies` reads the macOS and Windows
+    settings); an address guard refuses to be built behind one."""
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {})
+
 
 def _client(handler: Any = None, **kwargs: Any) -> EbsiHttpClient:
     c = EbsiHttpClient(allowed_hosts={HOST}, **kwargs)
