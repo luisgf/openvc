@@ -42,8 +42,9 @@ All notable changes to **openvc** are documented here. The format follows
   as a 403, a 404 and a 503, 48 outcomes) and pinned by
   `tests/test_ebsi_error_body_bound.py`: the status decides the class (403 `HttpError`, 404
   `HttpNotFound`, a retried 503 `HttpTransientExhausted`, three attempts) and a body the reader
-  cannot use gives `problem_type=None`. A stream that does not decode (a body that is not
-  gzip under `gzip`, garbage under `deflate`, a bad CRC trailer) is still
+  cannot use gives `problem_type=None`. A stream that does not decode, under a coding the
+  client reads and within the bounds below (a body that is not gzip under `gzip`, garbage
+  under `deflate`, a bad CRC trailer after a short body), is still
   `MalformedRegistryResponse`, not retried even as a 503, with `httpx.DecodingError` as its
   `__cause__` (itself caused by the `zlib` error) and the unchanged message: the new reader
   raises `httpx.DecodingError` for `_request` to map (#248), so the mapping and its message
@@ -57,15 +58,26 @@ All notable changes to **openvc** are documented here. The format follows
   retry and 404 handling, the 200 path, `get_bytes` and `probe` (which never read an error
   body), the public API and the dependencies. `Content-Length` is not consulted on this path.
 
-  **Two deliberate differences, both losing a `type` and neither changing a class.** A
-  `Content-Encoding` the client does not decode (`gzip, gzip`, `br`, `zstd`, anything but one
-  `gzip` or `deflate`; the request asks for `gzip, deflate` only) is not read at all: the
-  response is closed and `problem_type` is `None`, where `main` decoded `gzip, gzip` twice and
-  ignored an unknown coding, reading a `type` from a plain body labelled `zzz`.
-  `HttpUnexpectedEncoding`, which carries status 200, never reaches an error answer. And the
-  wire is bounded by the cap as well as the decoded body, so a coded body that is no smaller
-  than 16 KiB on the wire (a stored or incompressible one) is refused although `main` read
-  it; the recorded Problem Details answers are 150 to 190 bytes.
+  **Deliberate differences.** (1) A `Content-Encoding` the client does not decode (`gzip,
+  gzip`, `br`, `zstd`, anything but one `gzip` or `deflate`; the request asks for `gzip,
+  deflate` only) is not read at all: the response is closed and `problem_type` is `None`,
+  where `main` decoded `gzip, gzip` twice and ignored an unknown coding, reading a `type` from
+  a plain body labelled `zzz`. `HttpUnexpectedEncoding`, which carries status 200, never
+  reaches an error answer. (2) The wire is bounded by the cap as well as the decoded body, so
+  a coded body larger than 16 KiB on the wire (a stored or incompressible one; exactly 16 KiB
+  is still read) is refused although `main` read it; the recorded Problem Details answers are
+  150 to 190 bytes. (3) A body is refused for its size before the reader reaches damage
+  further on.
+
+  **Where a class does change.** For a *clean* body, (1) and (2) lose a `type` and keep the
+  class. A *corrupt* body that the reader never decodes (`gzip, gzip` or `gzip, deflate` over
+  garbage), or refuses for its size before the damage is reached (a bad CRC trailer behind more
+  than 16 KiB of output, or behind a wire over the cap), was `MalformedRegistryResponse`, not
+  retried, on `main` when it arrived whole, and the status's class when its trailer arrived in
+  a later chunk (on `main` it depended on the chunking). It is now the status's class whatever
+  the chunking: a 503 is retried to its attempt budget and fails over, a 403 is `HttpError`.
+  Measured by the review of the PR; nothing is accepted that was refused, and the number of
+  attempts stays bounded.
 - **The EBSI client's allow-list matches an origin, not a host name**
   ([#318](https://github.com/luisgf/openvc/issues/318), follow-up D1 of
   [ADR-0009](docs/adr/ADR-0009-ebsi-core-api-v1-and-node-trust.md)). Hardening; no
