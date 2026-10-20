@@ -366,6 +366,18 @@ finite input", with no explicit constant.
   `"false"` was `has_attributes=True`). The `hash` is typed where it is the value copied:
   always on v4, and on v5 and Core v1 only when the listing item's `id` is absent or empty
   (otherwise the `id` is the attribute id and the `hash`, of any type, is not read).
+  **So is the shape of the accreditation token every lane reads, and the DID it names**
+  (#352 follow-up, v1.37.0): `vc`, `credentialSubject` and `accreditedFor` sent in a shape the
+  reader does not know, and a `body` the proof suite cannot read, are `MalformedRegistryResponse`
+  on v4, v5 and Core v1 alike (never "no types", which is the unrestricted accreditation; one
+  such accreditation rejects the record), and the trust walk requires the JWT `sub` and the
+  credential's `credentialSubject.id`, each one that is sent, to be exactly the accredited
+  DID, at least one of them sent, else `AccreditationInvalid`: a RootTAO- or TAO-signed
+  accreditation that names nobody, an empty `sub`, or another DID cannot be replayed into
+  another issuer's record by a misrouted, steered or dishonest registry answer (measured as
+  trusted on `main` at b1fd669, on v5 and Core v1, with real P-256 signatures). Single-level
+  trust still verifies no accreditation signature, and an accreditation with no `accreditedFor`
+  is still unrestricted (a policy question, open).
   **Residual:** the TIR `attributes` URL and each revision `href` are pinned to the
   listing's origin (#172), not to `.../issuers/{did}/`, and a revision's own `did` is not
   read; both are outside #266 and #267.

@@ -249,12 +249,21 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   absent or empty (otherwise the `id` is the attribute id and the `hash` is not read);
   `tao`, `rootTao` and `body` a string or `null`. An absent member keeps its default (`""`,
   `None`, `false`), and one bad accreditation rejects the whole record. A node that sends
-  what its schema says is unaffected. The v4 adapter checks the shape as well: `attributes`,
-  when present, must be a list of objects (an absent one means no attributes), and a `vc` or
-  `credentialSubject` that an accreditation token sends must be an object, and its
-  `accreditedFor` a list of type strings or objects with a list of strings as `types` (an
-  absent one still means no types); one entry that is not rejects the record rather than being
-  skipped or widened to an unrestricted accreditation.
+  what its schema says is unaffected. The shape is checked as well: on v4, `attributes`, when
+  present, must be a list of objects (an absent one means no attributes); on every lane (v4, v5
+  and Core v1), a `vc` or `credentialSubject` that an accreditation token sends must be an
+  object, its `accreditedFor` a list of type strings or objects with a list of strings as
+  `types` (an absent one still means no types), and the token itself a compact JWS the proof
+  suite can read (its `MalformedToken` is reported as `MalformedRegistryResponse`, the suite's
+  error as `__cause__`); one accreditation that is not rejects the whole record rather than
+  being skipped or widened to an unrestricted accreditation.
+- **Every accreditation on a chain is bound to the DID it was read for** (`trust_anchors=`
+  mode): the JWT `sub` and the credential's `credentialSubject.id`, each one that is sent, must
+  be exactly the accredited DID, and at least one must be sent, else `AccreditationInvalid`. A
+  RootTAO's or TAO's accreditation that names nobody, carries an empty `sub`, or names another
+  DID is refused however well it is signed, so a registry answer cannot replay it into another
+  issuer's record. Single-level trust (no `trust_anchors`) checks no accreditation signature
+  and no binding: it trusts what the registry says about the issuer.
 - **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
   named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
   recorded on 2026-10-16
