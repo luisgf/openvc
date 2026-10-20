@@ -26,7 +26,15 @@ What each hop checks (defence in depth):
     TAO cannot vouch for a type it was never authorised to accredit.
   * **Signature & identity.** The accreditation VC-JWT's ``iss`` equals the
     ``accreditedBy`` DID it names, its signature verifies against that
-    accreditor's *resolved* key, and its subject is the DID being accredited.
+    accreditor's *resolved* key, and its subject is the DID being accredited: the
+    JWT ``sub`` and the credential's ``credentialSubject.id``, each one that is sent,
+    must be exactly that DID, and at least one must be sent. An accreditation that names
+    nobody, or another DID, is refused however well it is signed, so a registry cannot
+    replay a RootTAO's or a TAO's accreditation into *another* issuer's record. Across DIDs
+    only: a RootTAO- or TAO-signed credential for the *same* DID that carries no
+    ``accreditedFor`` (an onboarding authorisation, say) still reads as the unrestricted
+    accreditation, and ``vc.type`` is not checked against the role; both are the open
+    "absent means no types" policy, not a binding gap.
   * **Revocation (optional).** With a ``resolve_status_list`` the accreditation's
     own ``credentialStatus`` is checked too — a revoked accreditation breaks the
     chain, not just a TIR ``revoked`` role.
@@ -39,9 +47,10 @@ from typing import Any
 from openvc.did.base import DidResolutionError
 from openvc.proof._verify_common import safe_repr
 from openvc.proof.errors import ProofError
-from openvc.proof.vc_jwt import VcJwtProofSuite
-from openvc.status import ResolveStatusList, check_credential_status
+from openvc.proof.vc_jwt import VcJwtProofSuite, VerifiedCredential
+from openvc.status import ResolveStatusList, StatusListError, check_credential_status
 
+from ._message import bounded_text
 from .errors import EbsiError
 from .http import HttpNotFound
 from .models import Accreditation, IssuerRecord
@@ -97,18 +106,70 @@ def _pick_accreditation(
     return None
 
 
+def _check_subject_binding(verified: VerifiedCredential, *, subject: str) -> None:
+    """The verified accreditation must name *subject*, the DID whose registry record it was
+    read from, and no one else.
+
+    Three spellings name the accredited party, the JWT ``sub`` and the credential's
+    ``credentialSubject.id`` or ``credentialSubject.@id`` (what ``id`` aliases in JSON-LD, the
+    spelling the suite's ``_reconcile`` honours for ``issuer``). Each one that is **sent** must
+    be exactly *subject* (``""``, ``null`` and a non-string are sent and wrong, never
+    "absent"), at least one must be sent, and a sent ``credentialSubject`` must be an object
+    (an array of subjects names no single accredited DID). Anything else is
+    :class:`AccreditationInvalid`.
+
+    Why this is checked here and not left to the proof suite: the suite refuses a ``sub``
+    that is not a string and a ``sub`` that disagrees with a non-empty ``credentialSubject.id``,
+    but it reports the token's subject as ``None`` when neither is sent and as ``""`` when
+    ``sub`` is empty (an empty ``sub`` also skips its comparison with ``credentialSubject.id``),
+    and the check that used to live in :func:`_verify_accreditation` ran only ``if
+    verified.subject``. So a RootTAO- or TAO-signed accreditation that named nobody, or an
+    empty ``sub`` over a ``credentialSubject.id`` of another DID, placed in any issuer's record
+    by a registry (a bug, a steered response, a dishonest node: ADR-0009 D7) was accepted for
+    that issuer, on every lane (#352, the review of PR #354)."""
+    names: list[tuple[str, Any]] = []
+    if "sub" in verified.claims:
+        names.append(("sub", verified.claims["sub"]))
+    credential = verified.credential
+    if "credentialSubject" in credential:
+        cs = credential["credentialSubject"]
+        if not isinstance(cs, dict):
+            raise AccreditationInvalid(
+                f"accreditation for {safe_repr(subject)} has a credentialSubject that is not "
+                f"an object: {safe_repr(cs)}")
+        for key in ("id", "@id"):
+            if key in cs:
+                names.append((f"credentialSubject.{key}", cs[key]))
+    if not names:
+        raise AccreditationInvalid(
+            f"accreditation for {safe_repr(subject)} names no subject (neither sub nor "
+            "credentialSubject.id), so it cannot be bound to the accredited DID")
+    for where, value in names:
+        if not isinstance(value, str) or value != subject:
+            raise AccreditationInvalid(
+                f"accreditation subject ({where}) {safe_repr(value)} != "
+                f"accredited DID {safe_repr(subject)}")
+
+
 def _verify_accreditation(
     acc: Accreditation, *, subject: str, accreditor: str,
     resolver: DidEbsiResolver, proof_suite: VcJwtProofSuite,
 ) -> dict[str, Any]:
     """Verify the accreditation VC-JWT was signed by *accreditor* and issued for
     *subject*; return its verified credential (the ``vc`` object). Raises
-    :class:`AccreditationInvalid` on any inconsistency."""
+    :class:`AccreditationInvalid` on any inconsistency, a token the suite cannot read
+    included (its ``MalformedToken`` is an ``OpenvcError``, not an ``EbsiError``; here it
+    is the ``__cause__``)."""
     if not acc.credential_jwt:
         raise AccreditationInvalid(
             f"no raw accreditation token for {subject!r}; cannot verify its proof")
 
-    iss, kid = proof_suite.peek_issuer(acc.credential_jwt)
+    try:
+        iss, kid = proof_suite.peek_issuer(acc.credential_jwt)
+    except ProofError as exc:
+        raise AccreditationInvalid(
+            f"accreditation for {safe_repr(subject)} is not a readable token: "
+            f"{bounded_text(exc)}") from exc
     if iss != accreditor:
         raise AccreditationInvalid(
             f"accreditation issuer {safe_repr(iss)} != accreditedBy {safe_repr(accreditor)}")
@@ -129,10 +190,7 @@ def _verify_accreditation(
         raise AccreditationInvalid(
             f"accreditation for {subject!r} failed verification: {exc}") from exc
 
-    if verified.subject and verified.subject != subject:
-        raise AccreditationInvalid(
-            f"accreditation subject {safe_repr(verified.subject)} != "
-            f"accredited DID {safe_repr(subject)}")
+    _check_subject_binding(verified, subject=subject)
     return verified.credential
 
 
@@ -199,7 +257,16 @@ def verify_trust_chain(
         vc = _verify_accreditation(acc, subject=current, accreditor=accreditor,
                                    resolver=resolver, proof_suite=proof_suite)
         if resolve_status_list is not None:
-            status = check_credential_status(vc, resolve_status_list=resolve_status_list)
+            try:
+                status = check_credential_status(vc, resolve_status_list=resolve_status_list)
+            except StatusListError as exc:
+                # the accreditation's own `credentialStatus` (signed by the accreditor) is of a
+                # shape the status module refuses: its revocation cannot be checked, so the hop
+                # fails closed as a typed trust error, not as the status module's OpenvcError
+                # escaping `verify_trust_chain` (the review of PR #365)
+                raise AccreditationInvalid(
+                    f"the accreditation for {safe_repr(current)} has a credentialStatus that "
+                    f"cannot be checked: {bounded_text(exc)}") from exc
             if status.revoked:
                 raise AccreditationRevoked(
                     f"the accreditation for {current!r} is revoked via its status list")

@@ -8,6 +8,118 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
+- **The v5 and Core v1 TIR walk reads the accreditation token fail-closed, and the trust walk
+  binds every accreditation to the DID it was read for**
+  ([#352](https://github.com/luisgf/openvc/issues/352) follow-ups, left open by the review of
+  [#354](https://github.com/luisgf/openvc/pull/354), which closed them on the legacy v4 lane
+  only). **Wrong-accept, conditional on a registry-side fault**: a registry answer that puts an
+  accreditation in the wrong issuer's record (a bug, a steered or stale response, a dishonest
+  listed node, which the Trusted Nodes List does not rule out, ADR-0009 D7). `for_nodes`
+  defaults to the Core v1 adapters, so this is the production lane, and 1.36.0 on PyPI carries
+  it. Measured on `main` at b1fd669 (CPython 3.14.8) with real P-256 signatures through
+  `verify_trust_chain`, on v5 and on Core v1 separately, with a LEAF record holding one
+  accreditation signed by ROOT, the anchor: (a) the walk read a `credentialSubject` that is not
+  an object, a VCDM-legal **array of subjects** included, as `{}`, that is as an accreditation
+  with no types, which is the **unrestricted** one; `credentialSubject: [{"id": OTHER,
+  "accreditedFor": [OtherType]}]`, signed by ROOT for OTHER and for another type, was **trusted
+  for LEAF** for the credential's type, and `"x"`, `7`, `null`, `true` the same; a `vc` that is
+  not an object was `AccreditationInvalid` in recursive mode only because the suite's `verify`
+  wants a `vc` object, and single-level trust, which verifies no signature, accepted every one of
+  these shapes as the unrestricted accreditation. (b) `trust.py` compared the token's subject
+  with the accredited DID only `if verified.subject`, so a ROOT-signed accreditation carrying
+  neither `sub` nor `credentialSubject.id` was **trusted for LEAF** on every lane, v4 included;
+  an **empty `sub`** over a `credentialSubject.id` of OTHER the same (the suite skips its
+  `sub` / `id` comparison for an empty `sub` and reports `""`, which is falsy), and so was a
+  `credentialSubject.id` of `""` or `7` with no `sub`. (c) the shared flattener dropped an
+  `accreditedFor` it did not recognise: a single object, a bare string, `[{"types": ""}]`,
+  `[7]`, `[null]`, `[["T"]]` and `[{"types": [7]}]` read as no types and were **trusted for
+  every type** (the same accreditation as a list of objects: `NoTrustedAnchor`); `types` of `7`,
+  `null`, `true` or `1.5` was a bare `TypeError` out of `issuer_record` and
+  `verify_trust_chain`, past the `except EbsiError` of the node client's failover loop; a string
+  `types` was split into one-character types. (d) a `body` that is not a compact JWS with a
+  JSON-object payload escaped `issuer_record` and `verify_trust_chain` as the proof suite's
+  `MalformedToken`, an `OpenvcError` that is not an `EbsiError`, on every lane; a token whose
+  header alone is unreadable passed `issuer_record` (`peek_claims` reads the payload) and
+  escaped `verify_trust_chain` from `peek_issuer` the same way.
+
+  **What changed.** The token is read by one reader on every lane (`_types_from_token`, the
+  #354 checks lifted out of `TirV4`): the claims must be an object, `vc` and `credentialSubject`
+  objects when sent, `accreditedFor`, when sent, a list of type strings or objects whose `types`
+  is a list of strings, else `MalformedRegistryResponse` with the member and the value (through
+  `safe_repr`) in the message, never "no types"; the same shape gives the same message on v4,
+  v5 and Core v1. A `body` the suite cannot read is `MalformedRegistryResponse` too, with the
+  suite's `MalformedToken` as `__cause__` and its text bounded. In `trust.py` the JWT `sub` and
+  the credential's `credentialSubject.id`, each one that is **sent**, must be exactly the
+  accredited DID (`""`, `null` and a non-string are sent and wrong, never "absent"), at least
+  one of the two must be sent, and a sent `credentialSubject` must be an object; anything else
+  is `AccreditationInvalid`, the class the mismatch already had (a bad identity on the path),
+  on every lane; that holds **across DIDs**, which is what a replay is (a RootTAO-signed
+  credential for the *same* DID that carries no `accreditedFor`, an onboarding authorisation
+  say, still reads as the unrestricted accreditation under the policy below). `peek_issuer`'s
+  `MalformedToken` is `AccreditationInvalid` with the same `__cause__`. What the suite already
+  refused (a `sub` that is not a string, a non-empty `sub`
+  that disagrees with a non-empty `credentialSubject.id`) is refused as before, and an
+  accreditation that names the accredited DID once (`sub` only, as the VCDM 1.1 JWT encoding
+  does, or `credentialSubject.id` only) or twice is accepted as before.
+
+  **Decision: one bad accreditation rejects the whole record** on v5 and Core v1, as on v4
+  (the maintainer's 2026-10-20 decision for #352 and the #337 rule): nothing partial is
+  returned, and a good accreditation beside a bad one does not close a chain. The walk fetches
+  one revision per listing item and reads it as it goes, so it raises at the first malformed
+  accreditation it reaches, after the revisions before it were fetched and decoded (v4's "every
+  entry's shape before any token is decoded" is not available to a streaming walk); a revision's
+  scalars (#337) are typed before its token is decoded, and the token's shape right after.
+  **Decision: `MalformedToken` is wrapped.** A caller on `except EbsiError` (the node client's
+  loop, anyone following the docs) never saw it and the bare `OpenvcError` escaped; now
+  `issuer_record` and `verify_trust_chain` raise `MalformedRegistryResponse` for it, `except
+  OpenvcError` still catches it, and only a caller catching `MalformedToken` around those two
+  entry points changes. Under `for_nodes` the class is not a node failure (`classify` returns
+  `None` for it), so it reaches the caller and is not failed over, like every other malformed
+  200. One consequence worth saying: `MalformedRegistryResponse` is not a `TrustChainError`,
+  so every shape this closes now raises out of `verify_ebsi_badge` even with
+  `require_trust=False`, where `main` returned `trusted=True`; that is the stance #267 took
+  (malformed input is not an untrusted issuer, so `require_trust=False` does not suppress it).
+
+  **Found by the adversarial review of the PR** (Opus, runnable repros; all four are small and
+  inside this change's surface). (1) `accreditedFor` was checked in one pass and then read by
+  the old flattener in a second, so a list handed in by an injected `decode` that iterates
+  differently the second time was checked as scoped and read as unrestricted (new on v5 and
+  Core v1 with this change, on v4 since #354; a hostile `decode` is caller code and could return
+  `{}` anyway): the flattener is gone and `_wire_accredited_for` checks and reads in **one
+  pass**, returning the types. (2) The scalar readers (#337) kept a `str` subclass as sent, so a
+  `body` from an injected `fetch` whose `.split` answered with another token made `peek_claims`
+  read one token while the suite verified another, and a ROOT-signed scoped token read as
+  unrestricted (pre-existing on every lane; moot for a hostile `fetch`, which also serves the
+  DID documents): every scalar is now an exact `str` (`str.__str__`, as `_require_did_ebsi`
+  does), types included. (3) The binding honours `credentialSubject.@id` as it does `id` (what
+  `id` aliases in JSON-LD; the suite honours it for `issuer`): sent, it must be the accredited
+  DID too. (4) A `credentialStatus` the status module refuses, on a ROOT-signed accreditation
+  with `resolve_status_list` given, escaped `verify_trust_chain` as `StatusListError`, an
+  `OpenvcError` that is neither an `EbsiError` nor a `TrustChainError` (pre-existing, every
+  lane); it is now `AccreditationInvalid` with that error as `__cause__`. The review also
+  confirmed, with repros, pre-existing gaps that are **not changed here** because each changes
+  what trust means and is the maintainer's call: the leaf and hop type matching intersects the
+  credential's whole `type` list with `accreditedFor.types`, and every recorded `accreditedFor`
+  starts with `VerifiableCredential`, which every credential also carries, so on real EBSI data
+  the intersection is never empty and the delegated scope collapses to the generic types (an
+  issuer accredited for `TrustedNodesList` only is trusted for an `OpenBadgeCredential`);
+  `issuerType` is compared with the lowercase `revoked` only, never allow-listed against the
+  roles, and does not limit delegation (a `TI` can accredit); an accreditor whose DID document
+  is a 404 is `HttpNotFound`, an `EbsiError` but not a `TrustChainError`.
+
+  **Not changed.** The four recorded walks (the pilot's v5 response and the three Core v1
+  nodes) parse to the same record. `vc`, `credentialSubject` and `accreditedFor` **absent**, an
+  empty `accreditedFor`, an entry with no `types` and `"types": []` still read as "no types",
+  the unrestricted accreditation: whether an accreditation without `accreditedFor` should deny
+  is a policy question, and a ROOT-signed token for the right DID whose `vc` carries no
+  `credentialSubject` (one that nests the real one under `vc.vc`, say) is still accepted under
+  that policy. A listing item the walk cannot follow (not an object; `href` absent, not a
+  string, empty or off the listing's origin) is still **skipped** (#172, #243), not rejected: a
+  skipped item drops an accreditation and can only narrow trust (a record left with none is
+  `NoTrustedAnchor` / untrusted), where a misread token widens it. Single-level trust still
+  verifies no accreditation signature and no binding (its documented policy). Not touched: the
+  v4 entry cap, `issuerType` against the trust roles, `verify.py`'s `_credential_types`, the
+  dependencies and the public API. (`tests/test_ebsi_tir_walk_shape.py`)
 - **The EBSI client's error-body read is bounded on the decoded size, and its cap and
   deadline hold for a body that decodes to nothing**
   ([#350](https://github.com/luisgf/openvc/issues/350); found by the review of
@@ -1672,9 +1784,10 @@ Each is one value or table away from the other option. None changes anything tha
   `MalformedRegistryResponse` and not a skip, the rule #337 applies to scalars in the same
   adapter: a response whose shape is wrong is not a record to trust in part, and the good
   entries beside the bad one are not returned. The v5 and Core v1 walk skips a listing item
-  that is not an object, and a `vc` or `credentialSubject` that is not one reads there as an
-  accreditation with no type restriction; v4 does neither, because a skip here would turn a
-  crash into the widest accreditation there is.
+  that is not an object; a `vc` or `credentialSubject` that is not one *read* there as an
+  accreditation with no type restriction until the follow-up under `### Security` above closed
+  it, in this same release, with the same reader; v4 did neither from the start, because a
+  skip here would turn a crash into the widest accreditation there is.
 
   Not changed: v5 and Core v1 (their walk is untouched, and so is the shared
   `_flatten_accredited_for`, which they call too: v4 checks the shape before calling it, so
