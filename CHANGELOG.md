@@ -1634,6 +1634,82 @@ Each is one value or table away from the other option. None changes anything tha
   roles (a separate question, not part of this fix). There is no recorded TIR v4 response in the repository: the v4 tests
   are synthetic bodies around the recorded v5 accreditation tokens, and the recorded
   responses of the other lanes parse as before.
+- **An EBSI error message no longer shows the userinfo of a URL, and the text of a transport
+  error, a credential type list and a credential `id` is cut**
+  ([#351](https://github.com/luisgf/openvc/issues/351); pre-existing, found by the review of
+  #343). Hardening; no wrong-accept. Measured on `main` at 3bd9e59 (CPython 3.14.8, httpx
+  0.28.1, `allowed_hosts={"api-pilot.ebsi.eu"}`): `_guard_host("http://u:s3cret@api-pilot.ebsi.eu/x")`
+  raised `HttpForbiddenHost("non-https URL rejected: 'http://u:s3cret@api-pilot.ebsi.eu/x'")`,
+  so the password reached every log line that formats the exception. That rule was not the only
+  door. `NodeSession.get_json` (`URL is not on this session's node: …`), the node client's
+  `not a node of this client's … list` and `the node policy named a node …` messages and the
+  Trusted Nodes List's `… is not a bare https origin: …` quoted a URL as given too, and so did `host not in allow-list` for a host written
+  `user%3Apass%40host`. The refusal of a URL that `urlparse` cannot read chained `urlparse`'s own
+  `ValueError` as `__cause__`, and that text quotes what it could not read: a URL written
+  `https://user:s3cret%40api-pilot.ebsi.eu/x` has no `@` for a parser, so its password sits in the
+  PORT slot and the cause read `Port could not be cast to integer value as
+  's3cret%40api-pilot.ebsi.eu'` (a 70 000-character port made a 70 045-character cause). The
+  other two items of the issue were unbounded echoes of wire text: `gave up after N attempts:
+  …` formatted the last transport error's own text (a 16 000-character
+  `httpx.RemoteProtocolError` gave a 16 026-character message), and `verify.py` repeated the
+  credential's type list in `IssuerNotTrusted` (one 70 000-character `type` entry gave a
+  70 107-character message, 70 000 short entries 898 969), its issuer in the same message and the
+  credential `id` in `CredentialRevoked`, unbounded.
+
+  **Changed.** A new private leaf module, `openvc_ebsi/_message.py`, holds what a value may look
+  like inside a message: `redact_userinfo` / `url_repr` (the URL with its userinfo replaced by
+  `***`, then `safe_repr`'s cut: the userinfo goes FIRST, so a 200-character cut cannot leave the
+  start of a password showing) and `bounded_text` (the text cut past 200 characters with its
+  length, and NOT quoted, so a message that read `gave up after 3 attempts: transient` reads the
+  same). The userinfo is everything in the authority up to the last `@` (where `urlparse` and
+  httpx both split), the user name included, the empty forms (`https://@host/`) included; a
+  percent-encoded `@` (`%40`) counts as a delimiter too; an `@` in a path, query or fragment is
+  not userinfo and stays; the authority is read after a run of `/` and `\` characters (one slash
+  after a scheme, two without one) because a WHATWG parser reads `http:/u:p@h` and
+  `http:///u:p@h` as `http://u:p@h`, and after an empty scheme (`://u:p@h`, which httpx reads as an
+  authority); a reference with no slashes (`user:pass@host/x`) is read from its first
+  character. It is linear in the length of the URL, reads a `str` subclass through `str.__str__`
+  and never raises (a value it cannot read is `<url withheld>`). It is applied to every message
+  of `openvc_ebsi/` that quotes a URL: the guard's non-https and allow-list rules, `get_json` /
+  `get_bytes` / `probe` (past the guard, so no URL with userinfo reaches those, but the helper
+  makes that true by construction), the node client and the node list. `_url._split` now chains
+  a `ValueError` of fixed words (`the authority is not a valid host and port`) instead of
+  `urlparse`'s own, raised outside the `except` so the original is not `__context__` either;
+  `versioning._origin` reads through the same function and inherits it. `HttpTransientExhausted`
+  cuts the last error's text through `bounded_text` (243 characters for the case above; a
+  `__str__` that raises is `an object`). `IssuerNotTrusted` shows the issuer through `safe_repr`
+  and the type list through `bounded_text` (296 and 297 characters for the two cases above),
+  `CredentialRevoked` the `id` through `url_repr`.
+
+  **Found by the review of this change, and fixed in it.** The first version of the helper looked
+  for the authority after exactly `//`, and left the password showing for `http:/u:p@h`,
+  `http:///u:p@h`, `ws:/\u:p@h` and the like: a WHATWG parser (a browser, Node) reads those as
+  credentialed, urllib and httpx do not, so nothing was ever sent as Basic `Authorization`, but
+  the password reached six messages (1 779 594 generated shapes: 38 940 left the userinfo showing
+  to WHATWG, 0 to urllib and httpx, all with this one cause). Three smaller unbounded echoes
+  were bounded: `for_nodes`'s `unknown adapter name: …` (`didr="x" * 70000` gave 70 052
+  characters), `check_node_origin`'s `what` label in its three messages (70 032), and the
+  address-guard path of `_open_stream`, which still chained `urlparse`'s own error for a `str`
+  subclass that answers differently the second time it is read (it now chains the fixed words
+  too). An object whose `__class__` claims `str` is `an object` in `url_repr`, as `safe_repr`
+  says it.
+
+  **Not changed.** Every exception class, the leading words of every message (so every `match=`
+  keeps matching), and the text of a message whose value is short and has no userinfo, byte for
+  byte (the type list of `IssuerNotTrusted` included). **`.url` keeps the whole URL as given**
+  (`None` for the userinfo refusal), as #343 recorded: the caller who passed the URL already
+  holds its password, and the message is what reaches a log. A caller that logs `exc.url` still
+  logs it. The cause of the `does not parse` refusal is still a `ValueError`, without
+  `urlparse`'s words. The userinfo refusal (`URL rejected: carries userinfo`) already named the
+  rule only, and the port rule prints a range-checked number: neither moves. A host that
+  `urlparse` reads out of a URL (the allow-list rule) is not userinfo and is shown as before,
+  except for the `%40` form above. A reference with no slashes loses its scheme in the message
+  (`mailto:a@b` is `***@b`): `user:` in `user:pass@host` cannot be told from a scheme, so
+  keeping it is not safe. A secret in a query string (`?access_token=…`) is still shown, up to
+  200 characters: the rule covers userinfo only. Not touched, for their own changes: the
+  unbounded DIDs that `openvc_ebsi/trust.py` quotes with `!r` (not URLs, and not the issue's
+  scope), and `versioning.py`, which echoes no URL (its `no DID Registry adapter for …`
+  messages quote the adapter name unbounded; `for_nodes` now cuts it).
 
 ### Tests
 

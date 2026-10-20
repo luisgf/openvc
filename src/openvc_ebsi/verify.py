@@ -35,6 +35,7 @@ from openvc.status import (
     check_credential_status,
 )
 
+from ._message import bounded_text, url_repr
 from .errors import EbsiError
 from .models import Accreditation, IssuerRecord
 from .trust import TrustChain, TrustChainError, verify_trust_chain
@@ -183,9 +184,11 @@ def verify_ebsi_badge(
         accreditation = evaluate_issuer_trust(record, cred_types)
         trusted = accreditation is not None
         if require_trust and not trusted:
+            # both are the credential's own claims, and a 70 000-character `type` entry (or a
+            # list of that many) made the message as long (#351)
             raise IssuerNotTrusted(
-                f"issuer {verified.issuer!r} has no valid accreditation for "
-                f"types {cred_types}")
+                f"issuer {safe_repr(verified.issuer)} has no valid accreditation for "
+                f"types {bounded_text(cred_types)}")
 
     # 6) revocation — a set revocation bit invalidates the credential outright.
     status: StatusResult | None = None
@@ -195,7 +198,8 @@ def verify_ebsi_badge(
         if status.revoked:
             cred_id = verified.credential.get("id")    # never repr() a hostile shape
             raise CredentialRevoked(
-                f"credential {cred_id if isinstance(cred_id, str) else None!r} is revoked")
+                f"credential {url_repr(cred_id if isinstance(cred_id, str) else None)} "
+                "is revoked")
 
     return VerifiedEbsiBadge(
         credential=verified.credential,
