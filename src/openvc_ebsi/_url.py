@@ -36,7 +36,9 @@ class UrlNotVisibleAscii(UrlError):
 
 
 class UrlDoesNotParse(UrlError):
-    """``urlparse`` cannot read it, port included. ``__cause__`` is its ``ValueError``."""
+    """``urlparse`` cannot read it, port included. ``__cause__`` is a ``ValueError`` of fixed
+    words, not ``urlparse``'s own, whose text quotes the part of the URL it could not read (a
+    port that is a password, #351)."""
 
 
 class Origin(NamedTuple):
@@ -53,11 +55,19 @@ def _split(url: str) -> tuple[ParseResult, int | None]:
     # time), and a URL `urlparse` cannot read, port included (#246).
     if not (url.isascii() and url.isprintable()) or " " in url:
         raise UrlNotVisibleAscii()
+    # `urlparse`'s own ValueError quotes the text it could not read: a port that is not a
+    # number is echoed whole (`https://user:s3cret%40host/x` reads `s3cret%40host` as the port
+    # and says so, 70 000 characters of it if the port is that long). The cause is therefore
+    # a ValueError of fixed words, raised outside the `except` so the original is not chained
+    # as `__context__` either (#351).
+    refusal = None
     try:
         parsed = urlparse(url)            # raises on a broken IPv6 literal
         port = parsed.port                # raises on an out-of-range or non-numeric port
-    except ValueError as exc:
-        raise UrlDoesNotParse() from exc
+    except ValueError:
+        refusal = "the authority is not a valid host and port"
+    if refusal is not None:
+        raise UrlDoesNotParse() from ValueError(refusal)
     return parsed, port
 
 

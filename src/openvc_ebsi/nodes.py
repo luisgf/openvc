@@ -44,6 +44,7 @@ from typing import Any
 from openvc import _json
 from openvc.proof._verify_common import safe_repr, utc_instant
 from openvc_ebsi import _openpgp
+from openvc_ebsi._message import url_repr
 from openvc_ebsi.errors import (
     NodeListConfigError,
     NodeListEnvironmentMissing,
@@ -316,7 +317,7 @@ def check_node_origin(url: Any, environment: str, what: str = "url") -> str:
         raise NodeListConfigError(
             f"environment must be one of pilot, preprod, prod, not {safe_repr(environment)}")
     if type(url) is not str or _URL.fullmatch(url) is None:
-        raise NodeListMalformed(f"{what} is not a bare https origin: {safe_repr(url)}")
+        raise NodeListMalformed(f"{what} is not a bare https origin: {url_repr(url)}")
     if not url.startswith(_PREFIX[environment]):
         raise NodeListMalformed(f"{what} does not start with {_PREFIX[environment]}")
     _check_host(url[len("https://"):], what)
@@ -331,7 +332,7 @@ def _node(entry: Any, environment: str, seen: set[str], what: str) -> Node:
     check_node_origin(url, environment, f"{what}.url")
     host = url[len("https://"):]
     if url in seen:
-        raise NodeListMalformed(f"{what}.url is listed twice: {safe_repr(url)}")
+        raise NodeListMalformed(f"{what}.url is listed twice: {url_repr(url)}")
     seen.add(url)
     if type(country) is not str or _COUNTRY.fullmatch(country) is None:
         raise NodeListMalformed(f"{what}.country is not two upper-case letters")

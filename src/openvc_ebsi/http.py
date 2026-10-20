@@ -81,6 +81,7 @@ from openvc.cache import TtlCache
 from openvc.fetch import ip_is_forbidden
 from openvc.proof._verify_common import safe_repr, utc_instant
 
+from ._message import bounded_text, url_repr
 from ._url import HTTPS_PORT, UrlDoesNotParse, UrlNotVisibleAscii, carries_userinfo, read_origin
 from .environments import fixed_hosts
 from .errors import (
@@ -615,10 +616,10 @@ class EbsiHttpClient:
             data = _json.loads(body or b"")
         except (ValueError, RecursionError) as exc:   # non-JSON or hostile-depth body
             raise MalformedRegistryResponse(
-                f"registry returned a 200 with a non-JSON body: {safe_repr(url)}") from exc
+                f"registry returned a 200 with a non-JSON body: {url_repr(url)}") from exc
         if not isinstance(data, dict):           # null / array / string / number
             raise MalformedRegistryResponse(
-                f"registry returned a 200 that is not a JSON object: {safe_repr(url)}")
+                f"registry returned a 200 that is not a JSON object: {url_repr(url)}")
         self._cache.set(url, data)           # only cache successes
         return data
 
@@ -786,7 +787,7 @@ class EbsiHttpClient:
             except httpx.DecodingError as exc:       # not a TransportError: never retried
                 # A corrupt gzip/deflate body, on the capped read or the error drain (#248).
                 raise MalformedRegistryResponse(
-                    f"registry returned a body that does not decode: {safe_repr(url)}") from exc
+                    f"registry returned a body that does not decode: {url_repr(url)}") from exc
             except httpx.TransportError as exc:      # network error / timeout
                 last_exc = exc
                 self._sleep_before_retry(attempt, until=until)
@@ -814,7 +815,8 @@ class EbsiHttpClient:
                             problem_type=problem_type)
 
         raise HttpTransientExhausted(
-            f"gave up after {self._retry.attempts - first} attempts: {last_exc}", url=url,
+            f"gave up after {self._retry.attempts - first} attempts: {bounded_text(last_exc)}",
+            url=url,
             # the last attempt's status; None when it never got one (a transport failure)
             status=last_exc.status if isinstance(last_exc, HttpError) else None,
             problem_type=last_exc.problem_type if isinstance(last_exc, HttpError) else None,
@@ -920,7 +922,7 @@ class EbsiHttpClient:
                 continue
             if decoder.eof:
                 raise MalformedRegistryResponse(
-                    f"response has bytes after the end of its compressed stream: {safe_repr(url)}")
+                    f"response has bytes after the end of its compressed stream: {url_repr(url)}")
             room = cap - len(body)
             try:
                 # max_length is positive (room + 1 >= 1; 0 would mean unlimited) and at most
@@ -932,17 +934,17 @@ class EbsiHttpClient:
                 piece = decoder.decompress(chunk, min(room + 1, sys.maxsize))
             except zlib.error as exc:
                 raise MalformedRegistryResponse(
-                    f"response body does not decode: {safe_repr(url)}") from exc
+                    f"response body does not decode: {url_repr(url)}") from exc
             if len(piece) > room:
                 raise HttpError(
                     f"response exceeds {cap} bytes once decoded", status=200, url=url)
             body += piece
             if decoder.unused_data:
                 raise MalformedRegistryResponse(
-                    f"response has bytes after the end of its compressed stream: {safe_repr(url)}")
+                    f"response has bytes after the end of its compressed stream: {url_repr(url)}")
         if decoder is not None and not decoder.eof:
             raise MalformedRegistryResponse(
-                f"response body is a truncated compressed stream: {safe_repr(url)}")
+                f"response body is a truncated compressed stream: {url_repr(url)}")
         return bytes(body)
 
     def _read_problem_type(self, resp: httpx.Response) -> str | None:
@@ -982,12 +984,13 @@ class EbsiHttpClient:
             raise HttpForbiddenHost("URL rejected: does not parse", url=url) from exc.__cause__
         # The URL and the host in the next two messages are the caller's and, in practice, a
         # remote party's (a DID document, a registry link, a list entry): `safe_repr` cuts them
-        # (#338). `.url` keeps the whole URL.
+        # (#338), and `url_repr` withholds the userinfo of the URL first (#351). `.url` keeps
+        # the whole URL as given.
         if scheme != "https":
-            raise HttpForbiddenHost(f"non-https URL rejected: {safe_repr(url)}", url=url)
+            raise HttpForbiddenHost(f"non-https URL rejected: {url_repr(url)}", url=url)
         if not host or host not in self._allowed:
             raise HttpForbiddenHost(
-                f"host not in allow-list: {safe_repr(host or None)}", url=url)
+                f"host not in allow-list: {url_repr(host or None)}", url=url)
         # `read_origin` fills in 443 for an absent https port and only for an absent one,
         # so `:0` stays 0 here and is refused with every other port.
         if port != HTTPS_PORT:
@@ -995,7 +998,8 @@ class EbsiHttpClient:
         # Userinfo is outside an origin and the Trusted Nodes List publishes none (ADR-0009).
         # httpx would send it as a Basic `Authorization` header. This refusal names the rule
         # and carries no credentials, in the message or in `.url` (None here); an earlier
-        # rule's message and `.url` still hold the URL as given.
+        # rule's `.url` still holds the URL as given, and its message the URL with the
+        # userinfo withheld (#351).
         if carries_userinfo(url):
             raise HttpForbiddenHost("URL rejected: carries userinfo", url=None)
 

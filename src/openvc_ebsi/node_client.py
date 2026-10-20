@@ -63,6 +63,7 @@ from openvc.cache import TtlCache
 from openvc.observability import logger
 from openvc.proof._verify_common import safe_repr
 
+from ._message import url_repr
 from .errors import EbsiError, NodeClientConfigError, NodeListError, NodeListExpired
 from .http import (
     MAX_RESPONSE_BYTES,
@@ -260,7 +261,7 @@ class NodeSession:
             text = str.__str__(url)         # the text checked is the text fetched (#266)
             if not _on_origin(text, self._pin):
                 raise HttpForbiddenHost(
-                    f"URL is not on this session's node: {safe_repr(text)}", url=text)
+                    f"URL is not on this session's node: {url_repr(text)}", url=text)
             return self._http.get_json(text)
         except EbsiError as exc:
             self._note(exc)
@@ -443,7 +444,7 @@ class EbsiNodeClient:
     def _member(self, origin: object) -> str:
         if type(origin) is not str or origin not in self._origin_set:
             raise NodeClientConfigError(
-                f"not a node of this client's {self.environment} list: {safe_repr(origin)}")
+                f"not a node of this client's {self.environment} list: {url_repr(origin)}")
         return origin
 
     def _order(self) -> list[str]:
@@ -462,10 +463,10 @@ class EbsiNodeClient:
         for item in items:
             if type(item) is not str or item not in self._origin_set:
                 raise NodeClientConfigError(
-                    f"the node policy named a node that is not in the list: {safe_repr(item)}")
+                    f"the node policy named a node that is not in the list: {url_repr(item)}")
             if item in seen:
                 raise NodeClientConfigError(
-                    f"the node policy named a node twice: {safe_repr(item)}")
+                    f"the node policy named a node twice: {url_repr(item)}")
             seen.add(item)
         return items
 
@@ -510,10 +511,10 @@ def _checked_result(result: object) -> tuple[str, datetime, tuple[str, ...]]:
             raise NodeClientConfigError(str(exc)) from exc
         if host != origin[len("https://"):]:
             raise NodeClientConfigError(
-                f"nodes[{index}].host is not the host of its origin: {safe_repr(host)}")
+                f"nodes[{index}].host is not the host of its origin: {url_repr(host)}")
         if origin in origins:
             raise NodeClientConfigError(f"nodes[{index}].origin is listed twice: "
-                                        f"{safe_repr(origin)}")
+                                        f"{url_repr(origin)}")
         origins.append(origin)
     return environment, instant, tuple(origins)
 
