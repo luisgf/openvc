@@ -29,6 +29,16 @@ class UnknownEbsiEnvironment(EbsiError, ValueError):
     exact class (``type(exc) is ValueError``) must compare this one."""
 
 
+class NodeDerivedEnvironment(UnknownEbsiEnvironment):
+    """``for_ebsi`` was given the name of an environment that has no fixed host (``preprod``,
+    ``prod``): its hosts come from a verified Trusted Nodes List, so no allow-list can be seeded
+    from the name. The message points at :func:`openvc_ebsi.nodes.verify_node_list` and
+    :func:`openvc_ebsi.node_client.for_nodes`, which is how a client for it is built.
+
+    A subclass of :class:`UnknownEbsiEnvironment`, so a handler for a name ``for_ebsi`` does not
+    accept (and ``except ValueError``) catches it too; catch this class to tell the two apart."""
+
+
 class NodeListError(EbsiError):
     """Base class for every failure of the Trusted Nodes List verifier
     (:func:`openvc_ebsi.nodes.verify_node_list`).

@@ -278,6 +278,12 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
     URLs in version 4 of the Trusted Nodes List is under `ebsi.eu`. A request through such a
     client fails closed. `api.ebsi.eu` is not a node: no HTTP response could be obtained from
     it.
+  - `preprod` and `prod` are the names of EBSI Core API v1, whose hosts are the nodes of a signed
+    list rather than a name, so they have **no fixed host** and `for_ebsi` refuses them with
+    `NodeDerivedEnvironment` (an `UnknownEbsiEnvironment`, so also a `ValueError`) before it
+    builds a client. The message says where to go instead: verify the list with `verify_node_list`
+    and build the client with `for_nodes`, as [EBSI node trust](EBSI-Node-Trust) explains. They
+    are not `production` (`api.ebsi.eu`), and `EBSI_HOSTS` / `EBSI_BASE` do not hold them.
   - Any other name (another case, an empty string, a value that is not a string) raises
     `UnknownEbsiEnvironment`, which is also a `ValueError`.
 

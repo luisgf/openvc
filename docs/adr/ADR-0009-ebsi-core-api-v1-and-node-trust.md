@@ -9,7 +9,7 @@ changes nothing under `src/`; the ES256K opt-in it accepted was implemented afte
 (v1.37.0), see D8, and the answer to question 4 as #325 (v1.37.0), see "Open questions".
 **Implemented so far:** D1 (the origin allow-list, #318), D4's fetch half (#320), the
 Core v1 adapters, the `legacy-pilot` name and the deprecation of `pilot` (D6 in part: #321,
-#325 parts 1 and 2; part 3, the node-derived rows, waits for #324), D8 (#323) and,
+#325 parts 1 to 3; part 3, the node-derived `preprod` and `prod` rows, landed after #324), D8 (#323) and,
 in [#319](https://github.com/luisgf/openvc/issues/319) (unreleased, held), D2 (the pure verifier
 `openvc_ebsi.nodes.verify_node_list` over a minimal ECDSA-only OpenPGP reader) and D3's anchor
 and two version floors (the list itself is not vendored). #319's decisions 1 to 4 were taken
@@ -557,6 +557,15 @@ Names only; no code is proposed in this ADR.
   lane under a name EBSI has since reused, and `production` names a host where a verifying
   client cannot connect today (the certificate served does not cover the name; Context).
   Open question 4, decided by the maintainer on 2026-10-19: see "Open questions".
+  **Part 3 shipped** (#325, v1.37.0), narrower than the sentence above: the table holds
+  `EbsiEnvironment("preprod", None)` and `EbsiEnvironment("prod", None)` (the TNL's own
+  spellings), which are in neither `EBSI_HOSTS` nor `EBSI_BASE`, and `for_ebsi` refuses both
+  with `NodeDerivedEnvironment` (an `UnknownEbsiEnvironment`) before any client exists, its
+  message pointing at `verify_node_list` and `for_nodes`. The rows carry **no adapter
+  names**: `for_nodes(..., didr="core-v1", tir="core-v1")` owns and validates them, and a
+  copy in the table would be a second source of truth. There is **no node-derived `pilot`
+  row**: the name stays the deprecated alias of `legacy-pilot` until the MAJOR (2.0, #74),
+  when it changes meaning and refuses like these two. Open question 4 is unchanged.
 
 ## Migration plan
 
@@ -719,8 +728,9 @@ Titles with one line each; none have been filed.
 - `feat(ebsi): node-based client constructor with health check and single-node failover` —
   injected selection policy; walks never mix nodes; clients carry the list's `expires` and an injected clock; one environment per client.
 - `fix(ebsi): environment table — legacy-pilot, node-derived pilot/preprod/prod` — resolves
-  open question 4 (#325: parts 1 and 2 done, decided 2026-10-19; part 3, the node-derived rows,
-  waits for #324).
+  open question 4 (#325: parts 1 and 2 done, decided 2026-10-19; part 3 done after #324: the
+  node-derived `preprod` and `prod` rows, refused by `for_ebsi`; the node-derived `pilot` waits
+  for the MAJOR).
 - `security(ebsi): allow-list on origin (host and port 443), not host name` — the TNL
   guarantees bare origins.
 - `security(ebsi): optional resolved-address guard for list-derived hosts` — reuse

@@ -82,11 +82,12 @@ from openvc.fetch import ip_is_forbidden
 from openvc.proof._verify_common import safe_repr, utc_instant
 
 from ._url import HTTPS_PORT, UrlDoesNotParse, UrlNotVisibleAscii, carries_userinfo, read_origin
-from .environments import fixed_hosts
+from .environments import ENVIRONMENTS, fixed_hosts
 from .errors import (
     EbsiError,
     MalformedRegistryResponse,
     NodeClientConfigError,
+    NodeDerivedEnvironment,
     NodeListExpired,
     UnknownEbsiEnvironment,
 )
@@ -1236,6 +1237,12 @@ def for_ebsi(
       did not cover its name, so a client built from it is not known to complete a request
       (ADR-0009).
 
+    * ``"preprod"`` and ``"prod"`` are EBSI Core API v1, whose hosts are the nodes of a signed
+      Trusted Nodes List: they have **no fixed host**, so this function refuses them with
+      :class:`~openvc_ebsi.errors.NodeDerivedEnvironment`, before any client exists. Verify
+      the list with :func:`openvc_ebsi.nodes.verify_node_list` and build the client with
+      :func:`openvc_ebsi.node_client.for_nodes`.
+
     ``extra_hosts`` lets you permit additional issuer status-list hosts if you
     also follow StatusList proxies through this client. Entries are host NAMES: only
     ``https`` on port 443 of a listed host is reachable (#318), so a status list on another
@@ -1243,7 +1250,8 @@ def for_ebsi(
     port never matches.
 
     An environment that is not one of these names (another case, empty, not a string)
-    raises :class:`~openvc_ebsi.errors.UnknownEbsiEnvironment`, which is also a ``ValueError``.
+    raises :class:`~openvc_ebsi.errors.UnknownEbsiEnvironment`, which is also a ``ValueError``
+    and the parent class of :class:`~openvc_ebsi.errors.NodeDerivedEnvironment`.
 
     Every other keyword argument is passed to :class:`EbsiHttpClient`. In particular
     ``address_guard=AddressGuard()`` turns on the opt-in resolved-address guard: the host
@@ -1258,6 +1266,16 @@ def for_ebsi(
     # `str.__str__` would raise a bare TypeError on it.
     name = str.__str__(environment) if issubclass(type(environment), str) else None
     if name is None or name not in EBSI_HOSTS:
+        env = None if name is None else ENVIRONMENTS.get(name)
+        if env is not None and env.fixed_host is None:
+            # A name the table holds but with no host to seed from. Before any client exists.
+            raise NodeDerivedEnvironment(
+                f"EBSI environment {name!r} has no fixed host: its hosts are the nodes of a "
+                f"signed Trusted Nodes List, so for_ebsi cannot seed an allow-list from the "
+                f"name. Verify the list with openvc_ebsi.nodes.verify_node_list(..., "
+                f"environment={name!r}) and build the client with "
+                f"openvc_ebsi.node_client.for_nodes(result, ...) "
+                f"(wiki page 'EBSI-Node-Trust')")
         raise UnknownEbsiEnvironment(
             f"unknown EBSI environment: {safe_repr(environment)} "
             f"(known: {', '.join(sorted(map(str, EBSI_HOSTS)))})")

@@ -26,8 +26,18 @@ What each name means, as measured and documented in
   client built from it is not known to complete a request. The row is kept as it was; where
   reads go instead is on the wiki page "EBSI node trust" (``wiki/EBSI-Node-Trust.md``).
 
-Only a fixed host is expressible here. An environment whose hosts come from a verified node
-list has no fixed host (``fixed_host`` is ``None``) and is not part of the projection that
+* ``preprod``, ``prod`` — **node-derived**: EBSI Core API v1, whose hosts are the nodes of a
+  signed Trusted Nodes List, not a name. They have no fixed host (``fixed_host`` is ``None``),
+  so they are not in ``EBSI_HOSTS`` / ``EBSI_BASE`` and ``for_ebsi`` refuses them with
+  :class:`~openvc_ebsi.errors.NodeDerivedEnvironment`. A client for them is built with
+  :func:`openvc_ebsi.nodes.verify_node_list` and :func:`openvc_ebsi.node_client.for_nodes`
+  (``wiki/EBSI-Node-Trust.md``), which own the Core v1 adapter names (``didr`` / ``tir``): the
+  row holds none, so there is no second copy of that fact here. These are the Trusted Nodes
+  List's own spellings (``nodes._ENVIRONMENTS``). There is no node-derived ``pilot`` row: that
+  name stays the deprecated alias of ``legacy-pilot`` until the next MAJOR release (2.0, #74).
+
+Only a fixed host is expressible as a host. An environment whose hosts come from a verified
+node list has no fixed host (``fixed_host`` is ``None``) and is not part of the projection that
 :mod:`openvc_ebsi.http` exposes as ``EBSI_HOSTS`` / ``EBSI_BASE``.
 """
 from __future__ import annotations
@@ -57,13 +67,16 @@ class EbsiEnvironment:
 
 
 # ``legacy-pilot`` is appended after the three names that existed before it, so iterating
-# ``EBSI_HOSTS`` still yields those three first, in the order they always had.
+# ``EBSI_HOSTS`` still yields those three first, in the order they always had; the two
+# node-derived names come last and are filtered out of that projection.
 ENVIRONMENTS: Mapping[str, EbsiEnvironment] = MappingProxyType({
     env.name: env for env in (
         EbsiEnvironment("pilot", LEGACY_PILOT_HOST),
         EbsiEnvironment("conformance", "api-conformance.ebsi.eu"),
         EbsiEnvironment("production", "api.ebsi.eu"),
         EbsiEnvironment("legacy-pilot", LEGACY_PILOT_HOST),
+        EbsiEnvironment("preprod", None),
+        EbsiEnvironment("prod", None),
     )
 })
 
