@@ -61,7 +61,7 @@ schema = ["jsonschema>=4.18"]
 # EU Trusted List XAdES signature verification (openvc.trustlist.verify_xades_enveloped)
 # needs an XML-DSig processor; parsing/walking a TL works without it. signxml pulls
 # lxml + cryptography — kept out of core (the verify_signature callback is injected).
-trustlist = ["signxml>=3.2"]
+trustlist = ["signxml>=5.2.0"]
 # EXPERIMENTAL post-quantum ML-DSA (RFC 9964) signing + verification
 # (openvc.keys.MLDSASigningKey). Needs cryptography>=48 built against OpenSSL>=3.5; an
 # explicit opt-in, never a default trust path (ADR-0004). The core stays cryptography>=45.

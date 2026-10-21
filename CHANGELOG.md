@@ -4,6 +4,33 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.1] — unreleased
+
+### Changed
+
+- **The `[trustlist]` extra now requires `signxml>=5.2.0`** (was `>=3.2`). signxml 5.2.0
+  ([XML-Security/signxml#297](https://github.com/XML-Security/signxml/pull/297), fixing
+  [#296](https://github.com/XML-Security/signxml/issues/296), which openvc reported on
+  2026-10-14) writes the `ECKeyValue` point at the curve's field width; 5.1.0 and earlier
+  dropped a leading zero byte from a short coordinate, so about 2 in 256 random P-256 keys
+  produced a `KeyValue` that no longer matched the `X509Data` and signxml's own verifier
+  refused the document. Only documents *signed* by signxml were affected, and openvc never
+  signs XAdES: nothing in openvc's verify path changes, and a trust list signed by a real TSP
+  verified before as it does now. The floor is raised so the test suite no longer has to
+  steer around the bug (below), and so a consumer who signs test lists with the same extra
+  gets the fixed signer. signxml 5.2.0 asks for Python 3.9 or later, `cryptography>=45` and
+  `lxml>=5.2.1,<7`, all inside openvc's own floors. Verified against 5.2.0 before raising the
+  floor: short X and short Y coordinates on P-256, P-384 and P-521 through `XMLSigner` and
+  `XAdESSigner` give the SEC 1 point byte for byte, and 300 random P-256 keys sign and
+  verify with no failure.
+
+### Tests
+
+- `tests/test_trustlist_xades.py`: the `_full_width_p256_key` helper (a key drawn until both
+  coordinates filled 32 bytes, the workaround for the signxml bug above) is gone; the
+  fixtures take any P-256 key. The file ran ten times in a row against signxml 5.2.0 with
+  no failure.
+
 ## [1.37.0] — 2026-10-21
 
 ### Security

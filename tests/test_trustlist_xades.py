@@ -45,25 +45,10 @@ XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 # Helpers
 # --------------------------------------------------------------------------- #
 
-def _full_width_p256_key():
-    """A P-256 key whose public X and Y coordinates both fill 32 bytes.
-
-    signxml's *signer* drops a coordinate's leading zero byte when it writes the
-    ECKeyValue (a 64-byte point instead of 65), so for the ~2/256 random keys with a
-    short coordinate it emits a KeyValue that no longer matches the X509Data, and
-    verification rightly refuses it. That is a fixture-generator bug, not one in what
-    openvc verifies — openvc never signs XAdES — but it made every test here fail at
-    random. Draw keys until both coordinates are full width.
-    """
-    while True:
-        key = ec.generate_private_key(ec.SECP256R1())
-        numbers = key.public_key().public_numbers()
-        if numbers.x.bit_length() > 248 and numbers.y.bit_length() > 248:
-            return key
-
-
 def _cert(cn):
-    key = _full_width_p256_key()
+    # Any P-256 key: signxml >= 5.2.0 writes the ECKeyValue point at the field width
+    # (XML-Security/signxml#296, reported from here), so the random-key workaround is gone.
+    key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
     cert = (
         x509.CertificateBuilder().subject_name(name).issuer_name(name)
