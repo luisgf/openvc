@@ -779,11 +779,14 @@ def test_an_attribute_revision_without_an_attribute_object_is_malformed(lane, at
         w.walk()
 
 
+# Every shape carries a live `issuerType`: since #358 an attribute with no role (read as "")
+# is set aside by both trust policies before its body is looked at (pinned in
+# `test_ebsi_issuer_type_roles.py`), and the point here is the body, not the role.
 NO_USABLE_BODY = [
     {"body": None, "issuerType": "TI", "tao": ROOT},
     {"body": "", "issuerType": "TI", "tao": ROOT},
-    {"tao": ROOT},                                                        # no body key
-    {"hash": "h", "tao": ROOT},                                           # hash only
+    {"issuerType": "TI", "tao": ROOT},                                    # no body key
+    {"hash": "h", "issuerType": "TI", "tao": ROOT},                       # hash only
 ]
 
 

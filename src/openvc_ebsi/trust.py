@@ -2,7 +2,8 @@
 openvc_ebsi.trust — recursive EBSI trust-chain verification.
 
 Walk an issuer up the accreditation chain (``TI -> TAO -> ... -> RootTAO``),
-verifying at each hop that the accreditation is a real, non-revoked VC-JWT signed
+verifying at each hop that the accreditation is a real VC-JWT, with a live registry role,
+signed
 by the accreditor it names, until the chain reaches a **trusted RootTAO anchor**.
 
 Trust is relative to the anchors YOU choose — the RootTAO DIDs you decide to
@@ -37,7 +38,12 @@ What each hop checks (defence in depth):
     "absent means no types" policy, not a binding gap.
   * **Revocation (optional).** With a ``resolve_status_list`` the accreditation's
     own ``credentialStatus`` is checked too — a revoked accreditation breaks the
-    chain, not just a TIR ``revoked`` role.
+    chain, not just a TIR ``Revoked`` role. And the role itself is an exact allow-list
+    (#358): only ``RootTAO``, ``TAO`` or ``TI`` is eligible, and above the leaf only
+    ``RootTAO`` or ``TAO`` may accredit; ``Revoked`` (the spelling both registry APIs use),
+    ``undefined``, an absent member and any other string are set aside, never read as live.
+    The anchor's own record is not read: the caller pins the anchor DID, and the walk stops
+    at it.
 """
 from __future__ import annotations
 
@@ -53,7 +59,7 @@ from openvc.status import ResolveStatusList, StatusListError, check_credential_s
 from ._message import bounded_text
 from .errors import EbsiError
 from .http import HttpNotFound
-from .models import Accreditation, IssuerRecord
+from .models import DELEGATING_ROLES, TRUST_ROLES, Accreditation, IssuerRecord
 from .versioning import DidEbsiResolver
 
 DEFAULT_MAX_DEPTH = 6
@@ -83,17 +89,23 @@ class TrustChain:
 def _pick_accreditation(
     record: IssuerRecord, needed: set[str], *, leaf: bool
 ) -> Accreditation | None:
-    """A non-revoked accreditation authorising *needed*.
+    """An eligible accreditation authorising *needed*.
 
-    At the leaf its ``accreditedFor`` must **intersect** *needed* (the issuer is
-    authorised for at least one of the credential's types); above the leaf it
-    must be a **superset** of the delegated scope (the accreditor can delegate
-    everything beneath it).
+    Eligible means its ``issuerType`` is exactly a live role (``RootTAO``, ``TAO`` or ``TI``;
+    #358): ``Revoked``, ``undefined``, an absent member and any other string are set aside,
+    whatever the accreditation would authorise. Above the leaf the role must also be one that
+    may accredit (``RootTAO`` or ``TAO``): a TI's record may hold a well-signed accreditation
+    and still not delegate. At the leaf the ``accreditedFor`` must **intersect** *needed* (the
+    issuer is authorised for at least one of the credential's types); above the leaf it must
+    be a **superset** of the delegated scope (the accreditor can delegate everything beneath
+    it).
     """
     if not record.has_attributes:
         return None
     for acc in record.accreditations:
-        if acc.is_revoked:
+        if not acc.has_trust_role:               # Revoked, undefined, absent, misspelt (#358)
+            continue
+        if not leaf and not acc.can_accredit:    # only a TAO or a RootTAO accredits (#358)
             continue
         if not acc.credential_types:             # unrestricted (wildcard) — accept, matching
             return acc                           # the single-level policy in openvc_ebsi.verify
@@ -104,6 +116,43 @@ def _pick_accreditation(
         elif needed <= authorised:
             return acc
     return None
+
+
+_ROLE_SHOWN_MAX = 48            # a real role is at most 9 characters; the rest is for a diagnosis
+
+
+def _short_role(role: str) -> str:
+    """A registry-supplied role for a message: ``safe_repr`` of at most ``_ROLE_SHOWN_MAX``
+    characters, with the full length named when it was cut (a message that quotes a bounded
+    type list and a DID beside it stays readable)."""
+    if len(role) <= _ROLE_SHOWN_MAX:
+        return safe_repr(role)
+    return f"{safe_repr(role[:_ROLE_SHOWN_MAX])}... ({len(role)} chars)"
+
+
+def ineligible_roles_note(record: IssuerRecord, *, leaf: bool) -> str:
+    """The roles the eligibility rule of :func:`_pick_accreditation` set aside in *record*, as
+    a bounded clause for a "has no valid accreditation" message; ``""`` when it set none aside.
+
+    *leaf* selects the rule: a live role at the leaf (:data:`~openvc_ebsi.models.TRUST_ROLES`),
+    a delegating one above it (:data:`~openvc_ebsi.models.DELEGATING_ROLES`). The values are
+    registry-supplied, so each is shown through ``safe_repr`` and at most three are shown. The
+    leading words of the messages that take the clause are unchanged (#358)."""
+    rule = TRUST_ROLES if leaf else DELEGATING_ROLES
+    skipped: list[str] = []                      # first-seen order, for a stable message
+    seen: set[str] = set()                       # and a set beside it: v4 attributes are uncapped
+    for acc in record.accreditations:
+        if acc.issuer_type not in rule and acc.issuer_type not in seen:
+            seen.add(acc.issuer_type)
+            skipped.append(acc.issuer_type)
+    if not skipped:
+        return ""
+    shown = ", ".join(_short_role(role) for role in skipped[:3])
+    if len(skipped) > 3:
+        shown += f" and {len(skipped) - 3} more"
+    wanted = ("a live trust role (RootTAO, TAO or TI)" if leaf
+              else "a role that may accredit (RootTAO or TAO)")
+    return f"; set aside: issuerType {shown} is not {wanted}"
 
 
 def _check_subject_binding(verified: VerifiedCredential, *, subject: str) -> None:
@@ -247,7 +296,8 @@ def verify_trust_chain(
             raise NoTrustedAnchor(
                 f"{current!r} has no valid accreditation for "
                 + ("the credential's types" if is_leaf
-                   else f"the delegated types {sorted(needed)}"))
+                   else f"the delegated types {bounded_text(sorted(needed))}")
+                + ineligible_roles_note(record, leaf=is_leaf))
 
         accreditor = acc.tao
         if not accreditor:

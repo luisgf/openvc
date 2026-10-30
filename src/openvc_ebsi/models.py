@@ -10,9 +10,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Trust-chain roles as reported by the TIR.
-REVOKED_ROLE = "revoked"
+# Trust-chain roles as the registries spell them (#358). EBSI stores the issuer type on
+# chain as a small integer and both APIs render it as a name: the legacy Trusted Issuers
+# Registry API v5 (`/trusted-issuers-registry/v5/openapi.json`, info.version 5.0.0) documents
+# `attribute.issuerType` as "RootTAO, TAO, TI, Revoked or Undefined"; the EBSI Core API v1
+# (`/v1/openapi.json` on every node, `Accept: application/openapi+json`, info.version 1.0.0)
+# enumerates `["undefined", "RootTAO", "TAO", "TI", "Revoked"]`, "`undefined` (lowercase) is
+# returned for type 0". Both read 2026-10-30; the recorded fixtures carry `RootTAO` only.
+#
+# Policy (trust.py and verify.py): an accreditation is ELIGIBLE only if its role is exactly one
+# of TRUST_ROLES, and above the leaf of a chain only one of DELEGATING_ROLES may accredit (a TI
+# attests, it does not accredit). `Revoked`, `undefined`, an absent member (read as ""), another
+# case or any other string are not eligible; nothing is compared case-insensitively.
 TRUST_ROLES = frozenset({"RootTAO", "TAO", "TI"})
+DELEGATING_ROLES = frozenset({"RootTAO", "TAO"})
+REVOKED_ROLE = "Revoked"
+# `is_revoked` also reads the lowercase `revoked`, the spelling openvc compared with before
+# 1.38.0 (neither API emits it; a caller's own record builder may).
+REVOKED_ROLES = frozenset({REVOKED_ROLE, "revoked"})
 
 
 # NOTE: VerificationMethod and DidDocument moved to openvc.did.base — they are
@@ -22,7 +37,7 @@ TRUST_ROLES = frozenset({"RootTAO", "TAO", "TI"})
 @dataclass(frozen=True)
 class Accreditation:
     attribute_id: str
-    issuer_type: str              # RootTAO | TAO | TI | revoked
+    issuer_type: str              # RootTAO | TAO | TI | Revoked | undefined (as served)
     tao: str | None               # DID that accredited this issuer
     root_tao: str | None
     credential_types: tuple[str, ...] = ()   # what this accreditation authorises
@@ -33,7 +48,21 @@ class Accreditation:
 
     @property
     def is_revoked(self) -> bool:
-        return self.issuer_type == REVOKED_ROLE
+        """The registry revoked this accreditation (``Revoked``, or the pre-1.38 ``revoked``)."""
+        return self.issuer_type in REVOKED_ROLES
+
+    @property
+    def has_trust_role(self) -> bool:
+        """The role is exactly one of the three live ones (:data:`TRUST_ROLES`): what makes an
+        accreditation eligible at all. False for ``Revoked``, ``undefined``, an absent member,
+        another case or any other string."""
+        return self.issuer_type in TRUST_ROLES
+
+    @property
+    def can_accredit(self) -> bool:
+        """The role may accredit others (:data:`DELEGATING_ROLES`: ``RootTAO`` or ``TAO``), so
+        the accreditation can stand above the leaf of a chain. A ``TI`` attests only."""
+        return self.issuer_type in DELEGATING_ROLES
 
 
 @dataclass(frozen=True)

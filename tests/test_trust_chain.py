@@ -287,7 +287,7 @@ def test_chain_accreditation_failure_messages_are_bounded(case):
 
 
 def test_chain_revoked_mid_breaks_chain():
-    c = build_chain(mid_issuer_type="revoked")   # MID's accreditation is revoked
+    c = build_chain(mid_issuer_type="Revoked")   # MID's accreditation is revoked (wire spelling)
     with pytest.raises(NoTrustedAnchor):
         verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
                            proof_suite=c.suite, anchors={ROOT})
@@ -391,13 +391,13 @@ def test_pick_accreditation_accepts_wildcard_consistent_with_single_level():
     from openvc_ebsi.models import Accreditation, IssuerRecord
     from openvc_ebsi.trust import _pick_accreditation
 
-    wildcard = Accreditation(attribute_id="a", issuer_type="TI", tao="did:ebsi:tao",
+    wildcard = Accreditation(attribute_id="a", issuer_type="TAO", tao="did:ebsi:tao",
                              root_tao=None, credential_types=())
     record = IssuerRecord(did="did:ebsi:leaf", has_attributes=True, accreditations=(wildcard,))
     assert _pick_accreditation(record, {"SomeType"}, leaf=True) is wildcard
     assert _pick_accreditation(record, {"SomeType"}, leaf=False) is wildcard
 
-    restricted = Accreditation(attribute_id="b", issuer_type="TI", tao="did:ebsi:tao",
+    restricted = Accreditation(attribute_id="b", issuer_type="TAO", tao="did:ebsi:tao",
                                root_tao=None, credential_types=("OtherType",))
     rec2 = IssuerRecord(did="did:ebsi:leaf", has_attributes=True, accreditations=(restricted,))
     assert _pick_accreditation(rec2, {"SomeType"}, leaf=True) is None

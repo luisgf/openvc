@@ -4,7 +4,59 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.37.1] — unreleased
+## [1.38.0] — unreleased
+
+### Security
+
+- **The Trusted Issuers Registry role is an exact allow-list; `Revoked` was read as a live
+  role on every lane** ([#358](https://github.com/luisgf/openvc/issues/358)).
+  **Wrong-accept of a revoked accreditation, on real registry vocabulary.** Both registry
+  APIs render the on-chain issuer type as a name: the legacy TIR API v5 OpenAPI
+  (`https://api-pilot.ebsi.eu/trusted-issuers-registry/v5/openapi.json`, `info.version`
+  5.0.0) documents `attribute.issuerType` as "RootTAO, TAO, TI, Revoked or Undefined", and
+  the EBSI Core API v1 OpenAPI (`/v1/openapi.json` on every node, served with
+  `Accept: application/openapi+json`, `info.version` 1.0.0) enumerates `["undefined",
+  "RootTAO", "TAO", "TI", "Revoked"]` ("`undefined` (lowercase) is returned for type 0");
+  both read 2026-10-30. `Accreditation.is_revoked` compared with the lowercase `revoked`,
+  which neither API emits, and nothing checked that the role is one of the three live ones.
+  Measured on `main` at b0feaeb (CPython 3.14.10) with real P-256 signatures through
+  `evaluate_issuer_trust` and `verify_trust_chain`, on v4, v5 and Core v1 alike: an
+  accreditation whose attribute said **`Revoked`** was **trusted**, single-level and
+  recursive; so was `undefined` (Core v1's value for an unset type), `Undefined`, an absent
+  or empty `issuerType`, `RootTAO ` with a trailing space, `ti`, `Banana`; the only refused
+  spelling was `revoked`. And the recursive walk accepted an accreditation signed by an
+  accreditor whose own record said **`TI`** (a TI accrediting a TI), or `Revoked`,
+  `undefined` or nothing, where EBSI's model lets only a TAO or a RootTAO accredit.
+  **What changed.** An accreditation is eligible only if its `issuerType` is exactly
+  `RootTAO`, `TAO` or `TI` (`models.TRUST_ROLES`; `Accreditation.has_trust_role`), and the
+  accreditation read from an accreditor's record above the leaf only if its role is
+  `RootTAO` or `TAO` (`models.DELEGATING_ROLES`; `Accreditation.can_accredit`): everything
+  else is set aside, whatever it would authorise (the role rule runs before the type rule, so
+  an unrestricted accreditation with a bad role authorises nothing). Nothing is compared
+  case-insensitively or trimmed. `models.REVOKED_ROLE` now spells `Revoked`, the value both
+  APIs send; `is_revoked` reads it and still reads the pre-1.38 lowercase `revoked`
+  (`models.REVOKED_ROLES`). The adapters are unchanged: they copy the string the wire sends,
+  and the decision lives in the two policies (`trust._pick_accreditation`,
+  `verify.evaluate_issuer_trust`), where a revoked accreditation was already set aside. The
+  "has no valid accreditation" messages keep their leading words and gain a bounded clause
+  naming the roles set aside (`trust.ineligible_roles_note`: `safe_repr` per value, at most
+  three). Not read: the anchor's own record (the caller pins the anchor DID and the walk stops
+  at it; a check would cost a request per walk and guard a misconfiguration, not an attack).
+  **Migration.** A registry record whose only accreditation carries a role outside the
+  vocabulary, which 1.37 trusted, is now `IssuerNotTrusted` / `NoTrustedAnchor` (or
+  `trusted=False` under `require_trust=False`); a record built by hand with a lowercase or
+  other spelling of a live role must use the registry's exact spelling. The recorded fixtures
+  (v5 pilot and Core v1 preprod / prod, all `RootTAO`) verify as before.
+  The adversarial review of the PR (38 role spellings through every lane, a 3-hop position
+  probe, a 20 000-record differential of the two policies, fail-open sweeps; no wrong-accept
+  found) added two small fixes: the non-leaf refusal message now bounds the delegated type
+  list with `bounded_text` (with a wildcard leaf accreditation that list is the credential's
+  whole `type`, and a 500-type credential made a 1 002 163-character `NoTrustedAnchor` on
+  `main`; the TI-above-the-leaf refusals route through that line), and the note de-duplicates
+  roles linearly (the v4 inline lane caps no attribute count).
+  Tests: `tests/test_ebsi_issuer_type_roles.py` (every lane, both policies, the two-hop
+  delegation rule, the mixed record, the bounded messages at the leaf and above it, the model
+  predicates; the negatives are TRUSTED on `main` and refused here).
 
 ### Changed
 
