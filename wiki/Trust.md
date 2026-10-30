@@ -138,7 +138,9 @@ and the real lists become golden fixtures when they go live.
 ## EBSI (read-only plugin)
 
 `openvc_ebsi` resolves `did:ebsi` and reads the **Trusted Issuers Registry**,
-then checks that the issuer holds a non-revoked accreditation. Passing `trust_anchors=`
+then checks that the issuer holds an accreditation whose `issuerType` is a live role
+(exactly `RootTAO`, `TAO` or `TI`; `Revoked`, `undefined`, an absent member or any other
+spelling is set aside, never read as live). Passing `trust_anchors=`
 verifies the full accreditation chain — TI → TAO → RootTAO — recursively instead, with
 per-hop delegation scoping and revocation of the accreditations themselves. This example
 is the single-level check:
@@ -257,6 +259,15 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   suite can read (its `MalformedToken` is reported as `MalformedRegistryResponse`, the suite's
   error as `__cause__`); one accreditation that is not rejects the whole record rather than
   being skipped or widened to an unrestricted accreditation.
+- **The role is an exact allow-list** (#358, 1.38.0): an accreditation is eligible, on every
+  lane and in both trust modes, only if its `issuerType` is exactly `RootTAO`, `TAO` or `TI`
+  (`openvc_ebsi.models.TRUST_ROLES`), and the accreditation read from an accreditor's record
+  above the leaf only if it is `RootTAO` or `TAO` (`DELEGATING_ROLES`): a TI attests, it does
+  not accredit. `Revoked` (the spelling the legacy v5 and the Core v1 OpenAPI documents both
+  use), `undefined` (Core v1's value for an unset type), an absent or empty member, another
+  case or any other string is set aside before the type rule runs, so it authorises nothing,
+  an unrestricted accreditation included. The "has no valid accreditation" messages name the
+  roles set aside, bounded. The anchor's own record is not read (the caller pins the anchor).
 - **Every accreditation on a chain is bound to the DID it was read for** (`trust_anchors=`
   mode): the JWT `sub` and the credential's `credentialSubject.id`, each one that is sent, must
   be exactly the accredited DID, and at least one must be sent, else `AccreditationInvalid`. A

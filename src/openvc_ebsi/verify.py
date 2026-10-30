@@ -7,12 +7,13 @@ Wires the pieces the other modules expose into one call:
       -> resolve the DID document       (DID Registry adapter)
       -> select the verification method  (by kid)
       -> verify signature + temporal claims + VC-JWT reconciliation (proof suite)
-      -> check issuer trust in the TIR   (a non-revoked accreditation for the type)
+      -> check issuer trust in the TIR   (a live-role accreditation for the type)
 
 Trust has two modes (see ``verify_ebsi_badge``):
 
-* **Single level** (default) — the *issuer itself* must hold a valid, non-revoked
-  accreditation authorising the credential's type(s).
+* **Single level** (default) — the *issuer itself* must hold a valid accreditation
+  with a live role (``RootTAO``, ``TAO`` or ``TI``, never ``Revoked``) authorising the
+  credential's type(s).
 * **Recursive** (pass ``trust_anchors``) — the full ``TI -> TAO -> RootTAO`` chain
   is walked and every accreditation's signature verified, up to a trusted anchor
   (:mod:`openvc_ebsi.trust`).
@@ -38,7 +39,7 @@ from openvc.status import (
 from ._message import bounded_text, url_repr
 from .errors import EbsiError
 from .models import Accreditation, IssuerRecord
-from .trust import TrustChain, TrustChainError, verify_trust_chain
+from .trust import TrustChain, TrustChainError, ineligible_roles_note, verify_trust_chain
 from .versioning import DidEbsiResolver
 
 
@@ -81,15 +82,17 @@ def evaluate_issuer_trust(
     """Return the accreditation that authorises this issuer for the credential,
     or ``None`` if untrusted.
 
-    Single-level policy, fail-closed: pick the first **non-revoked** accreditation
-    that either authorises one of the credential's types, or carries no type
-    restriction at all. An accreditation scoped to other types does not count.
+    Single-level policy, fail-closed: pick the first accreditation whose ``issuerType`` is
+    exactly a live role (``RootTAO``, ``TAO`` or ``TI``; #358) that either authorises one of
+    the credential's types, or carries no type restriction at all. ``Revoked`` (the spelling
+    both registry APIs use), ``undefined``, an absent member and any other string are set
+    aside, and an accreditation scoped to other types does not count.
     """
     if not record.has_attributes:
         return None
     wanted = set(credential_types)
     for acc in record.accreditations:
-        if acc.is_revoked:
+        if not acc.has_trust_role:                 # Revoked, undefined, absent, misspelt (#358)
             continue
         if not acc.credential_types:               # unrestricted accreditation
             return acc
@@ -116,7 +119,7 @@ def verify_ebsi_badge(
     Trust modes:
 
     * ``trust_anchors`` **omitted** — single-level check: the issuer itself holds
-      a non-revoked accreditation for the credential's types.
+      an accreditation with a live role (not ``Revoked``) for the credential's types.
     * ``trust_anchors`` **given** — the full recursive chain is walked and every
       accreditation's signature verified, up to a trusted RootTAO in that set.
 
@@ -188,7 +191,8 @@ def verify_ebsi_badge(
             # list of that many) made the message as long (#351)
             raise IssuerNotTrusted(
                 f"issuer {safe_repr(verified.issuer)} has no valid accreditation for "
-                f"types {bounded_text(cred_types)}")
+                f"types {bounded_text(cred_types)}"
+                + ineligible_roles_note(record, leaf=True))
 
     # 6) revocation — a set revocation bit invalidates the credential outright.
     status: StatusResult | None = None
