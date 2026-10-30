@@ -139,9 +139,11 @@ def ineligible_roles_note(record: IssuerRecord, *, leaf: bool) -> str:
     registry-supplied, so each is shown through ``safe_repr`` and at most three are shown. The
     leading words of the messages that take the clause are unchanged (#358)."""
     rule = TRUST_ROLES if leaf else DELEGATING_ROLES
-    skipped: list[str] = []
+    skipped: list[str] = []                      # first-seen order, for a stable message
+    seen: set[str] = set()                       # and a set beside it: v4 attributes are uncapped
     for acc in record.accreditations:
-        if acc.issuer_type not in rule and acc.issuer_type not in skipped:
+        if acc.issuer_type not in rule and acc.issuer_type not in seen:
+            seen.add(acc.issuer_type)
             skipped.append(acc.issuer_type)
     if not skipped:
         return ""
@@ -294,7 +296,7 @@ def verify_trust_chain(
             raise NoTrustedAnchor(
                 f"{current!r} has no valid accreditation for "
                 + ("the credential's types" if is_leaf
-                   else f"the delegated types {sorted(needed)}")
+                   else f"the delegated types {bounded_text(sorted(needed))}")
                 + ineligible_roles_note(record, leaf=is_leaf))
 
         accreditor = acc.tao

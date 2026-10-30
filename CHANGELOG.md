@@ -47,9 +47,16 @@ All notable changes to **openvc** are documented here. The format follows
   `trusted=False` under `require_trust=False`); a record built by hand with a lowercase or
   other spelling of a live role must use the registry's exact spelling. The recorded fixtures
   (v5 pilot and Core v1 preprod / prod, all `RootTAO`) verify as before.
+  The adversarial review of the PR (38 role spellings through every lane, a 3-hop position
+  probe, a 20 000-record differential of the two policies, fail-open sweeps; no wrong-accept
+  found) added two small fixes: the non-leaf refusal message now bounds the delegated type
+  list with `bounded_text` (with a wildcard leaf accreditation that list is the credential's
+  whole `type`, and a 500-type credential made a 1 002 163-character `NoTrustedAnchor` on
+  `main`; the TI-above-the-leaf refusals route through that line), and the note de-duplicates
+  roles linearly (the v4 inline lane caps no attribute count).
   Tests: `tests/test_ebsi_issuer_type_roles.py` (every lane, both policies, the two-hop
-  delegation rule, the mixed record, the bounded messages, the model predicates; the negatives
-  are TRUSTED on `main` and refused here).
+  delegation rule, the mixed record, the bounded messages at the leaf and above it, the model
+  predicates; the negatives are TRUSTED on `main` and refused here).
 
 ### Changed
 

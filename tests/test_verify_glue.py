@@ -176,7 +176,7 @@ def test_untrusted_issuer_returned_when_trust_optional():
 
 
 def test_revoked_accreditation_is_not_trusted():
-    token, resolver, suite = _make(issuer_type="revoked")
+    token, resolver, suite = _make(issuer_type="Revoked")     # the registries' spelling (#358)
     with pytest.raises(IssuerNotTrusted):
         verify_ebsi_badge(token, resolver=resolver, proof_suite=suite)
 

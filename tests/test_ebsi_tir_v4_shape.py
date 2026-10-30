@@ -38,7 +38,8 @@ The readings pinned here:
 
 Not changed, and pinned as controls so nobody reads this file as changing them: an ``{}``
 entry is an object and parses to an accreditation of defaults (``test_ebsi_adapter_scalar_
-types.py``), and ``issuerType`` is not checked against the trust roles.
+types.py``), and ``issuerType`` is copied as sent: the adapter does not check it against
+the trust roles (the two policies do, since #358: ``test_ebsi_issuer_type_roles.py``).
 
 PARITY: there is NO recorded TIR v4 response in this repository (as in
 ``test_ebsi_adapter_scalar_types.py`` and ``test_ebsi_tir_did_binding.py``). The v4 bodies here

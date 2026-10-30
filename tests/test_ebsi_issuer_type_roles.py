@@ -43,7 +43,12 @@ from openvc_ebsi.models import (
     Accreditation,
     IssuerRecord,
 )
-from openvc_ebsi.trust import NoTrustedAnchor, TrustChain, verify_trust_chain
+from openvc_ebsi.trust import (
+    NoTrustedAnchor,
+    TrustChain,
+    ineligible_roles_note,
+    verify_trust_chain,
+)
 from openvc_ebsi.verify import IssuerNotTrusted, evaluate_issuer_trust, verify_ebsi_badge
 from openvc_ebsi.versioning import (
     DidEbsiResolver,
@@ -355,6 +360,34 @@ def test_the_message_names_the_role_and_is_bounded(lane: Lane) -> None:
     with pytest.raises(IssuerNotTrusted) as info2:
         verify_ebsi_badge(badge(), resolver=resolver, proof_suite=SUITE)
     assert len(str(info2.value)) < MESSAGE_BOUND and "issuerType" in str(info2.value)
+
+
+@pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
+def test_the_non_leaf_message_bounds_the_delegated_types(lane: Lane) -> None:
+    # the review of PR #371: above the leaf the message quoted `sorted(needed)` raw, and with a
+    # wildcard leaf accreditation the delegated scope is the credential's whole `type` list
+    # (1 002 163 characters measured on `main` with 500 types of 2 000 characters); the
+    # TI-above-the-leaf refusals of #358 route through that line
+    leaf = accreditation(subject=LEAF, accredited_by=MID, types=None)        # wildcard leaf
+    mid = accreditation(subject=MID, accredited_by=ROOT, kind="VerifiableAccreditationToAccredit")
+    resolver = registry(lane, {LEAF: [attribute(leaf, "TI", tao=MID, tag="leaf")],
+                               MID: [attribute(mid, "TI", tao=ROOT, tag="mid")]})
+    many_types = [f"T{i}" + "x" * 2000 for i in range(500)]
+    with pytest.raises(NoTrustedAnchor, match="no valid accreditation") as info:
+        verify_trust_chain(LEAF, many_types, resolver=resolver, proof_suite=SUITE,
+                           anchors={ROOT})
+    text = str(info.value)
+    assert len(text) < 2 * MESSAGE_BOUND and MID in text and "'TI'" in text
+
+
+def test_many_distinct_roles_are_counted_not_listed() -> None:
+    # the review of PR #371: the note de-duplicates roles linearly (a set beside the list;
+    # v4 inline attributes are uncapped) and shows at most three, counting the rest
+    record = IssuerRecord(did=LEAF, has_attributes=True,
+                          accreditations=tuple(_acc(f"Role{i}") for i in range(60)))
+    note = ineligible_roles_note(record, leaf=True)
+    assert note.startswith("; set aside: issuerType 'Role0', 'Role1', 'Role2' and 57 more")
+    assert len(note) < MESSAGE_BOUND and evaluate_issuer_trust(record, TYPES) is None
 
 
 @pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)

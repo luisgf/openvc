@@ -287,7 +287,7 @@ def test_chain_accreditation_failure_messages_are_bounded(case):
 
 
 def test_chain_revoked_mid_breaks_chain():
-    c = build_chain(mid_issuer_type="revoked")   # MID's accreditation is revoked
+    c = build_chain(mid_issuer_type="Revoked")   # MID's accreditation is revoked (wire spelling)
     with pytest.raises(NoTrustedAnchor):
         verify_trust_chain(LEAF, list(TYPES), resolver=c.resolver,
                            proof_suite=c.suite, anchors={ROOT})
