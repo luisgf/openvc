@@ -51,11 +51,12 @@ from openvc.proof.errors import (
 from openvc.proof.vc_jwt import VcJwtProofSuite, VerifiedCredential
 from openvc_ebsi.http import HttpNotFound
 from openvc_ebsi.trust import (
+    NoTrustedAnchor,
     AccreditationInvalid,
     TrustChainError,
     verify_trust_chain,
 )
-from openvc_ebsi.verify import evaluate_issuer_trust, verify_ebsi_badge
+from openvc_ebsi.verify import IssuerNotTrusted, evaluate_issuer_trust, verify_ebsi_badge
 from openvc_ebsi.versioning import (
     DidEbsiResolver,
     DidRegistryCoreV1,
@@ -303,11 +304,20 @@ def test_golden_verify_ebsi_badge_on_the_recorded_token_needs_the_opt_in(frozen_
     assert type(exc.value) is UnsupportedAlgorithm
 
     fetch, resolver = _recorded_resolver()
+    # with the opt-in the signature verifies; trust does not follow (#367): the badge is the
+    # root's own accreditation, whose specific type (`VerifiableAccreditationToAttest`) is not
+    # what its `accreditedFor` lists (`VerifiableAuthorisationForTrustChain`), and the generic
+    # types the two lists share no longer count. Until 1.38.0 this was `trusted=True`.
+    with pytest.raises(IssuerNotTrusted, match="no valid accreditation"):
+        verify_ebsi_badge(ROOT_TOKEN, resolver=resolver, proof_suite=opted_in(),
+                          expected_types=["VerifiableAccreditationToAttest"])
     result = verify_ebsi_badge(ROOT_TOKEN, resolver=resolver, proof_suite=opted_in(),
-                               expected_types=["VerifiableAccreditationToAttest"])
-    assert result.trusted is True and result.issuer == DID
+                               expected_types=["VerifiableAccreditationToAttest"],
+                               require_trust=False)
+    assert result.trusted is False and result.issuer == DID
     assert result.verified.issuer == DID and result.chain is None
-    assert result.accreditation is not None and result.accreditation.issuer_type == "RootTAO"
+    assert result.accreditation is None and result.issuer_record is not None
+    assert result.issuer_record.accreditations[0].issuer_type == "RootTAO"
     assert fetch.calls[0] == _manifest_url("preprod-grnet/did_document.json")
 
 
@@ -317,11 +327,13 @@ def test_golden_recursive_badge_mode_follows_the_same_two_branches(frozen_clock)
     ok = verify_ebsi_badge(ROOT_TOKEN, resolver=resolver, proof_suite=opted_in(),
                            trust_anchors={DID})
     assert ok.trusted is True and ok.chain is not None and ok.chain.hops == ()
-    # another anchor: the chain meets the self-accreditation cycle, exactly as above
-    with pytest.raises(TrustChainError, match="accreditation cycle") as exc:
+    # another anchor: the leaf pick refuses the root's own accreditation for this credential
+    # (#367: its specific type is not what the accreditedFor lists), before the walk would
+    # have met the self-accreditation cycle it met until 1.38.0
+    with pytest.raises(NoTrustedAnchor, match="no valid accreditation") as exc:
         verify_ebsi_badge(ROOT_TOKEN, resolver=resolver, proof_suite=opted_in(),
                           trust_anchors={OTHER_DID})
-    assert type(exc.value) is TrustChainError
+    assert type(exc.value) is NoTrustedAnchor
     soft = verify_ebsi_badge(ROOT_TOKEN, resolver=resolver, proof_suite=opted_in(),
                              trust_anchors={OTHER_DID}, require_trust=False)
     assert soft.trusted is False and soft.chain is None

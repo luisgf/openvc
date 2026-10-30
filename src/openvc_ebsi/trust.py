@@ -21,10 +21,13 @@ either way.
 
 What each hop checks (defence in depth):
 
-  * **Delegation scoping.** The leaf must be accredited for (at least one of) the
-    credential's types; the intersection becomes the *delegated scope*. Every
-    accreditor above it must be accredited for a **superset** of that scope — a
-    TAO cannot vouch for a type it was never authorised to accredit.
+  * **Delegation scoping.** The leaf must be accredited for **every specific type** of
+    the credential (the generic ``VerifiableCredential`` / ``VerifiableAttestation`` /
+    ``VerifiableAccreditation`` say nothing about what may be issued and are ignored on
+    both sides; #367); those specific types are the *delegated scope*. Every accreditor
+    above it must be accredited for a **superset** of that scope — a TAO cannot vouch
+    for a type it was never authorised to accredit. A credential that carries only
+    generic types has nothing to be accredited for and is refused.
   * **Signature & identity.** The accreditation VC-JWT's ``iss`` equals the
     ``accreditedBy`` DID it names, its signature verifies against that
     accreditor's *resolved* key, and its subject is the DID being accredited: the
@@ -69,6 +72,7 @@ from .models import (
     ACCREDITATION_TO_ATTEST,
     Accreditation,
     IssuerRecord,
+    specific_types,
 )
 from .versioning import DidEbsiResolver
 
@@ -99,25 +103,24 @@ class TrustChain:
 def _pick_accreditation(
     record: IssuerRecord, needed: set[str], *, leaf: bool
 ) -> Accreditation | None:
-    """An eligible accreditation authorising *needed*.
+    """An eligible accreditation authorising every type in *needed* (a non-empty set of
+    SPECIFIC types: the credential's at the leaf, the delegated scope above it).
 
     Eligible is :func:`accreditation_ineligibility` answering ``None``: a live role (#358), a
-    delegating one above the leaf, the kind of the hop in ``vc.type`` and at least one type in
-    ``accreditedFor`` (#368). Then the scope: at the leaf the ``accreditedFor`` must
-    **intersect** *needed* (the issuer is authorised for at least one of the credential's
-    types); above the leaf it must be a **superset** of the delegated scope (the accreditor
-    can delegate everything beneath it). There is no unrestricted accreditation.
+    delegating one above the leaf, the kind of the hop in ``vc.type``, and an ``accreditedFor``
+    that lists at least one specific type (#368, #367). Then the scope, the same rule at every
+    position (#367, rule (b)): the specific types of ``accreditedFor`` must be a **superset**
+    of *needed*. At the leaf that means the issuer is accredited for every specific type the
+    credential carries (until 1.38.0 one shared type was enough, and on real EBSI data the
+    shared type was always a generic one); above the leaf, that the accreditor can delegate
+    everything beneath it. There is no unrestricted accreditation.
     """
-    if not record.has_attributes:
+    if not record.has_attributes or not needed:
         return None
     for acc in record.accreditations:
         if accreditation_ineligibility(acc, leaf=leaf) is not None:
             continue
-        authorised = set(acc.credential_types)   # never empty here
-        if leaf:
-            if authorised & needed:
-                return acc
-        elif needed <= authorised:
+        if needed <= acc.specific_credential_types:
             return acc
     return None
 
@@ -143,7 +146,8 @@ def accreditation_ineligibility(acc: Accreditation, *, leaf: bool) -> str | None
        one;
     2. the kind (#368): ``vc.type`` must name ``VerifiableAccreditationToAttest`` at the leaf,
        ``VerifiableAccreditationToAccredit`` above it;
-    3. the scope (#368): ``accreditedFor`` must list at least one type. An accreditation
+    3. the scope (#368, #367): ``accreditedFor`` must list at least one type, and at least
+       one SPECIFIC type (the generic base types authorise nothing). An accreditation
        authorises only what it lists; there is no unrestricted one.
 
     The text is bounded (``safe_repr`` / ``bounded_text`` on registry-supplied values)."""
@@ -158,6 +162,9 @@ def accreditation_ineligibility(acc: Accreditation, *, leaf: bool) -> str | None
         return f"vc.type {bounded_text(list(acc.accreditation_types))} does not name {wanted}"
     if not acc.credential_types:
         return "accreditedFor names no type (an accreditation authorises only what it lists)"
+    if not acc.specific_credential_types:
+        return ("accreditedFor names only generic types (VerifiableCredential, "
+                "VerifiableAttestation, VerifiableAccreditation), which authorise nothing specific")
     return None
 
 
@@ -287,14 +294,24 @@ def verify_trust_chain(
     the path), or :class:`AccreditationRevoked` (an accreditation revoked via its
     own status list, when *resolve_status_list* is given).
     """
+    wanted = specific_types(credential_types)
+    if not wanted:
+        # the generic base types say nothing about what an issuer may issue, so a credential
+        # that carries only them has nothing to be accredited for (#367): refused before any
+        # request, as single-level trust refuses it, and before the anchor shortcut below (the
+        # review of PR #373: an anchor-issued generic-only credential was trusted with an empty
+        # scope)
+        raise NoTrustedAnchor(
+            f"the credential's types {bounded_text(list(credential_types))} name no specific "
+            f"type (VerifiableCredential, VerifiableAttestation and VerifiableAccreditation are "
+            f"generic): nothing to be accredited for")
     if subject_did in anchors:                       # the leaf is itself an anchor
-        return TrustChain(subject=subject_did, anchor=subject_did, hops=(),
-                          scope=frozenset(credential_types))
+        return TrustChain(subject=subject_did, anchor=subject_did, hops=(), scope=wanted)
 
     hops: list[TrustHop] = []
     current = subject_did
     seen = {current}
-    scope: set[str] | None = None                    # delegated types, fixed at the leaf
+    scope: frozenset[str] | None = None              # delegated specific types, fixed at the leaf
 
     for _ in range(max_depth):
         try:
@@ -315,9 +332,9 @@ def verify_trust_chain(
                 f"{safe_repr(current)} is not a did:ebsi identifier") from exc
 
         is_leaf = scope is None
-        needed = set(credential_types) if is_leaf else scope
+        needed = wanted if is_leaf else scope
         assert needed is not None
-        acc = _pick_accreditation(record, needed, leaf=is_leaf)
+        acc = _pick_accreditation(record, set(needed), leaf=is_leaf)
         if acc is None:
             raise NoTrustedAnchor(
                 f"{current!r} has no valid accreditation for "
@@ -348,14 +365,14 @@ def verify_trust_chain(
                     f"the accreditation for {current!r} is revoked via its status list")
 
         if is_leaf:                                  # fix the delegated scope
-            # what the leaf accreditation and the credential share (never empty: the pick
-            # required an intersection, and there is no unrestricted accreditation, #368)
-            scope = set(acc.credential_types) & set(credential_types)
+            # the credential's specific types, every one of which the leaf accreditation lists
+            # (the pick required that; #367), so what the accreditors above must cover
+            scope = wanted
         hops.append(TrustHop(subject=current, accreditor=accreditor, accreditation=acc))
 
         if accreditor in anchors:                    # reached the trust root
             return TrustChain(subject=subject_did, anchor=accreditor,
-                              hops=tuple(hops), scope=frozenset(scope or ()))
+                              hops=tuple(hops), scope=wanted)   # == scope, fixed at the leaf
         if accreditor in seen:
             raise TrustChainError(f"accreditation cycle detected at {accreditor!r}")
 

@@ -8,6 +8,7 @@ reach these types. Both ``resolver`` and ``versioning`` import from here.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 # Trust-chain roles as the registries spell them (#358). EBSI stores the issuer type on
@@ -38,6 +39,20 @@ REVOKED_ROLES = frozenset({REVOKED_ROLE, "revoked"})
 # `credentialSubject.accreditedFor` REQUIRED, each entry with `schemaId` and `types`.
 ACCREDITATION_TO_ATTEST = "VerifiableAccreditationToAttest"
 ACCREDITATION_TO_ACCREDIT = "VerifiableAccreditationToAccredit"
+
+# The generic base types (#367): `VerifiableCredential` (VCDM), `VerifiableAttestation` (EBSI's
+# base type, which its schema requires on every credential) and `VerifiableAccreditation` (the
+# base of the two accreditation kinds). Every recorded `type` list and every recorded
+# `accreditedFor.types` list starts with the first two, so a match that intersected whole
+# lists was never empty and said nothing about WHAT an issuer may issue. The type match is
+# made on the SPECIFIC types only: every specific type of the credential must be listed.
+GENERIC_TYPES = frozenset({"VerifiableCredential", "VerifiableAttestation",
+                           "VerifiableAccreditation"})
+
+
+def specific_types(types: Iterable[str]) -> frozenset[str]:
+    """*types* without the generic base types (:data:`GENERIC_TYPES`), as a set (#367)."""
+    return frozenset(types) - GENERIC_TYPES
 
 
 # NOTE: VerificationMethod and DidDocument moved to openvc.did.base — they are
@@ -75,6 +90,12 @@ class Accreditation:
         """The role may accredit others (:data:`DELEGATING_ROLES`: ``RootTAO`` or ``TAO``), so
         the accreditation can stand above the leaf of a chain. A ``TI`` attests only."""
         return self.issuer_type in DELEGATING_ROLES
+
+    @property
+    def specific_credential_types(self) -> frozenset[str]:
+        """The ``accreditedFor`` types without the generic base types: what this accreditation
+        authorises, as the type match reads it (#367)."""
+        return specific_types(self.credential_types)
 
     @property
     def is_to_attest(self) -> bool:
