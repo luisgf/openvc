@@ -8,6 +8,42 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
+- **The type match is made on the specific types, and the leaf must be accredited for every
+  one of them; a shared generic type was an accreditation for anything**
+  ([#367](https://github.com/luisgf/openvc/issues/367)). **Wrong-accept on real EBSI data,
+  every lane, both trust modes.** Both policies matched an accreditation by intersecting the
+  credential's whole `type` list with the accreditation's `accreditedFor.types`, and on real
+  EBSI data both lists start with the generic base types (`VerifiableCredential`,
+  `VerifiableAttestation`; every recorded `accreditedFor` is `[VC, VA, <one specific type>]`),
+  so the intersection was never empty: an issuer accredited only for `OtherType` was
+  accepted for every credential, and a two-hop chain whose leaf accreditation listed only
+  generic types closed through an accreditor scoped to another type. Measured on `main` at
+  2ec271c (#358 and #368 merged, CPython 3.14.10) with real P-256 signatures on v4, v5 and
+  Core v1: a credential `[VC, VA, MyBadge]` was **trusted** against accreditations for
+  `[VC, VA, OtherType]`, `[VC, VA]`, `[VC]` and `[VC, VA, VerifiableAccreditation]`; a
+  credential of generic types only was trusted against anything; `[MyBadge, Extra]` was
+  trusted against `[MyBadge]`; the only refusal was two lists with no type in common at all.
+  **What changed (rule (b), the maintainer's decision of 2026-10-30).** The generic base
+  types (`models.GENERIC_TYPES`: `VerifiableCredential`, `VerifiableAttestation`,
+  `VerifiableAccreditation`) are ignored on both sides (`models.specific_types`,
+  `Accreditation.specific_credential_types`), and **every** specific type of the credential
+  must be listed by the leaf accreditation: a superset, the same rule the hops above already
+  applied to the delegated scope, which is now the credential's specific types
+  (`TrustChain.scope`). A credential that carries no specific type has nothing to be
+  accredited for and is refused before any registry request (`NoTrustedAnchor` /
+  `IssuerNotTrusted` saying so); an accreditation that lists only generic types authorises
+  nothing (`accreditation_ineligibility`). One function still serves both policies.
+  **Migration.** A credential typed `[VC, VA, A, B]` now needs an accreditation listing both
+  `A` and `B` (one shared type was enough); a credential with only generic types, or an
+  accreditation listing only generic types, is refused; `TrustChain.scope` no longer contains
+  the generic types. An accreditation credential handed to `verify_ebsi_badge` *as the badge*
+  (the recorded RootTAO's own `…ToAttest`, in `test_es256k_ebsi_chain.py`) is no longer
+  trusted: its specific type is not what the issuer's `accreditedFor` lists, and the generic
+  types the two shared no longer count. The recorded fixtures verify as before (their tests ask for
+  `VerifiableAuthorisationForTrustChain`, the one specific type the recorded `accreditedFor`
+  lists). Tests: `tests/test_ebsi_trust_specific_types.py` (every lane, both policies, the
+  two-hop scope, mixed records, the generic-only credential and accreditation, bounded
+  messages; the negatives are TRUSTED on `main` and refused here).
 - **An accreditation authorises only the types its `accreditedFor` lists, and its `vc.type`
   must be the accreditation kind of the hop; the unrestricted accreditation is gone**
   ([#368](https://github.com/luisgf/openvc/issues/368)). **Wrong-accept, same-DID case, every
