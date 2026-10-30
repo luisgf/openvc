@@ -259,7 +259,7 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   a string or a list of strings, and the token itself a compact JWS the proof
   suite can read (its `MalformedToken` is reported as `MalformedRegistryResponse`, the suite's
   error as `__cause__`); one accreditation that is not rejects the whole record rather than
-  being skipped or widened to an unrestricted accreditation.
+  being skipped or read as an accreditation of another scope.
 - **The role is an exact allow-list** (#358, 1.38.0): an accreditation is eligible, on every
   lane and in both trust modes, only if its `issuerType` is exactly `RootTAO`, `TAO` or `TI`
   (`openvc_ebsi.models.TRUST_ROLES`), and the accreditation read from an accreditor's record

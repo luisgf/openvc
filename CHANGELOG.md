@@ -50,8 +50,15 @@ All notable changes to **openvc** are documented here. The format follows
   accreditation token"); a hand-built `Accreditation` needs `accreditation_types` to be
   eligible. The recorded fixtures verify as before (their tests ask for
   `VerifiableAuthorisationForTrustChain`, which the recorded `accreditedFor` lists).
+  The adversarial review of the PR (hand-assembled ES256 tokens against the peek-vs-verify
+  seam, 14 base64url perturbations, a 20 000-record differential of the two policies, 3-hop
+  position probes, fail-open sweeps; no wrong-accept found) added one fix: the `vc.type`
+  reader checked the list on one iteration and copied it on a second, so a list from an
+  injected `decode` that iterates differently the second time was a bare `TypeError` (the
+  pattern the #365 review fixed beside it); it reads in one pass now, and so does the inner
+  `accreditedFor[].types` loop, which had the same shape.
   Tests: `tests/test_ebsi_accreditation_deny_by_default.py` (every lane, both policies, the
-  two-hop kind rule, mixed records, the fail-closed `vc.type` reader, bounded messages, the
+  two-hop kind rule, mixed records, the fail-closed `vc.type` reader read in one pass, bounded messages, the
   recorded registries as the drift alarm; the negatives are TRUSTED on `main` and refused
   here); the tests that pinned the wildcard (`test_trust_chain.py`, `test_ebsi_core_v1.py`)
   now pin the new rule, and the chain harnesses give the accreditor a `…ToAccredit`.

@@ -424,6 +424,41 @@ def test_a_vc_type_of_an_unknown_shape_is_malformed_on_every_lane(lane: Lane, vc
     assert len(str(info.value)) < MESSAGE_BOUND
 
 
+class Flips(list):
+    """A list that iterates as *first* the first time and as *second* afterwards: what an
+    injected ``decode`` could hand the reader (the review of PR #365 and of PR #372)."""
+
+    def __init__(self, first: list[Any], second: list[Any]) -> None:
+        super().__init__(first)
+        self._second, self._passes = list(second), 0
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        self._passes += 1
+        return list.__iter__(self) if self._passes == 1 else iter(self._second)
+
+
+@pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
+def test_vc_type_and_accredited_for_types_are_read_in_one_pass(lane: Lane) -> None:
+    # the review of PR #372: `vc.type` was checked with one iteration and copied with a
+    # second (`Flips([VC, ToAttest], [7, 8])` was a bare TypeError out of `issuer_record`);
+    # the inner `accreditedFor[].types` loop had the same shape. Now what is checked is what
+    # is read: the first iteration, as exact strings
+    claims = {"vc": {"type": Flips([VC, ACCREDITATION_TO_ATTEST], [7, 8]),
+                     "credentialSubject": {"id": LEAF, "accreditedFor": [
+                         {"types": Flips(["MyBadge"], [9])}]}}}
+    resolver = registry(lane, {LEAF: [attribute("x.y.z", tao=ROOT, tag="leaf")]},
+                        decode=lambda body: claims)
+    acc = resolver.issuer_record(LEAF).accreditations[0]
+    assert acc.accreditation_types == (VC, ACCREDITATION_TO_ATTEST)
+    assert acc.credential_types == ("MyBadge",)
+    # and a non-string met on that one pass is the typed error, naming the member
+    bad = {"vc": {"type": [VC, 7], "credentialSubject": {"id": LEAF, **SCOPED}}}
+    resolver = registry(lane, {LEAF: [attribute("x.y.z", tao=ROOT, tag="leaf")]},
+                        decode=lambda body: bad)
+    with pytest.raises(MalformedRegistryResponse, match="vc.type is not a string or a list"):
+        resolver.issuer_record(LEAF)
+
+
 # --------------------------------------------------------------------------- #
 # Messages and the model
 # --------------------------------------------------------------------------- #

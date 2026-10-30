@@ -369,7 +369,8 @@ finite input", with no explicit constant.
   **So is the shape of the accreditation token every lane reads, and the DID it names**
   (#352 follow-up, v1.37.0): `vc`, `credentialSubject` and `accreditedFor` sent in a shape the
   reader does not know, and a `body` the proof suite cannot read, are `MalformedRegistryResponse`
-  on v4, v5 and Core v1 alike (never "no types", which is the unrestricted accreditation; one
+  on v4, v5 and Core v1 alike (never "no types", which was the unrestricted accreditation until
+  #368 and authorises nothing since; one
   such accreditation rejects the record), and the trust walk requires the JWT `sub` and the
   credential's `credentialSubject.id`, each one that is sent, to be exactly the accredited
   DID, at least one of them sent, else `AccreditationInvalid`: a RootTAO- or TAO-signed

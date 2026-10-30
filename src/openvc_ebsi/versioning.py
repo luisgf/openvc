@@ -235,11 +235,16 @@ def _wire_accredited_for(subject: dict[str, Any], what: str) -> tuple[str, ...]:
             raise MalformedRegistryResponse(
                 f"{what} accreditedFor[{index}] is not a string or an object: {safe_repr(entry)}")
         members = entry.get("types", [])
-        if not isinstance(members, list) or not all(isinstance(t, str) for t in members):
+        if not isinstance(members, list):
             raise MalformedRegistryResponse(
                 f"{what} accreditedFor[{index}] types is not a list of strings: "
                 f"{safe_repr(members)}")
-        types.extend(str.__str__(t) for t in members)
+        for member in members:           # one pass here too (the review of PR #372)
+            if not isinstance(member, str):
+                raise MalformedRegistryResponse(
+                    f"{what} accreditedFor[{index}] types is not a list of strings: "
+                    f"{safe_repr(member)}")
+            types.append(str.__str__(member))
     return tuple(dict.fromkeys(types))           # dedupe, preserve first-seen order
 
 
@@ -354,10 +359,16 @@ def _wire_vc_type(vc: dict[str, Any], what: str) -> tuple[str, ...]:
     value = vc.get("type", [])
     if isinstance(value, str):
         return (str.__str__(value),)
-    if not isinstance(value, list) or not all(isinstance(t, str) for t in value):
+    if not isinstance(value, list):
         raise MalformedRegistryResponse(
             f"{what} vc.type is not a string or a list of strings: {safe_repr(value)}")
-    return tuple(str.__str__(t) for t in value)
+    kinds: list[str] = []
+    for kind in value:           # ONE pass: a list from an injected `decode` may iterate
+        if not isinstance(kind, str):    # differently the second time (the review of PR #365)
+            raise MalformedRegistryResponse(
+                f"{what} vc.type is not a string or a list of strings: {safe_repr(kind)}")
+        kinds.append(str.__str__(kind))
+    return tuple(kinds)
 
 
 def _types_from_token(body: str | None, decode: DecodeJwt) -> _TokenScope:
@@ -516,8 +527,8 @@ class TirV4(TirAdapter):
     (#352). Every entry's shape is checked before any token is decoded. The same holds
     inside an accreditation token, read by :func:`_types_from_token` as on the other lanes: a
     ``vc``, ``credentialSubject`` or ``accreditedFor`` that is sent in a shape the reader does
-    not know rejects the record, never reads as "no types", which single-level and recursive
-    trust both accept for any credential."""
+    not know rejects the record, never reads as "no types" (which, since #368, authorises
+    nothing anyway: a misread must fail loudly, not quietly narrow or widen trust)."""
     version = "v4"
 
     def issuer_url(self, base: str, did: str) -> str:
