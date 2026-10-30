@@ -1556,9 +1556,12 @@ class Registry:
         self.tokens = {LEAF: self._accreditation(MID, LEAF), MID: self._accreditation(ROOT, MID)}
 
     def _accreditation(self, by: str, subject: str) -> str:
+        # MID accredits (a `…ToAccredit`), LEAF attests (a `…ToAttest`): the kind of the hop (#368)
+        kind = ("VerifiableAccreditationToAccredit" if subject == MID
+                else "VerifiableAccreditationToAttest")
         return self.suite.sign({
             "id": f"urn:uuid:acc-{subject[-4:]}",
-            "type": ["VerifiableCredential", "VerifiableAccreditationToAttest"],
+            "type": ["VerifiableCredential", kind],
             "issuer": by,
             "credentialSubject": {"id": subject, "accreditedFor": [{"types": TYPES}]},
         }, signing_key=self.keys[by])

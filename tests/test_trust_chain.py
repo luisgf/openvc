@@ -92,12 +92,15 @@ def _did_doc(did: str, sk: P256SigningKey) -> dict:
 
 def _accreditation(suite, signer: P256SigningKey, *, subject: str,
                    accredited_by: str, accredited_for: tuple[str, ...],
-                   credential_status: dict | None = None) -> str:
+                   credential_status: dict | None = None,
+                   kind: str = "VerifiableAccreditationToAttest") -> str:
     # Real v5 credentialSubject: id + accreditedFor objects. issuerType/tao/rootTao
-    # live on the TIR `attribute` wrapper (see _tir_routes), not here.
+    # live on the TIR `attribute` wrapper (see _tir_routes), not here. `kind` is the
+    # accreditation's own type: `…ToAttest` for an issuer, `…ToAccredit` for an accreditor
+    # (the walk requires the kind of the hop since #368).
     acc = {
         "id": f"urn:uuid:acc-{subject[-4:]}",
-        "type": ["VerifiableCredential", "VerifiableAccreditationToAttest"],
+        "type": ["VerifiableCredential", kind],
         "issuer": accredited_by,
         "credentialSubject": {
             "id": subject,
@@ -147,7 +150,8 @@ def build_chain(*, mid_issuer_type: str = "TAO",
     leaf_acc = _accreditation(suite, mid_sk, subject=LEAF, accredited_by=MID,
                               accredited_for=TYPES)
     mid_acc = _accreditation(suite, root_sk, subject=MID, accredited_by=ROOT,
-                             accredited_for=mid_accredited_for, credential_status=mid_status)
+                             accredited_for=mid_accredited_for, credential_status=mid_status,
+                             kind="VerifiableAccreditationToAccredit")
 
     tir = f"{BASE}/trusted-issuers-registry/v5/issuers"
     routes: dict[str, dict] = {
@@ -384,20 +388,34 @@ def test_verify_badge_recursive_checks_accreditation_status():
                           trust_anchors={ROOT}, resolve_status_list=resolve)
 
 
-def test_pick_accreditation_accepts_wildcard_consistent_with_single_level():
-    # #109: a wildcard (no type restriction) accreditation is accepted by the single-level
-    # policy (openvc_ebsi.verify) but was rejected at the leaf by the recursive walk; the
-    # two now agree — an unrestricted accreditation is accepted in both, at the leaf and above.
+def test_pick_accreditation_refuses_a_typeless_accreditation_like_single_level():
+    # #109 made the two policies agree on the wildcard (an accreditation with no type
+    # restriction was accepted by both); #368 removed the wildcard from both: an accreditation
+    # authorises only the types its accreditedFor lists, so one that lists none authorises
+    # nothing, at the leaf and above, and the two policies still agree.
     from openvc_ebsi.models import Accreditation, IssuerRecord
     from openvc_ebsi.trust import _pick_accreditation
+    from openvc_ebsi.verify import evaluate_issuer_trust
 
-    wildcard = Accreditation(attribute_id="a", issuer_type="TAO", tao="did:ebsi:tao",
-                             root_tao=None, credential_types=())
-    record = IssuerRecord(did="did:ebsi:leaf", has_attributes=True, accreditations=(wildcard,))
-    assert _pick_accreditation(record, {"SomeType"}, leaf=True) is wildcard
-    assert _pick_accreditation(record, {"SomeType"}, leaf=False) is wildcard
+    def acc(tag, types, kind):
+        return Accreditation(attribute_id=tag, issuer_type="TAO", tao="did:ebsi:tao",
+                             root_tao=None, credential_types=types,
+                             accreditation_types=("VerifiableCredential", kind))
 
-    restricted = Accreditation(attribute_id="b", issuer_type="TAO", tao="did:ebsi:tao",
-                               root_tao=None, credential_types=("OtherType",))
+    typeless = acc("a", (), "VerifiableAccreditationToAttest")
+    record = IssuerRecord(did="did:ebsi:leaf", has_attributes=True, accreditations=(typeless,))
+    assert _pick_accreditation(record, {"SomeType"}, leaf=True) is None
+    assert evaluate_issuer_trust(record, ["SomeType"]) is None
+    typeless_accreditor = acc("a", (), "VerifiableAccreditationToAccredit")
+    rec_up = IssuerRecord(did="did:ebsi:mid", has_attributes=True,
+                          accreditations=(typeless_accreditor,))
+    assert _pick_accreditation(rec_up, {"SomeType"}, leaf=False) is None
+
+    restricted = acc("b", ("OtherType",), "VerifiableAccreditationToAttest")
     rec2 = IssuerRecord(did="did:ebsi:leaf", has_attributes=True, accreditations=(restricted,))
     assert _pick_accreditation(rec2, {"SomeType"}, leaf=True) is None
+    assert evaluate_issuer_trust(rec2, ["SomeType"]) is None
+    scoped = acc("c", ("SomeType",), "VerifiableAccreditationToAttest")
+    rec3 = IssuerRecord(did="did:ebsi:leaf", has_attributes=True, accreditations=(scoped,))
+    assert _pick_accreditation(rec3, {"SomeType"}, leaf=True) is scoped
+    assert evaluate_issuer_trust(rec3, ["SomeType"]) is scoped

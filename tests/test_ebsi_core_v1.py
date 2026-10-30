@@ -41,7 +41,11 @@ from openvc.proof.vc_jwt import VcJwtProofSuite  # noqa: E402
 from openvc_ebsi.errors import MalformedRegistryResponse  # noqa: E402
 from openvc_ebsi.http import EbsiHttpClient, HttpNotFound  # noqa: E402
 from openvc_ebsi.models import IssuerRecord  # noqa: E402
-from openvc_ebsi.trust import AccreditationInvalid, verify_trust_chain  # noqa: E402
+from openvc_ebsi.trust import (  # noqa: E402
+    AccreditationInvalid,
+    NoTrustedAnchor,
+    verify_trust_chain,
+)
 from openvc_ebsi.verify import evaluate_issuer_trust  # noqa: E402
 from openvc_ebsi.versioning import (  # noqa: E402
     DID_REGISTRY_ADAPTERS,
@@ -792,38 +796,41 @@ NO_USABLE_BODY = [
 
 @pytest.mark.parametrize("attribute", NO_USABLE_BODY,
                          ids=["body-none", "body-empty", "no-body-key", "hash-only"])
-def test_an_attribute_object_with_no_usable_body_is_still_a_wildcard_by_design(lane, attribute):
-    # The missing-`attribute`-object check above is a SHAPE check; it does not remove the
-    # wildcard. An attribute OBJECT with nothing to decode is an accreditation with no type
-    # restriction, which single-level trust accepts for any credential (its documented policy:
-    # that mode trusts the node's list); recursive trust refuses it for lack of a token.
+def test_an_attribute_object_with_no_usable_body_authorises_nothing(lane, attribute):
+    # The missing-`attribute`-object check above is a SHAPE check. An attribute OBJECT with
+    # nothing to decode is read as an accreditation with no types and no kind, which both
+    # trust policies set aside (#368; until then single-level trust took it as the unrestricted
+    # accreditation and trusted the node's list for any credential). The record itself is read.
     w = World(lane)
     w.routes[w.attributes_url] = {"items": [w.item(1)], "total": 1}
     w.routes[w.href(1)] = {"attribute": attribute}
     record = w.walk()
     accreditation = record.accreditations[0]
     assert accreditation.credential_jwt == attribute.get("body")
-    assert accreditation.credential_types == ()
-    assert evaluate_issuer_trust(record, ["AnyCredentialType"]) is accreditation
+    assert accreditation.credential_types == () and accreditation.accreditation_types == ()
+    assert evaluate_issuer_trust(record, ["AnyCredentialType"]) is None
     resolver = DidEbsiResolver(w.fetch, _decode, base=w.base, didr=DidRegistryV5(), tir=w.tir)
-    with pytest.raises(AccreditationInvalid, match="no raw accreditation token") as exc:
+    with pytest.raises(NoTrustedAnchor, match="no valid accreditation") as exc:
         verify_trust_chain(DID, ["AnyCredentialType"], resolver=resolver,
                            proof_suite=VcJwtProofSuite(), anchors={OTHER_DID})
-    assert type(exc.value) is AccreditationInvalid
+    assert type(exc.value) is NoTrustedAnchor
 
 
-def test_a_body_whose_claims_name_no_accredited_for_is_the_same_wildcard(lane):
-    # why rejecting a body-less attribute could not close the wildcard: a body that decodes to
-    # claims with no `accreditedFor` reads the same way
+def test_a_body_whose_claims_name_no_accredited_for_authorises_nothing(lane):
+    # a body that decodes to claims with no `accreditedFor` is read the same way: no types,
+    # so nothing is authorised (EBSI's own accreditation schema makes `accreditedFor` required)
     w = World(lane)
     w.routes[w.attributes_url] = {"items": [w.item(1)], "total": 1}
     w.serve_revision(w.href(1), 1)
-    resolver = DidEbsiResolver(w.fetch, lambda body: {"vc": {"credentialSubject": {}}},
-                               base=w.base, didr=DidRegistryV5(), tir=w.tir)
+    resolver = DidEbsiResolver(
+        w.fetch, lambda body: {"vc": {"type": ["VerifiableCredential",
+                                               "VerifiableAccreditationToAttest"],
+                                      "credentialSubject": {}}},
+        base=w.base, didr=DidRegistryV5(), tir=w.tir)
     record = resolver.issuer_record(DID)
     assert record.accreditations[0].credential_jwt == "jwt-1"
     assert record.accreditations[0].credential_types == ()
-    assert evaluate_issuer_trust(record, ["AnyCredentialType"]) is record.accreditations[0]
+    assert evaluate_issuer_trust(record, ["AnyCredentialType"]) is None
 
 
 def test_non_object_listing_items_are_skipped_and_the_valid_one_is_read(lane):

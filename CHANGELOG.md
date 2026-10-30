@@ -8,6 +8,60 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
+- **An accreditation authorises only the types its `accreditedFor` lists, and its `vc.type`
+  must be the accreditation kind of the hop; the unrestricted accreditation is gone**
+  ([#368](https://github.com/luisgf/openvc/issues/368)). **Wrong-accept, same-DID case, every
+  lane, both trust modes.** The token reader read an absent `vc`, `credentialSubject` or
+  `accreditedFor` as "no types", and both policies read "no types" as the accreditation with
+  no type restriction, so any VC-JWT a RootTAO or TAO ever signed for the *same* DID that a
+  registry placed in that DID's record (an onboarding authorisation, a plain attestation, a
+  `…ToAttest` with the member left out or misspelt: `accreditedfor`, `Types`, a Greek omicron)
+  was the widest accreditation there is, and nothing checked the token's `vc.type` against
+  the hop (a `…ToAccredit` at the leaf, a `…ToAttest` above it, a bare `VerifiableCredential`,
+  no type at all). The subject binding of #365 did not help: those tokens name the right DID.
+  Measured on the tree at aea5e75 (`main` + #358, CPython 3.14.10) with real P-256 signatures
+  through `evaluate_issuer_trust` and `verify_trust_chain`, on v4, v5 and Core v1: every one
+  of those shapes was **trusted** for every credential type, and the same shapes signed for an
+  accreditor closed a two-hop chain; the only refusal was an accreditation scoped to another
+  type. **The primary sources.** EBSI's own JSON schema for the Verifiable Accreditation
+  Record (the `credentialSchema` every recorded accreditation token names: the pilot Trusted
+  Schemas Registry `zjVFNvbE…` and the Core API v1 `0xf57ce42c…`, served by every node; read
+  2026-10-30) makes `credentialSubject.accreditedFor` **required**, each entry with
+  `schemaId` and `types`; EBSI's trust model issues a `VerifiableAccreditationToAccredit` to a
+  TAO (it may accredit) and a `VerifiableAccreditationToAttest` to an issuer (it may attest);
+  the four recorded RootTAO accreditations (v5 pilot, Core v1 preprod GRNET and INCM, prod
+  ITI) all carry `accreditedFor` and are `…ToAttest`. **What changed.** The reader returns
+  the token's `vc.type` too (`Accreditation.accreditation_types`, a string or a list of
+  strings, else `MalformedRegistryResponse`); one eligibility function serves both policies
+  (`trust.accreditation_ineligibility`: the role of #358, then the kind, then at least one
+  type), so they never disagree; `_pick_accreditation` and `evaluate_issuer_trust` lost their
+  wildcard branch, the delegated scope is what the leaf accreditation and the credential
+  share, and the "has no valid accreditation" messages name each rule that set an
+  accreditation aside (`trust.ineligible_note`, replacing the role-only note of #358; both are
+  1.38.0). `models.ACCREDITATION_TO_ATTEST` / `ACCREDITATION_TO_ACCREDIT` and
+  `Accreditation.is_to_attest` / `is_to_accredit` name the kinds. Not changed: the #352 rule
+  that one malformed accreditation rejects the record (an absent `accreditedFor` is not
+  malformed, it authorises nothing, so a live accreditation beside it is still picked); the
+  anchor's own record is still not read. **Migration.** A registry record whose only
+  accreditation lists no type, or is not a `…ToAttest` (at the leaf) / `…ToAccredit` (above
+  it), which 1.37 trusted, is now `IssuerNotTrusted` / `NoTrustedAnchor` (or
+  `trusted=False` under `require_trust=False`); an attribute with no body is
+  `NoTrustedAnchor` on the recursive walk where it was `AccreditationInvalid` ("no raw
+  accreditation token"); a hand-built `Accreditation` needs `accreditation_types` to be
+  eligible. The recorded fixtures verify as before (their tests ask for
+  `VerifiableAuthorisationForTrustChain`, which the recorded `accreditedFor` lists).
+  The adversarial review of the PR (hand-assembled ES256 tokens against the peek-vs-verify
+  seam, 14 base64url perturbations, a 20 000-record differential of the two policies, 3-hop
+  position probes, fail-open sweeps; no wrong-accept found) added one fix: the `vc.type`
+  reader checked the list on one iteration and copied it on a second, so a list from an
+  injected `decode` that iterates differently the second time was a bare `TypeError` (the
+  pattern the #365 review fixed beside it); it reads in one pass now, and so does the inner
+  `accreditedFor[].types` loop, which had the same shape.
+  Tests: `tests/test_ebsi_accreditation_deny_by_default.py` (every lane, both policies, the
+  two-hop kind rule, mixed records, the fail-closed `vc.type` reader read in one pass, bounded messages, the
+  recorded registries as the drift alarm; the negatives are TRUSTED on `main` and refused
+  here); the tests that pinned the wildcard (`test_trust_chain.py`, `test_ebsi_core_v1.py`)
+  now pin the new rule, and the chain harnesses give the accreditor a `…ToAccredit`.
 - **The Trusted Issuers Registry role is an exact allow-list; `Revoked` was read as a live
   role on every lane** ([#358](https://github.com/luisgf/openvc/issues/358)).
   **Wrong-accept of a revoked accreditation, on real registry vocabulary.** Both registry
@@ -39,8 +93,8 @@ All notable changes to **openvc** are documented here. The format follows
   and the decision lives in the two policies (`trust._pick_accreditation`,
   `verify.evaluate_issuer_trust`), where a revoked accreditation was already set aside. The
   "has no valid accreditation" messages keep their leading words and gain a bounded clause
-  naming the roles set aside (`trust.ineligible_roles_note`: `safe_repr` per value, at most
-  three). Not read: the anchor's own record (the caller pins the anchor DID and the walk stops
+  naming the roles set aside (`safe_repr` per value, at most three; generalised to every
+  rule by #368 as `trust.ineligible_note`). Not read: the anchor's own record (the caller pins the anchor DID and the walk stops
   at it; a check would cost a request per walk and guard a misconfiguration, not an attack).
   **Migration.** A registry record whose only accreditation carries a role outside the
   vocabulary, which 1.37 trusted, is now `IssuerNotTrusted` / `NoTrustedAnchor` (or

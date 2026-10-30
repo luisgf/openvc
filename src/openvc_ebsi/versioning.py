@@ -43,9 +43,10 @@ Principles baked in below
    be strict only about the fields you depend on, about the JSON type of every
    scalar an adapter copies into the model (a wrong type is a typed
    ``MalformedRegistryResponse``, #337), and about the shape of the accreditation
-   token members every lane reads (``vc``, ``credentialSubject``, ``accreditedFor``:
-   a shape the reader does not know is the same typed error, never "no types", which
-   is the unrestricted accreditation; #352); an absent member keeps its default.
+   token members every lane reads (``vc``, ``credentialSubject``, ``accreditedFor``,
+   ``vc.type``: a shape the reader does not know is the same typed error, never "no
+   types"; #352, #368); an absent member keeps its default, and an accreditation with no
+   types or no kind authorises nothing (#368).
 5. Per-version golden fixtures (recorded real responses) prove each adapter maps
    to the same domain model — the drift alarm.
 6. Method-level policy lives in the resolver, once, for every version: the DID is
@@ -60,7 +61,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, NamedTuple
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from openvc.did.base import DidDocument, DidResolutionError, parse_did_document
@@ -213,11 +214,12 @@ def _wire_accredited_for(subject: dict[str, Any], what: str) -> tuple[str, ...]:
     the deduplicated types, in first-seen order, of a list whose entries are each a type string
     (older shapes) or an object ``{schemaId, types: [...]}`` (EBSI v5) whose ``types``, when
     sent, is a list of strings; anything else is :class:`MalformedRegistryResponse`. An
-    accreditation with no types is the unrestricted one, so a reader that dropped what it did
-    not recognise (the flattener this replaces) widened a single object, a bare string or a
-    ``types`` that is not a list to every credential type, and a ``types`` that is a number or
-    ``null`` was a bare ``TypeError``, one that is a string was split into characters. An
-    empty list, an object with no ``types`` and ``"types": []`` are still "no types". One pass,
+    accreditation with no types used to be the unrestricted one (until #368: it now authorises
+    nothing), so a reader that dropped what it did not recognise (the flattener this replaces)
+    widened a single object, a bare string or a ``types`` that is not a list to every
+    credential type, and a ``types`` that is a number or ``null`` was a bare ``TypeError``, one
+    that is a string was split into characters. An empty list, an object with no ``types`` and
+    ``"types": []`` are still "no types". One pass,
     because a list handed in by an injected ``decode`` can iterate differently the second time
     (the review of PR #365): what is checked is what is read. Each type is returned as an exact
     ``str``."""
@@ -233,11 +235,16 @@ def _wire_accredited_for(subject: dict[str, Any], what: str) -> tuple[str, ...]:
             raise MalformedRegistryResponse(
                 f"{what} accreditedFor[{index}] is not a string or an object: {safe_repr(entry)}")
         members = entry.get("types", [])
-        if not isinstance(members, list) or not all(isinstance(t, str) for t in members):
+        if not isinstance(members, list):
             raise MalformedRegistryResponse(
                 f"{what} accreditedFor[{index}] types is not a list of strings: "
                 f"{safe_repr(members)}")
-        types.extend(str.__str__(t) for t in members)
+        for member in members:           # one pass here too (the review of PR #372)
+            if not isinstance(member, str):
+                raise MalformedRegistryResponse(
+                    f"{what} accreditedFor[{index}] types is not a list of strings: "
+                    f"{safe_repr(member)}")
+            types.append(str.__str__(member))
     return tuple(dict.fromkeys(types))           # dedupe, preserve first-seen order
 
 
@@ -336,11 +343,41 @@ def _on_contract_address(url: str, address: str) -> str:
     return url
 
 
-def _types_from_token(body: str | None, decode: DecodeJwt) -> tuple[str, ...]:
-    """The credential types an accreditation token (a TIR attribute ``body``) authorises,
-    read the same way on every lane (v4, v5 and Core v1; #352).
+class _TokenScope(NamedTuple):
+    """What an accreditation token says about itself, read fail-closed on every lane."""
+    credential_types: tuple[str, ...]        # credentialSubject.accreditedFor[].types
+    accreditation_types: tuple[str, ...]     # vc.type
 
-    No ``body`` (absent, ``null`` or ``""``) is "no types", as it always was. Otherwise
+
+_NO_SCOPE = _TokenScope((), ())
+
+
+def _wire_vc_type(vc: dict[str, Any], what: str) -> tuple[str, ...]:
+    """``vc["type"]`` as exact strings: ``()`` when absent, a one-element tuple for the VCDM
+    string form, the members of a list of strings; anything else (``null``, a number, an
+    object, a list with a non-string) is :class:`MalformedRegistryResponse` (#368)."""
+    value = vc.get("type", [])
+    if isinstance(value, str):
+        return (str.__str__(value),)
+    if not isinstance(value, list):
+        raise MalformedRegistryResponse(
+            f"{what} vc.type is not a string or a list of strings: {safe_repr(value)}")
+    kinds: list[str] = []
+    for kind in value:           # ONE pass: a list from an injected `decode` may iterate
+        if not isinstance(kind, str):    # differently the second time (the review of PR #365)
+            raise MalformedRegistryResponse(
+                f"{what} vc.type is not a string or a list of strings: {safe_repr(kind)}")
+        kinds.append(str.__str__(kind))
+    return tuple(kinds)
+
+
+def _types_from_token(body: str | None, decode: DecodeJwt) -> _TokenScope:
+    """What an accreditation token (a TIR attribute ``body``) authorises and what kind it is,
+    read the same way on every lane (v4, v5 and Core v1; #352, #368): its
+    ``credentialSubject.accreditedFor`` types and its ``vc.type``.
+
+    No ``body`` (absent, ``null`` or ``""``) is "no types and no kind", which authorises
+    nothing (#368: the unrestricted accreditation is gone from both policies). Otherwise
     *decode* (the proof suite's ``peek_claims``, injected) reads it. A body that is not a
     compact JWS whose payload is a JSON object makes the suite raise its
     :class:`~openvc.proof.errors.ProofError` (``MalformedToken``), an ``OpenvcError`` that is
@@ -349,22 +386,22 @@ def _types_from_token(body: str | None, decode: DecodeJwt) -> tuple[str, ...]:
     handles ``except EbsiError`` (the node client's failover loop among them) must see it.
 
     Then the shape. The claims must be an object, ``vc`` and ``credentialSubject`` must be
-    objects when sent, and ``accreditedFor``, when sent, a list of type strings or objects
-    whose ``types`` is a list of strings, checked and read in one pass
+    objects when sent, ``vc.type``, when sent, a string or a list of strings
+    (:func:`_wire_vc_type`), and ``accreditedFor``, when sent, a list of type strings or
+    objects whose ``types`` is a list of strings, checked and read in one pass
     (:func:`_wire_accredited_for`); anything else is :class:`MalformedRegistryResponse`, never
-    "no types". An accreditation with no types is the **unrestricted** one, which single-level
-    and recursive trust both accept for any credential, so a ``vc`` or ``credentialSubject``
-    read as ``{}`` (what the walk did for a non-object, an array of subjects included) or an
-    ``accreditedFor`` the old flattener dropped widened a scoped accreditation to every type,
-    and ``types`` of a number or ``null`` was a bare ``TypeError``. ``vc``,
-    ``credentialSubject`` and ``accreditedFor`` **absent**, an empty ``accreditedFor``, an
-    entry with no ``types`` and ``"types": []`` still read as "no types": whether an
-    accreditation without ``accreditedFor`` should deny is a policy question not decided here,
-    and its consequence is that a RootTAO- or TAO-signed credential for the *same* DID that is
-    not an accreditation at all (an onboarding authorisation, say) reads as the unrestricted
-    one in that DID's record. Messages go through ``safe_repr`` / ``bounded_text``."""
+    "no types" (a ``vc`` or ``credentialSubject`` read as ``{}`` for a non-object, or an
+    ``accreditedFor`` the old flattener dropped, used to widen a scoped accreditation to every
+    type, and ``types`` of a number or ``null`` was a bare ``TypeError``). ``vc``,
+    ``credentialSubject``, ``accreditedFor`` and ``vc.type`` **absent**, an empty
+    ``accreditedFor``, an entry with no ``types`` and ``"types": []`` read as "no types" / "no
+    kind", which the two policies take as **authorising nothing** (#368; EBSI's own schema
+    makes ``accreditedFor`` required): a RootTAO- or TAO-signed credential for the *same* DID
+    that is not an accreditation (an onboarding authorisation, say) placed in that DID's record
+    is set aside, not read as the widest accreditation there is. Messages go through
+    ``safe_repr`` / ``bounded_text``."""
     if not body:
-        return ()
+        return _NO_SCOPE
     try:
         claims = decode(body)
     except ProofError as exc:
@@ -372,8 +409,10 @@ def _types_from_token(body: str | None, decode: DecodeJwt) -> tuple[str, ...]:
             f"TIR attribute token is not a readable JWS: {bounded_text(exc)}") from exc
     claims = _require_object(claims, "TIR attribute token claims")
     vc = _wire_object(claims, "vc", "TIR attribute token")
+    kinds = _wire_vc_type(vc, "TIR attribute token")
     subject = _wire_object(vc, "credentialSubject", "TIR attribute token vc")
-    return _wire_accredited_for(subject, "TIR attribute token credentialSubject")
+    return _TokenScope(_wire_accredited_for(subject, "TIR attribute token credentialSubject"),
+                       kinds)
 
 
 # --------------------------------------------------------------------------- #
@@ -488,8 +527,8 @@ class TirV4(TirAdapter):
     (#352). Every entry's shape is checked before any token is decoded. The same holds
     inside an accreditation token, read by :func:`_types_from_token` as on the other lanes: a
     ``vc``, ``credentialSubject`` or ``accreditedFor`` that is sent in a shape the reader does
-    not know rejects the record, never reads as "no types", which single-level and recursive
-    trust both accept for any credential."""
+    not know rejects the record, never reads as "no types" (which, since #368, authorises
+    nothing anyway: a misread must fail loudly, not quietly narrow or widen trust)."""
     version = "v4"
 
     def issuer_url(self, base: str, did: str) -> str:
@@ -514,7 +553,8 @@ class TirV4(TirAdapter):
                 issuer_type=_wire_str(a, "issuerType", "TIR attribute"),
                 tao=_wire_opt_str(a, "tao", "TIR attribute"),
                 root_tao=_wire_opt_str(a, "rootTao", "TIR attribute"),
-                credential_types=_types_from_token(body, decode),
+                credential_types=(scope := _types_from_token(body, decode)).credential_types,
+                accreditation_types=scope.accreditation_types,
                 credential_jwt=body,
             ))
         return IssuerRecord(did=did, has_attributes=bool(accs), accreditations=tuple(accs))
@@ -531,7 +571,8 @@ class _TirAttributeWalk(TirAdapter):
     Each accreditation token is read by :func:`_types_from_token`, as on v4 (#352): a body
     that is not a readable JWS, or a ``vc``, ``credentialSubject`` or ``accreditedFor`` sent
     in a shape the reader does not know, is :class:`MalformedRegistryResponse`, never "no
-    types" (the unrestricted accreditation), and **one such accreditation rejects the whole
+    types" (which, since #368, authorises nothing anyway), and **one such accreditation rejects
+    the whole
     record**, as a wrong scalar does (#337): nothing partial is returned. The walk fetches one
     revision per ``href`` and reads it as it goes, so it raises at the first malformed
     accreditation it reaches, after the revisions before it were fetched and read; the scalars
@@ -646,11 +687,9 @@ class _TirAttributeWalk(TirAdapter):
                 attribute = revision.get("attribute")
                 if not isinstance(attribute, dict):
                     # a shape check: a revision with no attribute object is malformed, not an
-                    # empty attribute. It does not remove the wildcard: an attribute object with
-                    # no body, or a body whose claims name no `accreditedFor`, is still an
-                    # accreditation with no type restriction, which single-level trust accepts
-                    # for any credential (its documented policy, `evaluate_issuer_trust`);
-                    # recursive trust refuses it unless a verifiable token backs it
+                    # empty attribute. An attribute object with no body, or a body whose claims
+                    # name no `accreditedFor`, is read as an accreditation with no types and
+                    # no kind, which both trust policies set aside (#368): it authorises nothing
                     raise MalformedRegistryResponse(
                         "TIR attribute revision has no attribute object")
                 # every scalar the record copies is typed (#337) before `decode` runs: the
@@ -669,8 +708,9 @@ class _TirAttributeWalk(TirAdapter):
                     issuer_type=issuer_type,
                     tao=tao,
                     root_tao=root_tao,
-                    credential_types=_types_from_token(body, decode),   # shape-checked (#352)
-                    credential_jwt=body,
+                    credential_types=(scope := _types_from_token(body, decode)).credential_types,
+                    credential_jwt=body,                                 # shape-checked (#352)
+                    accreditation_types=scope.accreditation_types,       # the kind (#368)
                 ))
         return IssuerRecord(did=did, has_attributes=has_attrs, accreditations=tuple(accs))
 

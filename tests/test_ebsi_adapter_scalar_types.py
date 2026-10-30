@@ -203,6 +203,12 @@ def _record(lane: Lane, **patches: dict[str, Any]) -> IssuerRecord:
     return _world(lane, **patches)[1].issuer_record(lane.did)
 
 
+def _kinds(body: str) -> tuple[str, ...]:
+    """The recorded token's ``vc.type`` (the kind the model carries since #368)."""
+    from openvc.proof.vc_jwt import VcJwtProofSuite
+    return tuple(VcJwtProofSuite().peek_claims(body)["vc"]["type"])
+
+
 def _expected(lane: Lane) -> IssuerRecord:
     """The record the RECORDED wire values spell, written from the fixture and not from the
     adapter: the list item's ``id`` (the attribute's ``hash`` on v4, which has no listing),
@@ -219,7 +225,7 @@ def _expected(lane: Lane) -> IssuerRecord:
         accs.append(Accreditation(
             attribute_id=attribute_id, issuer_type=attribute["issuerType"],
             tao=attribute["tao"], root_tao=attribute["rootTao"], credential_types=types,
-            credential_jwt=attribute["body"]))
+            credential_jwt=attribute["body"], accreditation_types=_kinds(attribute["body"])))
     return IssuerRecord(did=lane.did, has_attributes=True, accreditations=tuple(accs))
 
 

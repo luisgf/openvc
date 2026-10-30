@@ -255,30 +255,40 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   present, must be a list of objects (an absent one means no attributes); on every lane (v4, v5
   and Core v1), a `vc` or `credentialSubject` that an accreditation token sends must be an
   object, its `accreditedFor` a list of type strings or objects with a list of strings as
-  `types` (an absent one still means no types), and the token itself a compact JWS the proof
+  `types` (an absent one means no types, which authorises nothing, see below), its `vc.type`
+  a string or a list of strings, and the token itself a compact JWS the proof
   suite can read (its `MalformedToken` is reported as `MalformedRegistryResponse`, the suite's
   error as `__cause__`); one accreditation that is not rejects the whole record rather than
-  being skipped or widened to an unrestricted accreditation.
+  being skipped or read as an accreditation of another scope.
 - **The role is an exact allow-list** (#358, 1.38.0): an accreditation is eligible, on every
   lane and in both trust modes, only if its `issuerType` is exactly `RootTAO`, `TAO` or `TI`
   (`openvc_ebsi.models.TRUST_ROLES`), and the accreditation read from an accreditor's record
   above the leaf only if it is `RootTAO` or `TAO` (`DELEGATING_ROLES`): a TI attests, it does
   not accredit. `Revoked` (the spelling the legacy v5 and the Core v1 OpenAPI documents both
   use), `undefined` (Core v1's value for an unset type), an absent or empty member, another
-  case or any other string is set aside before the type rule runs, so it authorises nothing,
-  an unrestricted accreditation included. The "has no valid accreditation" messages name the
-  roles set aside, bounded. The anchor's own record is not read (the caller pins the anchor).
+  case or any other string is set aside before the type rule runs, so it authorises nothing.
+  The "has no valid accreditation" messages name the rule that set each accreditation aside,
+  bounded. The anchor's own record is not read (the caller pins the anchor).
+- **An accreditation authorises only what it lists, and must be the kind of the hop** (#368,
+  1.38.0): there is no unrestricted accreditation. One whose `accreditedFor` lists no type
+  (absent, empty, an entry without `types`, a misspelt member) authorises **nothing**, in both
+  trust modes and on every lane, which is what EBSI's own schema for the accreditation record
+  says (`accreditedFor` is required there, each entry with `schemaId` and `types`); and the
+  token's `vc.type` must name `VerifiableAccreditationToAttest` at the leaf and
+  `VerifiableAccreditationToAccredit` for the accreditation read from an accreditor's record
+  above it, the two kinds EBSI's trust model issues. So a RootTAO- or TAO-signed credential
+  for the *same* DID that is not an accreditation (an onboarding authorisation, say), placed
+  in that DID's record, is set aside rather than read as the widest accreditation there is.
+  One eligibility function (`openvc_ebsi.trust.accreditation_ineligibility`) serves the walk
+  and the single-level policy, so the two never disagree.
 - **Every accreditation on a chain is bound to the DID it was read for** (`trust_anchors=`
   mode): the JWT `sub` and the credential's `credentialSubject.id`, each one that is sent, must
   be exactly the accredited DID, and at least one must be sent, else `AccreditationInvalid`. A
   RootTAO's or TAO's accreditation that names nobody, carries an empty `sub`, or names another
   DID is refused however well it is signed, so a registry answer cannot replay it into another
-  issuer's record. That holds across DIDs: a RootTAO- or TAO-signed credential for the *same*
-  DID that carries no `accreditedFor` (an onboarding authorisation, say) still reads as the
-  unrestricted accreditation, because an absent `accreditedFor` means "no type restriction"
-  (a policy question that is open, not a binding gap). Single-level trust (no
-  `trust_anchors`) checks no accreditation signature and no binding: it trusts what the
-  registry says about the issuer.
+  issuer's record. Single-level trust (no `trust_anchors`) checks no accreditation signature
+  and no binding: it trusts what the registry says about the issuer, under the same
+  eligibility rules.
 - **Environment-aware**: `for_ebsi(environment)` seeds the allow-list from the host of a
   named EBSI environment, `"legacy-pilot"` by default. The names mean this, as measured and
   recorded on 2026-10-16

@@ -56,9 +56,10 @@ there too, where ``main`` returned ``trusted=True`` (the #267 stance).
 Not changed, pinned as controls: the four RECORDED walks (the pilot's v5 and three Core v1
 nodes) parse to the record their wire values spell; a listing item the walk cannot follow is
 still skipped (it narrows trust, where a misread token widens it); a ``vc`` with no
-``credentialSubject`` or no ``accreditedFor`` is still the unrestricted accreditation (a policy
-question, not decided here: a RootTAO-signed credential for the SAME DID that is not an
-accreditation reads as unrestricted, which the review measured and this file does not change).
+``credentialSubject`` or no ``accreditedFor`` still reads as "no types" (this file pins the
+READER's outcome; what "no types" authorises is the policy's question, which was open when this
+file was written and which #368 answered with "nothing":
+``test_ebsi_accreditation_deny_by_default.py``).
 Self-contained: ``tests/`` is not a package.
 """
 from __future__ import annotations
@@ -983,7 +984,8 @@ def _expected(rec: Recorded) -> IssuerRecord:
     accs = tuple(
         Accreditation(attribute_id=item["id"], issuer_type=attribute["issuerType"],
                       tao=attribute["tao"], root_tao=attribute["rootTao"],
-                      credential_types=types, credential_jwt=attribute["body"])
+                      credential_types=types, credential_jwt=attribute["body"],
+                      accreditation_types=tuple(PEEK(attribute["body"])["vc"]["type"]))
         for item, types in zip(items, rec.types, strict=True)
         for attribute in [rec.routes[item["href"]]["attribute"]])
     return IssuerRecord(did=rec.did, has_attributes=True, accreditations=accs)

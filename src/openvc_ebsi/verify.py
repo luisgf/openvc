@@ -39,7 +39,13 @@ from openvc.status import (
 from ._message import bounded_text, url_repr
 from .errors import EbsiError
 from .models import Accreditation, IssuerRecord
-from .trust import TrustChain, TrustChainError, ineligible_roles_note, verify_trust_chain
+from .trust import (
+    TrustChain,
+    TrustChainError,
+    accreditation_ineligibility,
+    ineligible_note,
+    verify_trust_chain,
+)
 from .versioning import DidEbsiResolver
 
 
@@ -82,20 +88,19 @@ def evaluate_issuer_trust(
     """Return the accreditation that authorises this issuer for the credential,
     or ``None`` if untrusted.
 
-    Single-level policy, fail-closed: pick the first accreditation whose ``issuerType`` is
-    exactly a live role (``RootTAO``, ``TAO`` or ``TI``; #358) that either authorises one of
-    the credential's types, or carries no type restriction at all. ``Revoked`` (the spelling
-    both registry APIs use), ``undefined``, an absent member and any other string are set
-    aside, and an accreditation scoped to other types does not count.
+    Single-level policy, fail-closed: pick the first accreditation that is eligible at the
+    leaf (:func:`~openvc_ebsi.trust.accreditation_ineligibility`: a live ``issuerType``, #358;
+    a ``vc.type`` naming ``VerifiableAccreditationToAttest`` and an ``accreditedFor`` that
+    lists at least one type, #368) and authorises one of the credential's types. There is no
+    unrestricted accreditation: one that lists no type authorises nothing, and one scoped to
+    other types does not count.
     """
     if not record.has_attributes:
         return None
     wanted = set(credential_types)
     for acc in record.accreditations:
-        if not acc.has_trust_role:                 # Revoked, undefined, absent, misspelt (#358)
+        if accreditation_ineligibility(acc, leaf=True) is not None:
             continue
-        if not acc.credential_types:               # unrestricted accreditation
-            return acc
         if wanted & set(acc.credential_types):     # authorises a wanted type
             return acc
     return None
@@ -192,7 +197,7 @@ def verify_ebsi_badge(
             raise IssuerNotTrusted(
                 f"issuer {safe_repr(verified.issuer)} has no valid accreditation for "
                 f"types {bounded_text(cred_types)}"
-                + ineligible_roles_note(record, leaf=True))
+                + ineligible_note(record, leaf=True))
 
     # 6) revocation — a set revocation bit invalidates the credential outright.
     status: StatusResult | None = None

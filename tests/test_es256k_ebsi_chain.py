@@ -398,10 +398,11 @@ def jws(by: Signer, kid: str, payload: dict[str, Any], *, high_s: bool = False,
 
 
 def _accreditation(by: Signer, kid: str, *, subject: str, accredited_by: str,
+                   kind: str = "VerifiableAccreditationToAttest",
                    high_s: bool = False, header: dict[str, Any] | None = None) -> str:
     now = int(FROZEN.timestamp())
     vc = {"id": f"urn:uuid:acc-{subject[-4:]}",
-          "type": ["VerifiableCredential", "VerifiableAccreditationToAttest"],
+          "type": ["VerifiableCredential", kind],      # the kind of the hop (#368)
           "issuer": accredited_by,
           "credentialSubject": {"id": subject, "accreditedFor": [{"types": TYPES}]}}
     return jws(by, kid, {"iss": accredited_by, "sub": subject, "nbf": now - 60, "iat": now - 60,
@@ -445,7 +446,8 @@ def build_world(*, leaf="ES256", mid="ES256", root="ES256K", high_s_root: bool =
     badge = _badge(leaf_k, f"{LEAF}#key-1")
     leaf_acc = _accreditation(mid_k, f"{MID}#key-1", subject=LEAF, accredited_by=MID)
     mid_acc = _accreditation(root_k, root_kid or f"{ROOT}#key-1", subject=MID,
-                             accredited_by=ROOT, high_s=high_s_root, header=root_header)
+                             accredited_by=ROOT, high_s=high_s_root, header=root_header,
+                             kind="VerifiableAccreditationToAccredit")
     routes: dict[str, Any] = {
         f"{BASE}/did-registry/v5/identifiers/{LEAF}": _did_doc(LEAF, leaf_k),
         f"{BASE}/did-registry/v5/identifiers/{MID}": _did_doc(MID, mid_k),
