@@ -46,7 +46,7 @@ from openvc_ebsi.models import (
 from openvc_ebsi.trust import (
     NoTrustedAnchor,
     TrustChain,
-    ineligible_roles_note,
+    ineligible_note,
     verify_trust_chain,
 )
 from openvc_ebsi.verify import IssuerNotTrusted, evaluate_issuer_trust, verify_ebsi_badge
@@ -364,15 +364,17 @@ def test_the_message_names_the_role_and_is_bounded(lane: Lane) -> None:
 
 @pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
 def test_the_non_leaf_message_bounds_the_delegated_types(lane: Lane) -> None:
-    # the review of PR #371: above the leaf the message quoted `sorted(needed)` raw, and with a
-    # wildcard leaf accreditation the delegated scope is the credential's whole `type` list
-    # (1 002 163 characters measured on `main` with 500 types of 2 000 characters); the
-    # TI-above-the-leaf refusals of #358 route through that line
-    leaf = accreditation(subject=LEAF, accredited_by=MID, types=None)        # wildcard leaf
+    # the review of PR #371: above the leaf the message quoted `sorted(needed)` raw, and the
+    # delegated scope is what the leaf accreditation and the credential share (1 002 163
+    # characters measured on `main` with 500 types of 2 000 characters, when a wildcard leaf
+    # still delegated the credential's whole `type` list; #368 removed the wildcard, so the
+    # leaf here lists the 500 types itself); the TI-above-the-leaf refusals of #358 route
+    # through that line
+    many_types = [f"T{i}" + "x" * 2000 for i in range(500)]
+    leaf = accreditation(subject=LEAF, accredited_by=MID, types=many_types)
     mid = accreditation(subject=MID, accredited_by=ROOT, kind="VerifiableAccreditationToAccredit")
     resolver = registry(lane, {LEAF: [attribute(leaf, "TI", tao=MID, tag="leaf")],
                                MID: [attribute(mid, "TI", tao=ROOT, tag="mid")]})
-    many_types = [f"T{i}" + "x" * 2000 for i in range(500)]
     with pytest.raises(NoTrustedAnchor, match="no valid accreditation") as info:
         verify_trust_chain(LEAF, many_types, resolver=resolver, proof_suite=SUITE,
                            anchors={ROOT})
@@ -385,8 +387,10 @@ def test_many_distinct_roles_are_counted_not_listed() -> None:
     # v4 inline attributes are uncapped) and shows at most three, counting the rest
     record = IssuerRecord(did=LEAF, has_attributes=True,
                           accreditations=tuple(_acc(f"Role{i}") for i in range(60)))
-    note = ineligible_roles_note(record, leaf=True)
-    assert note.startswith("; set aside: issuerType 'Role0', 'Role1', 'Role2' and 57 more")
+    note = ineligible_note(record, leaf=True)
+    reason = "issuerType {} is not a live trust role (RootTAO, TAO or TI)"
+    assert note == ("; set aside: " + "; ".join(reason.format(repr(f"Role{i}")) for i in range(3))
+                    + " and 57 more")
     assert len(note) < MESSAGE_BOUND and evaluate_issuer_trust(record, TYPES) is None
 
 
@@ -403,8 +407,10 @@ def test_the_message_says_which_rule_set_the_accreditor_aside(lane: Lane) -> Non
 # --------------------------------------------------------------------------- #
 
 def _acc(role: str, types: tuple[str, ...] = ("OpenBadgeCredential",)) -> Accreditation:
+    # a `…ToAttest` kind, so only the role (or an empty `types`) decides here (#368)
     return Accreditation(attribute_id="a", issuer_type=role, tao=ROOT, root_tao=ROOT,
-                         credential_types=types)
+                         credential_types=types,
+                         accreditation_types=("VerifiableAccreditationToAttest",))
 
 
 @pytest.mark.parametrize("role, revoked", [

@@ -31,11 +31,16 @@ What each hop checks (defence in depth):
     JWT ``sub`` and the credential's ``credentialSubject.id``, each one that is sent,
     must be exactly that DID, and at least one must be sent. An accreditation that names
     nobody, or another DID, is refused however well it is signed, so a registry cannot
-    replay a RootTAO's or a TAO's accreditation into *another* issuer's record. Across DIDs
-    only: a RootTAO- or TAO-signed credential for the *same* DID that carries no
-    ``accreditedFor`` (an onboarding authorisation, say) still reads as the unrestricted
-    accreditation, and ``vc.type`` is not checked against the role; both are the open
-    "absent means no types" policy, not a binding gap.
+    replay a RootTAO's or a TAO's accreditation into *another* issuer's record.
+  * **Kind and scope (#368).** An accreditation authorises only the types its
+    ``accreditedFor`` lists: one that lists none (an onboarding authorisation, a plain
+    attestation, a token with no ``accreditedFor`` or a misspelt member) authorises
+    **nothing**, there is no unrestricted accreditation; and the token's ``vc.type`` must
+    name the kind of the hop, ``VerifiableAccreditationToAttest`` at the leaf and
+    ``VerifiableAccreditationToAccredit`` for the accreditation read from an accreditor's
+    record above it (EBSI's own schema makes ``accreditedFor`` required; its trust model
+    issues the two kinds). So a RootTAO- or TAO-signed credential for the *same* DID that is
+    not an accreditation, placed in that DID's record, is set aside.
   * **Revocation (optional).** With a ``resolve_status_list`` the accreditation's
     own ``credentialStatus`` is checked too — a revoked accreditation breaks the
     chain, not just a TIR ``Revoked`` role. And the role itself is an exact allow-list
@@ -59,7 +64,12 @@ from openvc.status import ResolveStatusList, StatusListError, check_credential_s
 from ._message import bounded_text
 from .errors import EbsiError
 from .http import HttpNotFound
-from .models import DELEGATING_ROLES, TRUST_ROLES, Accreditation, IssuerRecord
+from .models import (
+    ACCREDITATION_TO_ACCREDIT,
+    ACCREDITATION_TO_ATTEST,
+    Accreditation,
+    IssuerRecord,
+)
 from .versioning import DidEbsiResolver
 
 DEFAULT_MAX_DEPTH = 6
@@ -91,25 +101,19 @@ def _pick_accreditation(
 ) -> Accreditation | None:
     """An eligible accreditation authorising *needed*.
 
-    Eligible means its ``issuerType`` is exactly a live role (``RootTAO``, ``TAO`` or ``TI``;
-    #358): ``Revoked``, ``undefined``, an absent member and any other string are set aside,
-    whatever the accreditation would authorise. Above the leaf the role must also be one that
-    may accredit (``RootTAO`` or ``TAO``): a TI's record may hold a well-signed accreditation
-    and still not delegate. At the leaf the ``accreditedFor`` must **intersect** *needed* (the
-    issuer is authorised for at least one of the credential's types); above the leaf it must
-    be a **superset** of the delegated scope (the accreditor can delegate everything beneath
-    it).
+    Eligible is :func:`accreditation_ineligibility` answering ``None``: a live role (#358), a
+    delegating one above the leaf, the kind of the hop in ``vc.type`` and at least one type in
+    ``accreditedFor`` (#368). Then the scope: at the leaf the ``accreditedFor`` must
+    **intersect** *needed* (the issuer is authorised for at least one of the credential's
+    types); above the leaf it must be a **superset** of the delegated scope (the accreditor
+    can delegate everything beneath it). There is no unrestricted accreditation.
     """
     if not record.has_attributes:
         return None
     for acc in record.accreditations:
-        if not acc.has_trust_role:               # Revoked, undefined, absent, misspelt (#358)
+        if accreditation_ineligibility(acc, leaf=leaf) is not None:
             continue
-        if not leaf and not acc.can_accredit:    # only a TAO or a RootTAO accredits (#358)
-            continue
-        if not acc.credential_types:             # unrestricted (wildcard) — accept, matching
-            return acc                           # the single-level policy in openvc_ebsi.verify
-        authorised = set(acc.credential_types)
+        authorised = set(acc.credential_types)   # never empty here
         if leaf:
             if authorised & needed:
                 return acc
@@ -130,29 +134,51 @@ def _short_role(role: str) -> str:
     return f"{safe_repr(role[:_ROLE_SHOWN_MAX])}... ({len(role)} chars)"
 
 
-def ineligible_roles_note(record: IssuerRecord, *, leaf: bool) -> str:
-    """The roles the eligibility rule of :func:`_pick_accreditation` set aside in *record*, as
-    a bounded clause for a "has no valid accreditation" message; ``""`` when it set none aside.
+def accreditation_ineligibility(acc: Accreditation, *, leaf: bool) -> str | None:
+    """Why *acc* cannot authorise anything at this position of a chain, or ``None`` when it
+    can (its scope is then the next question). Shared by the recursive walk and the
+    single-level policy (``openvc_ebsi.verify``), so the two never disagree. In order:
 
-    *leaf* selects the rule: a live role at the leaf (:data:`~openvc_ebsi.models.TRUST_ROLES`),
-    a delegating one above it (:data:`~openvc_ebsi.models.DELEGATING_ROLES`). The values are
-    registry-supplied, so each is shown through ``safe_repr`` and at most three are shown. The
-    leading words of the messages that take the clause are unchanged (#358)."""
-    rule = TRUST_ROLES if leaf else DELEGATING_ROLES
-    skipped: list[str] = []                      # first-seen order, for a stable message
-    seen: set[str] = set()                       # and a set beside it: v4 attributes are uncapped
+    1. the role (#358): ``issuerType`` must be a live role, and above the leaf a delegating
+       one;
+    2. the kind (#368): ``vc.type`` must name ``VerifiableAccreditationToAttest`` at the leaf,
+       ``VerifiableAccreditationToAccredit`` above it;
+    3. the scope (#368): ``accreditedFor`` must list at least one type. An accreditation
+       authorises only what it lists; there is no unrestricted one.
+
+    The text is bounded (``safe_repr`` / ``bounded_text`` on registry-supplied values)."""
+    if not acc.has_trust_role:
+        return (f"issuerType {_short_role(acc.issuer_type)} is not a live trust role "
+                f"(RootTAO, TAO or TI)")
+    if not leaf and not acc.can_accredit:
+        return (f"issuerType {_short_role(acc.issuer_type)} is not a role that may accredit "
+                f"(RootTAO or TAO)")
+    wanted = ACCREDITATION_TO_ATTEST if leaf else ACCREDITATION_TO_ACCREDIT
+    if wanted not in acc.accreditation_types:
+        return f"vc.type {bounded_text(list(acc.accreditation_types))} does not name {wanted}"
+    if not acc.credential_types:
+        return "accreditedFor names no type (an accreditation authorises only what it lists)"
+    return None
+
+
+def ineligible_note(record: IssuerRecord, *, leaf: bool) -> str:
+    """The reasons :func:`accreditation_ineligibility` set accreditations of *record* aside,
+    as a bounded clause for a "has no valid accreditation" message; ``""`` when it set none
+    aside. Distinct reasons in first-seen order, at most three shown, the rest counted. The
+    leading words of the messages that take the clause are unchanged (#358, #368)."""
+    reasons: list[str] = []
+    seen: set[str] = set()                       # a set beside the list: v4 attributes are uncapped
     for acc in record.accreditations:
-        if acc.issuer_type not in rule and acc.issuer_type not in seen:
-            seen.add(acc.issuer_type)
-            skipped.append(acc.issuer_type)
-    if not skipped:
+        why = accreditation_ineligibility(acc, leaf=leaf)
+        if why is not None and why not in seen:
+            seen.add(why)
+            reasons.append(why)
+    if not reasons:
         return ""
-    shown = ", ".join(_short_role(role) for role in skipped[:3])
-    if len(skipped) > 3:
-        shown += f" and {len(skipped) - 3} more"
-    wanted = ("a live trust role (RootTAO, TAO or TI)" if leaf
-              else "a role that may accredit (RootTAO or TAO)")
-    return f"; set aside: issuerType {shown} is not {wanted}"
+    shown = "; ".join(reasons[:3])
+    if len(reasons) > 3:
+        shown += f" and {len(reasons) - 3} more"
+    return f"; set aside: {shown}"
 
 
 def _check_subject_binding(verified: VerifiedCredential, *, subject: str) -> None:
@@ -297,7 +323,7 @@ def verify_trust_chain(
                 f"{current!r} has no valid accreditation for "
                 + ("the credential's types" if is_leaf
                    else f"the delegated types {bounded_text(sorted(needed))}")
-                + ineligible_roles_note(record, leaf=is_leaf))
+                + ineligible_note(record, leaf=is_leaf))
 
         accreditor = acc.tao
         if not accreditor:
@@ -322,10 +348,9 @@ def verify_trust_chain(
                     f"the accreditation for {current!r} is revoked via its status list")
 
         if is_leaf:                                  # fix the delegated scope
-            # a wildcard leaf (no type restriction) delegates the credential's types;
-            # otherwise the scope is what the leaf accreditation and the credential share
-            scope = (set(credential_types) if not acc.credential_types
-                     else set(acc.credential_types) & set(credential_types))
+            # what the leaf accreditation and the credential share (never empty: the pick
+            # required an intersection, and there is no unrestricted accreditation, #368)
+            scope = set(acc.credential_types) & set(credential_types)
         hops.append(TrustHop(subject=current, accreditor=accreditor, accreditation=acc))
 
         if accreditor in anchors:                    # reached the trust root

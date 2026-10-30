@@ -18,7 +18,8 @@ The readings pinned here:
   decision of 2026-10-20, the rule #337 applies to scalars): the good entries beside it are not
   returned. Here the bad entry is placed SECOND so a loop that returned early would show;
 * inside the token, ``vc`` and ``credentialSubject`` ABSENT still read as "no types" (what v4
-  always did); SENT, they must be objects, and ``null`` is not one. The v5 walk skips such a
+  always did; since #368 "no types" authorises nothing, so the reading no longer widens
+  anything); SENT, they must be objects, and ``null`` is not one. The v5 walk skips such a
   value instead (an accreditation with no type restriction); v4 rejects it, because a skip
   here would turn a crash into the widest accreditation there is. That the v5 walk skips is
   NOT touched by this change;
@@ -150,12 +151,19 @@ def _resolve(raw: Any, decode: Any = None) -> tuple[StubFetch, CountingDecode, I
     return fetch, counted, resolver.issuer_record(DID)
 
 
+def _kinds(body: str) -> tuple[str, ...]:
+    """The recorded token's ``vc.type`` (the kind the model carries since #368)."""
+    from openvc.proof.vc_jwt import VcJwtProofSuite
+    return tuple(VcJwtProofSuite().peek_claims(body)["vc"]["type"])
+
+
 def _expected() -> IssuerRecord:
     """The record the RECORDED wire values spell, written from the fixture: the attribute's
     ``hash`` is the id on v4 (there is no listing), the types are the recorded tokens'."""
     accs = tuple(
         Accreditation(attribute_id=a["hash"], issuer_type=a["issuerType"], tao=a["tao"],
-                      root_tao=a["rootTao"], credential_types=types, credential_jwt=a["body"])
+                      root_tao=a["rootTao"], credential_types=types, credential_jwt=a["body"],
+                      accreditation_types=_kinds(a["body"]))
         for a, types in zip(ATTRIBUTES, RECORDED_TYPES, strict=True))
     return IssuerRecord(did=DID, has_attributes=True, accreditations=accs)
 
