@@ -295,16 +295,18 @@ def verify_trust_chain(
     own status list, when *resolve_status_list* is given).
     """
     wanted = specific_types(credential_types)
-    if subject_did in anchors:                       # the leaf is itself an anchor
-        return TrustChain(subject=subject_did, anchor=subject_did, hops=(), scope=wanted)
     if not wanted:
         # the generic base types say nothing about what an issuer may issue, so a credential
         # that carries only them has nothing to be accredited for (#367): refused before any
-        # request, as single-level trust refuses it
+        # request, as single-level trust refuses it, and before the anchor shortcut below (the
+        # review of PR #373: an anchor-issued generic-only credential was trusted with an empty
+        # scope)
         raise NoTrustedAnchor(
             f"the credential's types {bounded_text(list(credential_types))} name no specific "
             f"type (VerifiableCredential, VerifiableAttestation and VerifiableAccreditation are "
             f"generic): nothing to be accredited for")
+    if subject_did in anchors:                       # the leaf is itself an anchor
+        return TrustChain(subject=subject_did, anchor=subject_did, hops=(), scope=wanted)
 
     hops: list[TrustHop] = []
     current = subject_did

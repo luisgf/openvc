@@ -41,9 +41,19 @@ All notable changes to **openvc** are documented here. The format follows
   trusted: its specific type is not what the issuer's `accreditedFor` lists, and the generic
   types the two shared no longer count. The recorded fixtures verify as before (their tests ask for
   `VerifiableAuthorisationForTrustChain`, the one specific type the recorded `accreditedFor`
-  lists). Tests: `tests/test_ebsi_trust_specific_types.py` (every lane, both policies, the
-  two-hop scope, mixed records, the generic-only credential and accreditation, bounded
-  messages; the negatives are TRUSTED on `main` and refused here).
+  lists). One relaxation is intended: above the leaf an accreditor no longer has to list the
+  generic types (an accreditor whose `accreditedFor` is `["MyBadge"]`, over a leaf accredited
+  for `[VC, VA, MyBadge]`, was refused and is trusted now, because the delegated scope is the
+  specific types). The adversarial review of the PR (a 6 × 20 000-record differential of the two
+  policies against an oracle written from the rule, 2- and 3-hop chains, generic-name variants,
+  bounds; no wrong-accept beyond that relaxation) added one fix: the leaf-is-anchor shortcut
+  returned before the "no specific type" refusal, so a generic-only credential issued by a
+  pinned anchor was trusted with an empty scope (as on `main`); the refusal runs first now.
+  Tests: `tests/test_ebsi_trust_specific_types.py` (every lane, both policies, the two-hop
+  scope, mixed records, the generic-only credential and accreditation, the anchor shortcut,
+  bounded messages; the headline, generic-only and one-of-two-types negatives are TRUSTED on
+  `main` and refused here, the `[]` credential and three two-hop cases were refused on `main`
+  already).
 - **An accreditation authorises only the types its `accreditedFor` lists, and its `vc.type`
   must be the accreditation kind of the hop; the unrestricted accreditation is gone**
   ([#368](https://github.com/luisgf/openvc/issues/368)). **Wrong-accept, same-DID case, every

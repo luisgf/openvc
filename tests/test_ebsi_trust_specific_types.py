@@ -13,6 +13,18 @@ P-256 signatures on v4, v5 and Core v1, single-level and recursive: a credential
 ``[MyBadge, Extra]`` was trusted against ``[MyBadge]``; and a two-hop chain whose leaf
 accreditation listed only generic types closed through an accreditor scoped to another type.
 
+Which negatives were already refused on ``main`` (the review of PR #373 ran each one there):
+the credential with no type at all (``[]``), the two-hop chains whose LEAF accreditation lists
+the specific type (an accreditor over generics only or over another type: main's superset rule
+above the leaf already refused them), a ``[MyBadge, Extra]`` credential through an accreditor
+that delegates ``MyBadge`` alone, and the ``["Unknown"]`` unit row. Every other negative was
+TRUSTED on ``main`` in every lane and policy.
+
+One relaxation is intended: above the leaf an accreditor no longer has to list the generic
+types (``main`` compared whole lists there, so an accreditor listing ``["MyBadge"]`` over a leaf
+``[VC, VA, MyBadge]`` was refused; it is trusted now, because the delegated scope is the
+specific types).
+
 Now the generic base types (``models.GENERIC_TYPES``: ``VerifiableCredential``,
 ``VerifiableAttestation``, ``VerifiableAccreditation``) are ignored on both sides and **every**
 specific type of the credential must be listed by the leaf accreditation (a superset, the same
@@ -250,8 +262,9 @@ def test_headline_a_shared_generic_type_is_not_an_accreditation_for_the_credenti
 @pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
 def test_a_credential_with_no_specific_type_has_nothing_to_be_accredited_for(
         lane: Lane, types: list[str]) -> None:
-    # TRUSTED on main against ANY accreditation (the generics intersected); nothing specific to
-    # match means nothing to trust: refused before any registry request on the walk
+    # TRUSTED on main against any accreditation that shared a generic type (`[]` excepted: it
+    # shared nothing, so main refused it too); nothing specific to match means nothing to
+    # trust: refused before any registry request on the walk
     resolver = one_hop(lane, [VC, VA, "OtherType"])
     with pytest.raises(NoTrustedAnchor, match="no specific type") as info:
         chain(resolver, types)
@@ -260,6 +273,29 @@ def test_a_credential_with_no_specific_type_has_nothing_to_be_accredited_for(
     if types:                                     # a badge needs a type list the suite signs
         with pytest.raises(IssuerNotTrusted, match="no specific type"):
             verify_ebsi_badge(badge(types), resolver=resolver, proof_suite=SUITE)
+
+
+@pytest.mark.parametrize("types", [
+    pytest.param([VC, VA], id="generic-only"),
+    pytest.param([VC, VA, VACC], id="with-VerifiableAccreditation"),
+    pytest.param([], id="no-type"),
+])
+def test_an_anchor_issued_credential_with_no_specific_type_is_refused_too(types: list[str]) -> None:
+    # the review of PR #373: the leaf-is-anchor shortcut returned before the "no specific type"
+    # refusal, so a generic-only credential whose issuer is a pinned anchor was trusted with an
+    # empty scope (on `main` as well); the refusal now runs first, before any request
+    resolver = registry(V5, {})                       # no record at all: nothing may be read
+    with pytest.raises(NoTrustedAnchor, match="no specific type"):
+        verify_trust_chain(LEAF, types, resolver=resolver, proof_suite=SUITE, anchors={LEAF})
+
+
+def test_the_anchor_shortcut_scope_is_the_specific_types() -> None:
+    # the shortcut reads no record and returns at once; its scope is what the credential needs,
+    # never the generic base types (a mutant returning the whole type list survived the suite)
+    c = verify_trust_chain(LEAF, [VC, VA, "MyBadge", "Extra"], resolver=registry(V5, {}),
+                           proof_suite=SUITE, anchors={LEAF})
+    assert c.anchor == LEAF and c.hops == ()
+    assert c.scope == frozenset({"MyBadge", "Extra"})
 
 
 @pytest.mark.parametrize("lane", ALL_LANES, ids=_lane_id)
