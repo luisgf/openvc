@@ -404,7 +404,7 @@ def test_the_state_id_must_still_equal_the_requested_did():
     # unchanged: a log served for another DID, or whose state names another DID, is refused
     did, log = Controller().log(_bare)
     with pytest.raises(DidWebvhError, match="!="):
-        _resolve("did:webvh:QmOther:" + HOST, log)
+        _resolve("did:webvh:QmAnother:" + HOST, log)
     other, other_log = Controller().log(lambda d, jwk: {**_bare(d, jwk), "id": OTHER})
     with pytest.raises(DidWebvhError, match="!="):
         _resolve(other, other_log)

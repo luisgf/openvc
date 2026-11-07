@@ -4,6 +4,29 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.38.1] — unreleased
+
+### Security
+
+- **did:webvh: the SCID of the requested DID is now bound to the log's genesis SCID and to
+  every `state.id`, and must be a well-formed base58btc segment, as did:webvh v1.0 requires**
+  ([#376](https://github.com/luisgf/openvc/issues/376)). The resolver replayed a `did.jsonl`
+  log against the log's own SCID — the genesis hash, the entryHash chain, the proofs and the
+  pre-rotation commitments — and compared the final `state.id` with the requested DID, but
+  never compared the SCID segment of the requested DID with `parameters.scid` of the first
+  entry, the comparison "Reading did:webvh DID URLs" makes a MUST; the segment was not
+  shape-checked either. `_WebvhReplay._replay` (shared by the sync and the async resolver) now
+  requires `parameters.scid` of the genesis entry to equal the requested DID's SCID (a
+  `DidWebvhError` naming both, cut by `safe_repr`), computes the placeholder substitution and
+  the genesis hash with the DID's SCID, requires the SCID segment of every entry's `state.id`
+  to be that SCID, and keeps the final `state.id == did` comparison; `_did_webvh_url` refuses,
+  before any fetch, a SCID segment that is empty, not base58btc or longer than 128 characters;
+  the final `state.id` and deactivation refusals cut the echoed id and DID by `safe_repr` too.
+  Through the pipeline the refusal is `KeyResolutionFailed` on the JOSE lanes and
+  `KeyResolutionError` on the Data Integrity lanes. The didwebvh-rs golden vectors are
+  unchanged. Found by the internal security review of 2026-11-07
+  (`test_did_webvh_scid_binding.py`).
+
 ## [1.38.0] — 2026-11-07
 
 ### Security

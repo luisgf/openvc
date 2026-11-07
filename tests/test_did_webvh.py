@@ -59,11 +59,11 @@ def test_scid_replace_is_depth_bounded():
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("did,url", [
-    ("did:webvh:QmSCID:example.com",
+    ("did:webvh:QmScid:example.com",
      "https://example.com/.well-known/did.jsonl"),
-    ("did:webvh:QmSCID:example.com:issuers:1",
+    ("did:webvh:QmScid:example.com:issuers:1",
      "https://example.com/issuers/1/did.jsonl"),
-    ("did:webvh:QmSCID:example.com%3A3000:dids",
+    ("did:webvh:QmScid:example.com%3A3000:dids",
      "https://example.com:3000/dids/did.jsonl"),
 ])
 def test_did_to_url(did, url):

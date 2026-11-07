@@ -50,7 +50,11 @@ vm = doc.key_by_kid("did:web:issuer.example#key-1")
 Method) is `did:web` plus a self-certifying, hash-chained **version log**. Instead of a
 single `did.json`, the controller publishes a `did.jsonl` whose every entry is bound to
 the one before it, so resolving means **verifying history** — openvc replays the log
-fail-closed: the **SCID** (the identifier is the hash of the genesis entry), the
+fail-closed: the **SCID** (the identifier is the hash of the genesis entry, and the SCID
+segment of the DID you ask for — a well-formed base58btc string, checked before any fetch —
+must equal the log's genesis `parameters.scid` and the SCID segment of every entry's
+`state.id`, so a log is only ever returned for the DID it commits to, never for another DID
+of the same host), the
 **entryHash chain** (an inserted / reordered / tampered entry breaks it), each entry's
 **`eddsa-jcs-2022` proof** by an authorized `updateKey`, and **key pre-rotation** (a
 rotated-in key must have been pre-committed). A deactivated log fails closed. The resolved
@@ -68,7 +72,7 @@ directly:
 from openvc.fetch import default_did_webvh_resolver
 
 resolver = default_did_webvh_resolver()    # fetches + replays did.jsonl, SSRF-guarded
-doc = resolver.resolve("did:webvh:QmSCID…:issuer.example")
+doc = resolver.resolve("did:webvh:Qmdxt11AjZewCNXX69bpEDobgjySeZ7eFwjf4tgpF6p2Dg:issuer.example")
 ```
 
 Verify-side only: openvc resolves and validates a log; creating, rotating or witnessing

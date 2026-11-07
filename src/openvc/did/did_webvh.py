@@ -13,7 +13,12 @@ For each log entry (one JSON object per line) this checks, fail-closed:
 
 * **SCID** (first entry) — the identifier is the ``base58btc(multihash-sha256(JCS(...)))``
   of the genesis entry with the SCID placeholdered out; a forged genesis cannot keep
-  the same SCID.
+  the same SCID. The SCID is the one in the **requested** DID (a well-formed base58btc
+  segment, checked before any fetch): it must equal ``parameters.scid`` of the genesis
+  entry, the placeholder substitution and the hash are computed with it, and it must be
+  the SCID segment of every entry's ``state.id`` — so a log answers only for the DID it
+  commits to, never for another DID of the same host (v1.0, "Reading did:webvh DID
+  URLs"; #376).
 * **entryHash chain** — each ``versionId`` is ``{n}-{entryHash}`` where the hash is
   computed over the entry with its predecessor's ``versionId`` substituted in; the
   version numbers must increment by one, so an inserted/removed/reordered entry breaks
@@ -46,7 +51,9 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from .. import _json
-from ..multibase import MultibaseError, b58btc_encode, decode_multibase, read_varint
+from ..multibase import (
+    MultibaseError, b58btc_decode, b58btc_encode, decode_multibase, read_varint,
+)
 from ..proof._jcs import JcsError, canonicalize
 from ..proof._verify_common import safe_repr
 from .base import DidDocument, DidResolutionError, parse_did_document
@@ -62,6 +69,9 @@ _MULTIHASH_SHA256_PREFIX = b"\x12\x20"      # multihash: sha2-256 (0x12), 32-byt
 _ED25519_MULTICODEC = 0xED                  # multicodec ed25519-pub varint head
 _EDDSA_JCS = "eddsa-jcs-2022"
 _MAX_LOG_ENTRIES = 1000          # bound a runaway log (the fetch already bounds total bytes)
+_MAX_SCID_LEN = 128              # a SCID is base58btc(multihash): 46 chars for sha2-256. Cap the
+#                                  requested DID's segment so an attacker-sized identifier is
+#                                  refused before any fetch and never echoed in full
 _MAX_SCID_DEPTH = 100            # bound _deep_replace_scid over the attacker-controlled genesis
 #                                  entry (parity with _jcs / cbor / sd_jwt) — fail closed typed
 #                                  before Python's RecursionError
@@ -75,12 +85,45 @@ class DidWebvhError(DidResolutionError):
 # identifier -> URL
 # --------------------------------------------------------------------------- #
 
+def _scid_segment(did: str) -> str:
+    """The SCID segment of a ``did:webvh`` identifier, unchecked: ``""`` for any other
+    string (so a ``state.id`` that is not a did:webvh never equals a real SCID)."""
+    if not did.startswith("did:webvh:"):
+        return ""
+    return did[len("did:webvh:"):].partition(":")[0]
+
+
+def _scid_of(did: str) -> str:
+    """The SCID segment of the requested ``did:webvh`` identifier, checked to be a
+    well-formed SCID — the value the whole replay is bound to.
+
+    did:webvh v1.0 defines the SCID as ``base58btc(multihash(...))``, so the segment must
+    be a non-empty base58btc string (the alphabet check is :func:`b58btc_decode`'s, the one
+    openvc has); it is capped at ``_MAX_SCID_LEN`` characters so an attacker-sized
+    identifier is refused, typed and cut by :func:`safe_repr`, before any fetch. Anything
+    else — empty, an excluded character (``0``, ``O``, ``I``, ``l``), a separator, a
+    non-ASCII code point, a lone surrogate — is a :class:`DidWebvhError`."""
+    scid = _scid_segment(did)
+    if not scid or len(scid) > _MAX_SCID_LEN:
+        raise DidWebvhError(
+            f"did:webvh {safe_repr(did)}: the SCID segment must be a non-empty base58btc "
+            f"string of at most {_MAX_SCID_LEN} characters")
+    try:
+        b58btc_decode(scid)
+    except MultibaseError as exc:
+        raise DidWebvhError(
+            f"did:webvh {safe_repr(did)}: the SCID segment is not base58btc ({exc})") from exc
+    return scid
+
+
 def _did_webvh_url(did: str) -> str:
     """Map a ``did:webvh`` identifier to its ``did.jsonl`` URL.
 
     The identifier is ``did:webvh:{SCID}:{did:web-style host+path}``; dropping the SCID
     segment leaves exactly a did:web identifier, so the host/path/``%3A``-port mapping is
-    reused — only the file is ``did.jsonl`` (versioned log) instead of ``did.json``."""
+    reused — only the file is ``did.jsonl`` (versioned log) instead of ``did.json``. The
+    SCID segment is checked too (:func:`_scid_of`), so a malformed identifier maps to no
+    URL and is refused before any fetch, on the sync and the async resolver alike."""
     msi = did[len("did:webvh:"):]
     scid, _, rest = msi.partition(":")
     if not scid or not rest:
@@ -91,6 +134,7 @@ def _did_webvh_url(did: str) -> str:
         web_url = _did_web_url("did:web:" + rest)
     except DidResolutionError as exc:
         raise DidWebvhError(f"did:webvh {safe_repr(did)}: {exc}") from exc
+    _scid_of(did)
     return web_url[: -len("did.json")] + "did.jsonl"
 
 
@@ -262,9 +306,15 @@ class _WebvhReplay:
         return did.startswith("did:webvh:")
 
     def _replay(self, did: str, log: str) -> DidDocument:
+        # The SCID of the REQUESTED DID is what the replay is bound to: the genesis entry
+        # must declare it and hash to it, and every state must carry it (v1.0, "Reading
+        # did:webvh DID URLs"). The log's own `parameters.scid` is only compared with it,
+        # never used in its place — a log that is self-consistent under another SCID is not
+        # this DID's log, whatever its `state.id` says (#376). Checked here as well as in
+        # the URL mapping, so a direct caller of the replay gets the same contract.
+        scid_from_did = _scid_of(did)
         entries = self._parse_lines(log)
 
-        scid: str | None = None
         prev_version_id: str | None = None
         prev_time: datetime | None = None
         active_keys: list[str] = []            # updateKeys in force, carried forward
@@ -296,13 +346,17 @@ class _WebvhReplay:
                     raise DidWebvhError(
                         f"unsupported did:webvh method {params.get('method')!r} "
                         "(need did:webvh:1.0)")
-                scid = params.get("scid")
-                if not isinstance(scid, str) or not scid:
+                declared_scid = params.get("scid")
+                if not isinstance(declared_scid, str) or not declared_scid:
                     raise DidWebvhError("genesis entry has no scid")
+                if declared_scid != scid_from_did:
+                    raise DidWebvhError(
+                        "the SCID of the requested DID does not match the log's genesis SCID "
+                        f"({safe_repr(scid_from_did)} != {safe_repr(declared_scid)})")
                 if not isinstance(declared_keys, list) or not declared_keys:
                     raise DidWebvhError("genesis entry has no updateKeys")
                 authorized = declared_keys
-                predecessor = scid
+                predecessor = scid_from_did
             elif next_key_hashes:               # pre-rotation active (set by the previous entry)
                 if not isinstance(declared_keys, list) or not declared_keys:
                     raise DidWebvhError(
@@ -320,12 +374,12 @@ class _WebvhReplay:
                 assert prev_version_id is not None
                 predecessor = prev_version_id
 
-            # -- SCID (genesis) -------------------------------------------- #
+            # -- SCID (genesis): the requested DID's, not the log's -------- #
             if index == 0:
-                assert scid is not None
                 prelim = _deep_replace_scid(
-                    {**_entry_without_proof(entry), "versionId": _SCID_PLACEHOLDER}, scid)
-                if _multihash_b58(_jcs(prelim)) != scid:
+                    {**_entry_without_proof(entry), "versionId": _SCID_PLACEHOLDER},
+                    scid_from_did)
+                if _multihash_b58(_jcs(prelim)) != scid_from_did:
                     raise DidWebvhError("SCID does not match the genesis entry (forged inception)")
 
             # -- entryHash chain ------------------------------------------- #
@@ -370,12 +424,22 @@ class _WebvhReplay:
             new_state = entry.get("state")
             if not isinstance(new_state, dict):
                 raise DidWebvhError(f"entry {number} has no state (DID document)")
+            # Every state carries the requested DID's SCID (the full DID is compared on the
+            # last state below; a portable log may change host, never SCID).
+            state_id = new_state.get("id")
+            if not isinstance(state_id, str) or _scid_segment(state_id) != scid_from_did:
+                raise DidWebvhError(
+                    f"entry {number}: the SCID segment of state.id {safe_repr(state_id)} != "
+                    f"the requested DID's SCID {safe_repr(scid_from_did)}")
             state = new_state
             prev_version_id = entry["versionId"]
             prev_time = vtime
 
         if state.get("id") != did:
-            raise DidWebvhError(f"resolved document id {state.get('id')!r} != requested {did!r}")
+            # Both values through safe_repr: the state is host-controlled and self-signed, so
+            # an attacker-sized id must not become an attacker-sized error.
+            raise DidWebvhError(
+                f"resolved document id {safe_repr(state.get('id'))} != requested {safe_repr(did)}")
         if "didDocument" in state:
             # In did:webvh the log state IS the DID document (v1.0, "The DID Log File"; Read
             # step 6): the spec defines no `didDocument` member in it. parse_did_document
@@ -390,7 +454,7 @@ class _WebvhReplay:
         if deactivated:
             # A deactivated DID resolves, but its keys must not be handed back for
             # verification — fail closed so a caller cannot trust a retired identity.
-            raise DidWebvhError(f"did:webvh {did!r} is deactivated")
+            raise DidWebvhError(f"did:webvh {safe_repr(did)} is deactivated")
         doc = parse_did_document(state)
         if doc.id != did:       # defence in depth, as did:web: the document returned is the one
             raise DidWebvhError(                    # for the DID asked for, whatever the parser
