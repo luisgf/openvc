@@ -142,7 +142,8 @@ then checks that the issuer holds an accreditation whose `issuerType` is a live 
 (exactly `RootTAO`, `TAO` or `TI`; `Revoked`, `undefined`, an absent member or any other
 spelling is set aside, never read as live). Passing `trust_anchors=`
 verifies the full accreditation chain — TI → TAO → RootTAO — recursively instead, with
-per-hop delegation scoping and revocation of the accreditations themselves. This example
+per-hop delegation scoping over the credential's specific types and revocation of the
+accreditations themselves. This example
 is the single-level check:
 
 <!-- docs: no-run -->
@@ -269,6 +270,16 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   case or any other string is set aside before the type rule runs, so it authorises nothing.
   The "has no valid accreditation" messages name the rule that set each accreditation aside,
   bounded. The anchor's own record is not read (the caller pins the anchor).
+- **The type match is made on the specific types, and the leaf must cover every one of them**
+  (#367, 1.38.0): the generic base types `VerifiableCredential`, `VerifiableAttestation` and
+  `VerifiableAccreditation` (`openvc_ebsi.models.GENERIC_TYPES`) say nothing about what an
+  issuer may issue and are ignored on both sides; every specific type of the credential must
+  be listed by the leaf accreditation's `accreditedFor` (until 1.38.0 one shared type was
+  enough, and on real EBSI data the shared type was always a generic one, so an issuer
+  accredited for `OtherType` was accepted for anything). The delegated scope is the
+  credential's specific types, and every accreditor above the leaf must be accredited for all
+  of them. A credential carrying only generic types has nothing to be accredited for and is
+  refused; so is an accreditation listing only generic types.
 - **An accreditation authorises only what it lists, and must be the kind of the hop** (#368,
   1.38.0): there is no unrestricted accreditation. One whose `accreditedFor` lists no type
   (absent, empty, an entry without `types`, a misspelt member) authorises **nothing**, in both

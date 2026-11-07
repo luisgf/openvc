@@ -38,7 +38,7 @@ from openvc.status import (
 
 from ._message import bounded_text, url_repr
 from .errors import EbsiError
-from .models import Accreditation, IssuerRecord
+from .models import Accreditation, IssuerRecord, specific_types
 from .trust import (
     TrustChain,
     TrustChainError,
@@ -91,17 +91,23 @@ def evaluate_issuer_trust(
     Single-level policy, fail-closed: pick the first accreditation that is eligible at the
     leaf (:func:`~openvc_ebsi.trust.accreditation_ineligibility`: a live ``issuerType``, #358;
     a ``vc.type`` naming ``VerifiableAccreditationToAttest`` and an ``accreditedFor`` that
-    lists at least one type, #368) and authorises one of the credential's types. There is no
-    unrestricted accreditation: one that lists no type authorises nothing, and one scoped to
-    other types does not count.
+    lists at least one specific type, #368, #367) and whose specific ``accreditedFor`` types
+    cover **every** specific type of the credential (#367, rule (b); the generic
+    ``VerifiableCredential`` / ``VerifiableAttestation`` / ``VerifiableAccreditation`` are
+    ignored on both sides). A credential with only generic types has nothing to be accredited
+    for: ``None``. There is no unrestricted accreditation, and one scoped to other types does
+    not count. The same rule as the recursive walk's leaf (one function, `_pick_accreditation`
+    agrees by construction).
     """
     if not record.has_attributes:
         return None
-    wanted = set(credential_types)
+    wanted = specific_types(credential_types)
+    if not wanted:
+        return None
     for acc in record.accreditations:
         if accreditation_ineligibility(acc, leaf=True) is not None:
             continue
-        if wanted & set(acc.credential_types):     # authorises a wanted type
+        if wanted <= acc.specific_credential_types:   # every specific type is listed
             return acc
     return None
 
@@ -197,6 +203,10 @@ def verify_ebsi_badge(
             raise IssuerNotTrusted(
                 f"issuer {safe_repr(verified.issuer)} has no valid accreditation for "
                 f"types {bounded_text(cred_types)}"
+                + ("" if specific_types(cred_types) else
+                   "; the credential names no specific type (VerifiableCredential, "
+                   "VerifiableAttestation and VerifiableAccreditation are generic): nothing "
+                   "to be accredited for")
                 + ineligible_note(record, leaf=True))
 
     # 6) revocation — a set revocation bit invalidates the credential outright.
