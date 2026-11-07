@@ -25,8 +25,16 @@ landed through its own pull request. Browse it by milestone:
   [#324](https://github.com/luisgf/openvc/issues/324) (`for_nodes`, the node-based client), [#323](https://github.com/luisgf/openvc/issues/323) (the ES256K opt-in),
   [#325](https://github.com/luisgf/openvc/issues/325) (the environment table) and
   [#326](https://github.com/luisgf/openvc/issues/326) (the weekly smoke); [#316](https://github.com/luisgf/openvc/issues/316) is the node-trust recipe
-  in the wiki. All of them are implemented in 1.37.0. Still open: the production launch itself
-  ([#113](https://github.com/luisgf/openvc/issues/113)) and ADR-0009 questions 2, 5, 6, 7 and 8.
+  in the wiki. All of them are implemented in 1.37.0. The adversarial reviews of that wave
+  filed a hardening batch in the same milestone; 1.38.0 closed its three trust-policy items
+  (the `issuerType` allow-list, [#358](https://github.com/luisgf/openvc/issues/358); no
+  unrestricted accreditation and the accreditation kind per hop,
+  [#368](https://github.com/luisgf/openvc/issues/368); the type match on specific types,
+  [#367](https://github.com/luisgf/openvc/issues/367)), and its review follow-ups are
+  [#374](https://github.com/luisgf/openvc/issues/374) and
+  [#375](https://github.com/luisgf/openvc/issues/375). Still open: the production launch itself
+  ([#113](https://github.com/luisgf/openvc/issues/113)), ADR-0009 questions 2, 5, 6, 7 and 8,
+  and the smaller hardening items (#357, #359–#363, #369).
 - **[Long term — PQ, BBS & 2.0](https://github.com/luisgf/openvc/milestone/8)** —
   the 2027 horizon: the BBS gate re-evaluation, the external security review,
   and the 2.0 breaking-cleanup window keyed to the W3C 2.1/1.1 maintenance

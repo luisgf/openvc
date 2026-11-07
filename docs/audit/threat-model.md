@@ -385,8 +385,12 @@ finite input", with no explicit constant.
   one of the credential's. Historical, from the review of the #352 follow-up: the leaf
   and hop type matching intersected the credential's whole `type` list with
   `accreditedFor.types`, which both begin with `VerifiableCredential` on real EBSI data, so
-  that scope is weaker than it reads (both found by the review of the #352 follow-up PR;
-  recorded as open).
+  that scope was weaker than it read (both found by the review of the #352 follow-up PR;
+  closed in v1.38.0). Open after v1.38.0, found by the review of the #367 PR: a generic type
+  spelt as its IRI or another case, whitespace or width counts as specific when both sides
+  carry it (#374; needs the accreditor to sign it), and the superset check runs over the
+  union of a token's `accreditedFor` entries with `schemaId` and `limitJurisdiction` unread
+  (#375).
   **Residual:** the TIR `attributes` URL and each revision `href` are pinned to the
   listing's origin (#172), not to `.../issuers/{did}/`, and a revision's own `did` is not
   read; both are outside #266 and #267.

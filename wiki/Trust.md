@@ -279,7 +279,11 @@ with EbsiHttpClient(allowed_hosts={node_host}) as http:
   accredited for `OtherType` was accepted for anything). The delegated scope is the
   credential's specific types, and every accreditor above the leaf must be accredited for all
   of them. A credential carrying only generic types has nothing to be accredited for and is
-  refused; so is an accreditation listing only generic types.
+  refused; so is an accreditation listing only generic types. Not read yet: an entry's
+  `schemaId` and `limitJurisdiction` (the types of all of a token's `accreditedFor` entries
+  are matched together, [#375](https://github.com/luisgf/openvc/issues/375)), and a generic
+  type is recognised by its exact name only
+  ([#374](https://github.com/luisgf/openvc/issues/374)).
 - **An accreditation authorises only what it lists, and must be the kind of the hop** (#368,
   1.38.0): there is no unrestricted accreditation. One whose `accreditedFor` lists no type
   (absent, empty, an entry without `types`, a misspelt member) authorises **nothing**, in both
