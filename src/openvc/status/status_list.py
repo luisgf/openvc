@@ -11,6 +11,18 @@ bit. So it stays pure stdlib and reusable by any VC profile (OB 3.0, EBSI, EUDI)
 
 Supports ``BitstringStatusListEntry`` and the older ``StatusList2021Entry`` —
 same field names, same bit encoding.
+
+The resolved list is **bound to the entry that named it** before its bit is read: its
+``type`` and ``credentialSubject.type`` must be the ones of the entry's family
+(``BitstringStatusListCredential`` / ``BitstringStatusList`` for a
+``BitstringStatusListEntry``, the ``StatusList2021`` spellings for a
+``StatusList2021Entry``; Bitstring Status List v1.0 §2.1, §2.2), and its ``id``, when it
+carries one, must equal the entry's ``statusListCredential``. A verified list the issuer
+published at another URL, or any issuer-signed credential whose subject happens to carry
+an ``encodedList``, is refused with :class:`~openvc.status.bitstring.StatusListError`
+whoever serves it. A list with no ``id`` is bound by its issuer (ADR-0006, when the
+binding is on) and its types only; the default resolvers surface a VC-JWT list's ``jti``
+as its ``id`` so the VCDM 1.1 JWT encoding is bound too.
 """
 from __future__ import annotations
 
@@ -19,15 +31,30 @@ from typing import Any, Awaitable, Callable
 
 from ..errors import OpenvcError
 from ..observability import logger, span
+from ..proof._verify_common import own_identifier
 from ._index import brief, status_index
 from .bitstring import decode_bitstring, get_status_bit
 
-# Fetch+verify a status-list credential URL -> the status-list VC as a dict.
+# Fetch+verify a status-list credential URL -> the status-list VC as a dict. A custom
+# resolver MUST return the body :func:`openvc.resolvers.authenticated_status_list` gives for
+# the ``VerificationResult`` of the list, not ``result.credential`` as it is: that helper
+# fills in the authenticated ``issuer`` where the body names no one (#226) and the ``id`` a
+# VC-JWT list carries only in ``jti`` (#377), both on a copy. Without it the issuer binding
+# fails closed and the id binding below is left to the body alone, so a VCDM 1.1 VC-JWT list
+# reaches the check id-less. The blessed resolvers in :mod:`openvc.resolvers` do this.
 ResolveStatusList = Callable[[str], dict]
 # The async counterpart: the same, returning an awaitable.
 AsyncResolveStatusList = Callable[[str], Awaitable[dict]]
 
 _ENTRY_TYPES = frozenset({"BitstringStatusListEntry", "StatusList2021Entry"})
+# The list a status entry may read, by the entry's type: the credential `type` and the
+# `credentialSubject.type` the list must carry (Bitstring Status List v1.0 §2.1 / §2.2; the
+# older StatusList2021 draft for the legacy entry). An entry of one family never reads a
+# list of the other.
+_LIST_TYPES: dict[str, tuple[str, str]] = {
+    "BitstringStatusListEntry": ("BitstringStatusListCredential", "BitstringStatusList"),
+    "StatusList2021Entry": ("StatusList2021Credential", "StatusList2021"),
+}
 PURPOSE_REVOCATION = "revocation"
 PURPOSE_SUSPENSION = "suspension"
 
@@ -127,7 +154,9 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
             # tolerated, a float / bool / signed or non-ASCII string is not
             index=status_index(index, field="statusListIndex", allow_string=True),
             purpose=purpose,
-            entry_type=next(iter(matched)),
+            # deterministic for an entry that carries both recognised types (set order is
+            # per-process): the list it reads is decided by this type
+            entry_type=min(matched),
         ))
     return entries
 
@@ -148,7 +177,48 @@ def _encoded_list(status_vc: dict[str, Any], entry: StatusEntry) -> str:
     encoded = subject.get("encodedList")
     if not isinstance(encoded, str) or not encoded:
         raise StatusListError("status-list credentialSubject has no encodedList string")
+    # The list must be a status list of the entry's family, by both types the REC makes
+    # MUSTs (§2.1 `type`, §2.2 `credentialSubject.type`): an issuer-signed credential of any
+    # other type whose subject carries an `encodedList` is not a status list, however it is
+    # served. A `type` that is neither a string nor an array names no type.
+    list_type, subject_type = _LIST_TYPES[entry.entry_type]
+    if list_type not in _type_names(status_vc.get("type")):
+        raise StatusListError(
+            f"status-list credential for a {entry.entry_type} needs type {list_type}, "
+            f"got {brief(status_vc.get('type'))}")
+    if subject_type not in _type_names(subject.get("type")):
+        raise StatusListError(
+            f"status-list credentialSubject for a {entry.entry_type} needs type "
+            f"{subject_type}, got {brief(subject.get('type'))}")
+    # The list must be the one the entry named: its `id` is the URL the entry pointed at.
+    # The issuer binding (ADR-0006) proves who signed the list, not which list it is, so
+    # another list of the same issuer served at this URL cleared a revocation. A list with
+    # no `id` is the documented residual (bound by issuer and types only); a present `id`
+    # that is not a string is malformed, never "no id". Compared as strings, unnormalised.
+    # Either JSON-LD spelling names the list (`id` or `@id`; both and different is malformed).
+    present, list_id = own_identifier(status_vc, error=StatusListError)
+    if present:
+        if not isinstance(list_id, str):
+            raise StatusListError(
+                f"status-list credential id must be a string, got {brief(list_id)}")
+        if list_id != entry.status_list_credential:
+            raise StatusListError(
+                f"status-list credential id {brief(list_id)} is not the entry's "
+                f"statusListCredential {brief(entry.status_list_credential)}")
     return encoded
+
+
+def _type_names(raw: Any) -> set[str]:
+    """The type names a ``type`` value carries: the string itself, or the string members
+    of an array (a member that is no string names nothing, as in
+    :func:`parse_status_entries`). Any other shape — absent, ``null``, a number, an
+    object — names no type at all, so the list is refused by the membership test rather
+    than crashing it or passing as untyped."""
+    if isinstance(raw, str):
+        return {raw}
+    if isinstance(raw, (list, tuple)):
+        return {t for t in raw if isinstance(t, str)}
+    return set()
 
 
 def _read_status_bit(status_vc: dict[str, Any], entry: StatusEntry) -> StatusEntryResult:
@@ -173,7 +243,11 @@ def check_credential_status(
 ) -> StatusResult:
     """Resolve each status-list credential the credential references and read its
     bit. Returns a :class:`StatusResult`; never raises on a *set* bit (that is a
-    verifier policy decision) — only on malformed data or a resolve failure."""
+    verifier policy decision) — only on malformed data, a resolve failure, or a resolved
+    list that is not the one the entry named (its types are not the entry family's, or
+    its ``id`` is not the entry's ``statusListCredential``). *resolve_status_list* must
+    return the body :func:`openvc.resolvers.authenticated_status_list` gives (see
+    :data:`ResolveStatusList`)."""
     with span("openvc.status"):
         results = [_read_status_bit(resolve_status_list(e.status_list_credential), e)
                    for e in parse_status_entries(credential)]

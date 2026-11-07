@@ -128,6 +128,7 @@ def dc_sd_jwt_list(key, did, issuer=ABSENT, *, url=URL, revoked=True):
     """An IETF SD-JWT VC list (`vct` is required): its `issuer` claim is nobody's but the
     signer's own vocabulary, and is not reconciled with `iss`."""
     body = {"iss": did, "vct": "urn:example:status-list",
+            "type": ["VerifiableCredential", "BitstringStatusListCredential"],
             "credentialSubject": _subject(url, revoked=revoked)}
     if issuer is not ABSENT:
         body["issuer"] = issuer
@@ -461,7 +462,7 @@ def test_a_deeply_nested_id_less_issuer_is_filled_without_recursing_into_it():
 
 def _issuerless_body(issuer=ABSENT):
     body = {"type": ["VerifiableCredential", "BitstringStatusListCredential"],
-            "credentialSubject": {"statusPurpose": "revocation",
+            "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                                   "encodedList": _subject()["encodedList"]}}
     if issuer is not ABSENT:
         body["issuer"] = issuer

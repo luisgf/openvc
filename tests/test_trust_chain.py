@@ -45,7 +45,8 @@ def _acc_status_vc(*set_indices: int) -> dict:
     bits = bytearray(32)
     for i in set_indices:
         set_status_bit(bits, i, 1)
-    return {"credentialSubject": {"statusPurpose": "revocation",
+    return {"type": ["VerifiableCredential", "BitstringStatusListCredential"],
+            "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                                   "encodedList": encode_bitstring(bytes(bits))}}
 
 

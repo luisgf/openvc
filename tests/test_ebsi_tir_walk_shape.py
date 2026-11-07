@@ -876,7 +876,8 @@ def _status_list(*set_bits: int) -> dict[str, Any]:
     bits = bytearray(32)
     for index in set_bits:
         bits[index // 8] |= 1 << (7 - index % 8)
-    return {"credentialSubject": {"statusPurpose": "revocation",
+    return {"type": ["VerifiableCredential", "BitstringStatusListCredential"],
+            "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                                   "encodedList": encode_bitstring(bytes(bits))}}
 
 

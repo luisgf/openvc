@@ -589,24 +589,32 @@ _NESTED_STATUS = {
 }
 
 
-def _status_lists():
-    """List 1 has no bit set; list 2 has STATUS_2's bit (7) set — STATUS_2 is revoked."""
+def _status_lists(*, legacy_list_2=False):
+    """List 1 has no bit set; list 2 has STATUS_2's bit (7) set — STATUS_2 is revoked.
+    With *legacy_list_2*, list 2 carries the ``StatusList2021`` type spellings: the status
+    check binds a list to the family of the entry that named it (#377), and the tests
+    that point a ``StatusList2021Entry`` at list 2 need a list of that family."""
     from openvc.status.bitstring import new_bitstring, set_status_bit
     from openvc.status.issue import build_status_list_credential
 
     clear, revoked = new_bitstring(131072), new_bitstring(131072)
     set_status_bit(revoked, int(STATUS_2["statusListIndex"]), 1)
+    list_2 = build_status_list_credential(
+        id=STATUS_2["statusListCredential"], issuer=DID, bitstring=revoked)
+    if legacy_list_2:
+        list_2["type"] = ["VerifiableCredential", "StatusList2021Credential"]
+        list_2["credentialSubject"]["type"] = "StatusList2021"
     return {
         STATUS["statusListCredential"]: build_status_list_credential(
             id=STATUS["statusListCredential"], issuer=DID, bitstring=clear),
-        STATUS_2["statusListCredential"]: build_status_list_credential(
-            id=STATUS_2["statusListCredential"], issuer=DID, bitstring=revoked),
+        STATUS_2["statusListCredential"]: list_2,
     }
 
 
-def _status_outcomes(secured, registry, *, require_status=True, extra_contexts=None):
+def _status_outcomes(secured, registry, *, require_status=True, extra_contexts=None,
+                     legacy_list_2=False):
     """Like :func:`_outcomes`, with a status-list resolver on both pipelines."""
-    lists = _status_lists()
+    lists = _status_lists(legacy_list_2=legacy_list_2)
     policy = VerificationPolicy(require_status=require_status)
     seen = []
 
@@ -1458,12 +1466,14 @@ def test_injected_status_context_swapped_for_vocab_is_rejected(suite_id, status,
         signing_key=key, verification_method=VM, extra_contexts=extra)
     registry = _registry(key.public_jwk())
     assert _status_outcomes(secured, registry, require_status=require_status,
-                            extra_contexts=extra) == [CredentialRevoked] * 2    # control
+                            extra_contexts=extra, legacy_list_2=True) == [
+        CredentialRevoked] * 2                                                 # control
 
     attacked = _vocab_respelled(secured, [V2], "https://w3id.org/vc/", "status-list#",
                                 "StatusList2021Entry")
     assert _status_outcomes(attacked, registry, require_status=require_status,
-                            extra_contexts=extra) == [ProofMalformed, ProofMalformed]
+                            extra_contexts=extra, legacy_list_2=True) == [
+        ProofMalformed, ProofMalformed]
 
 
 _V1 = "https://www.w3.org/2018/credentials/v1"
@@ -1541,12 +1551,12 @@ def test_ecdsa_sd_injected_status_context_swapped_for_vocab_is_rejected():
     derived = suite.derive_proof(base, selective_pointers=["/credentialSubject/name"],
                                  extra_contexts=extra)
     registry = _registry(key.public_jwk())
-    assert _status_outcomes(derived, registry, extra_contexts=extra) == [
-        CredentialRevoked] * 2                                                 # control
+    assert _status_outcomes(derived, registry, extra_contexts=extra,
+                            legacy_list_2=True) == [CredentialRevoked] * 2     # control
     attacked = _vocab_respelled(derived, [V2], "https://w3id.org/vc/", "status-list#",
                                 "StatusList2021Entry")
-    assert _status_outcomes(attacked, registry, extra_contexts=extra) == [
-        ProofMalformed, ProofMalformed]
+    assert _status_outcomes(attacked, registry, extra_contexts=extra,
+                            legacy_list_2=True) == [ProofMalformed, ProofMalformed]
 
 
 _ALUMNI_URL = "https://context.example/alumni/v1"
@@ -1761,7 +1771,8 @@ def test_status_entry_of_an_unserved_status_context_is_not_skipped(suite_id,
         signing_key=key, verification_method=VM, extra_contexts=extra)
     registry = _registry(key.public_jwk())
     assert _status_outcomes(secured, registry, require_status=require_status,
-                            extra_contexts=extra) == [CredentialRevoked] * 2   # control
+                            extra_contexts=extra, legacy_list_2=True) == [
+        CredentialRevoked] * 2                                                 # control
 
     # Before the fix: [None, None] when optional; StatusUnavailable when required, only
     # by the "declared but no recognised entry" branch
@@ -1782,8 +1793,8 @@ def test_ecdsa_sd_status_entry_of_an_unserved_status_context_is_not_skipped():
     derived = suite.derive_proof(base, selective_pointers=["/credentialSubject/name"],
                                  extra_contexts=extra)
     registry = _registry(key.public_jwk())
-    assert _status_outcomes(derived, registry, require_status=False,
-                            extra_contexts=extra) == [CredentialRevoked] * 2   # control
+    assert _status_outcomes(derived, registry, require_status=False, extra_contexts=extra,
+                            legacy_list_2=True) == [CredentialRevoked] * 2     # control
     assert _status_outcomes(_sl2021_by_iri(derived), registry, require_status=False) == [
         ProofMalformed, ProofMalformed]
 
@@ -1840,7 +1851,8 @@ def test_vc11_and_status_list_2021_credentials_still_verify(suite_id):
             _vc(**{"@context": [V2, _SL_URL]},
                 credentialStatus=dict(_SL_STATUS_2, statusListIndex=index)),
             signing_key=key, verification_method=VM, extra_contexts=extra)
-        assert _status_outcomes(secured, registry, extra_contexts=extra) == [expected] * 2
+        assert _status_outcomes(secured, registry, extra_contexts=extra,
+                                legacy_list_2=True) == [expected] * 2
 
 
 def test_vc11_context_is_still_not_served_by_default():

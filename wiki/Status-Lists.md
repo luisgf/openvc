@@ -272,7 +272,19 @@ and read `result.status.revoked`; suspension still rejects. See
 ## Hardening you get for free
 
 - **Anti-swap**: a status-list token's `sub` must equal the URI it was fetched
-  from, so a valid list cannot vouch for a different one.
+  from, so a valid list cannot vouch for a different one. A W3C list is bound to the entry
+  that named it the same way: its `type` and `credentialSubject.type` must be the entry
+  family's (`BitstringStatusListCredential` / `BitstringStatusList`, or the
+  `StatusList2021` spellings for a `StatusList2021Entry`) and its `id`, when it carries
+  one, must equal the entry's `statusListCredential` (a list whose `id` is another URL is
+  refused); the default resolvers read a VC-JWT list's `jti` as its `id`, and a list with no
+  `id` at all is bound by its issuer and types only, so publish lists whose `id` is their
+  URL (the builder does). Issuers: a list whose `id` is not the URL it is served at — a
+  `urn:uuid`, say — is refused, so publish each list at an `id` equal to its URL. A
+  status list secured as SD-JWT is never selectively disclosable: `issue()` refuses a
+  disclosable claim or a decoy on one, and `verify()` refuses one that carries an `_sd`
+  digest or a disclosure, since the status host could withhold the disclosure that names
+  the list.
 - **Decompression bomb cap**: lists decompress incrementally with a hard
   output bound, so a tiny malicious payload cannot OOM the verifier
   (fail-closed `StatusListError`).
@@ -314,12 +326,14 @@ and read `result.status.revoked`; suspension still rejects. See
   the credential's own issuer signed is accepted, and one an attacker signed is
   still refused, now by `StatusListIssuerUntrusted` naming the attacker, unless the
   attacker is in `status_issuer_allowlist`. A custom `resolve_status_list` must
-  uphold the same rule: return a list whose `issuer` you have authenticated, for
-  example by comparing it with the `result.issuer` of the `verify_credential` call
-  that checked the list, and fill in that `result.issuer` yourself where the body
-  names no one. The pipeline does not do it for you: an issuer-less body from a
-  custom resolver still fails closed (`StatusListIssuerUntrusted`, "no issuer to
-  bind against"). An issuer object that names the signer only by `@id`
+  uphold the same rule, and the `id` rule with it: return
+  `openvc.resolvers.authenticated_status_list(result)` for the `result` of the
+  `verify_credential` call that checked the list, never `result.credential` as it
+  is. The helper fills in, on a copy, the authenticated `result.issuer` where the
+  body names no one and the `jti` as `id` where a VC-JWT list has none. The
+  pipeline does not do it for you: an issuer-less body from a custom resolver still
+  fails closed (`StatusListIssuerUntrusted`, "no issuer to bind against"), and an
+  id-less one is bound by issuer and types only. An issuer object that names the signer only by `@id`
   (`{"@id": "did:…"}`) is not filled in either: the binding reads `id`, so it is
   refused with the same `StatusListIssuerUntrusted`. Spell it `issuer: "did:…"` or
   `{"id": "did:…"}`.

@@ -41,7 +41,7 @@ def _status_vc(*set_indices: int, purpose: str = "revocation") -> dict:
         set_status_bit(bits, i, 1)
     return {
         "type": ["VerifiableCredential", "BitstringStatusListCredential"],
-        "credentialSubject": {"statusPurpose": purpose,
+        "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": purpose,
                               "encodedList": encode_bitstring(bytes(bits))},
     }
 

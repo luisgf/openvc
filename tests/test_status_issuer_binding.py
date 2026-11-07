@@ -93,7 +93,7 @@ def _status_list_from(issuer_did):
     return lambda uri: {
         "type": ["VerifiableCredential", "BitstringStatusListCredential"],
         "issuer": issuer_did,
-        "credentialSubject": {"statusPurpose": "revocation",
+        "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                               "encodedList": encode_bitstring(bytes(bits))}}
 
 

@@ -71,7 +71,13 @@ from .errors import (
     SignatureInvalid,
     UnsupportedAlgorithm,
 )
-from .vc_jwt import ALLOWED_ALGS, ALLOWED_ALGS_PQ, SigningKey, VcJwtProofSuite
+from .vc_jwt import (
+    ALLOWED_ALGS,
+    ALLOWED_ALGS_PQ,
+    SigningKey,
+    VcJwtProofSuite,
+    _carries_sd_jwt_marker,
+)
 
 DEFAULT_LEEWAY_S = 60
 _HASHES = {"sha-256": hashlib.sha256, "sha-384": hashlib.sha384, "sha-512": hashlib.sha512}
@@ -120,6 +126,15 @@ _OPENVC_NON_DISCLOSABLE = frozenset({"credentialStatus", "@context"})
 # On a W3C VCDM payload only: the validity window the suite enforces (VCDM 1.1 names too).
 # On an IETF SD-JWT VC these names mean nothing and stay disclosable.
 _VCDM_VALIDITY_CLAIMS = frozenset({"validFrom", "validUntil", "issuanceDate", "expirationDate"})
+# A W3C status-list credential (the credential types `openvc.status.status_list._LIST_TYPES`
+# binds on; mirrored here so `proof` does not import `status`, which imports `proof`) is a
+# public document with nothing to disclose selectively: the status host is the "holder"
+# that presents it, so any claim an issuer made disclosable — its `id` or `jti`, which the
+# status check binds the list to — is one the host can withhold, undetected (RFC 9901
+# §9.7). issue() refuses to make any claim of such a payload disclosable or to add decoys;
+# verify() refuses a presentation of one that carries an `_sd` digest anywhere or any
+# disclosure at all (#377).
+_STATUS_LIST_TYPES = frozenset({"BitstringStatusListCredential", "StatusList2021Credential"})
 
 
 class SdJwtError(ProofError):
@@ -258,6 +273,16 @@ def _unpack(node: Any, disclosures: dict[str, list], used: set[str], seen: set[s
                                    top, placed))
         return out
     return node
+
+
+def _names_status_list(type_value: Any) -> bool:
+    """Whether a payload's ``type`` (a string, or an array whose string members are read)
+    names a W3C status-list credential type. Any other shape names nothing."""
+    if isinstance(type_value, str):
+        return type_value in _STATUS_LIST_TYPES
+    if isinstance(type_value, list):
+        return any(isinstance(t, str) and t in _STATUS_LIST_TYPES for t in type_value)
+    return False
 
 
 def _disclosure_refusal(name: Any, *, vcdm: bool) -> str | None:
@@ -560,7 +585,13 @@ class SdJwtVcProofSuite:
         names = list(disclosable)
         # Judge VCDM-ness on the payload as the verifier will parse it: a tuple
         # `@context` is not a list here, but it is a JSON array once signed.
-        vcdm = _declares_vcdm(json.loads(_json_bytes(payload)))
+        parsed = json.loads(_json_bytes(payload))
+        if _names_status_list(parsed.get("type")) and (names or decoys):
+            raise SdJwtError(
+                "a status-list credential must not be selectively disclosable (no "
+                "disclosable claim, no decoy): the status host could withhold the "
+                "disclosure that names the list, undetected (#377)")
+        vcdm = _declares_vcdm(parsed)
         for name in names:                     # refuse before any disclosure is built
             reason = _disclosure_refusal(name, vcdm=vcdm)
             if reason is not None:
@@ -784,6 +815,16 @@ class SdJwtVcProofSuite:
                 raise SdJwtError(
                     f"{what} {name!r} is selectively disclosed ({reason}): the issuer "
                     "made it withholdable, so its absence would go undetected")
+        # A status list is public and bound by its `id` / `jti` (#377): one that was issued
+        # with any disclosure or decoy lets the status host withhold the claim that names it.
+        # Judged on the processed `type` (a withheld `type` is refused by the status check,
+        # which requires it) and on the issuer JWT body as signed, at any depth.
+        if _names_status_list(unpacked.get("type")) and (
+                disclosures or _carries_sd_jwt_marker(claims)):
+            raise SdJwtError(
+                "a status-list credential must not be selectively disclosable: this one "
+                "carries an `_sd` digest or a disclosure, so the status host could withhold "
+                "the claim that names the list, undetected (#377)")
         if typ != _ISSUER_TYP:
             # VC-JOSE-COSE §6.1.3 registers `vc+sd-jwt` for a VCDM payload, and draft-19
             # dropped the transitional acceptance of it for an IETF SD-JWT VC. Read as VCDM

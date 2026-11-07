@@ -69,6 +69,7 @@ from ._verify_common import (
     check_numeric_dates,
     check_validity_window,
     issuer_identifiers,
+    own_identifier,
     leeway_seconds,
     reject_unknown_crit,
     safe_repr,
@@ -651,8 +652,11 @@ class VcJwtProofSuite:
                 f"sub {safe_repr(sub)} != credentialSubject.id {safe_repr(vc_sub)}")
 
         jti = claims.get("jti")
-        if jti and vc.get("id") and jti != vc["id"]:
-            raise ClaimsInvalid(f"jti {safe_repr(jti)} != vc.id {safe_repr(vc['id'])}")
+        # the credential's own id under either JSON-LD spelling (`id` / `@id`; both and
+        # different is malformed), as the status-list binding reads it (#377)
+        _, vc_id = own_identifier(vc, error=ClaimsInvalid)
+        if jti and vc_id and jti != vc_id:
+            raise ClaimsInvalid(f"jti {safe_repr(jti)} != vc.id {safe_repr(vc_id)}")
 
         subject = sub if isinstance(sub, str) else (vc_sub if isinstance(vc_sub, str) else None)
         return iss, subject

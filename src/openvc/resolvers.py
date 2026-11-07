@@ -98,7 +98,9 @@ def default_status_list_resolver(
     pipeline reconciles ``iss`` and ``issuer`` first; ``StatusListError`` on a
     ``dc+sd-jwt`` list, where it does not), and one whose body names no one (the issuer is
     in the JWT ``iss`` only) gets the verified signer filled in, on a copy, so
-    ``require_status_issuer_binding`` can bind it (ADR-0006, #226)."""
+    ``require_status_issuer_binding`` can bind it (ADR-0006, #226). A body that names no
+    ``id`` gets the JWT ``jti`` filled in the same way, so the status check can bind the
+    list to the URL the entry named (#377)."""
     leeway_s = leeway_seconds(leeway_s, error=StatusListError)
 
     def resolve(url: str) -> dict:
@@ -109,7 +111,7 @@ def default_status_list_resolver(
             credential, resolver=resolver, jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             policy=VerificationPolicy(require_status=False, leeway_s=leeway_s),
             extra_contexts=extra_contexts)
-        return _authenticated_list(result)
+        return authenticated_status_list(result)
     return resolve
 
 
@@ -142,11 +144,23 @@ def default_status_list_token_resolver(
     return resolve
 
 
-def _authenticated_list(result: Any) -> dict:
-    """The verified status-list credential, with an ``issuer`` that is the issuer the
-    pipeline authenticated (``result.issuer``). The ADR-0006 binding reads that field
-    from the body, and an IETF SD-JWT's ``issuer`` claim is not reconciled with its
-    ``iss``: a list signed by A that names B must not pass as B's.
+def authenticated_status_list(result: Any) -> dict:
+    """The body a ``resolve_status_list`` must return for a W3C status list it verified
+    with :func:`openvc.verify.verify_credential` (or the async twin): *result* is that
+    call's ``VerificationResult``. **A custom resolver must return this, not
+    ``result.credential``**: it fills in, on a copy, the two identities the status check
+    binds on and the VCDM 1.1 JWT encoding keeps in the envelope — the authenticated
+    ``issuer`` where the body names no one (ADR-0006, #226) and the ``id`` a VC-JWT list
+    carries only in ``jti`` (#377). The blessed resolvers of this module call it.
+
+        def resolve(url):
+            return authenticated_status_list(
+                verify_credential(fetch(url), policy=VerificationPolicy(require_status=False)))
+
+    The ``issuer`` the body names is the issuer the pipeline authenticated
+    (``result.issuer``). The ADR-0006 binding reads that field from the body, and an IETF
+    SD-JWT's ``issuer`` claim is not reconciled with its ``iss``: a list signed by A that
+    names B must not pass as B's.
 
     * A body whose ``issuer`` names someone else is refused (``StatusListError``; a VC-JWT
       or ``vc+sd-jwt`` list never gets here with one, the pipeline having refused the
@@ -159,10 +173,17 @@ def _authenticated_list(result: Any) -> dict:
       credential's issuer, so a list signed by an attacker is still refused, naming the
       attacker (#226).
 
+    The same for the list's ``id``: the status check binds the list to the entry that
+    named it by comparing its ``id`` with the entry's ``statusListCredential`` (#377), and
+    the VCDM 1.1 JWT encoding moves the credential's id to ``jti``, which the VC-JWT lane
+    never copies back into ``vc.id``. A body with no ``id`` gets a string ``jti`` filled in,
+    on a copy; a present ``id`` is left alone (the lane has already refused a ``jti`` that
+    differs from it), and a body with neither stays id-less, bound by issuer and types.
+
     ``result.credential`` is never written to: it is the verified claim set, and an
     SD-JWT result shares it with ``result.claims``."""
     from .proof._verify_common import issuer_identifiers, safe_repr
-    credential: dict = result.credential
+    credential: dict = _identified_list(result.credential, getattr(result, "claims", None))
     signer = result.issuer
     if "issuer" not in credential:
         return {**credential, "issuer": signer} if _is_identity(signer) else credential
@@ -176,6 +197,21 @@ def _authenticated_list(result: Any) -> dict:
     if identifiers or not isinstance(issuer, dict) or not _is_identity(signer):
         return credential
     return {**credential, "issuer": {**issuer, "id": signer}}
+
+
+_authenticated_list = authenticated_status_list        # the name the 1.31.0 / 1.35.0 work used
+
+
+def _identified_list(credential: dict, claims: Any) -> dict:
+    """*credential* with the ``id`` its JWT envelope carries, when the body has none (under
+    either spelling, ``id`` or ``@id``) and the envelope's ``jti`` is a non-empty string —
+    on a copy. The W3C status check compares that ``id`` with the entry's
+    ``statusListCredential``; without it a VCDM 1.1 VC-JWT list would be bound by issuer
+    and types only."""
+    if "id" in credential or "@id" in credential or not isinstance(claims, dict):
+        return credential
+    jti = claims.get("jti")
+    return {**credential, "id": jti} if isinstance(jti, str) and jti else credential
 
 
 def _is_identity(signer: Any) -> bool:
@@ -263,7 +299,8 @@ def default_status_list_resolver_async(
     """Async :func:`default_status_list_resolver` — fetches the status-list credential
     over the SSRF-guarded async fetch and **verifies** it through the async pipeline
     before returning it. *resolver* is an :class:`AsyncDidResolver`. The returned body
-    names its issuer exactly as :func:`default_status_list_resolver`'s does."""
+    names its issuer and its ``id`` exactly as :func:`default_status_list_resolver`'s
+    does."""
     leeway_s = leeway_seconds(leeway_s, error=StatusListError)
 
     async def resolve(url: str) -> dict:
@@ -275,7 +312,7 @@ def default_status_list_resolver_async(
             credential, resolver=resolver, jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             policy=VerificationPolicy(require_status=False, leeway_s=leeway_s),
             extra_contexts=extra_contexts)
-        return _authenticated_list(result)
+        return authenticated_status_list(result)
     return resolve
 
 
@@ -308,6 +345,7 @@ def default_status_list_token_resolver_async(
 
 
 __all__ = [
+    "authenticated_status_list",
     "default_credential_schema_resolver",
     "default_credential_schema_resolver_async",
     "default_status_list_resolver",

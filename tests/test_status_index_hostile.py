@@ -147,7 +147,7 @@ def _ietf_vc_jwt(idx_literal: str | None) -> str:
 
 W3C_LIST = {
     "type": ["VerifiableCredential", "BitstringStatusListCredential"],
-    "credentialSubject": {"statusPurpose": "revocation",
+    "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                           "encodedList": encode_bitstring(bytes(32))},
 }
 IETF_LIST = {"sub": TOKEN_URI,
@@ -455,7 +455,7 @@ def test_revoked_credential_with_a_deep_id_never_aborts_the_batch():
     of a self-issued credential controls both that id and its own list's bit."""
     revoked_list = {
         "type": ["VerifiableCredential", "BitstringStatusListCredential"],
-        "credentialSubject": {"statusPurpose": "revocation",
+        "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                               "encodedList": encode_bitstring(b"\x04" + bytes(31))},
     }                                                     # bit 5 set, bit 3 clear
     bad = _signed_jwt(VC_JWT_HEADER, _vc_jwt_payload(
@@ -474,7 +474,9 @@ def test_revoked_credential_with_a_deep_id_never_aborts_the_batch():
 
 
 def test_revoked_message_does_not_repr_a_container_id():
-    revoked_list = {"credentialSubject": {"encodedList": encode_bitstring(b"\x04" + bytes(31))}}
+    revoked_list = {"type": "BitstringStatusListCredential",
+                    "credentialSubject": {"type": "BitstringStatusList",
+                                          "encodedList": encode_bitstring(b"\x04" + bytes(31))}}
     bad = _signed_jwt(VC_JWT_HEADER, _vc_jwt_payload(
         {"type": "BitstringStatusListEntry", "statusListIndex": "5",
          "statusListCredential": LIST_URL}, vc_id="ID"), {"ID": '{"nested": [1]}'})
@@ -541,7 +543,8 @@ def test_w3c_resolved_list_shapes_fail_typed(resolved):
 def test_corrupt_deflate_list_never_aborts_the_batch():
     """The issuer serves its own list; verify_many fetches each list URL once."""
     corrupt_url = "https://status.example/w3c/corrupt"
-    corrupt = {"credentialSubject": {"statusPurpose": "revocation",
+    corrupt = {"type": ["VerifiableCredential", "BitstringStatusListCredential"],
+               "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                                      "encodedList": _corrupt_deflate_list()}}
     bad = _signed_jwt(VC_JWT_HEADER, _vc_jwt_payload(
         {"type": "BitstringStatusListEntry", "statusPurpose": "revocation",

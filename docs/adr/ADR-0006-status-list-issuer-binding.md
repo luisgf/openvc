@@ -79,6 +79,46 @@ relaxed: the pipeline does not fill anything in, so a custom `resolve_status_lis
 returns an issuer-less body still fails closed and should fill in the issuer it
 authenticated the same way. With the binding off nothing changes.
 
+*Addendum (2026-11, [#377](https://github.com/luisgf/openvc/issues/377)).* The issuer
+binding proves **who signed** a list, not **which list** it is: a second list of the same
+issuer (a shard, or any issuer-signed credential whose subject carries an `encodedList`),
+served at the entry's URL by a compromised or third-party host, passed the binding and was
+read for the entry's bit. The IETF lane had always pinned its token to the fetched URI
+(`sub == uri`); the W3C lane now binds the resolved list to the entry that named it, in
+the status check itself (`openvc.status.status_list._encoded_list`, so every lane, the
+async pipeline and `openvc_ebsi`, with or without this policy flag): its `type` must
+include the credential type of the entry's family (`BitstringStatusListCredential` for a
+`BitstringStatusListEntry`, `StatusList2021Credential` for a `StatusList2021Entry`), its
+`credentialSubject.type` must be that family's (`BitstringStatusList` / `StatusList2021`),
+and its `id` (under either JSON-LD spelling, `id` or `@id`), when it carries one, must
+equal the entry's `statusListCredential` as a string. A VC-JWT list in the VCDM 1.1 JWT
+encoding keeps its id in `jti`, so `openvc.resolvers.authenticated_status_list` — the
+public helper the default resolvers run on the list's `VerificationResult` — surfaces a
+string `jti` as the `id` of an id-less body, on a copy, as it does the issuer. **A custom
+`resolve_status_list` must return what that helper gives**, not `result.credential`: as
+for the issuer, the pipeline fills nothing in, and a resolver that returns the bare body
+hands the check an id-less list (EBSI lists, reachable only through custom resolvers, are
+the common case). **The id rule is strict, by decision (2026-11-07):** a resolved list
+whose `id` is not the URL the entry named is refused. The REC makes the match a MAY
+(§2.2: the list "MAY express an `id` property that matches" `statusListCredential`), but
+when the id is present and differs the verifier cannot say which list it is, so it fails
+closed. An issuer whose lists carry non-URL ids (a `urn:uuid`, as EBSI's base schema
+makes an `id` mandatory and its VCs conventionally carry) must publish each list at an
+`id` equal to its URL to be checkable. A relaxation — an `id` that is not a URL treated as
+absent, or a same-origin match — was considered and left for a maintainer decision if a
+real deployment needs it; the live check of 2026-11-07 (88 accreditation bodies decoded
+from the EBSI pilot TIR, v5) found no `credentialStatus` on any of them, so the rule
+cannot touch the EBSI accreditation path today, and the shape of a live EBSI
+StatusList2021 list stays unconfirmed. **Residual:** a list with no `id` at all (neither
+`vc.id` nor `jti`) is accepted and bound by its issuer and its types only; publish lists
+with an `id` equal to their URL (the builder does) so the binding is complete. On a list secured as SD-JWT that
+residual was reachable by the host, not only by an issuer that set no `id`: a disclosable
+`id` or `jti` is a disclosure the status host — the holder of a public list — can withhold
+undetected (RFC 9901 §9.7). So a status-list credential is never selectively disclosable:
+`SdJwtVcProofSuite.issue()` refuses any disclosable claim and any decoy on a payload typed
+as one, and `verify()` refuses a presentation of one that carries an `_sd` digest or a
+disclosure at all.
+
 Default **off** is deliberate and documented: the binding is a *hardening opt-in*, not a
 silent behaviour change. The `docs/threat-model` / Security-Model note the residual gap
 when it is off.

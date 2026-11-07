@@ -663,7 +663,7 @@ def _badge(types: list[str], *, cred_id: str = "urn:uuid:badge-1", revoked: bool
         set_status_bit(bits, 17, 1)
         resolve = {STATUS_URL: {
             "type": ["VerifiableCredential", "BitstringStatusListCredential"],
-            "credentialSubject": {"statusPurpose": "revocation",
+            "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                                   "encodedList": encode_bitstring(bytes(bits))}}}.__getitem__
     token = suite.sign(credential, signing_key=sk)
     routes = {

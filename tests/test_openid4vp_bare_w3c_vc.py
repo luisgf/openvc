@@ -905,7 +905,7 @@ def _bitstring_list(*revoked):
     for i in revoked:
         set_status_bit(bits, i, 1)
     return {"type": ["VerifiableCredential", "BitstringStatusListCredential"],
-            "credentialSubject": {"statusPurpose": "revocation",
+            "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                                   "encodedList": encode_bitstring(bytes(bits))}}
 
 

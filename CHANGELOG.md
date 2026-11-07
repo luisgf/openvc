@@ -26,6 +26,47 @@ All notable changes to **openvc** are documented here. The format follows
   `KeyResolutionError` on the Data Integrity lanes. The didwebvh-rs golden vectors are
   unchanged. Found by the internal security review of 2026-11-07
   (`test_did_webvh_scid_binding.py`).
+- **W3C status lists: the resolved list is now bound to the entry that named it — by its
+  `id` when it carries one and by its credential and subject types — alongside the issuer
+  binding of ADR-0006** ([#377](https://github.com/luisgf/openvc/issues/377)). After a
+  status list's proof verified, the check read only `credentialSubject.encodedList` (and
+  `statusPurpose` when present): nothing compared the list's `id` with the entry's
+  `statusListCredential`, and neither the list's `type` nor its `credentialSubject.type`
+  was required (Bitstring Status List v1.0 §2.1 and §2.2 make both MUSTs); the IETF Token
+  Status List lane already pins its token to the fetched URI (`sub == uri`). Now
+  `check_credential_status` (and the async twin, every lane and `openvc_ebsi`) refuses, with
+  a typed `StatusListError`, a resolved list whose `type` does not include the credential
+  type of the entry's family (`BitstringStatusListCredential` for a
+  `BitstringStatusListEntry`, `StatusList2021Credential` for a `StatusList2021Entry`) or
+  whose `credentialSubject.type` is not that family's (`BitstringStatusList` /
+  `StatusList2021`), and one whose `id`, when present, is not the string the entry pointed
+  at (compared as strings, no normalisation; a present `id` of another shape is malformed,
+  not absent). **A resolved list whose `id` is not the URL the entry named is now
+  refused**: the REC makes the match a MAY, but when the id is present and differs the
+  verifier cannot say which list it is, so it fails closed; a list without `id` stays bound
+  by issuer and types. The id is read under either JSON-LD spelling, `id` or `@id` (both
+  present and different is malformed), and the VC-JWT lane's `jti` rule now reads `@id`
+  too. A list with no `id` is accepted and stays bound by its issuer (when
+  `require_status_issuer_binding` is on) and its types: the documented residual (ADR-0006
+  addendum, which also says what an issuer whose lists carry non-URL ids must do). A VC-JWT list in the VCDM 1.1
+  JWT encoding carries its id only in `jti`, which the lane never copies into `vc.id`: the
+  new public helper **`openvc.resolvers.authenticated_status_list(result)`** (the function
+  the blessed resolvers, sync and async, run on the `VerificationResult` of a list) now
+  surfaces a string `jti` as the `id` of a body that has none, on a copy, as it fills in the
+  issuer since 1.35.0; a present `id` is left alone. **A custom `resolve_status_list` must
+  return what that helper gives, not `result.credential`**: the pipeline fills nothing in,
+  so a resolver that returns the bare body hands the check an id-less VCDM 1.1 list, bound
+  by issuer and types only (the `ResolveStatusList` contract, the wiki and ADR-0006 say so).
+  A status list secured as SD-JWT (`vc+sd-jwt` or `dc+sd-jwt`) **must not be selectively
+  disclosable at all**: the status host is the holder that presents it and a withheld
+  disclosure is undetectable (RFC 9901 §9.7), so a disclosable `id` or `jti` let the host
+  turn an id-bound list into the id-less residual. `SdJwtVcProofSuite.issue()` now refuses
+  any `disclosable` claim and any `decoys` on a payload whose `type` names a status-list
+  credential (`SdJwtError`, nothing signed), and `verify()` refuses a presentation of one
+  that carries an `_sd` digest at any depth or any disclosure; a plain one verifies as
+  before, and it must carry the W3C `type` and the subject type in its claims like any
+  other list. The existing shape errors are reported first and keep their messages.
+  Threat-model row on swap / replay and the Status Lists wiki page say what is bound now.
 
 ## [1.38.0] — 2026-11-07
 

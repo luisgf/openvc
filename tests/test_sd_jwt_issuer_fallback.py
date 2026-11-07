@@ -1195,7 +1195,7 @@ def _status_list(issuer, *, set_indices=()):
         set_status_bit(bits, index, 1)
     document = {"type": ["VerifiableCredential", "BitstringStatusListCredential"],
                 "issuer": issuer,
-                "credentialSubject": {"statusPurpose": "revocation",
+                "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                                       "encodedList": encode_bitstring(bytes(bits))}}
     asked: list[str] = []
 

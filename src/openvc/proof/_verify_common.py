@@ -140,6 +140,23 @@ _FRACTION = re.compile(r"\.(\d+)")
 # home); imported above and re-exported here (and by the suites) for back-compat.
 
 
+def own_identifier(obj: Any, *, error: type[Exception]) -> tuple[bool, Any]:
+    """``(present, value)`` for an object's own identifier under either JSON-LD spelling,
+    ``id`` or ``@id`` (``id`` aliases ``@id``). Both present and equal read as one; both
+    present and different is malformed and raises *error* (the object names two things).
+    A non-object has no identifier: ``(False, None)``. Shared by the VC-JWT ``jti`` rule
+    and the status-list ``id`` binding, so a list that spells its id ``@id`` is not read as
+    id-less by one and as named by the other (#377)."""
+    if not isinstance(obj, dict):
+        return False, None
+    present = [key for key in ("id", "@id") if key in obj]
+    if not present:
+        return False, None
+    if len(present) == 2 and obj["id"] != obj["@id"]:
+        raise error(f"id {safe_repr(obj['id'])} != @id {safe_repr(obj['@id'])}")
+    return True, obj[present[0]]
+
+
 def issuer_identifiers(issuer: Any) -> list[Any]:
     """Every identifier a credential's ``issuer`` carries: the value itself, or each
     of an object's ``id`` / ``@id`` that is present (``id`` aliases ``@id`` in JSON-LD).

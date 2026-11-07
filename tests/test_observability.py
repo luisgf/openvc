@@ -241,7 +241,7 @@ def test_status_boundary_emits_event(obs):
     records, spans = obs
     bits = bytearray(32)
     status_vc = {"type": ["VerifiableCredential", "BitstringStatusListCredential"],
-                 "credentialSubject": {"statusPurpose": "revocation",
+                 "credentialSubject": {"type": "BitstringStatusList", "statusPurpose": "revocation",
                                        "encodedList": encode_bitstring(bytes(bits))}}
     credential = {"credentialStatus": {
         "type": "BitstringStatusListEntry", "statusPurpose": "revocation",
