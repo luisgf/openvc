@@ -224,6 +224,37 @@ All notable changes to **openvc** are documented here. The format follows
   `epk` readers keep their tolerant decoding (out of scope). Found by the internal security
   review of 2026-11-07 (`test_openid4vci_canonical_jwk.py`).
 
+- **The three RDF Data Integrity suites now canonicalize under a work budget — 20 000 000
+  units of Hash N-Degree Quads work, with a 1 024 blank-node and a 1 000 000 call backstop —
+  and a document over it is refused as `CanonicalizationBudgetExceeded` (a `ProofMalformed`)
+  before any signature check**
+  ([#381](https://github.com/luisgf/openvc/issues/381)). RDFC-1.0 falls back to permutations
+  over blank nodes whose first-degree hashes tie, and pyld's `URDNA2015` has no limit on it,
+  so a `credentialSubject` of mutually linked blank-node objects under an inline `@vocab` was
+  factorial: through `verify_credential` a clique of 8 (73 quads, about 2.5 KB) took 20 s, 9
+  took 240 s and `K5,5` 1.6 s, before key resolution or any signature check, and
+  `verify_many` is sequential, so one item stalled the batch; `ldp_vc` / `ldp_vp` and a Data
+  Integrity status-list credential reach the same canonicalizer. `openvc.proof._rdfc` (a
+  `URDNA2015` subclass) now serves `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and
+  `ecdsa-sd-2023`. The budget counts the steps that cost time, not how often the algorithm is
+  called: one unit per statement a step visits (a clique of 7 whose nodes carry 10 000
+  literals cost 12.6 s under a call-count limit alone), a charge per recursive step, every
+  copy of the identifier issuer where it is made (pyld copies it for each group of related
+  nodes, singletons too: a tied cycle of 100 whose nodes point at one shared node under 200
+  predicates cost 31 s while a permutation count stood at zero), and an upper bound on the
+  permutations of each tied group (pyld permutes a multiset, so two holder-bound credentials
+  of one presentation that share an identical sub-object tie but cost one permutation),
+  counted before they run. The budget is per canonicalization. Measured on one core of a
+  laptop: a clique of 8 is refused after 1.1 s, `K5,5` 0.8 s, a 15 by 15 grid 0.3 s, a clique
+  of 7 with 10 000 literals per node 2.8 s, the shared-target cycle 1.8 to 2.3 s (a loaded
+  shared runner takes several times that); a clique of 6, three disjoint ones, `K4,4`, a tied
+  cycle of 150, an `@list` of 200 identical items, a 255-node ring, a 300-node tree and a
+  three-credential presentation pass, and every RDF fixture (W3C vectors, ecdsa-sd interop,
+  status lists, `ldp_vc` / `ldp_vp`, docs snippets: at most 5 blank nodes and no
+  tie-breaking work) spends nothing. The output of an accepted document is byte-identical to
+  `jsonld.normalize`, the goldens included. Found by the internal security review of
+  2026-11-07 (`test_rdfc_budget.py`).
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
