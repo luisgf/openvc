@@ -240,6 +240,33 @@ already raised a bare `TypeError` (`contexts=5`, a `bytes` issuer) now raise
 [CHANGELOG](https://github.com/luisgf/openvc/blob/main/CHANGELOG.md) entry for 1.33.0
 has the list.
 
+### Multi-bit statuses: `statusSize` and `statusMessage`
+
+A Bitstring entry may carry `statusSize`, the width in bits of each credential's status
+(REC §2.1; absent means 1). The credential's status is then the `statusSize`-bit value
+at position `statusListIndex * statusSize`, read most-significant bit first, and for a
+`revocation` or `suspension` entry any non-zero value means the status applies (REC §3.3).
+openvc supports sizes **1 to 8**; `statusSize` must be an integer in that range (a string,
+float, `bool`, `null`, `0` or `9` is a `StatusListError`). Above 1 the entry must also
+carry `statusMessage` (an array of exactly `2 ** statusSize` `{"status": "0x1", "message": "..."}`
+objects, each `status` a distinct `0x`-prefixed hexadecimal below `2 ** statusSize`), as the REC
+requires;
+a missing or malformed one is a `StatusListError`. A position whose last bit lies past
+the decoded list is a `StatusListError` too, not a read of another credential's bit.
+
+`check_credential_status` exposes the raw value as `StatusEntryResult.status_value` (and
+the parsed width as `StatusEntry.status_size`); the REC reads the meaning of a non-zero
+value from `statusMessage`, which openvc parses and validates but does not interpret.
+The verdict follows the value only for the `revocation` and `suspension` purposes; for any
+other purpose (`message`, `refresh`, an unknown one) a non-zero value is exposed
+(`is_set`, `status_value`) but never fails verification, so read `status_value` yourself.
+`StatusList2021Entry` defines neither `statusSize` nor `statusMessage`: an entry of that type
+carrying either is a `StatusListError`, and it always holds a single bit.
+On the issuing side, size the list with `new_bitstring(n, status_size)`, write a value with
+`set_status_value(bits, index, value, size)` and stamp the credential with
+`build_status_list_entry(..., status_size=2, status_message=[...])` (pass the full
+`2 ** status_size` list).
+
 ## Fail-closed by default in the pipeline
 
 `verify_credential` treats a **declared status it cannot check as a
