@@ -203,14 +203,28 @@ def test_allowed_relabel_still_verifies_and_consumes(world):
     assert len(tl.providers) == 1
 
 
-@pytest.mark.parametrize("enc", ["GB2312", "latin-9"])
-def test_expat_own_failures_are_typed_even_past_the_allow_list(world, enc, monkeypatch):
-    # defence in depth: were a label ever added to the allow-list, expat's bare
-    # ValueError / LookupError would still surface as the typed error
+def _past_allow_list(monkeypatch, enc):
     from openvc.trustlist import parse
     monkeypatch.setattr(parse, "_ALLOWED_ENCODINGS", parse._ALLOWED_ENCODINGS | {enc.upper()})
+
+
+# Defence in depth: were a label ever added to the allow-list, expat's own bare
+# ValueError / LookupError would still surface as the typed error. Both labels below fail
+# in expat on every interpreter (multi-byte; a codec nobody knows).
+@pytest.mark.parametrize("enc", ["GB2312", "x-no-such-codec-9f2a"])
+def test_expat_own_failures_are_typed_even_past_the_allow_list(world, enc, monkeypatch):
+    _past_allow_list(monkeypatch, enc)
     with pytest.raises(TrustListParseError, match="malformed trust list XML"):
         parse_trust_list(_relabel(world["signed"], enc))
+
+
+def test_latin9_past_the_allow_list_parses_or_is_typed(world, monkeypatch):
+    # an alias of ISO-8859-15: older interpreters raise LookupError, 3.15 resolves it
+    _past_allow_list(monkeypatch, "latin-9")
+    try:
+        parse_trust_list(_relabel(world["signed"], "latin-9"))
+    except TrustListParseError:
+        pass
 
 
 @pytest.mark.parametrize("enc", ["hz", "ISO-8859-2", "windows-1252", "UTF-7"])
