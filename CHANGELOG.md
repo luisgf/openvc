@@ -23,6 +23,36 @@ All notable changes to **openvc** are documented here. The format follows
   the refusal stays `KeyResolutionFailed` on the JOSE lanes and `KeyResolutionError` on the
   Data Integrity lanes. Every did:key vector (Ed25519, P-256, P-384) resolves as before.
   Found by the internal security review of 2026-11-07 (`test_did_key_bounded.py`).
+- **`verify_vp_token`'s `require_holder_binding` now reaches the `dc+sd-jwt` lane, which
+  requires a Key Binding JWT under it, and an SD-JWT VC presented with no KB-JWT reports
+  `holder=None`; the `mso_mdoc` lane is exempt by construction**
+  ([#378](https://github.com/luisgf/openvc/issues/378)). The switch is documented as the
+  caller's own, stricter rule — whatever the query says, the presenter must be bound to
+  what they present — but it was read on the W3C lanes only: `_verify_sd_jwt_vc` had no
+  such parameter and reported `holder = sub` unconditionally, and the `mso_mdoc` branch of
+  `_verify_one` returned before the switch was read. So a `dc+sd-jwt` Credential Query
+  that set `require_cryptographic_holder_binding` to `false`, answered with an SD-JWT VC
+  and no KB-JWT, was accepted under `require_holder_binding=True` with `holder` set to the
+  issuer-written `sub` (`key_bound=False`), an identifier nobody had authenticated, where a
+  bare `jwt_vc_json` answer in the same situation was refused. Now, with the switch on,
+  the SD-JWT VC must carry a KB-JWT bound to this exchange (`key_bound=True`), whatever
+  the query's flag says, else `ClaimsInvalid` ("… has no authenticated holder, so it
+  cannot meet require_holder_binding", the bare lane's wording); the check runs after the
+  lane's format, `typ` and `vct_values` pins, so their errors come first as before.
+  **Behaviour change on an accepted input:** a `dc+sd-jwt` presented with no KB-JWT under
+  a query that waived binding, with the switch off, is still accepted but now reports
+  `holder=None` instead of `sub` — the `sub` is the issuer's identifier for the holder,
+  not an authenticated presenter, and stays readable as `credentials[0].subject`; with a
+  KB-JWT verified, `holder` is `sub` as before, except that an empty-string `sub` is no
+  identifier and reports `None` too (it used to report `""`). The `mso_mdoc` lane does not read the
+  switch, by decision: `verify_device_response` verifies the `DeviceAuth` over the
+  origin-bound `SessionTranscript`, signed with the device key the issuer sealed in the
+  MSO, for every document or refuses the response (`MdocDeviceAuthError`), which is
+  cryptographic holder binding by construction (`device_signed=True` on every result);
+  `holder` stays `None` because an mdoc carries no holder identifier. The `verify_vp_token`
+  and `VerifiedPresentation` docstrings and the Presentations wiki page now say what
+  `holder` means on each lane and what the switch enforces where. Found by the internal
+  security review of 2026-11-07 (`test_openid4vp_holder_binding_lanes.py`).
 
 ### Fixed
 
