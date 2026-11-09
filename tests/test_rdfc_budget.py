@@ -184,6 +184,57 @@ def test_poison_graph_refused_typed_and_bounded_through_verify_credential(subjec
     assert calls <= _rdfc.MAX_CANONICALIZATION_WORK // 200
 
 
+def _shared_target_cycle(n: int, predicates: int) -> list:
+    # A tied cycle whose nodes each point at ONE canonical blank node under many predicates:
+    # every one of those related groups is a singleton, and pyld deep-copies the identifier
+    # issuer for each of them (review of #424, round 2).
+    shared = {f"p{k}": {"id": "_:y"} for k in range(predicates)}
+    return ([dict({"id": f"_:c{i}", "link": {"id": f"_:c{(i + 1) % n}"}}, **shared)
+             for i in range(n)] + [{"id": "_:y", "tag": "u"}])
+
+
+@pytest.mark.parametrize("subject", [_shared_target_cycle(100, 200), _shared_target_cycle(50, 500),
+                                     _shared_target_cycle(20, 2000)],
+                         ids=["cycle100xQ200", "cycle50xQ500", "cycle20xQ2000"])
+def test_singleton_groups_are_charged_for_their_issuer_copies(subject, run, tight):
+    # Without charging the copies of singleton groups these cost 13-31 s while the counter
+    # stood at 4 M of 10 M units, and the document was accepted.
+    exc, calls = run(lambda: verify_credential(_wrap(subject)))
+    assert type(exc).__name__ == BUDGET_ERROR, exc
+    assert calls < 150_000 // 200
+
+
+def test_singleton_copies_decide_a_document_the_other_charges_would_accept(run, monkeypatch):
+    # The uncharged total of this document is 4.0 M units (quads, calls), under a 6 M ceiling,
+    # so it is the copies pyld makes of the issuer for its singleton groups that refuse it.
+    from openvc.proof import _rdfc
+    monkeypatch.setattr(_rdfc, "MAX_CANONICALIZATION_WORK", 6_000_000)
+    exc, calls = run(lambda: verify_credential(_wrap(_shared_target_cycle(100, 200))))
+    assert type(exc).__name__ == BUDGET_ERROR, exc
+    assert calls < 3_000      # the uncharged accounting let it run 10 000 calls (31 s)
+
+
+def test_the_issuer_copy_charge_is_per_copy_and_per_entry(monkeypatch):
+    import copy
+
+    from openvc.proof import _rdfc
+    from pyld.identifier_issuer import IdentifierIssuer
+
+    canon = _rdfc.new_canonicalizer()
+    canon.blank_node_info = {"_:x": {"quads": []}}
+    issuer = IdentifierIssuer("_:b")
+    for name in ("_:x", "_:y", "_:z"):
+        issuer.get_id(name)
+    canon.hash_n_degree_quads("_:x", issuer)         # installs the charging issuer
+    before = canon._work
+    twin = copy.deepcopy(issuer)
+    assert canon._work - before == _rdfc._COPY_FIXED_COST + _rdfc._COPY_ENTRY_COST * 3
+    assert twin.existing == issuer.existing and twin.existing is not issuer.existing
+    monkeypatch.setattr(_rdfc, "MAX_CANONICALIZATION_WORK", canon._work + 1)
+    with pytest.raises(_rdfc.CanonicalizationBudgetExceeded):
+        copy.deepcopy(twin)
+
+
 def test_default_budget_refuses_k55_and_a_fat_clique_after_bounded_work(run):
     # The real ceiling, once (about 1-2 s each). The fat clique costs 10 000 calls of 7 000
     # quads each without a work counter (12 s measured); here the work, not the call count,
@@ -199,7 +250,7 @@ def test_clique_8_is_refused_in_the_first_call_when_its_permutations_exceed_the_
         run, monkeypatch):
     from openvc.proof import _rdfc
     # 7! = 5040 distinct permutations of a tied group, each charged for what it costs
-    monkeypatch.setattr(_rdfc, "MAX_CANONICALIZATION_WORK", 500_000)
+    monkeypatch.setattr(_rdfc, "MAX_CANONICALIZATION_WORK", 200_000)
     exc, calls = run(lambda: verify_credential(_wrap(_clique_subject(8))))
     assert type(exc).__name__ == BUDGET_ERROR, exc
     assert calls == 1
@@ -268,7 +319,7 @@ def test_the_tied_cases_below_the_ceiling_still_reach_the_signature_check():
 
 def test_budget_constants_are_importable_and_pinned():
     from openvc.proof import _rdfc
-    assert _rdfc.MAX_CANONICALIZATION_WORK == 10_000_000
+    assert _rdfc.MAX_CANONICALIZATION_WORK == 20_000_000
     assert _rdfc.MAX_BLANK_NODES == 1024
     assert _rdfc.MAX_HNDQ_CALLS == 1_000_000
     assert issubclass(_rdfc.CanonicalizationBudgetExceeded, ProofMalformed)
@@ -344,7 +395,7 @@ def test_two_holder_bound_credentials_sharing_an_anonymous_sub_object_still_veri
             {"@context": CTX, "type": ["VerifiableCredential"], "issuer": idid,
              "validFrom": f"2026-01-0{k + 1}T00:00:00Z",
              "credentialSubject": {"id": hdid, "address": address}},
-            signing_key=isk, verification_method=ivm) for k in range(2)]
+            signing_key=isk, verification_method=ivm) for k in range(3)]
         vp = suite_cls().add_proof(
             {"@context": [VC2], "type": ["VerifiablePresentation"], "holder": hdid,
              "verifiableCredential": vcs},
@@ -366,6 +417,16 @@ def test_tie_free_documents_of_any_reasonable_size_verify_without_hndq_work(run)
         exc, calls = run(lambda: verify_credential(signed))
         assert exc is None, exc
         assert calls == 0
+
+
+def test_the_tied_shapes_that_must_keep_passing_pass_at_the_real_budget():
+    # clique 6, K4,4, three disjoint K6 and a tied cycle of 100 reach the signature check
+    three_k6 = [{"id": f"_:{g}{i}", "link": [{"id": f"_:{g}{j}"} for j in range(6) if j != i]}
+                for g in "abc" for i in range(6)]
+    cycle = [{"id": f"_:c{i}", "link": {"id": f"_:c{(i + 1) % 100}"}} for i in range(100)]
+    for subject in (_clique_subject(6), _bipartite_subject(4), three_k6, cycle):
+        with pytest.raises(SignatureInvalid):
+            verify_credential(_wrap(subject))
 
 
 def test_an_rdf_list_of_150_identical_items_still_canonicalizes(run):

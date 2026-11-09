@@ -846,28 +846,35 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   and pyld's `URDNA2015` has no limit on it (RDFC-1.0 §4.4 recommends one); openvc bounded
   only nesting depth and, for fetched documents, input length. A `credentialSubject` of
   blank-node objects under an inline `@vocab` builds a regular graph with factorial cost: a
-  clique of 8 (2.5 KB) cost 20 s through `verify_credential`, 9 about 240 s; and because every
-  step walks all the statements of its node, a clique of 7 with 10 000 literals per node
-  (0.83 MB) cost 12.6 s even under a call-count limit. `verify_many` is sequential, so one
-  item stalled the batch. The same input reaches `ldp_vc` / `ldp_vp` in a `vp_token` and a
-  Data Integrity status-list credential a resolver fetches. **Controls:**
-  `openvc.proof._rdfc` canonicalizes under a work budget (`MAX_CANONICALIZATION_WORK`, 10
-  million units: statements visited, a charge per recursive step, and the distinct
+  clique of 8 (2.5 KB) cost 20 s through `verify_credential`, 9 about 240 s. Every step also
+  walks all the statements of its node and deep-copies the identifier issuer for each group of
+  related nodes (singleton groups too), so a clique of 7 with 10 000 literals per node
+  (0.83 MB) cost 12.6 s under a call-count limit, and a tied cycle of 100 whose nodes each
+  point at one shared node under 200 predicates (0.45 MB) cost 31 s while a count of
+  permutations stood at zero. `verify_many` is sequential, so one item stalled the batch. The
+  same input reaches `ldp_vc` / `ldp_vp` in a `vp_token` and a Data Integrity status-list
+  credential a resolver fetches. **Controls:** `openvc.proof._rdfc` canonicalizes under a
+  work budget (`MAX_CANONICALIZATION_WORK`, 20 million units: statements visited, a charge
+  per recursive step, every issuer copy charged where it is made, and an upper bound on the
   permutations of each tied group times their cost, counted before they run), plus a
   blank-node (1 024) and a call (1 000 000) backstop. Over budget is a typed
   `CanonicalizationBudgetExceeded` (`ProofMalformed`) before any signature check. The numbers
   come from measuring every RDF fixture in the repository (at most 5 blank nodes, no
-  tie-breaking work) and from legitimate shapes that tie (two credentials of one presentation
-  sharing a sub-object, a list of 150 identical items). **Residual:** the budget is per
-  canonicalization and bounds the cost, it does not remove it. A hostile document costs up to
-  about 2.6 s of one core to refuse on a developer laptop (the worst of our probes: a clique of
-  8; a fat clique 1.8 s; a 50 000-literal node 4.3 s, of which 3.4 s is the linear cost the
-  same bytes have without ties), several times that on a loaded shared runner; a presentation
-  of N credentials multiplies it by N + 1; and a parsed credential has no size cap of its own
-  (the 1 MiB cap is on fetched documents), so the input size is the caller's to bound. It is
-  amplification of CPU, not a wrong-accept. A tied graph whose work exceeds the budget is
-  refused even if legitimate (a clique of 8 would have to be hand-built). The JCS suites do
-  no RDF work and are unaffected (`test_rdfc_budget.py`).
+  tie-breaking work) and from legitimate shapes that tie (three credentials of one
+  presentation sharing a sub-object, a list of 200 identical items). **Residual:** the budget
+  is per canonicalization and bounds the cost, it does not remove it. On one core of a
+  developer laptop the worst refusals measured are 1.1 s (a clique of 8), 2.8 s (a fat
+  clique, 0.97 MB) and 2.3 s (the shared-target cycle, 0.94 MB), 5.5 s for a 4.4 MB document
+  of which 3.4 s is the linear cost the same bytes have without ties; a loaded shared runner
+  takes several times that, because the unit is calibrated on the dearest step and the time to
+  spend the budget varies by shape. A presentation of N credentials multiplies it by N + 1,
+  and a parsed credential has no size cap of its own (the 1 MiB cap is on fetched documents),
+  so the input size is the caller's to bound. It is amplification of CPU, not a wrong-accept.
+  A document whose permutation upper bound exceeds the budget is refused even if the
+  algorithm would have finished quickly (a blank-node id shared by two identical blank-node
+  graphs of ten or more statements each), and a tied graph over the budget is refused even if
+  legitimate (a clique of 8 would have to be hand-built). The JCS suites do no RDF work and
+  are unaffected (`test_rdfc_budget.py`).
 
 ## 10. Out of scope
 

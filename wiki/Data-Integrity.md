@@ -186,25 +186,34 @@ document over it with `CanonicalizationBudgetExceeded` (a `ProofMalformed`) befo
 signature check, so a poison item in `verify_many` is one per-item error and the batch carries
 on.
 
-The budget is one number, `MAX_CANONICALIZATION_WORK` (10 000 000 units), spent only in the
-tie-breaking phase: one unit per statement visited, a fixed charge per recursive step, and, for
-each group of tied blank nodes, the number of distinct permutations times what one costs. The
-permutations are counted before they run, so a factorial is refused without being computed. A
-blank-node ceiling (1 024, checked before any hashing) and a recursion-call ceiling
-(1 000 000) are coarse backstops. The budget is per canonicalization, not per credential or
-per presentation: a presentation of N credentials canonicalizes N + 1 documents, each with its
-own budget.
+The budget is one number, `MAX_CANONICALIZATION_WORK` (20 000 000 units), spent only in the
+tie-breaking phase: one unit per statement visited, a fixed charge per recursive step, a charge
+for every copy of the identifier issuer that the algorithm makes (one per group of related
+nodes in every step, singleton groups included, each charged where it is made and in
+proportion to its size), and, for each group of tied blank nodes, an upper bound on the
+permutations times what one copy costs. The permutations are counted before they run, so a
+factorial is refused without being computed. A blank-node ceiling (1 024, checked before any
+hashing) and a recursion-call ceiling (1 000 000) are coarse backstops. The budget is per
+canonicalization, not per credential or per presentation: a presentation of N credentials
+canonicalizes N + 1 documents, each with its own budget.
 
 Every RDF fixture in the repository (the W3C vectors, the ecdsa-sd interop vectors, the
 status-list, `ldp_vc` and `ldp_vp` tests) has at most 5 blank nodes and spends **no** budget,
-because nothing real ties. Documents that tie but are cheap pass: two credentials in one
+because nothing real ties. Documents that tie but are cheap pass: three credentials in one
 presentation that share an identical sub-object, 255 distinct blank nodes in a ring, a 300-node
-tree, an `@list` of 150 identical items. What is refused is work: a symmetric graph (a clique of
-8, a complete bipartite graph K5,5, a 15 by 15 grid) or a tied node that carries thousands of
-statements. The refusal takes up to about 2.6 seconds of one core on a developer laptop (up to
-several times that on a loaded shared runner) because that is how long it takes to spend the
-budget. Giving the nodes an `id`, an IRI or a distinguishing value keeps them out of the
-tie-breaking phase. The output of an accepted document is byte-identical to pyld's `normalize`.
+tree, an `@list` of 200 identical items, a tied cycle of 150, a clique of 6 or three disjoint
+ones. What is refused is work: a symmetric graph (a clique of 8, a complete bipartite graph
+K5,5, a 15 by 15 grid), a tied node that carries thousands of statements, or tied nodes that
+each point at one shared node under thousands of predicates. Measured on one core of a
+developer laptop, a refusal takes 0.3 to 1.1 s for the plain graphs and 1.7 to 2.8 s for the
+documents above half a megabyte (a 4.4 MB document costs 5.5 s, of which 3.4 s is the linear
+cost the same bytes have without ties); a loaded shared runner takes several times that. The
+unit is calibrated on the dearest step, so the time to spend the budget varies by shape. A
+contrived document can be refused that the algorithm would canonicalize quickly, because the
+permutation count is an upper bound (a blank-node id shared by two identical blank-node
+graphs of ten or more statements each). Giving the nodes an `id`, an IRI or a distinguishing
+value keeps them out of the tie-breaking phase. The output of an accepted document is
+byte-identical to pyld's `normalize`.
 
 ## The JSON must be what was signed
 
