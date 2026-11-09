@@ -40,7 +40,8 @@ repository (D8, issue #381): at most 5 blank nodes, **0** Hash N-Degree Quads ca
 The unit is calibrated on the dearest step (an issuer copy, about 0.1 microsecond per
 unit); every other step is cheaper per unit (at most about 0.11 microsecond measured), so the
 ceiling is a few seconds of one core at most, not a fixed duration (see the wiki).
-Output is byte-identical to ``jsonld.normalize(..., algorithm="URDNA2015", format="application/n-quads")``.
+Output is byte-identical to
+``jsonld.normalize(..., algorithm="URDNA2015", format="application/n-quads")``.
 """
 from __future__ import annotations
 
