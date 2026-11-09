@@ -195,24 +195,31 @@ All notable changes to **openvc** are documented here. The format follows
   `epk` readers keep their tolerant decoding (out of scope). Found by the internal security
   review of 2026-11-07 (`test_openid4vci_canonical_jwk.py`).
 
-- **The three RDF Data Integrity suites now canonicalize under a work budget: 256 blank
-  nodes, 10 000 Hash N-Degree Quads calls and 10 000 permutations, and a document over it is
-  refused as `CanonicalizationBudgetExceeded` (a `ProofMalformed`) before any signature check**
+- **The three RDF Data Integrity suites now canonicalize under a work budget — 10 000 000
+  units of Hash N-Degree Quads work, with a 1 024 blank-node and a 1 000 000 call backstop —
+  and a document over it is refused as `CanonicalizationBudgetExceeded` (a `ProofMalformed`)
+  before any signature check**
   ([#381](https://github.com/luisgf/openvc/issues/381)). RDFC-1.0 falls back to permutations
-  over blank nodes whose first-degree hashes tie, and pyld's `URDNA2015` has no limit on it, so
-  a `credentialSubject` of mutually linked blank-node objects under an inline `@vocab` was
+  over blank nodes whose first-degree hashes tie, and pyld's `URDNA2015` has no limit on it,
+  so a `credentialSubject` of mutually linked blank-node objects under an inline `@vocab` was
   factorial: through `verify_credential` a clique of 8 (73 quads, about 2.5 KB) took 20 s, 9
   took 240 s and `K5,5` 1.6 s, before key resolution or any signature check, and
-  `verify_many` is sequential, so one item stalled the batch. `ldp_vc` / `ldp_vp` and a Data
+  `verify_many` is sequential, so one item stalled the batch; `ldp_vc` / `ldp_vp` and a Data
   Integrity status-list credential reach the same canonicalizer. `openvc.proof._rdfc` (a
-  `URDNA2015` subclass) now serves `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and `ecdsa-sd-2023`;
-  the blank-node ceiling is checked before any hashing and the permutations are counted as
-  `k!` per tied group before they run, so a clique of 8 is refused in milliseconds and the
-  worst measured document at the ceiling costs about 3 s on a laptop (8 s on a loaded CI runner). The ceilings come from measuring
-  every RDF fixture (W3C vectors, ecdsa-sd interop, status lists, `ldp_vc` / `ldp_vp`, docs
-  snippets): at most 5 blank nodes and no Hash N-Degree Quads work. The output of an accepted
-  document is byte-identical to `jsonld.normalize`, the goldens included. Found by the
-  internal security review of 2026-11-07 (`test_rdfc_budget.py`).
+  `URDNA2015` subclass) now serves `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and
+  `ecdsa-sd-2023`. The budget counts what the work costs, not how often it is called: one unit
+  per statement a step visits (a clique of 7 whose nodes carry 10 000 literals cost 12.6 s
+  under a call-count limit alone), a charge per recursive step, and the *distinct*
+  permutations of each tied group (pyld permutes a multiset, so two holder-bound credentials
+  of one presentation that share an identical sub-object tie but cost one permutation),
+  counted before they run. The budget is per canonicalization. Measured on a laptop: a
+  clique of 8 is refused after 2.6 s, `K5,5` 1.2 s, a fat clique 1.8 s, a 15 by 15 grid 1.1 s;
+  a tied cycle of 100, an `@list` of 150 identical items, a 255-node ring, a 300-node tree and
+  the two-credential presentation pass, and every RDF fixture (W3C vectors, ecdsa-sd interop,
+  status lists, `ldp_vc` / `ldp_vp`, docs snippets: at most 5 blank nodes and no
+  tie-breaking work) spends nothing. The output of an accepted document is byte-identical to
+  `jsonld.normalize`, the goldens included. Found by the internal security review of
+  2026-11-07 (`test_rdfc_budget.py`).
 
 ### Fixed
 

@@ -177,24 +177,34 @@ Trusted List checks read `now` the same way, each raising its own error class.
 
 The three RDF suites (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `ecdsa-sd-2023`) canonicalize the
 document before they look at the signature. RDFC-1.0 hashes blank nodes by their
-neighbourhood and, when several have the same hash, tries every permutation of them, which is
-factorial: a 2.5 KB credential of eight blank nodes that all link to one another cost about
-20 seconds and nine cost about four minutes. openvc now canonicalizes under a budget
-(`openvc.proof._rdfc`) and refuses a document over it with `CanonicalizationBudgetExceeded`
-(a `ProofMalformed`) before any signature check, so a poison item in `verify_many` is one
-per-item error and the batch carries on.
+neighbourhood and, when several have the same hash, tries every distinct permutation of them,
+which is factorial: a 2.5 KB credential of eight blank nodes that all link to one another cost
+about 20 seconds and nine cost about four minutes. Each step of that search also walks every
+statement about the node, so a tied node carrying thousands of literals makes every step
+dearer. openvc now canonicalizes under a **work budget** (`openvc.proof._rdfc`) and refuses a
+document over it with `CanonicalizationBudgetExceeded` (a `ProofMalformed`) before any
+signature check, so a poison item in `verify_many` is one per-item error and the batch carries
+on.
 
-Three ceilings apply to one canonicalization: 256 distinct blank nodes, 10 000 Hash N-Degree
-Quads calls (the recursion), and 10 000 permutations (counted as `k!` for each group of `k`
-tied nodes, before any of them runs). The largest document among every RDF fixture in the
-repository (the W3C vectors, the ecdsa-sd interop vectors, the status-list, `ldp_vc` and
-`ldp_vp` tests) has 5 blank nodes and needs no Hash N-Degree Quads work at all, because
-nothing real ties. A legitimate document reaches a ceiling only if it holds a highly
-symmetric blank-node graph: more than a handful of blank nodes with identical neighbourhoods
-that also refer to one another, such as a clique. Blank nodes that merely repeat (sibling
-objects with the same shape under one subject) are cheap and pass. Giving such nodes an
-`id`, an IRI or a distinguishing value keeps them out of the fallback. The output of an
-accepted document is byte-identical to pyld's `normalize`.
+The budget is one number, `MAX_CANONICALIZATION_WORK` (10 000 000 units), spent only in the
+tie-breaking phase: one unit per statement visited, a fixed charge per recursive step, and, for
+each group of tied blank nodes, the number of distinct permutations times what one costs. The
+permutations are counted before they run, so a factorial is refused without being computed. A
+blank-node ceiling (1 024, checked before any hashing) and a recursion-call ceiling
+(1 000 000) are coarse backstops. The budget is per canonicalization, not per credential or
+per presentation: a presentation of N credentials canonicalizes N + 1 documents, each with its
+own budget.
+
+Every RDF fixture in the repository (the W3C vectors, the ecdsa-sd interop vectors, the
+status-list, `ldp_vc` and `ldp_vp` tests) has at most 5 blank nodes and spends **no** budget,
+because nothing real ties. Documents that tie but are cheap pass: two credentials in one
+presentation that share an identical sub-object, 255 distinct blank nodes in a ring, a 300-node
+tree, an `@list` of 150 identical items. What is refused is work: a symmetric graph (a clique of
+8, a complete bipartite graph K5,5, a 15 by 15 grid) or a tied node that carries thousands of
+statements. The refusal takes up to about 2.6 seconds of one core on a developer laptop (up to
+several times that on a loaded shared runner) because that is how long it takes to spend the
+budget. Giving the nodes an `id`, an IRI or a distinguishing value keeps them out of the
+tie-breaking phase. The output of an accepted document is byte-identical to pyld's `normalize`.
 
 ## The JSON must be what was signed
 
