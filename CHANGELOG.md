@@ -8,6 +8,21 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
+- **did:key: the identifier is now decoded by the bounded `openvc.multibase` codec — base58
+  input of at most 4 096 characters, a multicodec varint of at most 9 bytes — so an oversized
+  `did:key` `iss` / `verificationMethod` is refused before any big-integer work**
+  ([#386](https://github.com/luisgf/openvc/issues/386)). `DidKeyResolver` kept private
+  copies of the base58 and varint decoders without the caps `multibase` already has (the
+  threat model lists that cap as the control); base58 decoding is O(n²) big-integer work and
+  nothing bounds the length of an `iss` or a `verificationMethod`, so a 100 000-character
+  `did:key` issuer cost about 1.2 s of CPU before any signature check — through
+  `verify_credential` and through the Data Integrity lanes' offline did:key fallback alike —
+  and a 200 000-character one about 5 s. The resolver now calls `b58btc_decode` /
+  `read_varint` and maps `MultibaseError` to the `DidResolutionError` callers already see for
+  a malformed did:key (the message carries the length, never the input); through the pipeline
+  the refusal stays `KeyResolutionFailed` on the JOSE lanes and `KeyResolutionError` on the
+  Data Integrity lanes. Every did:key vector (Ed25519, P-256, P-384) resolves as before.
+  Found by the internal security review of 2026-11-07 (`test_did_key_bounded.py`).
 - **EU trusted lists, TS 119 612 XML lane: a null `NextUpdate` now closes the list, and a
   `NextUpdate` that is not a UTC date-time of the mandated `Z` form is refused — neither
   reads as unbounded validity any more** ([#389](https://github.com/luisgf/openvc/issues/389),
@@ -26,15 +41,58 @@ All notable changes to **openvc** are documented here. The format follows
   tz-naive value — **not** read as UTC — another offset, the basic format or another
   separator are refused; the fields are read by regex, not by `fromisoformat`, so the accept
   set is the same on every interpreter) — and `walk_lotl` stages a null `NextUpdate` as
-  `"expired"` with a
-  problem naming
-  `closed TL (null NextUpdate)` (a closed LOTL stops the walk, a closed national TL
-  contributes nothing) and a malformed one as a `"parse"` problem, so only aware datetimes
-  are ever compared. `consume_trust_list` returns the closed signal (`next_update is None`)
+  `"expired"` with a problem naming `closed TL (null NextUpdate)` (a closed LOTL stops the
+  walk, a closed national TL contributes nothing) and a malformed one as a `"parse"`
+  problem, so only UTC datetimes are ever compared. `consume_trust_list` returns the closed signal (`next_update is None`)
   to a direct caller, as `consume_lote` does, and its docstring now says, as `consume_lote`'s
   does, that freshness is the walk's job; `TrustList`'s shape is unchanged. The recorded
   EU LOTL / ES TL goldens are unchanged. Found by the internal security review of 2026-11-07
   (`test_trustlist_nextupdate_closed.py`).
+
+### Fixed
+
+- **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
+  and abort a whole `verify_many` batch** ([#387](https://github.com/luisgf/openvc/issues/387)).
+  In `openvc.schema` the dialect lookup (`validator_for`) ran outside the guarded region, and
+  the guard caught only the processor's own types (`SchemaError`, `ValidationError`,
+  `Unresolvable`) and `RecursionError`. Measured on v1.38.1 through `verify_many` with
+  `resolve_credential_schema=` set: a schema with `multipleOf: 0.5` met by the number `1e400`
+  (parsed to infinity) or by a 400-digit integer, or `multipleOf: <400-digit integer>` met by
+  a float, raised a bare `OverflowError` out of the processor's `multipleOf`; a `$schema` of
+  `http://[::1` raised a bare `ValueError` (`Invalid IPv6 URL`) out of `urlsplit`. None was an
+  `OpenvcError`, so one such credential — signed by any issuer with a resolvable DID, its
+  `credentialSchema.id` pointing at the issuer's own host — aborted the whole batch instead of
+  becoming that item's `error` (no wrong-accept; schema validation is opt-in). The dialect
+  lookup now runs inside the guard, and `ArithmeticError` (`OverflowError`), `ValueError`,
+  `TypeError` and `re.error` are caught alongside the processor's own types, attributed by the
+  phase they surfaced in: while the schema is looked up, meta-validated or built, the resource
+  is unusable (`SchemaResolutionError`); while the credential is validated, its values could
+  not be checked against the schema (`SchemaValidationError`); an unresolvable `$ref` and a
+  recursion overflow stay `SchemaResolutionError` wherever they surface. The message names the
+  exception type and cuts its text through `safe_repr`. Refusing a non-finite number in the
+  credential before validation is not part of this change (a document-level rule, outside the
+  schema layer). Found by the internal security review of 2026-11-07
+  (`test_schema_typed_failures.py`).
+
+- **`verify_ebsi_badge` refuses, typed, a credential `type` that is neither a string nor a
+  list of strings** ([#359](https://github.com/luisgf/openvc/issues/359)). `_credential_types`
+  in `openvc_ebsi/verify.py` treated a `str` as one type and otherwise iterated the value, after
+  the signature verified (so the value is the issuer's) and with the default
+  `expected_types=None` (the core suite's own type check does not run then). Measured on
+  v1.38.1: a signed `"type"` of `7`, `null`, `true` or `1.5` was a bare `TypeError` out of both
+  trust modes, with `require_trust=False` too, and out of `EbsiNodeClient.run`, whose failover
+  loop catches `EbsiError` only; `{"OpenBadgeCredential": 1}` was read as the list of the
+  object's keys and trusted; `["X", 3]` was read as `["X"]`, the non-string dropped in silence.
+  VCDM 1.1 and 2.0 both define `type` as a string or an array of strings. Now any other shape
+  is **`CredentialTypeMalformed`**, a new `EbsiVerificationError` subclass, raised before any
+  registry request in both trust modes whatever `require_trust` says (a credential whose types
+  cannot be read is malformed, not untrusted), with the value cut through `safe_repr` and the
+  offending entry of a list named by its index; a list with one non-string entry is rejected,
+  not filtered (fail closed, #352's rule). Unchanged: a string is a one-element list (`""` is one
+  type that no accreditation lists), `[]` and an absent `type` are no types (#367), and with
+  `expected_types` given the core suite's `ClaimsInvalid` still comes first for a scalar or
+  object `type`. Found by the internal security review of 2026-11-07 (§ M10;
+  `test_ebsi_credential_types_shape.py`).
 
 ## [1.38.1] — 2026-11-07
 

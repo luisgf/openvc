@@ -403,7 +403,9 @@ with for_nodes(result, clock=clock, decode_jwt=suite.peek_claims) as nodes:
   fails over from, and does for a node's *answer* (a 404 or another 4xx), as does a bare
   `session.get_json`. A node that *answers* does not fail over: a 404, any other 4xx, a
   malformed 200, an expired list, and every error about the content (`AccreditationInvalid`,
-  `NoTrustedAnchor`, `IssuerNotTrusted`) propagate at once.
+  `NoTrustedAnchor`, `IssuerNotTrusted`, and `CredentialTypeMalformed`, raised when the signed
+  credential's `type` is neither a string nor a list of strings, before the registry is read)
+  propagate at once.
 - **A 404 is one node's answer.** It is `HttpNotFound` naming that node, does not mark the node
   unhealthy and does not fail over, so a lagging node can say "not found" about a brand-new DID
   (`NoTrustedAnchor` in the trust walk) until you retry. Confirming it on a second node is not

@@ -1,5 +1,5 @@
 """
-openvc.did.did_key — offline resolver for the did:key method (Ed25519, P-256).
+openvc.did.did_key — offline resolver for the did:key method (Ed25519, P-256, P-384).
 
 did:key is self-contained: the public key is encoded in the identifier itself, so
 resolution is pure decoding — no network. Format:
@@ -9,6 +9,14 @@ resolution is pure decoding — no network. Format:
 Supported multicodecs:
     0xed   Ed25519 public key   -> OKP / Ed25519 JWK
     0x1200 P-256   public key   -> EC  / P-256  JWK (from the compressed point)
+    0x1201 P-384   public key   -> EC  / P-384  JWK (from the compressed point)
+
+The identifier is attacker-controlled (a VC-JWT ``iss``, a Data Integrity
+``verificationMethod``) and nothing upstream bounds its length, so the decoding is
+:mod:`openvc.multibase`'s, whose caps apply: its base58 decode (O(n²) big-integer work)
+refuses more than ``openvc.multibase._MAX_B58_LEN`` characters and its varint reader more
+than ``openvc.multibase._MAX_VARINT_BYTES`` bytes, so an oversized identifier is refused
+before any big-integer work (#386).
 """
 
 from __future__ import annotations
@@ -17,38 +25,13 @@ import base64
 
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from ..multibase import MultibaseError, b58btc_decode, read_varint
 from .base import DidDocument, DidResolutionError, VerificationMethod
-
-# base58btc (Bitcoin) alphabet
-_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-_B58_INDEX = {c: i for i, c in enumerate(_B58_ALPHABET)}
 
 # multicodec codes (unsigned-varint encoded in the key bytes)
 _MC_ED25519_PUB = 0xED
 _MC_P256_PUB = 0x1200
 _MC_P384_PUB = 0x1201
-
-
-def _b58decode(s: str) -> bytes:
-    num = 0
-    for ch in s:
-        try:
-            num = num * 58 + _B58_INDEX[ch]
-        except KeyError:
-            raise DidResolutionError(f"invalid base58 character {ch!r}") from None
-    body = num.to_bytes((num.bit_length() + 7) // 8, "big") if num else b""
-    n_leading = len(s) - len(s.lstrip("1"))          # each leading '1' == 0x00
-    return b"\x00" * n_leading + body
-
-
-def _read_varint(data: bytes) -> tuple[int, int]:
-    result = shift = 0
-    for i, byte in enumerate(data):
-        result |= (byte & 0x7F) << shift
-        if not byte & 0x80:
-            return result, i + 1
-        shift += 7
-    raise DidResolutionError("truncated multicodec varint")
 
 
 def _b64url(b: bytes) -> str:
@@ -64,8 +47,14 @@ class DidKeyResolver:
         if not multibase.startswith("z"):
             raise DidResolutionError("did:key must use base58btc ('z') multibase")
 
-        raw = _b58decode(multibase[1:])
-        code, offset = _read_varint(raw)
+        try:
+            # the bounded codec: the base58 length and the varint width are capped by
+            # openvc.multibase, so an oversized identifier costs nothing before this
+            # refusal; MultibaseError's text carries the length, never the input
+            raw = b58btc_decode(multibase[1:])
+            code, offset = read_varint(raw)
+        except MultibaseError as exc:
+            raise DidResolutionError(f"malformed did:key: {exc}") from exc
         key_bytes = raw[offset:]
 
         if code == _MC_ED25519_PUB:
