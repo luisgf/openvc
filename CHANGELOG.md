@@ -4,6 +4,30 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] — unreleased
+
+### Fixed
+
+- **`verify_ebsi_badge` refuses, typed, a credential `type` that is neither a string nor a
+  list of strings** ([#359](https://github.com/luisgf/openvc/issues/359)). `_credential_types`
+  in `openvc_ebsi/verify.py` treated a `str` as one type and otherwise iterated the value, after
+  the signature verified (so the value is the issuer's) and with the default
+  `expected_types=None` (the core suite's own type check does not run then). Measured on
+  v1.38.1: a signed `"type"` of `7`, `null`, `true` or `1.5` was a bare `TypeError` out of both
+  trust modes, with `require_trust=False` too, and out of `EbsiNodeClient.run`, whose failover
+  loop catches `EbsiError` only; `{"OpenBadgeCredential": 1}` was read as the list of the
+  object's keys and trusted; `["X", 3]` was read as `["X"]`, the non-string dropped in silence.
+  VCDM 1.1 and 2.0 both define `type` as a string or an array of strings. Now any other shape
+  is **`CredentialTypeMalformed`**, a new `EbsiVerificationError` subclass, raised before any
+  registry request in both trust modes whatever `require_trust` says (a credential whose types
+  cannot be read is malformed, not untrusted), with the value cut through `safe_repr` and the
+  offending entry of a list named by its index; a list with one non-string entry is rejected,
+  not filtered (fail closed, #352's rule). Unchanged: a string is a one-element list (`""` is one
+  type that no accreditation lists), `[]` and an absent `type` are no types (#367), and with
+  `expected_types` given the core suite's `ClaimsInvalid` still comes first for a scalar or
+  object `type`. Found by the internal security review of 2026-11-07 (§ M10;
+  `test_ebsi_credential_types_shape.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security

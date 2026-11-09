@@ -54,6 +54,15 @@ class VerificationMethodNotFound(EbsiVerificationError): ...
 class IssuerNotTrusted(EbsiVerificationError): ...
 
 
+class CredentialTypeMalformed(EbsiVerificationError):
+    """The signed credential's ``type`` is neither a string nor a list of strings (VCDM 1.1 and
+    2.0 define it as one of the two): ``null``, a number, a bool, an object, or a list with an
+    entry that is not a string. Raised after the signature verified (the value is the issuer's)
+    and before the trust decision, in both trust modes and whatever ``require_trust`` says: a
+    credential whose types cannot be read is malformed, not untrusted (#359). The message shows
+    the value through ``safe_repr``: bounded, never a bare ``TypeError`` past ``EbsiError``."""
+
+
 @dataclass(frozen=True)
 class VerifiedEbsiBadge:
     """The result of a successful (or trust-optional) EBSI verification.
@@ -76,10 +85,24 @@ class VerifiedEbsiBadge:
 
 
 def _credential_types(credential: dict[str, Any]) -> list[str]:
+    """The credential's ``type`` as the list of strings the trust decision reads.
+
+    A string is one type (``""`` included: a type no accreditation lists), a list of strings is
+    itself, an absent ``type`` is no types (nothing to be accredited for, #367). Anything else is
+    :class:`CredentialTypeMalformed`, a list with one non-string entry included: it is rejected,
+    not filtered, so a shape the reader does not know is never read in part (#352's rule); an
+    object's keys are not its types either. One pass over the list, bounded message (#359)."""
     t = credential.get("type", [])
     if isinstance(t, str):
         return [t]
-    return [x for x in t if isinstance(x, str)]
+    if not isinstance(t, list):
+        raise CredentialTypeMalformed(
+            f"credential type is neither a string nor a list of strings: {safe_repr(t)}")
+    for i, x in enumerate(t):
+        if not isinstance(x, str):
+            raise CredentialTypeMalformed(
+                f"credential type[{i}] is not a string: {safe_repr(x)}")
+    return list(t)
 
 
 def evaluate_issuer_trust(
@@ -141,7 +164,9 @@ def verify_ebsi_badge(
     ``require_trust`` controls only whether an untrusted result raises (single
     level: :class:`IssuerNotTrusted`; recursive: a
     :class:`~openvc_ebsi.trust.TrustChainError`) or is returned with
-    ``trusted=False``.
+    ``trusted=False``. A credential whose ``type`` is neither a string nor a list of
+    strings is :class:`CredentialTypeMalformed` in both modes, whatever ``require_trust``
+    says: it is malformed, not untrusted (#359).
 
     ``resolve_status_list`` (if given) enables revocation checking: it must fetch
     and **verify** a status-list credential URL and return it as a dict. A set
