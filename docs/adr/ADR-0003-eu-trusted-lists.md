@@ -100,7 +100,7 @@ so it processes untrusted XML. Hardening, stdlib-only:
   Annex B.0: "Applications shall use UTF-8 encoding for XML TLs"; a wider label lets expat
   decode differently from the libxml2 that verified the signature, e.g. a UTF-8 BOM body
   re-labelled ISO-8859-1), a UTF-16/UTF-32 BOM or a NUL among the first four bytes is
-  refused before expat sees the document, and and expat's own `ValueError` / `LookupError` on an
+  refused before expat sees the document, and expat's own `ValueError` / `LookupError` on an
   exotic label are typed too — so D6's per-TL `parse` problem holds instead of the walk
   aborting with zero anchors.
 *(This is deliberately not `defusedxml`: the specific hardening we need — forbid

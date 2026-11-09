@@ -199,6 +199,19 @@ def test_utf16_and_utf32_are_refused(world, codec, label):
         parse_trust_list((decl + text).encode(codec))
 
 
+def test_bomless_utf16_be_is_refused_before_expat(world):
+    text = world["signed"].decode("ascii")
+    doc = text.encode("utf-16-be")                  # no BOM, no declaration: starts 00 3C
+    assert doc[:1] == b"\x00"
+    with pytest.raises(TrustListParseError, match="Annex B.0"):
+        parse_trust_list(doc)
+
+
+def test_nul_first_without_declaration_is_refused_before_expat(world):
+    with pytest.raises(TrustListParseError, match="Annex B.0"):
+        parse_trust_list(b"\x00" + world["signed"])
+
+
 @pytest.mark.parametrize("enc", ["ISO-8859-1", "iso-8859-1", "UTF-16", "UTF-16LE"])
 def test_wider_labels_are_refused(world, enc):
     with pytest.raises(TrustListParseError, match="unsupported XML encoding"):
