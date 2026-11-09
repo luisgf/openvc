@@ -15,9 +15,21 @@ socket to that exact IP) while TLS SNI, certificate validation, and the Host
 header still use the hostname. So an attacker who flips DNS between the check and
 the connect cannot redirect us to an internal address — we never re-resolve.
 
+One wall-clock deadline, ``timeout_s``, bounds the **whole** dereference: DNS
+resolution, the TCP connect, the TLS handshake, the status line and headers, and
+the body. The per-operation socket timeout alone would not — ``http.client`` reads
+the response head one socket operation at a time, so a server dripping one byte
+per operation held a verifier thread for ``timeout_s`` × bytes (hours for a 1 KB
+head), and ``getaddrinfo`` has no timeout at all. So the lookup runs on a helper
+thread the caller waits on only until the deadline, and a watchdog timer shuts the
+socket down at the deadline so a blocked read fails with a typed error. The one
+residual is the lookup itself: a ``getaddrinfo`` that never returns is abandoned
+on its daemon thread (the caller is released; the thread lives until the OS
+resolver gives up). ``timeout_s`` must be a positive, finite number of seconds.
+
 Dependency-light on purpose: pure stdlib (http.client + ssl + socket +
-ipaddress). Pass ``https_json_fetch`` wherever a ``Fetch`` is expected, or use
-``default_did_web_resolver()``.
+ipaddress + threading). Pass ``https_json_fetch`` wherever a ``Fetch`` is
+expected, or use ``default_did_web_resolver()``.
 """
 from __future__ import annotations
 
@@ -25,10 +37,12 @@ import asyncio
 import http.client
 import ipaddress
 import json
+import math
 import socket
 import ssl
+import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse
 
 from . import _json
@@ -42,6 +56,7 @@ if TYPE_CHECKING:
 DEFAULT_TIMEOUT_S = 10.0
 MAX_RESPONSE_BYTES = 1_048_576  # 1 MiB — DID documents are small; bound memory.
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_WATCHDOG_THREAD_NAME = "openvc-fetch-watchdog"
 
 
 class UnsafeUrlError(DidResolutionError):
@@ -96,62 +111,203 @@ def _resolve_public_ips(host: str, port: int) -> list[str]:
     return ips
 
 
+def _resolve_within(hostname: str, port: int, deadline: float, timeout_s: float) -> str:
+    """:func:`_resolve_public_ips` on a daemon thread, waited on until *deadline*.
+
+    ``getaddrinfo`` has no timeout of its own, so the caller waits for the lookup only
+    until the deadline and then fails closed with a typed error. The thread is then
+    abandoned (it is a daemon, so it never blocks interpreter exit); it holds its
+    resolver resources until the OS resolver gives up — the documented residual. The
+    SSRF classification is the untouched :func:`_resolve_public_ips`, run as is, so a
+    stubbed resolver (tests) still governs."""
+    addresses: list[list[str]] = []
+    failures: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            addresses.append(_resolve_public_ips(hostname, port))
+        except BaseException as exc:  # re-raised on the calling thread below
+            failures.append(exc)
+
+    worker = threading.Thread(target=_run, name="openvc-fetch-dns", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError as exc:  # thread exhaustion: fail closed, typed
+        raise DidResolutionError(f"cannot start the DNS lookup for {hostname!r}: {exc}") from exc
+    worker.join(max(deadline - time.monotonic(), 0.0))
+    if failures:
+        raise failures[0]
+    if not addresses:
+        raise DidResolutionError(
+            f"DNS resolution of {hostname!r} exceeded the {timeout_s:g}s deadline")
+    return addresses[0][0]
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """An ``HTTPSConnection`` whose TCP socket goes to one validated *ip* while TLS SNI,
+    certificate validation and the Host header use the hostname (what closes DNS
+    rebinding: the name is never resolved again). Every socket it opens is handed to
+    *watch* as soon as it exists — the TLS socket before the handshake, which is why
+    the wrap and the handshake are two steps — so the deadline watchdog can shut it
+    down at any point of the exchange. ``phase`` names the step in progress, for the
+    error message."""
+
+    def __init__(self, hostname: str, port: int, *, ip: str, timeout: float,
+                 context: ssl.SSLContext, watch: Callable[[socket.socket], None]) -> None:
+        # The base constructor raises InvalidURL on a control character in the host.
+        super().__init__(hostname, port, timeout=timeout, context=context)
+        self._pinned_ip = ip
+        self._tls_context = context
+        self._watch = watch
+        self.phase = "TCP connect"
+
+    def connect(self) -> None:
+        # The (hostname, port) address http.client would connect to is ignored.
+        raw = socket.create_connection((self._pinned_ip, self.port), timeout=self.timeout)
+        self._watch(raw)
+        try:  # as http.client does; some OSs do not implement TCP_NODELAY
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        self.phase = "TLS handshake"
+        # wrap_socket detaches *raw* (the TLS socket owns the descriptor from here), so
+        # the TLS socket must be watched before the first handshake byte is read.
+        self.sock = self._tls_context.wrap_socket(
+            raw, server_hostname=self.host, do_handshake_on_connect=False)
+        self._watch(self.sock)
+        self.sock.do_handshake()
+
+
 def _https_get(
     hostname: str, ip: str, port: int, target: str, *,
     timeout: float, max_bytes: int,
 ) -> tuple[int, bytes]:
     """GET *target* over https, TCP-pinned to *ip* but with TLS SNI, certificate
     validation and Host header for *hostname*. Returns (status, body). Reads at
-    most ``max_bytes + 1`` so the caller can detect oversize."""
+    most ``max_bytes + 1`` so the caller can detect oversize.
+
+    *timeout* is one wall-clock budget, in seconds from this call, for the whole
+    exchange — TCP connect, TLS handshake, request, status line, headers and body —
+    and also the per-operation socket timeout. A watchdog timer shuts the socket
+    down when the budget runs out, so a read blocked inside ``getresponse`` fails at
+    once instead of being allowed the per-operation timeout again for every byte
+    (``http.client`` reads the head one operation at a time, so a server dripping
+    one byte per operation held the connection for ``timeout`` × bytes before
+    1.39.0; CPython already bounds one ``do_handshake`` call as a whole). Once the
+    watchdog has fired, every outcome is the typed deadline error — never a
+    truncated body returned as complete."""
+    deadline = time.monotonic() + timeout
     context = ssl.create_default_context()
+    expired = threading.Event()
+    sockets: list[socket.socket] = []
 
-    def _connect_to_validated_ip(address: Any, timeout: Any = None,
-                                 source_address: Any = None) -> socket.socket:
-        # Ignore the (hostname, port) address http.client would use; connect to
-        # the IP we validated. wrap_socket still uses hostname for SNI + cert.
-        return socket.create_connection((ip, port), timeout=timeout,
-                                        source_address=source_address)
+    def _shutdown(sock: socket.socket) -> None:
+        # The base-class method, on purpose: SSLSocket.shutdown also drops the socket's
+        # _sslobj, which the main thread reads between an "is not None" check and the
+        # call in send() / read() — a bare AttributeError race. The descriptor-level
+        # shutdown is all that is needed: the blocked read returns EOF or fails.
+        try:
+            socket.socket.shutdown(sock, socket.SHUT_RDWR)
+        except OSError:  # already closed, or a raw socket detached by wrap_socket
+            pass
 
-    conn: http.client.HTTPSConnection | None = None
+    def _expire() -> None:
+        # The flag goes first: a read that then returns EOF is seen as expired.
+        expired.set()
+        for sock in list(sockets):
+            _shutdown(sock)
+
+    def _watch(sock: socket.socket) -> None:
+        sockets.append(sock)
+        if expired.is_set():  # the watchdog fired before this socket existed
+            _shutdown(sock)
+
+    conn: _PinnedHTTPSConnection | None = None
+    watchdog: threading.Timer | None = None
     try:
         # Built inside the try: the constructor raises InvalidURL on a control
         # character in the host.
-        conn = http.client.HTTPSConnection(hostname, port, timeout=timeout, context=context)
-        setattr(conn, "_create_connection", _connect_to_validated_ip)
+        conn = _PinnedHTTPSConnection(hostname, port, ip=ip, timeout=timeout,
+                                      context=context, watch=_watch)
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0:
+            raise _deadline_error(hostname, target, conn.phase)
+        timer = threading.Timer(remaining_s, _expire)
+        timer.name = _WATCHDOG_THREAD_NAME
+        timer.daemon = True
+        try:
+            timer.start()
+        except RuntimeError as exc:  # thread exhaustion: fail closed, typed
+            raise DidResolutionError(
+                f"fetch failed for https://{hostname}{target}: cannot start the deadline "
+                f"watchdog: {exc}") from exc
+        watchdog = timer
+        # request() opens the connection (connect + TLS handshake) on first use.
         conn.request("GET", target, headers={
             "Accept": "application/did+ld+json, application/json"})
+        conn.phase = "response head"
         resp = conn.getresponse()
-        # Read against a total wall-clock deadline, not only the per-socket timeout: a hostile
+        if expired.is_set():
+            raise _deadline_error(hostname, target, conn.phase)
+        # Read against the same deadline, not only the per-socket timeout: a hostile
         # server dripping one byte before each recv could otherwise hold the connection (and,
         # on the async path, a to_thread worker) for timeout × number-of-recv. read1 does at
         # most one recv per call, so the deadline is actually enforced between reads.
-        deadline = time.monotonic() + timeout
+        conn.phase = "response body"
         chunks: list[bytes] = []
         remaining = max_bytes + 1
         while remaining > 0:
-            if time.monotonic() > deadline:
-                raise DidResolutionError(
-                    f"read exceeded {timeout:g}s deadline for https://{hostname}{target}")
+            if expired.is_set() or time.monotonic() > deadline:
+                raise _deadline_error(hostname, target, conn.phase)
             chunk = resp.read1(min(remaining, 65536))
             if not chunk:
                 break
             chunks.append(chunk)
             remaining -= len(chunk)
+        # An EOF caused by the watchdog's shutdown is not a complete body.
+        if expired.is_set():
+            raise _deadline_error(hostname, target, conn.phase)
         return resp.status, b"".join(chunks)
     # ValueError: a non-ASCII request target fails to encode (UnicodeEncodeError) as
     # the request line is written, and ssl rejects some server hostnames.
     except (OSError, http.client.HTTPException, ValueError) as exc:
+        # The watchdog's shutdown is what made the read fail — or the per-operation
+        # socket timeout, armed later than the watchdog, ran out of the same budget.
+        if expired.is_set() or (isinstance(exc, TimeoutError) and time.monotonic() >= deadline):
+            raise _deadline_error(
+                hostname, target, conn.phase if conn is not None else "TCP connect") from exc
         raise DidResolutionError(f"fetch failed for https://{hostname}{target}: {exc}") from exc
     finally:
+        if watchdog is not None:
+            # cancel() alone could leave the callback mid-run while the socket below is
+            # closed; join() makes the shutdown happen-before the close, so it can never
+            # reach a descriptor the OS has since reused. The callback is a few syscalls.
+            watchdog.cancel()
+            watchdog.join()
         if conn is not None:
             conn.close()
+
+
+def _deadline_error(hostname: str, target: str, phase: str) -> DidResolutionError:
+    return DidResolutionError(
+        f"fetch failed for https://{hostname}{target}: exceeded the wall-clock deadline "
+        f"during the {phase}")
 
 
 def _https_fetch_guarded(
     url: str, *, timeout_s: float, max_bytes: int,
 ) -> bytes:
     """Fetch *url* over https with the SSRF guards above and return the raw body.
-    Shared by :func:`https_json_fetch` and :func:`https_text_fetch`."""
+    Shared by :func:`https_json_fetch` and :func:`https_text_fetch`.
+
+    The deadline starts here, before anything is parsed or resolved: DNS, connect,
+    TLS, headers and body all spend the one ``timeout_s`` budget."""
+    # A NaN budget would make every deadline comparison false (the deadline would never
+    # fire), inf overflows the timers: both are refused up front, like a non-positive one.
+    if not (timeout_s > 0 and math.isfinite(timeout_s)):
+        raise DidResolutionError(
+            f"timeout_s must be a positive, finite number of seconds, got {timeout_s!r}")
+    deadline = time.monotonic() + timeout_s
     # ASCII before anything parses it. urlparse NFKC-normalizes a non-ASCII netloc,
     # which is quadratic on CPython <= 3.12 for out-of-order combining marks, even
     # on a worker thread (normalize holds the GIL). getaddrinfo would IDNA-encode a
@@ -180,15 +336,21 @@ def _https_fetch_guarded(
     # Log host + path only — a query string could carry a caller secret, so it is never
     # logged (nor is any response body).
     logger.debug("fetch https://%s%s", hostname, parsed.path or "/")
-    ip = _resolve_public_ips(hostname, port)[0]
+    ip = _resolve_within(hostname, port, deadline, timeout_s)
 
     target = parsed.path or "/"
     if parsed.query:
         target += "?" + parsed.query
 
+    # What the lookup left of the budget is the exchange's whole budget: _https_get
+    # measures connect, TLS, head and body from the same start instant.
+    remaining_s = deadline - time.monotonic()
+    if remaining_s <= 0:
+        raise DidResolutionError(
+            f"DNS resolution of {hostname!r} exceeded the {timeout_s:g}s deadline")
     with span("openvc.fetch", host=hostname):
         status, raw = _https_get(hostname, ip, port, target,
-                                 timeout=timeout_s, max_bytes=max_bytes)
+                                 timeout=remaining_s, max_bytes=max_bytes)
     if status in _REDIRECT_STATUSES:
         raise UnsafeUrlError(f"redirect ({status}) not followed (SSRF guard)")
     if status != 200:

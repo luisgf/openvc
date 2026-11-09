@@ -209,8 +209,19 @@ finite input", with no explicit constant.
   blessed resolvers): https-only; blocks private/loopback/link-local/reserved/
   multicast/unspecified; rejects the host if *any* resolved address is forbidden;
   refuses redirects; **pins the socket to the validated IP** (DNS-rebinding
-  TOCTOU closed); 1 MiB response cap + wall-clock read deadline; query strings
-  never logged. `src/openvc/fetch.py:41-148`. See **R5**. Since v1.25.0 it also
+  TOCTOU closed); 1 MiB response cap; **one wall-clock deadline, `timeout_s`, over the
+  whole dereference** — DNS resolution, TCP connect, TLS handshake, status line, headers
+  and body — kept by a watchdog timer that shuts the socket down at the deadline (a read
+  blocked in the handshake or the head fails at once with the typed error, and an EOF the
+  watchdog causes is never a complete body) and by the body loop's per-read check against
+  the same deadline, since 1.39.0 (#385; before it the deadline started after the response
+  head, so a host sending header bytes slowly held a verifier thread for `timeout_s` ×
+  bytes, and the lookup had no bound). *Residual:* the lookup runs on a daemon thread the
+  caller abandons at the deadline, so a `getaddrinfo` that never returns keeps that thread
+  and its resolver resources until the OS resolver gives up; the bound is per dereference,
+  so a credential that names several hosts spends one budget per fetch. Query strings
+  never logged. `src/openvc/fetch.py` (`_resolve_within`, `_PinnedHTTPSConnection`,
+  `_https_get`). See **R5**. Since v1.25.0 it also
   refuses any other address that is not `is_global` (RFC 6598 CGNAT, #156), and a
   malformed or non-ASCII URL, a control character in the host or a host over 253
   characters is refused before DNS (#207, #235).

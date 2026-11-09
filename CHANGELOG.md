@@ -4,6 +4,33 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] — unreleased
+
+### Security
+
+- **`openvc.fetch`: one wall-clock deadline now covers the whole dereference — DNS
+  resolution, the TCP connect, the TLS handshake, the status line and headers, and the
+  body** ([#385](https://github.com/luisgf/openvc/issues/385)). `_https_get` started its
+  deadline after `getresponse()` returned, so it bounded only the body: the response head
+  was read one socket operation at a time, each allowed the full per-socket `timeout_s`
+  (up to 100 header lines of 65 536 bytes), and `getaddrinfo` had no bound at all, so a
+  host named by any unauthenticated credential (`did:web`, `/.well-known/jwt-vc-issuer`, a
+  status list or a schema through the default resolvers) could hold a verifier thread for
+  `timeout_s` × bytes by sending header bytes slowly (measured: a 1 s budget returned OK
+  after 9.3 s; a 1 KB head at the default 10 s is hours). Now the deadline starts before
+  the lookup, which runs on a daemon thread the caller waits on only until the deadline,
+  and a watchdog timer shuts the socket down at the deadline, so a read blocked in the
+  handshake or the head fails at once with the typed `DidResolutionError` ("exceeded the
+  wall-clock deadline during the response head"); the body loop keeps its per-read check
+  against the same deadline, and an EOF the watchdog causes is never returned as a complete
+  body. The watchdog is cancelled and joined on every exit path. `timeout_s` must now be a
+  positive, finite number: NaN made every deadline comparison false and `inf` overflowed
+  the socket timeout with a bare `OverflowError`; both are refused up front with the typed
+  error. The async fetches inherit the bound (the same code under `to_thread`). Residual:
+  a `getaddrinfo` that never returns is abandoned on its daemon thread, which holds its
+  resolver resources until the OS resolver gives up. Found by the internal security review
+  of 2026-11-07 (`test_fetch_deadline.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
