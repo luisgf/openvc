@@ -169,8 +169,11 @@ Added with [#383](https://github.com/luisgf/openvc/issues/383) (internal securit
   the chain validated to and requires the document signer's `countryName` to be present and
   equal to the anchor's (absent on either side is a refusal: Annex B mandates it on both)
   and its `stateOrProvinceName` equal when both carry it (absent on one side: no
-  constraint). The comparison is of the decoded text, with no normalisation of it (the
-  ASN.1 string type — UTF8String, PrintableString — is normalised away by the decode). A
+  constraint). The comparison is of the decoded text, exact and **case-sensitive**, with no
+  normalisation of it (the ASN.1 string type — UTF8String, PrintableString — is normalised
+  away by the decode): a DS `C=ut` under an anchor `C=UT` is refused — ISO 3166-1 alpha-2
+  codes are upper-case, so a lower-case value is non-conformant on its own, and RFC 5280's
+  case-folding is a name-chaining rule, not §9.3.3. A
   `C` or `ST` that appears more than once in either subject is refused: the ISO profile uses
   each once and the equality is undefined otherwise; `CN` and `O` are informational — exposed
   when they appear exactly once, omitted otherwise, never a refusal. A `C` that is not a
