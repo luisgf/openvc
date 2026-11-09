@@ -9,8 +9,8 @@ All notable changes to **openvc** are documented here. The format follows
 ### Security
 
 - **EU trusted lists, TS 119 612 XML lane: a null `NextUpdate` now closes the list, and a
-  `NextUpdate` that is not an aware UTC date-time is refused — neither reads as unbounded
-  validity any more** ([#389](https://github.com/luisgf/openvc/issues/389),
+  `NextUpdate` that is not a UTC date-time of the mandated `Z` form is refused — neither
+  reads as unbounded validity any more** ([#389](https://github.com/luisgf/openvc/issues/389),
   [#407](https://github.com/luisgf/openvc/issues/407)). ETSI TS 119 612 clause 5.3.15 makes
   a null `NextUpdate` the mark of a **closed** TL and has a verifier discard a TL whose Next
   update is in the past "as a measure to reduce the risk of a substitution by an attacker
@@ -21,13 +21,18 @@ All notable changes to **openvc** are documented here. The format follows
   contributing anchors indefinitely, and a tz-naive value escaped `walk_lotl` as a bare
   `TypeError` (#407). Now, mirroring the LoTE lane: `parse_trust_list` keeps `None` only for
   a *null* `NextUpdate` (element absent, without `<dateTime>`, or empty) and raises
-  `TrustListParseError` for a value that is unparseable or carries no UTC designator /
-  offset — a naive value is **not** read as UTC; `+00:00` is accepted alongside `Z` — and
-  `walk_lotl` stages a null `NextUpdate` as `"expired"` with a problem naming
+  `TrustListParseError` for anything but the `YYYY-MM-DDThh:mm:ssZ` shape clause 5.1.3
+  mandates (a fraction of a second is tolerated and `+00:00` is accepted for `Z`; a
+  tz-naive value — **not** read as UTC — another offset, the basic format or another
+  separator are refused; the fields are read by regex, not by `fromisoformat`, so the accept
+  set is the same on every interpreter) — and `walk_lotl` stages a null `NextUpdate` as
+  `"expired"` with a
+  problem naming
   `closed TL (null NextUpdate)` (a closed LOTL stops the walk, a closed national TL
   contributes nothing) and a malformed one as a `"parse"` problem, so only aware datetimes
   are ever compared. `consume_trust_list` returns the closed signal (`next_update is None`)
-  to a direct caller, as `consume_lote` does; `TrustList`'s shape is unchanged. The recorded
+  to a direct caller, as `consume_lote` does, and its docstring now says, as `consume_lote`'s
+  does, that freshness is the walk's job; `TrustList`'s shape is unchanged. The recorded
   EU LOTL / ES TL goldens are unchanged. Found by the internal security review of 2026-11-07
   (`test_trustlist_nextupdate_closed.py`).
 

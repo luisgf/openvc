@@ -44,8 +44,10 @@ Properties worth knowing:
   expired — or is **closed** (a null `NextUpdate`, TS 119 612 §5.3.15) —
   contributes **zero** anchors and is recorded in `anchors.problems`, never
   silently trusted; a closed or expired LOTL stops the walk. A `NextUpdate` that
-  is not an aware ISO 8601 UTC date-time (§5.1.3 mandates the `Z` form; a
-  tz-naive value is never read as UTC) is a parse failure, not unbounded validity.
+  is not a UTC date-time of the `YYYY-MM-DDThh:mm:ssZ` form §5.1.3 mandates
+  (`+00:00` is accepted for `Z`, a fraction is tolerated; any other offset, a
+  tz-naive value or another layout is never read as UTC) is a parse failure, not
+  unbounded validity.
 - **Selective** — the default selection keeps `granted` qualified-CA services
   (the ones that issue EUDI issuer certs); pass `select=None` for everything, or a
   `Select(service_types=…)` over `ServiceType`. Beyond `CA_QC`, the named types cover

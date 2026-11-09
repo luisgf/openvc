@@ -12,10 +12,11 @@ signature is verified — it is what finds the signer certs), so it is hardened:
 * **Bounded input.** A configurable byte cap (default 16 MiB — a national TL is a
   few MB) rejects an oversize document before parsing.
 * **Namespace by URI, never by prefix.** Elements are matched on ``{uri}local``.
-* **Date-times fail closed.** ``NextUpdate`` is read as an **aware** ``datetime`` or
-  as *null* (a closed TL, clause 5.3.15); a value that is not an ISO 8601 UTC
-  date-time (clause 5.1.3) is a :class:`TrustListParseError`, never ``None`` —
-  the walk would otherwise read it as unbounded validity (#389, #407).
+* **Date-times fail closed.** ``NextUpdate`` is read as a UTC ``datetime`` of the
+  ``YYYY-MM-DDThh:mm:ssZ`` form clause 5.1.3 mandates (a fraction tolerated,
+  ``+00:00`` accepted for ``Z``) or as *null* (a closed TL, clause 5.3.15); any
+  other value is a :class:`TrustListParseError`, never ``None`` — the walk would
+  otherwise read it as unbounded validity (#389, #407).
 
 No signature logic lives here (that is an injected callback — see
 :mod:`openvc.trustlist.consume`).
@@ -23,8 +24,9 @@ No signature logic lives here (that is an injected callback — see
 from __future__ import annotations
 
 import base64
+import re
 import xml.parsers.expat as expat
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from xml.etree.ElementTree import Element, TreeBuilder
 
@@ -39,6 +41,19 @@ XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 
 DEFAULT_MAX_BYTES = 16 * 1024 * 1024        # 16 MiB — generous for a national TL
 DEFAULT_MAX_ELEMENTS = 500_000              # ADR-0003 D4: bound the element count too
+
+# Clause 5.1.3's date-time shape: ISO 8601, UTC, second precision, the ``Z``
+# designator — ``lote._DATETIME_Z`` (the LoTE lane's clause 6.1.3 twin, kept there
+# unchanged; neither lane imports the other's private name) with two tolerances:
+# a fraction of a second, and ``+00:00`` as the offset spelling of UTC. ASCII
+# digits only, and the fields are read by this regex rather than by the
+# interpreter's ``fromisoformat`` (which widened in 3.11: basic format, any
+# separator, short offsets, and ``24:00:00`` rolled to the next day), so the
+# accept set is the same on every interpreter.
+_DATETIME_UTC = re.compile(
+    r"(?P<Y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})T(?P<H>\d{2}):(?P<M>\d{2}):(?P<S>\d{2})"
+    r"(?P<frac>\.\d+)?(?:Z|\+00:00)",
+    re.ASCII)
 
 _NS_SEP = "\x01"
 
@@ -255,34 +270,42 @@ def _int(value: str | None) -> int | None:
 
 
 def _parse_datetime(value: str | None, ctx: str) -> datetime | None:
-    """A TL date-time as an **aware** ``datetime``, or ``None`` for a *null* value.
+    """A TL date-time as a UTC ``datetime``, or ``None`` for a *null* value.
 
     ETSI TS 119 612 clause 5.1.3: every TL date-time is ISO 8601, expressed as
-    **UTC** with the ``Z`` designator. *value* is the stripped text of the
-    ``<dateTime>`` element (``None`` / empty when the element is absent or empty —
-    the null that clause 5.3.15 uses to mark a closed TL; the caller stages that).
+    **UTC**, with year, month, day, hour, minute, second and the ``Z`` designator —
+    the shape :data:`_DATETIME_UTC` pins (a fraction of a second is tolerated and
+    ``+00:00`` is accepted as the offset spelling of UTC, as the docs say; nothing
+    else is). *value* is the stripped text of the ``<dateTime>`` element (``None`` /
+    empty when the element is absent or empty — the null that clause 5.3.15 uses to
+    mark a closed TL; the caller stages that).
 
     Anything else is :class:`TrustListParseError` — never ``None``, which the walk
-    would read as unbounded validity (#389): a string ``fromisoformat`` rejects,
-    and a parseable one **without** a UTC designator or offset. A naive value is
-    not read as UTC: the profile mandates the ``Z`` form, and a guessed zone would
-    hand the expiry comparison an attacker-shaped instant (and used to escape
-    ``walk_lotl`` as a bare ``TypeError`` — #407). The ``+00:00`` spelling of UTC is
-    accepted alongside ``Z``; the echoed value is cut by :func:`safe_repr`."""
+    would read as unbounded validity (#389): another layout (the basic format, a
+    non-``T`` separator, no seconds), another offset, a naive value — which is
+    **not** read as UTC: a guessed zone would hand the expiry comparison an
+    attacker-shaped instant, and it used to escape ``walk_lotl`` as a bare
+    ``TypeError`` (#407) — or a field out of range (hour 24, 30 February). The shape
+    and the fields are read by the regex, never by ``fromisoformat``, so the accept
+    set is the same on every interpreter; the echoed value is cut by :func:`safe_repr`."""
     if not value:
         return None
-    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    match = _DATETIME_UTC.fullmatch(value)
+    if match is None:
+        raise TrustListParseError(
+            f"{ctx} dateTime {safe_repr(value)} is not a UTC date-time of the "
+            f"YYYY-MM-DDThh:mm:ssZ form (ETSI TS 119 612 clause 5.1.3)")
+    frac = match.group("frac") or ""
     try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError as exc:
+        return datetime(
+            int(match["Y"]), int(match["m"]), int(match["d"]),
+            int(match["H"]), int(match["M"]), int(match["S"]),
+            int(frac[1:7].ljust(6, "0")) if frac else 0,      # truncated past six digits
+            tzinfo=timezone.utc)
+    except ValueError as exc:                   # a field out of range: hour 24, 30 February
         raise TrustListParseError(
-            f"{ctx} dateTime {safe_repr(value)} is not an ISO 8601 date-time "
+            f"{ctx} dateTime {safe_repr(value)} is not a valid date-time "
             f"(ETSI TS 119 612 clause 5.1.3)") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise TrustListParseError(
-            f"{ctx} dateTime {safe_repr(value)} carries no UTC designator: clause 5.1.3 "
-            f"mandates UTC with 'Z', and a naive value is not read as UTC")
-    return parsed
 
 
 __all__ = ["parse_trust_list", "TSL", "ADD", "DEFAULT_MAX_BYTES"]

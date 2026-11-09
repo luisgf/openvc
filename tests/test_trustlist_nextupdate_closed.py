@@ -6,15 +6,17 @@ Clause 5.3.15: ``NextUpdate`` is the instant by which an update shall be issued
 "or be null to indicate a closed TL", and a TL "with a Next update occurring in
 the past shall be discarded as expired as a measure to reduce the risk of a
 substitution by an attacker with an old TL". Clause 5.1.3: every TL date-time is
-ISO 8601, **UTC**, with the ``Z`` designator.
+ISO 8601, **UTC**, second precision, with the ``Z`` designator — the shape the
+LoTE lane's ``_DATETIME_Z`` pins; this lane tolerates a fraction and ``+00:00``.
 
 The XML lane used to read a null ``NextUpdate`` — and any ``dateTime`` that
 ``fromisoformat`` rejected — as *unbounded* validity (anchors kept, no problem),
 and let a tz-naive value escape ``walk_lotl`` as a bare ``TypeError``. Now, as
 on the LoTE lane (``lote._staleness``): null ⇒ the list is **closed** — zero
-anchors and an ``"expired"`` problem naming ``closed TL (null NextUpdate)``; an
-unparseable or naive value ⇒ ``TrustListParseError`` (a ``"parse"`` problem in
-the walk) — never ``None``, never read as UTC; only aware datetimes are compared.
+anchors and an ``"expired"`` problem naming ``closed TL (null NextUpdate)``; any
+value outside that shape — unparseable, naive, another offset or layout — ⇒
+``TrustListParseError`` (a ``"parse"`` problem in the walk) — never ``None``, never
+read as UTC; only UTC datetimes are ever compared, on every interpreter alike.
 
 Fixtures: the synthetic ``tests/fixtures/trustlist/`` LOTL + DE TL (stub XML
 signature verifier; the real XAdES check is the ``[trustlist]`` extra's) and, for
@@ -24,7 +26,7 @@ is not a package — no cross-import).
 from __future__ import annotations
 
 import pathlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -57,8 +59,9 @@ NULL_FORMS = {
     "absent element": b"",
 }
 
-# Values that are not an aware ISO 8601 date-time (clause 5.1.3): unparseable, or
-# parseable but without the UTC designator / an offset (never read as UTC).
+# Values outside clause 5.1.3's shape: unparseable, or parseable by `fromisoformat`
+# but not the mandated layout — naive (never read as UTC), another offset, the basic
+# format, another separator, no seconds — or a field out of range.
 MALFORMED = {
     "garbage": b"not-a-date",
     "numeric": b"1767225600",
@@ -66,15 +69,30 @@ MALFORMED = {
     "naive, in the future": b"2099-01-01T00:00:00",
     "date only": b"2099-01-01",
     "Z not trailing": b"Z2099-01-01T00:00:00",
+    "offset +01:00": b"2099-01-01T01:00:00+01:00",
+    "offset +02:00": b"2099-01-01T02:00:00+02:00",
+    "offset -05:00": b"2098-12-31T19:00:00-05:00",
+    "offset +0000 (no colon)": b"2099-01-01T00:00:00+0000",
+    "basic format": b"20990101T000000Z",
+    "space separator": b"2099-01-01 00:00:00Z",
+    "no seconds": b"2099-01-01T00:00Z",
+    "lowercase z": b"2099-01-01T00:00:00z",
+    "hour 24": b"2099-01-01T24:00:00Z",
+    "30 February": b"2099-02-30T00:00:00Z",
 }
+OUT_OF_RANGE = {"hour 24", "30 February"}       # pass the shape, fail the calendar
 
-# Aware spellings of the same future instant: UTC as Z, UTC as +00:00, a non-zero
-# offset. All compare as instants; the Z form is the one clause 5.1.3 mandates.
-AWARE_FUTURE = {
+# The mandated shape, with the two tolerances the lane allows: a fraction of a
+# second (truncated past six digits) and `+00:00` as the offset spelling of UTC.
+UTC_FUTURE = {
     "Z": (b"2099-01-01T00:00:00Z", datetime(2099, 1, 1, tzinfo=timezone.utc)),
     "+00:00": (b"2099-01-01T00:00:00+00:00", datetime(2099, 1, 1, tzinfo=timezone.utc)),
-    "+02:00": (b"2099-01-01T02:00:00+02:00",
-               datetime(2099, 1, 1, 2, tzinfo=timezone(timedelta(hours=2)))),
+    "fraction .5Z": (b"2099-01-01T00:00:00.5Z",
+                     datetime(2099, 1, 1, 0, 0, 0, 500000, tzinfo=timezone.utc)),
+    "fraction .123456+00:00": (b"2099-01-01T00:00:00.123456+00:00",
+                               datetime(2099, 1, 1, 0, 0, 0, 123456, tzinfo=timezone.utc)),
+    "fraction .1234567Z": (b"2099-01-01T00:00:00.1234567Z",
+                           datetime(2099, 1, 1, 0, 0, 0, 123456, tzinfo=timezone.utc)),
 }
 
 PAST_Z = b"2020-01-01T00:00:00Z"
@@ -131,21 +149,20 @@ def test_parse_a_null_next_update_is_none(form):
 
 
 @pytest.mark.parametrize("form", sorted(MALFORMED), ids=sorted(MALFORMED))
-def test_parse_refuses_an_unparseable_or_naive_next_update(form):
+def test_parse_refuses_a_next_update_outside_the_mandated_utc_shape(form):
     with pytest.raises(TrustListParseError, match="NextUpdate") as info:
         parse_trust_list(_with_date(DE_TL, MALFORMED[form]))
     assert "5.1.3" in str(info.value)            # the clause the refusal rests on
-    if b"T" in MALFORMED[form] and MALFORMED[form][:1].isdigit():
-        assert "UTC" in str(info.value)          # the naive forms name the missing designator
+    if form not in OUT_OF_RANGE:                 # a shape failure names the mandated form
+        assert "UTC" in str(info.value) and "YYYY-MM-DDThh:mm:ssZ" in str(info.value)
 
 
-@pytest.mark.parametrize("form", sorted(AWARE_FUTURE), ids=sorted(AWARE_FUTURE))
-def test_parse_keeps_an_aware_next_update(form):
-    value, expected = AWARE_FUTURE[form]
+@pytest.mark.parametrize("form", sorted(UTC_FUTURE), ids=sorted(UTC_FUTURE))
+def test_parse_keeps_a_utc_next_update_of_the_mandated_shape(form):
+    value, expected = UTC_FUTURE[form]
     tl = parse_trust_list(_with_date(DE_TL, value))
     assert tl.next_update == expected
-    assert tl.next_update.tzinfo is not None and tl.next_update.utcoffset() is not None
-    assert tl.next_update == datetime(2099, 1, 1, tzinfo=timezone.utc)   # one instant
+    assert tl.next_update.tzinfo is timezone.utc
 
 
 def test_parse_message_for_a_huge_garbage_value_is_bounded():
@@ -218,9 +235,9 @@ def test_walk_a_past_next_update_is_still_expired():
     assert "closed" not in res.problems[0].detail      # expired ≠ closed
 
 
-@pytest.mark.parametrize("form", sorted(AWARE_FUTURE), ids=sorted(AWARE_FUTURE))
-def test_walk_keeps_the_anchors_of_a_national_tl_with_a_future_aware_next_update(form):
-    value, _ = AWARE_FUTURE[form]
+@pytest.mark.parametrize("form", sorted(UTC_FUTURE), ids=sorted(UTC_FUTURE))
+def test_walk_keeps_the_anchors_of_a_national_tl_with_a_future_utc_next_update(form):
+    value, _ = UTC_FUTURE[form]
     res, _ = _walk({LOTL_URL: LOTL, DE_URL: _with_date(DE_TL, value)})
     assert len(res.anchors) == 1 and res.problems == ()
 
@@ -249,9 +266,9 @@ def test_walk_a_lotl_with_an_unparseable_or_naive_next_update_stops_with_the_pro
     assert fetched == [LOTL_URL]
 
 
-@pytest.mark.parametrize("form", sorted(AWARE_FUTURE), ids=sorted(AWARE_FUTURE))
-def test_walk_follows_a_lotl_with_a_future_aware_next_update(form):
-    value, _ = AWARE_FUTURE[form]
+@pytest.mark.parametrize("form", sorted(UTC_FUTURE), ids=sorted(UTC_FUTURE))
+def test_walk_follows_a_lotl_with_a_future_utc_next_update(form):
+    value, _ = UTC_FUTURE[form]
     res, fetched = _walk({LOTL_URL: _with_date(LOTL, value), DE_URL: DE_TL})
     assert len(res.anchors) == 1 and res.problems == ()
     assert fetched == [LOTL_URL, DE_URL]

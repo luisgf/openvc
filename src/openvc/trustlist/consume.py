@@ -121,7 +121,14 @@ def consume_trust_list(
     raise on any failure; if it is ``None`` this raises
     :class:`TrustListSignatureUnavailable` — a list is never parsed-and-trusted
     unverified. Signature verification runs before parsing so an unauthentic list is
-    rejected outright."""
+    rejected outright.
+
+    ``consume_trust_list`` establishes authenticity and well-formedness — **not
+    freshness**: staging an expired or **closed** list (``NextUpdate`` in the past, or
+    null per ETSI TS 119 612 clause 5.3.15) is :func:`walk_lotl`'s job, as on the
+    LoTE lane (``consume_lote`` / ``walk_lote``). A closed list comes back with its
+    services attached and ``next_update is None``; a caller using
+    ``consume_trust_list`` directly must check ``next_update`` itself."""
     if verify_signature is None:
         raise TrustListSignatureUnavailable(
             "no verify_signature callback given; a trust list is never trusted "
@@ -154,8 +161,9 @@ def walk_lotl(
     filters the trust services (default: ``granted`` qualified-CA — pass ``None`` for
     all); *fetch* performs the SSRF-guarded GETs. A TL that cannot be fetched /
     verified / is expired — or is **closed** (a null ``NextUpdate``, clause 5.3.15:
-    stage ``"expired"``; a ``NextUpdate`` that is not an aware UTC date-time is a
-    ``"parse"`` problem) — contributes no anchors and is recorded in the result's
+    stage ``"expired"``; a ``NextUpdate`` that is not a UTC date-time of the
+    ``YYYY-MM-DDThh:mm:ssZ`` form clause 5.1.3 mandates is a ``"parse"`` problem) —
+    contributes no anchors and is recorded in the result's
     ``problems`` — never silently trusted (ADR-0003 D6). A closed or expired LOTL
     stops the walk with that one problem. Pass *now* to pin the expiry evaluation
     instant."""
