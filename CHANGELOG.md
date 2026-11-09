@@ -34,8 +34,15 @@ All notable changes to **openvc** are documented here. The format follows
   through the key backend and re-encoded fixed-width — and under `strict=True` refuses a
   member whose spelling differs from that (**`NonCanonicalKey`**, an `InvalidKey`, naming
   the member, never its value); a wrong-width coordinate (RFC 7518 §6.2.1.2 makes the full
-  width a MUST), an off-curve point, a lone UTF-16 surrogate (named by code point and
-  index) or an unsupported key type is a plain `InvalidKey` in either mode. The header `jwk` of a key
+  width a MUST), an off-curve point or an EC coordinate `>= p`, a lone UTF-16 surrogate
+  (named by code point and index), a non-object input or an unsupported key type is a plain
+  `InvalidKey` in either mode. **So is an Ed25519 `x` that is not a canonical point encoding
+  (`y >= p`, RFC 8032 §5.1.3) or is one of the eight small-order points** (libsodium's
+  blocklist): `cryptography` accepts any 32 bytes as an Ed25519 public key, so the identity
+  point alone had four strict-canonical spellings — hence four thumbprints — and a key-proof
+  signature under it needs no private key at all (found by the adversarial review of the PR;
+  pre-existing on `main`, where such a batch was accepted). P-256 / P-384 already refuse a
+  coordinate `>= p` through `from_encoded_point`, now pinned. The header `jwk` of a key
   proof is checked **strictly**, after the private-member and `alg` binding rules and before
   any crypto or the nonce: a padded, dirty-bit or non-alphabet coordinate is `ClaimsInvalid`
   naming the member, and so are a wrong-width coordinate (verified on `main`, as a different
@@ -47,9 +54,11 @@ All notable changes to **openvc** are documented here. The format follows
   still refuses the proof naming the rule. On that attestation side only the key shapes
   the proof `alg` can bind to (EC P-256 / P-384, OKP Ed25519) are canonicalised, and a
   malformed attested key of one of those shapes (wrong width, off-curve) now refuses the
-  proof even when a sibling entry matches; an attested key of any other type (the X25519
-  or RSA sibling of a multi-key attestation) is read as RFC 7638 reads it and passed over,
-  as before, refused only when it cannot be digested at all — and **`VerifiedProof.public_jwk` is the minimal
+  proof; an attested key of any other type (the X25519 or RSA sibling of a multi-key
+  attestation) is read as RFC 7638 reads it and passed over, as before, refused only when
+  it cannot be digested at all. **Every attested key is read before any is matched**, so
+  either refusal holds wherever the entry sits in the list (`main` stopped at the first
+  match, so junk listed after it went unread) — and **`VerifiedProof.public_jwk` is the minimal
   canonical JWK**: nothing beyond `kty`/`crv`/`x`(/`y`) survives into a `cnf.jwk`; the
   wallet's header stays verbatim in `VerifiedProof.header`. The SD-JWT `cnf.jwk` and JWE
   `epk` readers keep their tolerant decoding (out of scope). Found by the internal security

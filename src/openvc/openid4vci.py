@@ -969,9 +969,9 @@ def _check_batch_invariants(
     if len(set(thumbprints)) != len(thumbprints):
         # N credentials must mean N keys; otherwise a wallet gets N copies bound to one.
         # The thumbprints are of the canonical key form (issue #379): a key the wallet
-        # spelled N ways — padding, dirty trailing bits, a non-alphabet character — is
-        # refused as non-canonical before it gets here, and a resolver's key is
-        # normalised, so "one thumbprint" does mean "one key".
+        # spelled N ways — padding, dirty trailing bits, a non-alphabet character, a
+        # non-canonical Ed25519 point encoding — is refused before it gets here, and a
+        # resolver's key is normalised, so "one thumbprint" does mean "one key".
         raise ClaimsInvalid("two key proofs in the batch are bound to the same key")
 
     # Last, and exactly once: every signature above has verified, so an unauthenticated
@@ -1212,24 +1212,34 @@ def _check_attested_key(thumbprint: str, attestation: UnverifiedKeyAttestation) 
     proof key, which already passed the ``alg`` binding, so it is read as RFC 7638 reads
     it, exactly as before: compared and passed over, or refused only if RFC 7638 cannot
     digest it at all.
+
+    **Every** attested key is read before any is matched, so a malformed entry refuses
+    the proof wherever it sits in the list — before or after the matching one. A
+    reject-only step loses nothing by being order-independent, and an attestation that
+    lists a key nobody could hold is not one to issue against.
     """
-    for key in attestation.attested_keys:
-        kty, crv = key.get("kty"), key.get("crv")
-        # The str checks come first: a list or object `kty`/`crv` is unhashable and the
-        # set lookup would be a bare TypeError over bytes the wallet chose. Such a key
-        # falls through to RFC 7638, which refuses it typed.
-        if isinstance(kty, str) and isinstance(crv, str) and (kty, crv) in _BINDABLE_KEY_SHAPES:
-            _, attested = _canonical_key(key, "an attested key")
-        else:
-            try:
-                attested = jwk_thumbprint(key)
-            except InvalidKey as exc:
-                raise ClaimsInvalid(f"an attested key cannot be thumbprinted: {exc}") from exc
-        if attested == thumbprint:
-            return
+    attested = [_attested_thumbprint(key) for key in attestation.attested_keys]
+    if thumbprint in attested:
+        return
     raise ClaimsInvalid(
         "the key that signed this proof is not among the key attestation's "
         "attested_keys (compared by RFC 7638 thumbprint of the canonical key form)")
+
+
+def _attested_thumbprint(key: Mapping[str, Any]) -> str:
+    """One ``attested_keys`` entry as the thumbprint it is compared by (see
+    :func:`_check_attested_key`): canonical form for a bindable shape, RFC 7638 as given
+    for any other type; :class:`ClaimsInvalid` for an entry neither can read."""
+    kty, crv = key.get("kty"), key.get("crv")
+    # The str checks come first: a list or object `kty`/`crv` is unhashable and the set
+    # lookup would be a bare TypeError over bytes the wallet chose. Such a key falls
+    # through to RFC 7638, which refuses it typed.
+    if isinstance(kty, str) and isinstance(crv, str) and (kty, crv) in _BINDABLE_KEY_SHAPES:
+        return _canonical_key(key, "an attested key")[1]
+    try:
+        return jwk_thumbprint(key)
+    except InvalidKey as exc:
+        raise ClaimsInvalid(f"an attested key cannot be thumbprinted: {exc}") from exc
 
 
 def _check_key_binds_to_alg(jwk: Mapping[str, Any], alg: str) -> None:

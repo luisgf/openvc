@@ -22,7 +22,11 @@ downstream):
   * App. D's `attested_keys` are compared in canonical form, so an attestation that
     spells an honest key non-canonically still matches — and a wrong-width one still
     refuses, naming RFC 7518 §6.2.1.2;
-  * `openvc.keys.canonical_public_jwk`, the helper behind all of it.
+  * `openvc.keys.canonical_public_jwk`, the helper behind all of it — including, from
+    the adversarial review of the PR, that an Ed25519 `x` must be a canonical point
+    encoding of a point that is not small-order (the identity had four "canonical"
+    spellings and signs for anyone), that every attested key is read before any is
+    matched, and the helper's own contract on junk input and message bounds.
 
 The `openvc.keys` helper is imported inside its tests on purpose: against a tree that
 predates it the behavioural tests must still be collected and fail on their own merits.
@@ -498,28 +502,34 @@ def test_a_sibling_of_another_type_spelled_non_canonically_is_passed_over_too():
     assert verified.thumbprint == jwk_thumbprint(key.public_jwk())
 
 
+@pytest.mark.parametrize("junk_first", [True, False], ids=["junk-before", "junk-after"])
 @pytest.mark.parametrize("junk, expect", [
     ({"kty": "XX", "x": "a"}, "an attested key cannot be thumbprinted"),
     ({"kty": "EC", "crv": "P-256", "x": "a"}, "an attested key cannot be thumbprinted"),
     ({"kty": "EC", "crv": "P-256", "x": 123, "y": "a"}, "an attested key cannot be thumbprinted"),
 ], ids=["unknown-kty", "missing-y", "non-string-x"])
-def test_junk_in_attested_keys_still_refuses_even_next_to_the_honest_key(junk, expect):
-    """Unchanged from before: a key RFC 7638 cannot digest refuses the proof, whatever else
-    the attestation lists."""
+def test_junk_in_attested_keys_refuses_wherever_it_sits(junk, expect, junk_first):
+    """A key RFC 7638 cannot digest refuses the proof, whatever else the attestation lists
+    and in whatever order: every entry is read before any is matched (before this change,
+    and on the tree before it, junk listed after the matching key went unread)."""
     key = _P256()
-    attested = _attestation(junk, key.public_jwk())
+    keys = (junk, key.public_jwk()) if junk_first else (key.public_jwk(), junk)
+    attested = _attestation(*keys)
     with pytest.raises(ClaimsInvalid, match=expect):
         _verify(_request(_proof(key, header_extra={"key_attestation": attested})))
 
 
-def test_a_malformed_key_of_a_bindable_shape_refuses_even_next_to_the_honest_key():
+@pytest.mark.parametrize("junk_first", [True, False], ids=["junk-before", "junk-after"])
+def test_a_malformed_key_of_a_bindable_shape_refuses_wherever_it_sits(junk_first):
     """Deliberately stricter than before on the attestation side: a P-256 sibling of the wrong
-    width or off the curve is not a key, and a bindable shape is validated as one."""
+    width or off the curve is not a key, a bindable shape is validated as one, and the list
+    order does not matter."""
     key = _P256()
     other = _P256().public_jwk()
     for junk, expect in ((dict(other, x=_wide(other["x"])), "RFC 7518 §6.2.1.2"),
                          (_off_curve(other), "is not a valid P-256 public key")):
-        attested = _attestation(junk, key.public_jwk())
+        keys = (junk, key.public_jwk()) if junk_first else (key.public_jwk(), junk)
+        attested = _attestation(*keys)
         message = f"an attested key cannot be thumbprinted: .*{expect}"
         with pytest.raises(ClaimsInvalid, match=message):
             _verify(_request(_proof(key, header_extra={"key_attestation": attested})))
@@ -610,7 +620,8 @@ def test_canonical_public_jwk_refuses_an_off_curve_point():
     ({"kty": "EC", "crv": "secp256k1", "x": "a", "y": "b"}, "no canonical public form"),
     ({"kty": "OKP", "crv": "X25519", "x": "a"}, "no canonical public form"),
     ({"kty": "EC", "x": "a", "y": "b"}, "no canonical public form"),
-    ({"kty": "EC", "crv": ["P-256"], "x": "a", "y": "b"}, "crv='list'"),
+    ({"kty": "EC", "crv": ["P-256"], "x": "a", "y": "b"}, "crv=list"),
+    ({"kty": "EC", "crv": "C" * 33, "x": "a", "y": "b"}, "crv=str: EC P-256"),
     ({"kty": "RSA", "n": "AQAB", "e": "AQAB"}, "no canonical public form"),
     ({"kty": "oct", "k": "AQAB"}, "no canonical public form"),
     ({"kty": "AKP", "alg": "ML-DSA-65", "pub": "AA"}, "unsupported JWK kty 'AKP'"),
@@ -632,6 +643,193 @@ def test_a_lone_surrogate_in_the_header_jwk_is_typed_and_named_by_code_point():
     with pytest.raises(ClaimsInvalid, match=expect) as info:
         _verify(_request(_proof(key, jwk=spelled)))
     assert "\ud800" not in str(info.value)
+
+
+@pytest.mark.parametrize("not_a_jwk", [[1], "abc", None, 5, b"x", ({"kty": "EC"},)],
+                         ids=["list", "str", "None", "int", "bytes", "tuple"])
+def test_canonical_public_jwk_refuses_a_non_object_typed(not_a_jwk):
+    from openvc.keys import InvalidKey, canonical_public_jwk
+
+    with pytest.raises(InvalidKey, match="JWK must be a JSON object"):
+        canonical_public_jwk(not_a_jwk)
+
+
+@pytest.mark.parametrize("jwk", [
+    {"kty": "A" * 100_000},
+    {"kty": "EC", "crv": "C" * 100_000, "x": "a", "y": "b"},
+    {"kty": "K" * 100_000, "crv": "P-256", "x": "a", "y": "b"},
+    {"kty": "EC", "crv": "P-256", "x": "A" * 100_000, "y": "b"},
+    {"kty": "EC", "crv": "P-256", "x": "!" * 100_000, "y": "b"},
+], ids=["kty", "crv", "kty-with-crv", "x", "x-non-b64"])
+def test_canonical_public_jwk_messages_are_bounded(jwk):
+    from openvc.keys import InvalidKey, canonical_public_jwk
+
+    with pytest.raises(InvalidKey) as info:
+        canonical_public_jwk(jwk, strict=True)
+    assert len(str(info.value)) < 200
+
+
+# ---------------------------------------- Ed25519 point encodings (RFC 8032 §5.1.3) #
+
+_P_ED = 2**255 - 19
+_D_ED = (-121665 * pow(121666, -1, _P_ED)) % _P_ED
+_SQRT_M1 = pow(2, (_P_ED - 1) // 4, _P_ED)
+_B_ENC = bytes.fromhex("5866666666666666666666666666666666666666666666666666666666666666")
+
+
+def _sqrt_ed(a):
+    a %= _P_ED
+    c = pow(a, (_P_ED + 3) // 8, _P_ED)
+    if (c * c) % _P_ED == a:
+        return c
+    c = (c * _SQRT_M1) % _P_ED
+    return c if (c * c) % _P_ED == a else None
+
+
+def _ed_add(P, Q):
+    (x1, y1), (x2, y2) = P, Q
+    k = _D_ED * x1 * x2 * y1 * y2
+    return ((x1 * y2 + x2 * y1) * pow(1 + k, -1, _P_ED) % _P_ED,
+            (y1 * y2 + x1 * x2) * pow(1 - k, -1, _P_ED) % _P_ED)
+
+
+def _small_order_ys():
+    """Derived from the curve, not copied: 1 (identity), p-1 (order 2), 0 (order 4) and the
+    two y with y² = (-1 ± sqrt(1+d))/d, whose double lies on y = 0 (order 8)."""
+    ys = {0, 1, _P_ED - 1}
+    root = _sqrt_ed(1 + _D_ED)
+    for r in (root, _P_ED - root):
+        y = _sqrt_ed((-1 + r) * pow(_D_ED, -1, _P_ED))
+        if y is not None:
+            ys |= {y, _P_ED - y}
+    return ys
+
+
+def _ed_enc(y, sign=0):
+    enc = bytearray(y.to_bytes(32, "little"))
+    enc[31] |= sign
+    return bytes(enc)
+
+
+def _ed_jwk(enc):
+    return {"kty": "OKP", "crv": "Ed25519", "x": _b64u(enc)}
+
+
+def test_the_small_order_set_is_the_torsion_subgroup():
+    """Self-check of the test's own derivation: five y values, and each point of order 8
+    doubles onto y = 0, then onto the point of order 2, then onto the identity."""
+    ys = _small_order_ys()
+    assert len(ys) == 5
+    for y in ys - {0, 1, _P_ED - 1}:
+        x = _sqrt_ed((y * y - 1) * pow(_D_ED * y * y + 1, -1, _P_ED))
+        assert x is not None
+        p2 = _ed_add((x, y), (x, y))
+        p4 = _ed_add(p2, p2)
+        assert p2[1] == 0 and p4 == (0, _P_ED - 1) and _ed_add(p4, p4) == (0, 1)
+    # libsodium's `ge25519_has_small_order` table, little-endian
+    assert int.from_bytes(bytes.fromhex(
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"), "little") in ys
+    assert int.from_bytes(bytes.fromhex(
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"), "little") in ys
+
+
+@pytest.mark.parametrize("label, enc", [
+    ("identity y=1", _ed_enc(1)),
+    ("identity y=1 sign-bit", _ed_enc(1, 0x80)),
+    ("identity y=1+p", _ed_enc(1 + _P_ED)),
+    ("identity y=1+p sign-bit", _ed_enc(1 + _P_ED, 0x80)),
+    ("y=p (non-canonical 0)", _ed_enc(_P_ED)),
+    ("y=p+18", _ed_enc(_P_ED + 18)),
+    ("all 0xff", b"\xff" * 32),
+    ("all 0x00", b"\x00" * 32),
+])
+def test_a_non_canonical_or_identity_ed25519_encoding_is_refused_in_both_modes(label, enc):
+    from openvc.keys import InvalidKey, NonCanonicalKey, canonical_public_jwk
+
+    for strict in (False, True):
+        with pytest.raises(InvalidKey, match="Ed25519 point") as info:
+            canonical_public_jwk(_ed_jwk(enc), strict=strict)
+        assert not isinstance(info.value, NonCanonicalKey)    # it is not a key, not a spelling
+        assert _b64u(enc) not in str(info.value)
+
+
+@pytest.mark.parametrize("sign", [0, 0x80], ids=["sign-0", "sign-1"])
+@pytest.mark.parametrize("y", sorted(_small_order_ys()),
+                         ids=["y=0", "y=1", "y=order8-a", "y=order8-b", "y=p-1"])
+def test_every_small_order_ed25519_point_is_refused(y, sign):
+    """All eight torsion points, both sign bits of each y (ten encodings; two name the same
+    point as another, which is exactly the duplicate-spelling problem)."""
+    from openvc.keys import InvalidKey, canonical_public_jwk
+
+    with pytest.raises(InvalidKey, match="small-order Ed25519 point"):
+        canonical_public_jwk(_ed_jwk(_ed_enc(y, sign)))
+
+
+def test_a_real_ed25519_key_is_accepted_and_its_negation_is_another_real_key():
+    from openvc.keys import canonical_public_jwk
+
+    jwk = _ED().public_jwk()
+    assert canonical_public_jwk(jwk, strict=True) == jwk
+    assert jwk_thumbprint(canonical_public_jwk(jwk)) == jwk_thumbprint(jwk)
+    raw = bytearray(_raw(jwk["x"]))
+    raw[31] ^= 0x80                                          # -A: a different, valid point
+    negated = _ed_jwk(bytes(raw))
+    assert canonical_public_jwk(negated, strict=True) == negated
+
+
+def test_forged_proofs_under_the_identity_point_are_refused_before_the_nonce():
+    """The review's headline: [S]B == R + [k]A holds for A = identity with R = B, S = 1, so a
+    proof under it needs no private key. Four strict-canonical spellings → four thumbprints
+    → a 4-proof batch minted four credentials on the tree before this change."""
+    forged = _B_ENC + (1).to_bytes(32, "little")
+    spellings = [_ed_enc(1), _ed_enc(1, 0x80), _ed_enc(1 + _P_ED), _ed_enc(1 + _P_ED, 0x80)]
+    assert len({jwk_thumbprint(_ed_jwk(e)) for e in spellings}) == 4
+
+    def forged_proof(enc):
+        header = {"typ": "openid4vci-proof+jwt", "alg": "EdDSA", "jwk": _ed_jwk(enc)}
+        claims = {"aud": ISSUER, "iat": NOW_TS, "nonce": NONCE}
+        return ".".join((_b64u(json.dumps(header).encode()), _b64u(json.dumps(claims).encode()),
+                         _b64u(forged)))
+
+    calls = []
+    expect = "key proof jwk cannot be thumbprinted: .*Ed25519 point"
+    with pytest.raises(ClaimsInvalid, match=expect):
+        _verify(_request(forged_proof(spellings[0])),
+                check_nonce=lambda n: calls.append(n) or True)
+    with pytest.raises(ClaimsInvalid, match="Ed25519 point"):
+        _verify(_request(*(forged_proof(e) for e in spellings)), batch_size=4,
+                check_nonce=lambda n: calls.append(n) or True)
+    assert calls == []
+
+
+def test_a_resolver_returning_the_identity_point_is_refused_typed():
+    key = _ED()
+    with pytest.raises(ClaimsInvalid, match="cannot be thumbprinted: .*small-order Ed25519 point"):
+        _verify(_request(_proof(key, key_param="kid")),
+                resolve_proof_key=lambda kid: _ed_jwk(_ed_enc(1)))
+
+
+def test_a_p256_coordinate_at_or_above_p_is_refused_by_the_backend():
+    """Pins what `from_encoded_point` does for EC (the review checked it): a point with a tiny
+    x can be spelled with x + p in 32 bytes; `EllipticCurvePublicNumbers` would reduce it
+    silently, `from_encoded_point` refuses it, and so does the helper."""
+    from openvc.keys import InvalidKey, canonical_public_jwk
+
+    p256 = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff
+    b = 0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b
+    x = 0
+    while True:
+        rhs = (x ** 3 - 3 * x + b) % p256
+        if pow(rhs, (p256 - 1) // 2, p256) == 1:
+            y = pow(rhs, (p256 + 1) // 4, p256)
+            break
+        x += 1
+    assert (y * y) % p256 == rhs and x + p256 < 2**256
+    jwk = {"kty": "EC", "crv": "P-256", "x": _b64u(x.to_bytes(32, "big")),
+           "y": _b64u(y.to_bytes(32, "big"))}
+    assert canonical_public_jwk(jwk, strict=True) == jwk
+    with pytest.raises(InvalidKey, match="is not a valid P-256 public key"):
+        canonical_public_jwk(dict(jwk, x=_b64u((x + p256).to_bytes(32, "big"))))
 
 
 def test_canonical_public_jwk_is_public_api():
