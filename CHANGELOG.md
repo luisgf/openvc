@@ -44,7 +44,12 @@ All notable changes to **openvc** are documented here. The format follows
   `x5c` leaf is normalised, not refused. The batch rule, the App. D `attested_keys`
   comparison and `VerifiedProof.thumbprint` work on the canonical form — a key attestation
   that spells the honest key non-canonically keeps matching, a wrong-width attested key
-  still refuses the proof naming the rule — and **`VerifiedProof.public_jwk` is the minimal
+  still refuses the proof naming the rule. On that attestation side only the key shapes
+  the proof `alg` can bind to (EC P-256 / P-384, OKP Ed25519) are canonicalised, and a
+  malformed attested key of one of those shapes (wrong width, off-curve) now refuses the
+  proof even when a sibling entry matches; an attested key of any other type (the X25519
+  or RSA sibling of a multi-key attestation) is read as RFC 7638 reads it and passed over,
+  as before, refused only when it cannot be digested at all — and **`VerifiedProof.public_jwk` is the minimal
   canonical JWK**: nothing beyond `kty`/`crv`/`x`(/`y`) survives into a `cnf.jwk`; the
   wallet's header stays verbatim in `VerifiedProof.header`. The SD-JWT `cnf.jwk` and JWE
   `epk` readers keep their tolerant decoding (out of scope). Found by the internal security

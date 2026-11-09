@@ -444,12 +444,19 @@ def test_a_stranger_in_attested_keys_is_still_not_among_them():
     [{}], [{"kty": "EC"}], [{"kty": "XX", "x": "a"}],
     [{"kty": "EC", "crv": "P-256", "x": 123, "y": "a"}],
     [{"kty": "EC", "crv": "secp256k1", "x": "a", "y": "b"}],
-])
+    # unhashable kty / crv: a set lookup on them would be a bare TypeError
+    [{"kty": "EC", "crv": ["P-256"], "x": "a", "y": "b"}],
+    [{"kty": "EC", "crv": {"a": 1}, "x": "a", "y": "b"}],
+    [{"kty": ["EC"], "crv": "P-256", "x": "a", "y": "b"}],
+    [{"kty": None, "crv": None, "x": "a"}],
+], ids=["empty", "kty-only", "unknown-kty", "non-string-x", "secp256k1",
+        "list-crv", "object-crv", "list-kty", "null-kty-crv"])
 def test_a_malformed_attested_key_is_typed_not_leaked(attested_keys):
     key = _P256()
     attested = _attestation(attested_keys=attested_keys)
-    with pytest.raises(ClaimsInvalid):
+    with pytest.raises(ClaimsInvalid) as info:
         _verify(_request(_proof(key, header_extra={"key_attestation": attested})))
+    assert type(info.value) is ClaimsInvalid
 
 
 def _x25519_jwk():

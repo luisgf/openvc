@@ -1214,7 +1214,11 @@ def _check_attested_key(thumbprint: str, attestation: UnverifiedKeyAttestation) 
     digest it at all.
     """
     for key in attestation.attested_keys:
-        if (key.get("kty"), key.get("crv")) in _BINDABLE_KEY_SHAPES:
+        kty, crv = key.get("kty"), key.get("crv")
+        # The str checks come first: a list or object `kty`/`crv` is unhashable and the
+        # set lookup would be a bare TypeError over bytes the wallet chose. Such a key
+        # falls through to RFC 7638, which refuses it typed.
+        if isinstance(kty, str) and isinstance(crv, str) and (kty, crv) in _BINDABLE_KEY_SHAPES:
             _, attested = _canonical_key(key, "an attested key")
         else:
             try:
