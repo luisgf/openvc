@@ -387,6 +387,22 @@ field (a `holder` that disagrees with the signer is rejected). Every credential 
 presentation carries must also be bound to that holder, unless the query opts out — see
 [Holder binding on the W3C formats](#holder-binding-on-the-w3c-formats).
 
+What `holder` means depends on the lane, because each lane authenticates the presenter
+differently. For `jwt_vc_json` and `ldp_vc` it is the VP signer, as above. For `dc+sd-jwt`
+it is the issuer-signed `sub` once the Key Binding JWT has proved possession of the `cnf`
+key (`credentials[0].key_bound is True`); an SD-JWT VC presented with no KB-JWT, which only
+a query that waived binding accepts, reports `holder=None` since 1.39.0 (it used to report
+`sub`, an identifier nobody had authenticated; it stays readable as
+`credentials[0].subject`). A bare W3C credential reports `None`, since nothing
+authenticated a holder, and so does `mso_mdoc`: its `DeviceAuth` is verified, but an mdoc
+carries no holder identifier. `require_holder_binding=True`, the caller's own switch,
+enforces the binding on every lane whatever the query says: on the W3C lanes every
+embedded credential's subject must be the signer and a bare credential is refused; on
+`dc+sd-jwt` the SD-JWT VC must carry a KB-JWT bound to this exchange, else
+`ClaimsInvalid`; `mso_mdoc` meets it by construction, because the `DeviceAuth` over the
+origin-bound `SessionTranscript`, signed with the device key the issuer sealed in the MSO,
+is verified for every document or the response is refused.
+
 ### Matching the credential type: `meta.type_values`
 
 A DCQL query for `jwt_vc_json` or `ldp_vc` lists the credential types it
@@ -597,7 +613,10 @@ describes.
 
 `require_holder_binding=True` is the stricter, caller-side switch, and it ignores the
 query. Every embedded credential's subject must be the authenticated holder, *including*
-an SD-JWT VC's `sub`. `VpJwtProofSuite.verify` knows nothing of DCQL. There, use
+an SD-JWT VC's `sub`. On the `dc+sd-jwt` lane the same switch requires the KB-JWT
+(`key_bound=True`), and `mso_mdoc` meets it by construction — see
+[what `holder` means per lane](#openid4vp-10-verify_vp_token) above.
+`VpJwtProofSuite.verify` knows nothing of DCQL. There, use
 `require_holder_binding` for the subject rule and
 `policy=VerificationPolicy(require_key_binding=True)` for nested SD-JWTs.
 
