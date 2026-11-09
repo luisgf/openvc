@@ -81,6 +81,64 @@ All notable changes to **openvc** are documented here. The format follows
   EU LOTL / ES TL goldens are unchanged. Found by the internal security review of 2026-11-07
   (`test_trustlist_nextupdate_closed.py`).
 
+- **`openvc.fetch`: one wall-clock deadline now covers the whole dereference — DNS
+  resolution, the TCP connect, the TLS handshake, the status line and headers, and the
+  body** ([#385](https://github.com/luisgf/openvc/issues/385)). `_https_get` started its
+  deadline after `getresponse()` returned, so it bounded only the body — and not all of it:
+  the response head was read one socket operation at a time, each allowed the full
+  per-socket `timeout_s` (up to 100 header lines of 65 536 bytes), the chunk-size lines and
+  trailers of a chunked body were read the same way inside `read1` (a 1 s budget leaked 6–7 s
+  there too, one case returning OK), and `getaddrinfo` had no bound at all, so a
+  host named by any unauthenticated credential (`did:web`, `/.well-known/jwt-vc-issuer`, a
+  status list or a schema through the default resolvers) could hold a verifier thread for
+  `timeout_s` × bytes by sending header bytes slowly (measured: a 1 s budget returned OK
+  after 9.3 s; a 1 KB head at the default 10 s is hours). Now the deadline starts before
+  the lookup, which runs on a daemon thread the caller waits on only until the deadline,
+  and a watchdog timer shuts the socket down at the deadline, so a read blocked in the
+  handshake, the head or a chunk-size line fails at once with the typed `DidResolutionError`
+  naming the phase ("exceeded the wall-clock deadline during the TLS handshake" / "the
+  response head" / "the response body"); the body loop keeps its per-read check against the
+  same deadline, and an EOF the watchdog causes is never returned as a complete body. The
+  watchdog is cancelled and joined on every exit path, and the override of `connect()` still
+  emits the stdlib `http.client.connect` audit event. `timeout_s` must now be an `int` or
+  `float` greater than 0 and at most one day (`MAX_TIMEOUT_S`, the EBSI `deadline_s`
+  ceiling): NaN made every deadline comparison false, `inf` and a finite value past ~9.2e9 s
+  overflowed the timers with a bare `OverflowError`, a non-number was a bare `TypeError`;
+  all are refused up front with the typed error. The async fetches inherit the bound (the
+  same code under `to_thread`). Residual:
+  a `getaddrinfo` that never returns is abandoned on its daemon thread, which holds its
+  resolver resources until the OS resolver gives up. Found by the internal security review
+  of 2026-11-07 (`test_fetch_deadline.py`).
+
+- **did:web: a path segment is now sent as written and must match the method's own grammar
+  — the DID Core `idchar`, `ALPHA / DIGIT / "." / "-" / "_" / pct-encoded` — and a segment
+  that is empty, a dot segment in any spelling, outside that grammar, or a `%XX` escape of a
+  delimiter, `;`, a control character, whitespace or a non-ASCII octet is refused before any
+  fetch** ([#384](https://github.com/luisgf/openvc/issues/384)). The did:web mapping decodes
+  only the port's `%3A`; `_did_web_url` percent-decoded every segment, so an escaped `#`, `?` or
+  `/`, a `..` segment or an escaped control character changed the path the guarded fetch
+  requested — `urlparse` cuts a path at a fragment or a query, so `did.json` was not even
+  asked for — and the trust boundary widened from `<path>/did.json` to any path on the host;
+  such a DID resolves in no conformant resolver. Now the host segment decodes `%3A` alone (any
+  other `%` fails the domain-name syntax), every path segment goes on the wire verbatim, and
+  `_check_segment` refuses, with a `DidResolutionError` naming the DID and the segment through
+  `safe_repr`, a segment that is empty; a dot segment (the set an https issuer identifier is
+  held to: `..`, `%2E%2E`, …); outside the did:web ABNF (did:web §"Method Specific
+  Identifier", which is DID Core 1.0 §3.1 `idchar`) — so `;` (a servlet container strips a
+  path parameter before it normalizes the path, which makes `..;` a dot segment), `/ ? # \`,
+  `@ ~ ! $ & ' ( ) * + , =`, a double quote, `< >`, a backtick, `{ } [ ] | ^`, whitespace, a
+  control character, non-ASCII and a `%` that is not a `%XX` escape; or a `%XX` escape of a
+  delimiter, `;`, `%`, a control character, whitespace or a non-ASCII octet — before any fetch,
+  the caller's own included, on the sync and the async resolver alike. `did:webvh` reuses the
+  mapping and inherits the refusal as a `DidWebvhError`. Through the pipeline the refusal is
+  `KeyResolutionFailed` on the JOSE lanes and `KeyResolutionError` on the Data Integrity lanes.
+  Plain paths and `%3A` ports resolve as before; an escape of any other printable ASCII
+  character (`%40`, `%41`, `%3A` in a path segment) now goes on the wire as written
+  (`/%40evil/did.json`; it used to be decoded to `/@evil/did.json`). A did:web whose path has
+  characters outside `idchar` (`did:web:example.com:~alice`, `:user+x`, `:a!b`, `:a@b`) used to
+  be fetched and is now refused. Found by the internal security review of 2026-11-07; the `;`
+  spelling by the PR's adversarial review (`test_did_web_segments.py`).
+
 - **The three RDF Data Integrity suites now canonicalize under a work budget: 256 blank
   nodes, 10 000 Hash N-Degree Quads calls and 10 000 permutations, and a document over it is
   refused as `CanonicalizationBudgetExceeded` (a `ProofMalformed`) before any signature check**
@@ -6523,7 +6581,6 @@ verifies (see *Changed*).
   coordinates are full width: 0 failures in 600. openvc never signs XAdES, so trust-list
   verification is unaffected.
 
-
 ## [1.31.3] — 2026-10-13
 
 Tests and docs only: no library code changes.
@@ -6962,7 +7019,6 @@ Side effects of the shared reader, all edge cases:
   typed error.
 - On mdoc, a negative `leeway_s` now counts as 0, as it already did on the Data
   Integrity and WRPRC windows. It used to narrow the window.
-
 
 ## [1.30.4] — 2026-10-13
 
