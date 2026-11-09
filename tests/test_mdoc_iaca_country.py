@@ -15,11 +15,13 @@ import base64
 import datetime as dt
 import hashlib
 import pathlib
+import warnings
 
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.name import _ASN1Type
 from cryptography.x509.oid import NameOID
 
 from openvc import cbor, mdoc
@@ -129,6 +131,12 @@ def _tdate(when):
 
 def _device_response(ds_cert, ds_key, *, intermediates=(), issuing_country="UT",
                      mso_signer=None):
+    return _device_response_from_der(ds_cert.public_bytes(DER), ds_key, intermediates=intermediates,
+                                     issuing_country=issuing_country, mso_signer=mso_signer)
+
+
+def _device_response_from_der(ds_der, ds_key, *, intermediates=(), issuing_country="UT",
+                              mso_signer=None):
     """A DeviceResponse sealed by *ds_cert* (``x5chain`` = DS [+ intermediates]) and
     device-signed for SESSION_TRANSCRIPT. *mso_signer* lets the MSO be signed by a key other
     than the DS's (a bogus seal)."""
@@ -147,7 +155,7 @@ def _device_response(ds_cert, ds_key, *, intermediates=(), issuing_country="UT",
         "validityInfo": {"signed": _tdate(NOW), "validFrom": _tdate(_PAST),
                          "validUntil": _tdate(_FUTURE)},
     }
-    ders = [ds_cert.public_bytes(DER)] + [c.public_bytes(DER) for c in intermediates]
+    ders = [ds_der] + [c.public_bytes(DER) for c in intermediates]
     x5chain = ders[0] if len(ders) == 1 else ders
     issuer_auth = _cose_sign1(cbor.encode(cbor.CborTag(24, cbor.encode(mso))),
                               mso_signer or ds_key, x5chain=x5chain)
@@ -173,6 +181,100 @@ def _verify(device_response, anchors):
 
 def _b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+# --------------------------------------------------------------------------- #
+# DER surgery: patch bytes inside the TBSCertificate and re-sign with the issuer key, so a
+# certificate with a subject value no builder would emit is still genuinely path-valid.
+# --------------------------------------------------------------------------- #
+
+def _der_len(n):
+    if n < 0x80:
+        return bytes([n])
+    body = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(body)]) + body
+
+
+def _read_tlv(buf, pos):
+    tag, first = buf[pos], buf[pos + 1]
+    if first < 0x80:
+        length, header = first, 2
+    else:
+        nbytes = first & 0x7F
+        length, header = int.from_bytes(buf[pos + 2:pos + 2 + nbytes], "big"), 2 + nbytes
+    return tag, pos + header, pos + header + length
+
+
+def _resign_with_patch(cert_der, old, new, issuer_key, *, count=1):
+    """Replace *old* by *new* inside the TBSCertificate of *cert_der* and re-sign the TBS
+    with *issuer_key* (ECDSA P-256 / SHA-256). *old* must occur exactly *count* times."""
+    tag, start, end = _read_tlv(cert_der, 0)
+    assert tag == 0x30 and end == len(cert_der)
+    _, _, tbs_end = _read_tlv(cert_der, start)
+    tbs = cert_der[start:tbs_end]
+    assert tbs.count(old) == count, (tbs.count(old), old)
+    tbs = tbs.replace(old, new)
+    _, _, alg_end = _read_tlv(cert_der, tbs_end)
+    sig_alg = cert_der[tbs_end:alg_end]
+    sig = issuer_key.sign(tbs, ec.ECDSA(hashes.SHA256()))
+    bitstr = b"\x03" + _der_len(len(sig) + 1) + b"\x00" + sig
+    body = tbs + sig_alg + bitstr
+    return b"\x30" + _der_len(len(body)) + body
+
+
+# OID 2.5.4.6 (countryName) followed by a UTF8String "UT": the byte pattern the DS below
+# carries once (its issuer's C is a PrintableString), so a patch hits only the DS subject.
+_UTF8_C_UT = b"\x06\x03\x55\x04\x06\x0c\x02UT"
+_MALFORMED_C = [
+    ("invalid-utf8", b"\x06\x03\x55\x04\x06\x0c\x02\xff\xfe"),
+    ("lone-continuation-byte", b"\x06\x03\x55\x04\x06\x0c\x02\x80U"),
+    ("integer-tag", b"\x06\x03\x55\x04\x06\x02\x02UT"),
+    ("tag-0x05", b"\x06\x03\x55\x04\x06\x05\x02UT"),
+    ("context-tag-0x80", b"\x06\x03\x55\x04\x06\x80\x02UT"),
+    ("bit-string", b"\x06\x03\x55\x04\x06\x03\x02\x00U"),
+]
+
+
+def _utf8_c_name(cn):
+    return x509.Name([x509.NameAttribute(NameOID.COUNTRY_NAME, "UT", _type=_ASN1Type.UTF8String),
+                      x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+
+
+def _unvalidated_c_name(c, cn="x"):
+    # cryptography refuses a C that is not 2 characters at build time; the parser does not.
+    # (The builders warn about it too — silenced here so a test's own warning capture sees
+    # only what the verify path emits.)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return x509.Name([x509.NameAttribute(NameOID.COUNTRY_NAME, c, _validate=False),
+                          x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+
+
+def _ds_with_subject(issuer, issuer_key, subject):
+    key = ec.generate_private_key(ec.SECP256R1())
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")                  # see _unvalidated_c_name
+        issuer_name = issuer.subject
+    cert = (x509.CertificateBuilder()
+            .subject_name(subject).issuer_name(issuer_name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(_PAST).not_valid_after(_FUTURE)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(_MDOC_DS_EKU, critical=False)
+            .sign(issuer_key, hashes.SHA256()))
+    return cert, key
+
+
+def _iaca_with_subject(subject):
+    key = ec.generate_private_key(ec.SECP256R1())
+    cert = (x509.CertificateBuilder()
+            .subject_name(subject).issuer_name(subject)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(_PAST).not_valid_after(_FUTURE)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .add_extension(_CA_KU, critical=True)
+            .sign(key, hashes.SHA256()))
+    return cert, key
 
 
 # --------------------------------------------------------------------------- #
@@ -258,12 +360,71 @@ def test_repeated_state_attribute_is_refused_even_when_one_matches():
         _verify(_device_response(ds, ds_key), [ut])
 
 
-def test_repeated_attribute_on_the_anchor_is_refused_too():
+def test_repeated_country_on_the_anchor_is_refused_too():
     ut, ut_key = _iaca(c="UT", extra=[x509.NameAttribute(NameOID.COUNTRY_NAME, "UT")])
     ds, ds_key = _ds(ut, ut_key, c="UT")
     with pytest.raises(mdoc.MdocTrustError,
                        match=r"IACA anchor certificate subject carries 2 C attributes"):
         _verify(_device_response(ds, ds_key), [ut])
+
+
+# --- malformed subjects: path-valid certificates whose Name the verifier is the first to decode
+
+@pytest.mark.parametrize("patch", [p for _, p in _MALFORMED_C], ids=[n for n, _ in _MALFORMED_C])
+def test_malformed_ds_subject_is_a_typed_refusal(patch):
+    ut, ut_key = _iaca(c="UT")
+    ds, ds_key = _ds_with_subject(ut, ut_key, _utf8_c_name("utopia ds"))
+    der = _resign_with_patch(ds.public_bytes(DER), _UTF8_C_UT, patch, ut_key)
+    x509.load_der_x509_certificate(der)                  # loads; the Name decodes lazily
+    with pytest.raises(mdoc.MdocTrustError,
+                       match=r"document-signer certificate subject cannot be decoded") as excinfo:
+        _verify(_device_response_from_der(der, ds_key), [ut])
+    assert len(str(excinfo.value)) < 200                 # nothing of the attribute is echoed
+    with pytest.raises(X5cError, match="cannot be decoded"):
+        resolve_mdoc_signer([der], trust_anchors=[ut], now=NOW)
+
+
+def test_malformed_anchor_subject_is_a_typed_refusal():
+    bad_c = _MALFORMED_C[0][1]                           # invalid UTF-8
+    root, root_key = _iaca_with_subject(_utf8_c_name("root"))
+    root_der = _resign_with_patch(root.public_bytes(DER), _UTF8_C_UT, bad_c, root_key, count=2)
+    ds, ds_key = _ds(root, root_key, c="UT")             # its issuer must carry the same bytes
+    ds_der = _resign_with_patch(ds.public_bytes(DER), _UTF8_C_UT, bad_c, root_key)
+    with pytest.raises(mdoc.MdocTrustError,
+                       match=r"IACA anchor certificate subject cannot be decoded"):
+        _verify(_device_response_from_der(ds_der, ds_key),
+                [x509.load_der_x509_certificate(root_der)])
+
+
+@pytest.mark.parametrize("c", ["UTX", "UT ", "U", ""],
+                         ids=["three", "trailing-space", "one", "empty"])
+def test_country_not_two_characters_is_refused_without_a_warning(c):
+    ut, ut_key = _iaca(c="UT")
+    ds, ds_key = _ds_with_subject(ut, ut_key, _unvalidated_c_name(c))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(mdoc.MdocTrustError,
+                           match=r"countryName .* is not a 2-character ISO 3166-1 alpha-2 code"):
+            _verify(_device_response(ds, ds_key), [ut])
+    assert caught == []                                  # cryptography's UserWarning is silenced
+
+
+def test_country_length_rule_holds_under_warnings_as_errors():
+    # `python -W error` turned the lazy-decode UserWarning into a bare exception; not any more.
+    ut, ut_key = _iaca(c="UT")
+    ds, ds_key = _ds_with_subject(ut, ut_key, _unvalidated_c_name("UTX"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(mdoc.MdocTrustError, match="alpha-2"):
+            _verify(_device_response(ds, ds_key), [ut])
+
+
+def test_three_letter_country_equal_on_both_sides_is_still_refused():
+    # Equality alone would accept 'UTX' == 'UTX'; §9.3.3 compares alpha-2 codes.
+    root, root_key = _iaca_with_subject(_unvalidated_c_name("UTX", cn="root"))
+    ds, ds_key = _ds_with_subject(root, root_key, _unvalidated_c_name("UTX"))
+    with pytest.raises(mdoc.MdocTrustError, match="alpha-2"):
+        _verify(_device_response(ds, ds_key), [root])
 
 
 def test_an_intermediate_does_not_become_the_comparison_anchor():
@@ -357,6 +518,15 @@ def test_single_anchor_deployment_is_unchanged():
     [doc] = _verify(_device_response(ds, ds_key), [ut])
     assert doc.doc_type == DOCTYPE
     assert doc.ds_subject["C"] == doc.anchor_subject["C"] == "UT"
+
+
+def test_repeated_cn_or_o_is_informational_and_omitted():
+    cn, org = NameOID.COMMON_NAME, NameOID.ORGANIZATION_NAME
+    ut, ut_key = _iaca(c="UT", extra=[x509.NameAttribute(org, "o1"), x509.NameAttribute(org, "o1")])
+    ds, ds_key = _ds(ut, ut_key, c="UT", extra=[x509.NameAttribute(cn, "second cn")])
+    [doc] = _verify(_device_response(ds, ds_key), [ut])   # accepted: §9.3.3 names C and ST only
+    assert "CN" not in doc.ds_subject and doc.ds_subject["C"] == "UT"
+    assert "O" not in doc.anchor_subject and doc.anchor_subject["CN"] == "IACA UT"
 
 
 def test_organization_is_exposed_when_present():

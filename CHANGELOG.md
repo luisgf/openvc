@@ -65,8 +65,14 @@ All notable changes to **openvc** are documented here. The format follows
   `resolve_mdoc_signer_key` wraps, same checks, key only) requires, after path validation and
   the DS EKU, a `countryName` on both the DS and the matched anchor — absent on either side
   is a refusal, Annex B mandates it on both — and equal, and `stateOrProvinceName` equal when
-  both carry it (absent on one side: no constraint); compared as strings, no normalisation; a
-  subject attribute that appears more than once is refused. The refusal is `X5cError`, and
+  both carry it (absent on one side: no constraint); compared as decoded text, no
+  normalisation; a `C` or `ST` that appears more than once is refused (the ISO profile uses
+  each once), while `CN` / `O` are informational and omitted when repeated; a `C` that is not
+  a 2-character ISO 3166-1 alpha-2 code is refused, with cryptography's `UserWarning` about it
+  silenced; and a DS or anchor subject that cannot be decoded is a typed refusal — the Name
+  decodes lazily on the first read, after path validation, so on `main` such a path-valid DS
+  was accepted silently, and before this guard it escaped as a bare `ValueError` / `KeyError`
+  / `TypeError`. The refusal is `X5cError`, and
   `MdocTrustError` through `verify_device_response`, `verify_issuer_signed` and
   `verify_vp_token`, naming both values cut by `safe_repr`. `VerifiedMdoc` gains, add-only and
   defaulting to empty, `ds_subject` and `anchor_subject` — the `C`, `ST`, `CN` and `O`

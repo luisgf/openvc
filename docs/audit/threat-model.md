@@ -158,15 +158,18 @@ boundary is attacker-controlled until a signature verifies.
 - **ISO mdoc (`mso_mdoc`)** — `src/openvc/mdoc.py`, **experimental** (ADR-0005).
   IssuerAuth `COSE_Sign1` + `x5chain`→IACA + `valueDigests`, DeviceAuth over the
   Digital Credentials API SessionTranscript. Constant-time digest compare
-  (`:404`). Of the IACA/DS certificate profile, `x5c.resolve_mdoc_signer` enforces
-  exactly three things: RFC 5280 §6.1 path validation to the caller's IACA anchors, the
-  DS EKU `1.0.18013.5.1.2`, and the ISO 18013-5 §9.3.3 subject equality between the DS
-  and the anchor it validated to — `countryName` present on both and equal,
-  `stateOrProvinceName` equal when both carry it (#383; exposed as
-  `VerifiedMdoc.ds_subject` / `anchor_subject`). The rest of Annex B (DS key usage, CRL
-  distribution point, the IACA's own fields) is not checked, and the Table B.1
-  cross-check of the disclosed `issuing_country` / `issuing_jurisdiction` against those
-  subjects is the caller's. All structure delegates to the CBOR codec (§6).
+  (`:404`). Of the IACA/DS certificate profile, `x5c.resolve_mdoc_signer` enforces: RFC
+  5280 §6.1 path validation to the caller's IACA anchors; the DS EKU `1.0.18013.5.1.2`; a
+  P-256 / P-384 / Ed25519 leaf key; and the ISO 18013-5 §9.3.3 subject equality between
+  the DS and the anchor it validated to — `countryName` present exactly once on both, a
+  2-character alpha-2 code, and equal; `stateOrProvinceName` equal when both carry it,
+  once each — compared as decoded text with no normalisation of it; a subject that cannot
+  be decoded is a typed refusal, not a bare `ValueError` (#383; exposed as
+  `VerifiedMdoc.ds_subject` / `anchor_subject`, where `CN` / `O` are informational). The
+  rest of Annex B (DS key usage, CRL distribution point, the IACA's own fields) is not
+  checked, and the Table B.1 cross-check of the disclosed `issuing_country` /
+  `issuing_jurisdiction` against those subjects is the caller's. All structure delegates
+  to the CBOR codec (§6).
 - **JWE (HAIP encrypted response)** — `src/openvc/jwe.py`, decrypt-only.
   `alg`∈`{ECDH-ES}` and `enc`∈`{A128GCM, A256GCM}` allow-listed before crypto
   (`:41-42,122-126`); `zip` rejected → no JWE zip bombs (`:127-128`); `crit`

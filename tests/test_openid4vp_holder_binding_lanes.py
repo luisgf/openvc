@@ -244,7 +244,9 @@ _MDOC_DS_EKU = x509.ExtendedKeyUsage([x509.ObjectIdentifier("1.0.18013.5.1.2")])
 
 
 def _name(cn):
-    return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    # C is mandatory on the IACA and the DS (ISO 18013-5 Annex B) and must be equal (§9.3.3)
+    return x509.Name([x509.NameAttribute(NameOID.COUNTRY_NAME, "UT"),
+                      x509.NameAttribute(NameOID.COMMON_NAME, cn)])
 
 
 def _self_signed(cn, key):

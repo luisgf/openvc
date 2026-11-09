@@ -26,6 +26,7 @@ store — the trust anchors are the caller's.
 from __future__ import annotations
 
 import base64
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -269,23 +270,51 @@ class MdocSigner:
     anchor_subject: Mapping[str, str]
 
 
+# The attributes §9.3.3 compares: each must appear exactly once to be comparable. CN / O are
+# reported only — a repeated or odd one is omitted from the mapping, never a refusal.
+_COMPARED = frozenset({"C", "ST"})
+
+
 def _subject_attributes(cert: Any, role: str) -> dict[str, str]:
-    """The Annex B subject attributes of *cert* as ``{"C": ..., "ST": ..., ...}``. An
-    attribute that appears more than once, or whose value is not a string, is refused: the
-    profile has each at most once and the §9.3.3 equality is undefined otherwise."""
+    """The Annex B subject attributes of *cert* as ``{"C": ..., "ST": ..., ...}``.
+
+    ``cryptography`` decodes the Name lazily on the first ``.subject`` read — path
+    validation compares issuer and subject as raw DER and never decodes them — so a
+    path-valid certificate with an undecodable attribute raises there (``ValueError``,
+    ``KeyError``, ``TypeError``): the read is guarded into a typed refusal. The same decode
+    warns when a ``countryName`` is not two characters; the warning is silenced and the
+    length is refused explicitly (§9.3.3 compares ISO 3166-1 alpha-2 codes). A ``C`` or
+    ``ST`` that appears more than once is refused — the ISO profile uses each once and the
+    equality is undefined otherwise; ``CN`` / ``O`` are informational: exposed when they
+    appear exactly once, omitted otherwise."""
     from cryptography import x509
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            subject = cert.subject
+    except (ValueError, TypeError, KeyError) as exc:
+        raise X5cError(f"mdoc {role} certificate subject cannot be decoded") from exc
     out: dict[str, str] = {}
     for short, dotted in _SUBJECT_ATTRIBUTES:
-        values = cert.subject.get_attributes_for_oid(x509.ObjectIdentifier(dotted))
+        values = subject.get_attributes_for_oid(x509.ObjectIdentifier(dotted))
         if not values:
             continue
         if len(values) != 1:
-            raise X5cError(f"mdoc {role} certificate subject carries {len(values)} {short} "
-                           f"attributes (ISO 18013-5 Annex B has one)")
+            if short in _COMPARED:
+                raise X5cError(f"mdoc {role} certificate subject carries {len(values)} {short} "
+                               f"attributes; the ISO 18013-5 profile uses each once and the "
+                               f"9.3.3 equality needs one")
+            continue
         value = values[0].value
         if not isinstance(value, str):
-            raise X5cError(f"mdoc {role} certificate subject {short} is not a string")
+            if short in _COMPARED:
+                raise X5cError(f"mdoc {role} certificate subject {short} is not a string")
+            continue
         out[short] = value
+    country = out.get("C")
+    if country is not None and len(country) != 2:
+        raise X5cError(f"mdoc {role} certificate subject countryName {safe_repr(country)} is "
+                       f"not a 2-character ISO 3166-1 alpha-2 code")
     return out
 
 

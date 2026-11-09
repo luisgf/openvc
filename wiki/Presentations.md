@@ -556,7 +556,8 @@ name = mdl.elements("org.iso.18013.5.1")["family_name"]
 
 Each result also carries `ds_subject` and `anchor_subject`: the `C`, `ST`, `CN` and `O`
 attributes of the document-signer certificate and of the IACA anchor it validated to, as
-strings. openvc has already required the two countries to be equal; what the *document*
+strings (`CN` and `O` are informational — present when the certificate carries them exactly
+once). openvc has already required the two countries to be equal; what the *document*
 claims about itself is yours to compare — ISO 18013-5 Table B.1 ties the `issuing_country`
 element to the IACA's country:
 
