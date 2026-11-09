@@ -115,6 +115,18 @@ sd_jwt = SdJwtVcProofSuite().issue(
 assert proof.key_source == "jwk"
 ```
 
+**What comes back is the key, nothing else.** `proof.public_jwk` is the minimal canonical
+form — only the RFC 7638 members (`kty`/`crv`/`x`/`y`), each coordinate fixed-width,
+unpadded base64url; `openvc.keys.canonical_public_jwk` is the helper. A `kid`, an `alg`,
+`use`, `key_ops` or an `x5u`/`jku` URL the wallet put next to its key is **not** in it, so
+it is safe to sign straight into `cnf.jwk`; the header is kept verbatim in `proof.header`
+for whoever wants to look. In return the wallet's header `jwk` **must be spelled
+canonically**: a coordinate with `=` padding, a non-alphabet character or non-zero
+trailing bits is refused as `ClaimsInvalid` naming the member, before any signature is
+checked. Those spellings decode to the same key but thumbprint differently, which would
+let one key pass as several (see [Batches](#batches)). A key your `resolve_proof_key*`
+returns, or an `x5c` leaf, is normalised rather than refused.
+
 Wire it into your framework however you like — openvc never sees the request object,
 the access token, or the socket:
 
@@ -172,7 +184,7 @@ request** — there is no partial issuance.
 | 4 | `key_attestation`, if present, is a string and parses as a key attestation |
 | 4b | if you passed `require_key_attestation=True`, the header **must** carry one — before crypto, before the nonce is spent |
 | 5 | **exactly one** of `jwk` / `kid` / `x5c` / `trust_chain` |
-| 6 | the key binds to the header `alg` — no `ES256` over an Ed25519 key; no private members in a `jwk` |
+| 6 | the key binds to the header `alg` — no `ES256` over an Ed25519 key; no private members in a `jwk`; a `jwk` coordinate is canonical base64url (fixed width, no padding, zero trailing bits) or the proof is refused naming the member |
 | 7 | with a `key_attestation`: the key is one of its `attested_keys` (App. D) |
 | 8 | the signature |
 | 9 | `aud` equals your Credential Issuer Identifier; a multi-valued `aud` is rejected |
@@ -238,7 +250,10 @@ yours; the ordering is only available here. Default `False`, so an issuer that d
 not advertise the requirement is unchanged.
 
 **What openvc does enforce** is App. D's MUST: with a `key_attestation` present, the key
-that signed the proof must be one of its `attested_keys`. Be clear about what that buys.
+that signed the proof must be one of its `attested_keys` — compared in canonical form on
+both sides, so an attestation that spells the key with padding still matches, while a
+coordinate of the wrong width does not (RFC 7518 §6.2.1.2 makes the full width a MUST)
+and the refusal names the rule. Be clear about what that buys.
 It **stops no attacker** — nothing here verifies the attestation's signature, so whoever
 forges a proof also forges an attestation listing their own key. It catches an honest
 wallet, or *your own resolver*, handing over a key the wallet never claimed, which would
@@ -263,7 +278,9 @@ proofs = verify_credential_request_proofs(
 ```
 
 All proofs in a batch must carry the same nonce, and no two may be bound to the same
-key — N credentials must mean N keys.
+key — N credentials must mean N keys. Keys are compared by the RFC 7638 thumbprint of
+their **canonical** form, and a header `jwk` that is not canonical is refused before the
+comparison, so one key spelled three ways is a refusal, not three keys.
 
 ## Errors
 

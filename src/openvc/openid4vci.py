@@ -11,15 +11,17 @@ Endpoint, it:
      are mutually exclusive;
   2. verifies every proof in that array as an ``openid4vci-proof+jwt`` (App. F.1) —
      the ``typ`` pin, the algorithm allow-list *before* any crypto, unknown ``crit``,
-     **exactly one** of the ``jwk`` / ``kid`` / ``x5c`` header key parameters, the
-     signature, the ``aud`` binding to the Credential Issuer Identifier, and ``iat``
-     freshness in **both** directions; and
+     **exactly one** of the ``jwk`` / ``kid`` / ``x5c`` header key parameters (a ``jwk``
+     spelled in canonical base64url, or refused), the signature, the ``aud`` binding to
+     the Credential Issuer Identifier, and ``iat`` freshness in **both** directions; and
   3. enforces the invariants that only exist across the batch — one shared ``nonce``,
      consumed **exactly once** through the caller's store, and no two proofs bound to
      the same key.
 
-It returns the wallet public key each proof demonstrated possession of, which is what
-:meth:`openvc.proof.sd_jwt.SdJwtVcProofSuite.issue` wants as ``holder_jwk``.
+It returns the wallet public key each proof demonstrated possession of — in the
+minimal canonical RFC 7638 form, so nothing the wallet put next to the key reaches the
+credential — which is what :meth:`openvc.proof.sd_jwt.SdJwtVcProofSuite.issue` wants as
+``holder_jwk``.
 
 This is deliberately **not** an OpenID4VCI server. It builds no Credential Response,
 publishes no metadata, mints no ``c_nonce``, pre-authorized code, ``transaction_id`` or
@@ -74,7 +76,9 @@ from urllib.parse import urlparse
 
 from . import _json
 from .errors import OpenvcError
-from .keys import MLDSA_ALGS, InvalidKey, jwk_thumbprint
+from .keys import (
+    MLDSA_ALGS, InvalidKey, NonCanonicalKey, canonical_public_jwk, jwk_thumbprint,
+)
 from .proof._jws import parse_compact, verify_compact
 from .proof._verify_common import (
     DEFAULT_LEEWAY_S,
@@ -177,6 +181,10 @@ _ALG_KEY_BINDING = {
     "ES384": ("EC", "P-384"),
 }
 
+# The (kty, crv) shapes a proof `alg` can bind to — hence the only shapes an attested key
+# can share with the proof key, and the only ones worth canonicalising on that side.
+_BINDABLE_KEY_SHAPES = frozenset(_ALG_KEY_BINDING.values())
+
 # Members that must never appear in a proof's `jwk`: their presence means a wallet is
 # leaking a private key, or is probing for a backend that would use it.
 _PRIVATE_JWK_MEMBERS = frozenset({"d", "k", "p", "q", "dp", "dq", "qi", "priv"})
@@ -277,7 +285,13 @@ class VerifiedProof:
     """One **verified** key proof from a Credential Request's ``proofs`` array.
 
     ``public_jwk`` is the key the issued Credential must be bound to — hand it straight
-    to :meth:`~openvc.proof.sd_jwt.SdJwtVcProofSuite.issue` as ``holder_jwk``.
+    to :meth:`~openvc.proof.sd_jwt.SdJwtVcProofSuite.issue` as ``holder_jwk``. It is the
+    **minimal canonical form** (:func:`openvc.keys.canonical_public_jwk`): only the RFC
+    7638 members, each coordinate fixed-width unpadded base64url. Whatever else the
+    wallet put in its header ``jwk`` — ``kid``, an ``alg``, ``use``, ``key_ops``,
+    ``x5u``/``jku`` URLs — is **not** here and so cannot be signed into a ``cnf.jwk``;
+    the header is kept verbatim in ``header`` for anyone who wants to look.
+    ``thumbprint`` is the RFC 7638 digest of that same canonical form.
 
     ``key_attestation`` is the header's attestation JWT captured **verbatim and
     unverified** (the ``peek_*`` doctrine): it must never drive a trust decision. Its
@@ -954,6 +968,10 @@ def _check_batch_invariants(
     thumbprints = [proof.thumbprint for proof in verified]
     if len(set(thumbprints)) != len(thumbprints):
         # N credentials must mean N keys; otherwise a wallet gets N copies bound to one.
+        # The thumbprints are of the canonical key form (issue #379): a key the wallet
+        # spelled N ways — padding, dirty trailing bits, a non-alphabet character — is
+        # refused as non-canonical before it gets here, and a resolver's key is
+        # normalised, so "one thumbprint" does mean "one key".
         raise ClaimsInvalid("two key proofs in the batch are bound to the same key")
 
     # Last, and exactly once: every signature above has verified, so an unauthenticated
@@ -1008,13 +1026,12 @@ def _verify_one_proof(
         raise ClaimsInvalid(
             "key proof is missing the required key_attestation header")
 
-    public_jwk, key_source = _proof_key(
+    public_jwk, thumbprint, key_source = _proof_key(
         header, alg=alg, resolve_proof_key=resolve_proof_key,
         resolve_proof_key_in_context=resolve_proof_key_in_context,
         attestation=attestation, credential_issuer=credential_issuer, index=index,
         trust_anchors=trust_anchors, now=now)
 
-    thumbprint = _thumbprint(public_jwk, "the key proof's key")
     if attestation is not None:
         _check_attested_key(thumbprint, attestation)
 
@@ -1062,8 +1079,10 @@ def _proof_key(
     index: int,
     trust_anchors: Sequence[Any] | None,
     now: datetime | None,
-) -> tuple[dict[str, Any], str]:
-    """The wallet's public key, from **exactly one** header key parameter."""
+) -> tuple[dict[str, Any], str, str]:
+    """The wallet's public key, from **exactly one** header key parameter — in canonical
+    minimal form, with its RFC 7638 thumbprint, and the name of the parameter it came from.
+    """
     present = [name for name in _KEY_PARAMS if header.get(name) is not None]
     if len(present) != 1:
         # Zero means there is no key. Two lets an attacker pair a `kid` naming an
@@ -1080,9 +1099,17 @@ def _proof_key(
         leaked = sorted(_PRIVATE_JWK_MEMBERS.intersection(jwk))
         if leaked:
             raise ClaimsInvalid(f"key proof jwk carries private members {leaked}")
-        jwk = dict(jwk)
         _check_key_binds_to_alg(jwk, alg)
-        return jwk, source
+        # Strict, because the wallet chose these bytes. RFC 7638 digests the member
+        # *strings* while the decoder behind the signature check is tolerant (an explicit
+        # `=`, a non-alphabet character, non-zero trailing bits all decode), so one key
+        # has many spellings that verify alike and thumbprint apart — N spellings would
+        # be N "distinct" keys to the batch rule and to every per-key policy downstream
+        # (issue #379). A non-canonical member is refused here, before any crypto, and
+        # what goes forward is the minimal canonical form: `kid`, `alg`, `use`, `x5u`
+        # and friends never reach `public_jwk`, hence never a `cnf.jwk` (issue #401).
+        canonical, thumbprint = _canonical_key(jwk, "key proof jwk", strict=True)
+        return canonical, thumbprint, source
 
     if source == "x5c":
         if not trust_anchors:
@@ -1100,7 +1127,8 @@ def _proof_key(
             chain[0], chain[1:], trust_anchors=trust_anchors, now=now)
         jwk = _x5c.leaf_public_jwk(chain[0])
         _check_key_binds_to_alg(jwk, alg)
-        return jwk, source
+        canonical, thumbprint = _canonical_key(jwk, "the key proof's key")
+        return canonical, thumbprint, source
 
     if source == "kid":
         kid = header["kid"]
@@ -1124,26 +1152,41 @@ def _proof_key(
                 "key_attestation)")
         if not isinstance(jwk, Mapping):
             raise ClaimsInvalid(f"{resolver} did not return a JWK")
-        jwk = dict(jwk)
         _check_key_binds_to_alg(jwk, alg)
-        return jwk, source
+        # Normalised, not refused: the resolver is the caller's code, often reading a
+        # wallet-provider attestation, and neither is the strict side.
+        canonical, thumbprint = _canonical_key(jwk, "the key proof's key")
+        return canonical, thumbprint, source
 
     raise UnsupportedProofType(
         "OpenID Federation trust_chain proof keys are not supported")
 
 
-def _thumbprint(jwk: Mapping[str, Any], subject: str) -> str:
-    """RFC 7638, with :class:`~openvc.keys.InvalidKey` mapped into this module's errors.
+def _canonical_key(
+    jwk: Mapping[str, Any], subject: str, *, strict: bool = False,
+) -> tuple[dict[str, Any], str]:
+    """The canonical minimal form of *jwk* and its RFC 7638 thumbprint.
 
-    ``InvalidKey`` is a key-backend error, not a :class:`~openvc.proof.errors.ProofError`,
-    so letting it out would hand a Credential Endpoint an exception type this module
-    does not document — over bytes a wallet chose. `_check_key_binds_to_alg` does not
-    prevent it: it reads ``kty``/``crv`` and never the coordinates.
+    The thumbprint is taken over the canonical form, never over the spelling received:
+    that is what makes it identify the *key* (issue #379). A key that cannot be
+    canonicalised — a non-string or wrong-width coordinate, an off-curve point, a key
+    type no backend decodes — has no thumbprint worth the name and is refused. With
+    *strict*, a key that decodes but is not spelled canonically is refused too, naming
+    the member (the header ``jwk`` rule; see :func:`openvc.keys.canonical_public_jwk`).
+
+    :class:`~openvc.keys.InvalidKey` is a key-backend error, not a
+    :class:`~openvc.proof.errors.ProofError`, so letting it out would hand a Credential
+    Endpoint an exception type this module does not document — over bytes a wallet, a
+    resolver or an attestation chose. `_check_key_binds_to_alg` does not prevent it: it
+    reads ``kty``/``crv`` and never the coordinates.
     """
     try:
-        return jwk_thumbprint(jwk)
+        canonical = canonical_public_jwk(jwk, strict=strict)
+    except NonCanonicalKey as exc:
+        raise ClaimsInvalid(f"{subject}: {exc}") from exc
     except InvalidKey as exc:
         raise ClaimsInvalid(f"{subject} cannot be thumbprinted: {exc}") from exc
+    return canonical, jwk_thumbprint(canonical)
 
 
 def _check_attested_key(thumbprint: str, attestation: UnverifiedKeyAttestation) -> None:
@@ -1157,15 +1200,32 @@ def _check_attested_key(thumbprint: str, attestation: UnverifiedKeyAttestation) 
 
     That an unverified blob may drive it at all rests on the direction: it can only
     *reject* a proof, never accept one.
+
+    Both sides are compared in canonical form: *thumbprint* already is, and each
+    attested key of a shape this lane can bind (:data:`_BINDABLE_KEY_SHAPES`) is
+    normalised here, so an attestation that spells an honest key with padding or dirty
+    trailing bits still matches (the attestation is not the strict side — the wallet's
+    own header ``jwk`` is). A coordinate of the wrong width is not a spelling (RFC 7518
+    §6.2.1.2 makes the full width a MUST) and still refuses the proof, naming the rule,
+    as does any other malformed key of a bindable shape. An attested key of another type
+    altogether — the X25519 or RSA sibling of a multi-key attestation — cannot be the
+    proof key, which already passed the ``alg`` binding, so it is read as RFC 7638 reads
+    it, exactly as before: compared and passed over, or refused only if RFC 7638 cannot
+    digest it at all.
     """
-    if any(_thumbprint(key, "an attested key") == thumbprint
-           for key in attestation.attested_keys):
-        return
+    for key in attestation.attested_keys:
+        if (key.get("kty"), key.get("crv")) in _BINDABLE_KEY_SHAPES:
+            _, attested = _canonical_key(key, "an attested key")
+        else:
+            try:
+                attested = jwk_thumbprint(key)
+            except InvalidKey as exc:
+                raise ClaimsInvalid(f"an attested key cannot be thumbprinted: {exc}") from exc
+        if attested == thumbprint:
+            return
     raise ClaimsInvalid(
         "the key that signed this proof is not among the key attestation's "
-        "attested_keys (compared by RFC 7638 thumbprint — note that a JWK whose "
-        "coordinates are not fixed-width per RFC 7518 §6.2.1.2 thumbprints differently "
-        "from the same key encoded correctly)")
+        "attested_keys (compared by RFC 7638 thumbprint of the canonical key form)")
 
 
 def _check_key_binds_to_alg(jwk: Mapping[str, Any], alg: str) -> None:

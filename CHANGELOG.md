@@ -4,6 +4,52 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] — unreleased
+
+### Security
+
+- **OpenID4VCI key proofs: the header `jwk` must be spelled in canonical base64url, and the
+  key a proof earns comes back in its minimal RFC 7638 form**
+  ([#379](https://github.com/luisgf/openvc/issues/379); closes
+  [#401](https://github.com/luisgf/openvc/issues/401) too). RFC 7638 digests the JWK member
+  *strings*, while the base64url decoder behind the signature check is tolerant: an explicit
+  `=` padding, a non-alphabet character, the standard `+`/`/` alphabet and non-zero trailing
+  bits all decode to the same coordinate, and a coordinate carrying a leading zero octet
+  decodes to the same integer. One wallet key therefore had many spellings that verified
+  identically and thumbprinted differently — and `verify_credential_request_proofs`
+  deduplicated a batch by thumbprint, so N spellings of one key were N keys to the "no two
+  proofs on the same key" rule, N credentials bound to one; `VerifiedProof.thumbprint` and
+  `public_jwk` carried the spelling received, so every per-key policy downstream (one
+  credential per wallet key, a DPoP `jkt`, a `cnf.jkt`) could be walked around the same way.
+  The header `jwk` was also returned verbatim: a wallet's `kid`, a contradicting `alg`,
+  `use`, `key_ops`, `x5u`/`jku` URLs and any blob up to the proof cap rode into `public_jwk`
+  and, on the documented `SdJwtVcProofSuite.issue(holder_jwk=proof.public_jwk)` path, were
+  signed into the issued credential's `cnf.jwk`. Measured on `main` at 4b25b9d: a
+  `batch_size=3` request with three proofs on one P-256 key spelled three ways was
+  **accepted** with three distinct thumbprints, and an `x5u: http://169.254.169.254/` from
+  the header reached the issued `cnf.jwk`. **What changed** (maintainer decision D9: strict
+  on the proof key, canonical minimal form downstream). The new public helper
+  **`openvc.keys.canonical_public_jwk(jwk, *, strict=False)`** returns a fresh dict of the
+  RFC 7638 members only — EC `P-256` / `P-384` and OKP `Ed25519`, each coordinate decoded
+  through the key backend and re-encoded fixed-width — and under `strict=True` refuses a
+  member whose spelling differs from that (**`NonCanonicalKey`**, an `InvalidKey`, naming
+  the member, never its value); a wrong-width coordinate (RFC 7518 §6.2.1.2 makes the full
+  width a MUST), an off-curve point, a lone UTF-16 surrogate (named by code point and
+  index) or an unsupported key type is a plain `InvalidKey` in either mode. The header `jwk` of a key
+  proof is checked **strictly**, after the private-member and `alg` binding rules and before
+  any crypto or the nonce: a padded, dirty-bit or non-alphabet coordinate is `ClaimsInvalid`
+  naming the member, and so are a wrong-width coordinate (verified on `main`, as a different
+  thumbprint) and an off-curve point (a `SignatureInvalid` out of the backend on `main`). A
+  key returned by `resolve_proof_key` / `resolve_proof_key_in_context` or taken from an
+  `x5c` leaf is normalised, not refused. The batch rule, the App. D `attested_keys`
+  comparison and `VerifiedProof.thumbprint` work on the canonical form — a key attestation
+  that spells the honest key non-canonically keeps matching, a wrong-width attested key
+  still refuses the proof naming the rule — and **`VerifiedProof.public_jwk` is the minimal
+  canonical JWK**: nothing beyond `kty`/`crv`/`x`(/`y`) survives into a `cnf.jwk`; the
+  wallet's header stays verbatim in `VerifiedProof.header`. The SD-JWT `cnf.jwk` and JWE
+  `epk` readers keep their tolerant decoding (out of scope). Found by the internal security
+  review of 2026-11-07 (`test_openid4vci_canonical_jwk.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
