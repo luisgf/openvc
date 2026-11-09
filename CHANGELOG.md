@@ -324,6 +324,31 @@ All notable changes to **openvc** are documented here. The format follows
   `suspension` is exposed but never fails verification. Size-1 Bitstring entries and lists are unchanged. The IETF Token Status List lane is untouched. Found by
   the internal security review of 2026-11-07 (`test_status_list_status_size.py`).
 
+- **A trust list whose XML declaration names an exotic encoding is now a typed
+  `TrustListParseError` — a per-TL `parse` problem in `walk_lotl` — instead of a bare
+  exception that aborted the walk** ([#388](https://github.com/luisgf/openvc/issues/388)).
+  The XML declaration is not covered by the XAdES signature (C14N discards it), so whoever
+  serves the bytes can re-label a genuinely signed, pure-ASCII list without breaking the
+  signature, and `_hardened_parse` caught only `expat.ExpatError`: measured on v1.38.1,
+  `encoding="GB2312"` (also `Shift_JIS`, `EUC-JP`, `big5`, `gbk`) raised a bare `ValueError`
+  (`multi-byte encodings are not supported`) and `latin-9` a bare `LookupError` out of
+  `parse_trust_list` (documented to raise `TrustListParseError` only), `consume_trust_list`
+  and `walk_lotl`, where the bare exception propagated out of the walk instead of recording
+  that one list as a problem (ADR-0003 D6). No wrong-accept on those labels. The parser now refuses, from an
+  `XmlDeclHandler` that fires before expat switches encodings, any declared `encoding` outside
+  the allow-list `{UTF-8, US-ASCII}` (case-insensitive; ETSI TS 119 612 Annex B.0 requires
+  UTF-8) — a wider label let expat decode differently from the libxml2 that verified the
+  signature: a UTF-8-BOM list re-labelled `ISO-8859-1` verified yet read as Latin-1, so its
+  names were not what the signer signed (anchors, URIs and territories are ASCII and were
+  unchanged). A document starting with a UTF-16 / UTF-32 BOM or with a NUL among its first
+  four bytes (expat's UTF-16 autodetection) is refused before expat sees it, so an absent
+  declaration means UTF-8; a UTF-8 BOM stays accepted. expat's own `ValueError` / `LookupError`
+  are typed behind it. A caller sees `TrustListParseError` with a bounded message; through
+  `walk_lotl` that list contributes no anchors, is recorded as stage `"parse"` and the other
+  lists still anchor (a LOTL that fails this way stops the walk with that one problem). The
+  recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
+  security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security

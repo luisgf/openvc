@@ -63,9 +63,12 @@ Properties worth knowing:
   (document + `SignedProperties` references) and is pinned by golden fixtures recorded
   from the real Commission-signed EU LOTL and the Spanish national TL.
 - **Hardened XML** — stdlib parsing with DTD/DOCTYPE rejected (no XXE, no
-  entity-expansion bombs), size-bounded input; XAdES verification lives behind
-  the `[trustlist]` extra (`signxml`) and pins the signer to the certs the
-  parent list vouched for.
+  entity-expansion bombs), size-bounded input, and the XML declaration's `encoding`
+  allow-listed to UTF-8 / US-ASCII (TS 119 612 Annex B.0 requires UTF-8). The declaration
+  is outside the XAdES signature, and a UTF-16 / UTF-32 body is refused too, so a
+  re-labelled list is a typed `TrustListParseError` — a per-TL `parse` problem in
+  `walk_lotl` — never a bare exception. XAdES verification lives behind the `[trustlist]`
+  extra (`signxml`) and pins the signer to the certs the parent list vouched for.
 
 Design rationale: [ADR-0003](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0003-eu-trusted-lists.md).
 

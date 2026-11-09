@@ -11,6 +11,19 @@ signature is verified — it is what finds the signer certs), so it is hardened:
   fetch external resources on its own either.
 * **Bounded input.** A configurable byte cap (default 16 MiB — a national TL is a
   few MB) rejects an oversize document before parsing.
+* **Declared encoding allow-listed.** The XML declaration is *not* covered by the XAdES
+  signature (C14N discards it), so whoever serves the bytes can re-label a genuinely
+  signed list. An ``XmlDeclHandler`` (it fires before expat switches encodings) refuses,
+  typed, any declared ``encoding`` outside ``{UTF-8, US-ASCII}`` (case-insensitive):
+  ETSI TS 119 612 Annex B.0 says "Applications shall use UTF-8 encoding for XML TLs", and
+  any other label lets expat decode differently from the libxml2 that verified the
+  signature (a UTF-8 BOM body re-labelled ``ISO-8859-1`` verifies yet reads as Latin-1).
+  Before expat sees the bytes a document that starts with a UTF-16/UTF-32 BOM, or has a
+  NUL among its first four bytes (expat's UTF-16 autodetection), is refused too, so an
+  absent declaration really means UTF-8; a UTF-8 BOM stays accepted. expat's
+  own failures on an exotic label (``ValueError`` for a multi-byte one, ``LookupError``
+  for an unknown alias) are typed as well, so ``parse_trust_list`` raises only
+  :class:`TrustListParseError` (#388).
 * **Namespace by URI, never by prefix.** Elements are matched on ``{uri}local``.
 * **Date-times fail closed.** ``NextUpdate`` is read as a UTC ``datetime`` of the
   ``YYYY-MM-DDThh:mm:ssZ`` form clause 5.1.3 mandates (a fraction tolerated,
@@ -115,6 +128,12 @@ def parse_trust_list(xml: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Trust
 # Hardened XML parse
 # --------------------------------------------------------------------------- #
 
+# TS 119 612 Annex B.0: "Applications shall use UTF-8 encoding for XML TLs". US-ASCII is
+# its strict subset; any wider label lets expat and libxml2 decode differently.
+_ALLOWED_ENCODINGS = frozenset({"UTF-8", "US-ASCII"})
+_NOT_UTF8_BOMS = (b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff")  # UTF-16 / UTF-32 BOMs
+
+
 def _hardened_parse(xml: bytes, *, max_bytes: int,
                     max_elements: int = DEFAULT_MAX_ELEMENTS) -> Element:
     if not isinstance(xml, (bytes, bytearray)):
@@ -123,6 +142,10 @@ def _hardened_parse(xml: bytes, *, max_bytes: int,
     if len(xml) > max_bytes:
         raise TrustListParseError(
             f"trust list is {len(xml)} bytes, over the {max_bytes}-byte cap")
+
+    # expat autodetects UTF-16/32 from a BOM or a leading NUL, before any declaration is read.
+    if bytes(xml[:4]).startswith(_NOT_UTF8_BOMS) or b"\x00" in xml[:4]:
+        raise TrustListParseError("trust lists are UTF-8 (TS 119 612 Annex B.0)")
 
     builder = TreeBuilder()
     parser = expat.ParserCreate(namespace_separator=_NS_SEP)
@@ -140,6 +163,14 @@ def _hardened_parse(xml: bytes, *, max_bytes: int,
                 f"trust list exceeds the {max_elements}-element cap")
         builder.start(_qname(name), {_qname(k): v for k, v in attrs.items()})
 
+    def _xml_decl(_version: Any, encoding: Any, _standalone: Any) -> None:
+        # Fires before the encoding switch. The declaration is unsigned (C14N drops it),
+        # so the label is attacker-chosen: allow-list it rather than hand it to expat.
+        if encoding is not None and encoding.upper() not in _ALLOWED_ENCODINGS:
+            raise TrustListParseError(
+                f"trust list declares an unsupported XML encoding {safe_repr(encoding)}")
+
+    parser.XmlDeclHandler = _xml_decl
     parser.StartDoctypeDeclHandler = _forbid_dtd
     parser.StartElementHandler = _start
     parser.EndElementHandler = lambda name: builder.end(_qname(name))
@@ -148,8 +179,11 @@ def _hardened_parse(xml: bytes, *, max_bytes: int,
         parser.Parse(bytes(xml), True)
     except TrustListParseError:
         raise
-    except expat.ExpatError as exc:
-        raise TrustListParseError(f"malformed trust list XML: {exc}") from exc
+    except (expat.ExpatError, ValueError, LookupError) as exc:
+        # ValueError / LookupError: expat's unknown-encoding path (defence in depth
+        # behind the allow-list above).
+        raise TrustListParseError(
+            f"malformed trust list XML: {safe_repr(str(exc))}") from exc
     return builder.close()
 
 
