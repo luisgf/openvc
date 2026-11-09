@@ -208,7 +208,7 @@ All notable changes to **openvc** are documented here. The format follows
   `URDNA2015` subclass) now serves `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and `ecdsa-sd-2023`;
   the blank-node ceiling is checked before any hashing and the permutations are counted as
   `k!` per tied group before they run, so a clique of 8 is refused in milliseconds and the
-  worst measured document at the ceiling costs under 3 s. The ceilings come from measuring
+  worst measured document at the ceiling costs about 3 s on a laptop (8 s on a loaded CI runner). The ceilings come from measuring
   every RDF fixture (W3C vectors, ecdsa-sd interop, status lists, `ldp_vc` / `ldp_vp`, docs
   snippets): at most 5 blank nodes and no Hash N-Degree Quads work. The output of an accepted
   document is byte-identical to `jsonld.normalize`, the goldens included. Found by the

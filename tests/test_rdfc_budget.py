@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import base64
 import json
-import time
 from pathlib import Path
 
 import pytest
@@ -41,7 +40,6 @@ from openvc.proof.errors import ProofMalformed, SignatureInvalid  # noqa: E402
 VC2 = "https://www.w3.org/ns/credentials/v2"
 CTX = [VC2, {"@vocab": "https://v.example/"}]
 FX = Path(__file__).parent / "fixtures" / "vc_di_eddsa"
-FAST = 3.0          # seconds, CI-runner slack: main takes 20 s on clique 8, minutes on 9
 BUDGET_ERROR = "CanonicalizationBudgetExceeded"
 
 _ISSUER = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
@@ -111,35 +109,56 @@ def _ring_subject(n: int) -> list:
             for i in range(n)]
 
 
-def _timed(fn):
-    t = time.perf_counter()
-    try:
-        fn()
-    except BaseException as exc:  # noqa: BLE001 - the caller asserts the class
-        return exc, time.perf_counter() - t
-    return None, time.perf_counter() - t
+@pytest.fixture
+def run(monkeypatch):
+    """``run(fn) -> (exception or None, Hash N-Degree Quads calls that did real work)``.
+    Wall-clock bounds flake on a loaded CI runner (the same refusal took 0.3 s here and 4-8 s
+    on one py3.11 job), so a refusal is proved bounded by counting the work pyld was let do."""
+    from pyld.jsonld import URDNA2015
+    calls = [0]
+    original = URDNA2015.hash_n_degree_quads
+
+    def counting(self, id_, issuer):
+        calls[0] += 1
+        return original(self, id_, issuer)
+
+    monkeypatch.setattr(URDNA2015, "hash_n_degree_quads", counting)
+
+    def runner(fn):
+        calls[0] = 0
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 - the caller asserts the class
+            return exc, calls[0]
+        return None, calls[0]
+
+    return runner
 
 
 # --------------------------------------------------------------------------- #
-# 1. Negatives: poison graphs are refused, typed and fast
+# 1. Negatives: poison graphs are refused, typed and bounded
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("subject", [_clique_subject(8), _bipartite_subject(5)],
                          ids=["clique-8", "K5,5"])
-def test_poison_graph_refused_typed_and_fast_through_verify_credential(subject):
-    exc, dt = _timed(lambda: verify_credential(_wrap(subject)))
+def test_poison_graph_refused_typed_and_bounded_through_verify_credential(subject, run):
+    from openvc.proof import _rdfc
+    exc, calls = run(lambda: verify_credential(_wrap(subject)))
     assert type(exc).__name__ == BUDGET_ERROR, exc
     assert isinstance(exc, ProofMalformed)
-    assert dt < FAST, f"refusal took {dt:.2f}s"
+    assert calls <= _rdfc.MAX_HNDQ_CALLS
     # names the ceiling, never echoes the document
     assert "budget" in str(exc)
     assert "_:b0" not in str(exc) and "v.example" not in str(exc)
 
 
-def test_clique_8_refused_without_running_the_permutations():
-    # the pre-count refuses the 7! = 5040 group before one permutation runs
-    _, dt = _timed(lambda: verify_credential(_wrap(_clique_subject(8))))
-    assert dt < 1.0
+def test_clique_8_refused_without_running_the_permutations(run):
+    # the pre-count refuses the 7! = 5040 group in the first Hash N-Degree Quads call, before
+    # one permutation (or one recursive call) runs
+    exc, calls = run(lambda: verify_credential(_wrap(_clique_subject(8))))
+    assert type(exc).__name__ == BUDGET_ERROR, exc
+    assert "permutations" in str(exc)
+    assert calls == 1
 
 
 def test_poison_item_is_a_per_item_error_in_verify_many_and_siblings_verify():
@@ -148,16 +167,14 @@ def test_poison_item_is_a_per_item_error_in_verify_many_and_siblings_verify():
         {"@context": CTX, "type": ["VerifiableCredential"], "issuer": did,
          "credentialSubject": {"id": "did:example:s", "name": "Ada"}},
         signing_key=sk, verification_method=vm)
-    t = time.perf_counter()
     results = verify_many([good, _wrap(_clique_subject(8)), good, _wrap(_bipartite_subject(5))],
                           policy=VerificationPolicy())
-    assert time.perf_counter() - t < 2 * FAST
     assert [r.error is None for r in results] == [True, False, True, False]
     assert type(results[1].error).__name__ == BUDGET_ERROR
     assert type(results[3].error).__name__ == BUDGET_ERROR
 
 
-def test_ecdsa_rdfc_suite_refuses_the_poison_after_the_key_matched():
+def test_ecdsa_rdfc_suite_refuses_the_poison_after_the_key_matched(run):
     sk, did, vm = _p256_key()
     suite = EcdsaRdfcProofSuite()
     signed = suite.add_proof(
@@ -165,33 +182,34 @@ def test_ecdsa_rdfc_suite_refuses_the_poison_after_the_key_matched():
          "credentialSubject": {"id": "did:example:s", "name": "Ada"}},
         signing_key=sk, verification_method=vm)
     signed["credentialSubject"] = _clique_subject(8)
-    exc, dt = _timed(lambda: verify_credential(signed))
+    exc, calls = run(lambda: verify_credential(signed))
     assert type(exc).__name__ == BUDGET_ERROR, exc
-    assert dt < FAST
+    assert calls <= 1
     # and the signing side refuses the same document
     unsecured = {k: v for k, v in signed.items() if k != "proof"}
     with pytest.raises(ProofMalformed):
         suite.add_proof(unsecured, signing_key=sk, verification_method=vm)
 
 
-def test_ecdsa_sd_refuses_the_poison_on_both_canonicalization_paths():
+def test_ecdsa_sd_refuses_the_poison_on_both_canonicalization_paths(run):
     clique_nquads = "".join(
         f"_:b{i} <https://v.example/link> _:b{j} .\n"
         for i in range(8) for j in range(8) if i != j)
-    exc, dt = _timed(lambda: _canonicalize(clique_nquads))
+    exc, calls = run(lambda: _canonicalize(clique_nquads))
     assert type(exc).__name__ == BUDGET_ERROR, exc
-    assert dt < FAST
+    assert calls <= 1
 
     sk = P256SigningKey.generate(kid="did:key:zDnaeykfoobar#zDnaeykfoobar")
     credential = {"@context": CTX, "type": ["VerifiableCredential"],
                   "issuer": "did:example:issuer", "validFrom": "2026-01-01T00:00:00Z",
                   "credentialSubject": _clique_subject(8)}
-    exc, dt = _timed(lambda: EcdsaSdProofSuite().add_base_proof(
+    exc, calls = run(lambda: EcdsaSdProofSuite().add_base_proof(
         credential, signing_key=sk, verification_method="did:key:zDnaeykfoobar#zDnaeykfoobar",
         mandatory_pointers=["/issuer"]))
     assert isinstance(exc, ProofMalformed), exc
     assert type(exc).__name__ == BUDGET_ERROR
-    assert dt < FAST
+    from openvc.proof import _rdfc
+    assert calls <= _rdfc.MAX_HNDQ_CALLS     # bounded; the skolemized graph reaches the call cap
 
 
 def test_budgets_below_the_ceiling_still_reach_the_signature_check():
@@ -214,31 +232,31 @@ def test_budget_constants_are_importable_and_pinned():
     assert issubclass(_rdfc.CanonicalizationBudgetExceeded, ProofMalformed)
 
 
-def test_hndq_call_ceiling_alone_stops_the_recursion(monkeypatch):
+def test_hndq_call_ceiling_alone_stops_the_recursion(monkeypatch, run):
     from openvc.proof import _rdfc
     monkeypatch.setattr(_rdfc, "MAX_PERMUTATIONS", 10 ** 12)     # the permutation guard is off
-    exc, dt = _timed(lambda: verify_credential(_wrap(_clique_subject(7))))
+    exc, calls = run(lambda: verify_credential(_wrap(_clique_subject(7))))
     assert type(exc).__name__ == BUDGET_ERROR, exc
     assert "Hash N-Degree Quads calls" in str(exc)
-    assert dt < 2 * FAST
+    assert calls <= _rdfc.MAX_HNDQ_CALLS
 
 
-def test_permutation_ceiling_alone_stops_a_tied_group(monkeypatch):
+def test_permutation_ceiling_alone_stops_a_tied_group(monkeypatch, run):
     from openvc.proof import _rdfc
     monkeypatch.setattr(_rdfc, "MAX_HNDQ_CALLS", 10 ** 12)       # the call guard is off
-    exc, dt = _timed(lambda: verify_credential(_wrap(_clique_subject(8))))
+    exc, calls = run(lambda: verify_credential(_wrap(_clique_subject(8))))
     assert type(exc).__name__ == BUDGET_ERROR, exc
     assert "permutations" in str(exc)
-    assert dt < FAST
+    assert calls <= 1
 
 
-def test_a_tied_group_too_large_to_factor_is_refused_without_computing_the_factorial():
+def test_a_tied_group_too_large_to_factor_is_refused_without_computing_the_factorial(run):
     # 40 interchangeable neighbours of one hub that is itself tied with a twin hub
     spokes = [{"id": f"_:s{i}"} for i in range(40)]
     subject = [{"id": "_:h0", "link": spokes}, {"id": "_:h1", "link": spokes}]
-    exc, dt = _timed(lambda: verify_credential(_wrap(subject)))
+    exc, calls = run(lambda: verify_credential(_wrap(subject)))
     assert type(exc).__name__ == BUDGET_ERROR, exc
-    assert dt < FAST
+    assert calls <= 1
 
 
 def _plain_subject(n: int) -> list:
@@ -282,9 +300,7 @@ def test_linear_ring_of_256_blank_nodes_still_verifies_within_the_budget():
         {"@context": CTX, "type": ["VerifiableCredential"], "issuer": did,
          "credentialSubject": subject},
         signing_key=sk, verification_method=vm)
-    t = time.perf_counter()
     result = verify_credential(signed)
-    assert time.perf_counter() - t < 2 * FAST
     assert result.issuer == did
 
 

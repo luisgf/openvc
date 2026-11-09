@@ -855,7 +855,7 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   come from measuring every RDF fixture in the repository (at most 5 blank nodes, no
   Hash N-Degree Quads work). **Residual:** the ceilings bound the cost, they do not remove
   it. A document at the ceiling still costs CPU before the signature is checked (about
-  0.5 to 3 seconds measured on one core: a 225-node grid is the worst found), so this is
+  0.5 to 3 seconds on a developer laptop, up to 8 on a shared CI runner: a 225-node grid is the worst found), so this is
   amplification bounded by the input cap, not a wrong-accept; a symmetric but legitimate
   document over the ceiling is refused. The JCS suites do no RDF work and are unaffected
   (`test_rdfc_budget.py`).
