@@ -28,7 +28,8 @@ All notable changes to **openvc** are documented here. The format follows
   a query that waived binding, with the switch off, is still accepted but now reports
   `holder=None` instead of `sub` — the `sub` is the issuer's identifier for the holder,
   not an authenticated presenter, and stays readable as `credentials[0].subject`; with a
-  KB-JWT verified, `holder` is `sub` as before. The `mso_mdoc` lane does not read the
+  KB-JWT verified, `holder` is `sub` as before, except that an empty-string `sub` is no
+  identifier and reports `None` too (it used to report `""`). The `mso_mdoc` lane does not read the
   switch, by decision: `verify_device_response` verifies the `DeviceAuth` over the
   origin-bound `SessionTranscript`, signed with the device key the issuer sealed in the
   MSO, for every document or refuses the response (`MdocDeviceAuthError`), which is

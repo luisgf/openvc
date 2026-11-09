@@ -920,7 +920,7 @@ def _verify_mso_mdoc(
 def _verify_sd_jwt_vc(
     query_id: str, vct_values: list[str] | None, presentation: Any, *, require_binding: bool,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
-    require_holder_binding: bool = False,
+    require_holder_binding: bool,
     jwt_vc_issuer_fetch: Any = None,
     x5c_trust_anchors: Any = None,
     resolve_status_list: Any = None,
@@ -984,8 +984,9 @@ def _verify_sd_jwt_vc(
             f"require_holder_binding")
     # `sub` is the issuer's identifier for the holder. It names the authenticated
     # presenter only once the KB-JWT proved possession of the `cnf` key the issuer bound
-    # it to; with no KB-JWT nobody authenticated, so nothing is reported (not `sub`).
-    holder = result.subject if key_bound is True else None
+    # it to; with no KB-JWT nobody authenticated, so nothing is reported (not `sub`). An
+    # empty `sub` is no identifier either (the W3C lanes read an empty subject as absent).
+    holder = (result.subject or None) if key_bound is True else None
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_SD_JWT_VC, holder=holder,
         credentials=(result,), raw=result.raw)
@@ -994,7 +995,7 @@ def _verify_sd_jwt_vc(
 def _verify_jwt_vp(
     query_id: str, presentation: Any, *, require_binding: bool,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
-    require_holder_binding: bool = False,
+    require_holder_binding: bool,
     jwt_vc_issuer_fetch: Any = None,
     x5c_trust_anchors: Any = None,
     resolve_status_list: Any = None,

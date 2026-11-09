@@ -175,6 +175,24 @@ a `dc+sd-jwt` query, whatever `meta.vct_values` says, or whether it sets any. Be
 calls every SD-JWT `sd-jwt-vc` and the lane did not look at the typ (#272). A
 `dc+sd-jwt` token needs a `vct` in any case ([SD-JWT VC](SD-JWT-VC)).
 
+What `holder` means depends on the lane, because each lane authenticates the presenter
+differently. For `jwt_vc_json` and `ldp_vc` it is the VP signer: the controller of the key
+that signed the presentation, never a self-asserted field (see
+[Holder binding on the W3C formats](#holder-binding-on-the-w3c-formats)). For `dc+sd-jwt`
+it is the issuer-signed `sub` once the Key Binding JWT has proved possession of the `cnf`
+key (`credentials[0].key_bound is True`); an SD-JWT VC presented with no KB-JWT, which only
+a query that waived binding accepts, reports `holder=None` since 1.39.0 (it used to report
+`sub`, an identifier nobody had authenticated; it stays readable as
+`credentials[0].subject`), and so does one whose `sub` is the empty string. A bare W3C
+credential reports `None`, since nothing authenticated a holder, and so does `mso_mdoc`:
+its `DeviceAuth` is verified, but an mdoc carries no holder identifier.
+`require_holder_binding=True`, the caller's own switch, enforces the binding on every lane
+whatever the query says: on the W3C lanes every embedded credential's subject must be the
+signer and a bare credential is refused; on `dc+sd-jwt` the SD-JWT VC must carry a KB-JWT
+bound to this exchange, else `ClaimsInvalid`; `mso_mdoc` meets it by construction, because
+the `DeviceAuth` over the origin-bound `SessionTranscript`, signed with the device key the
+issuer sealed in the MSO, is verified for every document or the response is refused.
+
 ### Credential sets (`credential_sets`)
 
 `credential_sets` lets a query say which of its Credential Queries must come back
@@ -386,22 +404,6 @@ the `verificationMethod` that signed the proof, not a self-asserted `holder`
 field (a `holder` that disagrees with the signer is rejected). Every credential the
 presentation carries must also be bound to that holder, unless the query opts out — see
 [Holder binding on the W3C formats](#holder-binding-on-the-w3c-formats).
-
-What `holder` means depends on the lane, because each lane authenticates the presenter
-differently. For `jwt_vc_json` and `ldp_vc` it is the VP signer, as above. For `dc+sd-jwt`
-it is the issuer-signed `sub` once the Key Binding JWT has proved possession of the `cnf`
-key (`credentials[0].key_bound is True`); an SD-JWT VC presented with no KB-JWT, which only
-a query that waived binding accepts, reports `holder=None` since 1.39.0 (it used to report
-`sub`, an identifier nobody had authenticated; it stays readable as
-`credentials[0].subject`). A bare W3C credential reports `None`, since nothing
-authenticated a holder, and so does `mso_mdoc`: its `DeviceAuth` is verified, but an mdoc
-carries no holder identifier. `require_holder_binding=True`, the caller's own switch,
-enforces the binding on every lane whatever the query says: on the W3C lanes every
-embedded credential's subject must be the signer and a bare credential is refused; on
-`dc+sd-jwt` the SD-JWT VC must carry a KB-JWT bound to this exchange, else
-`ClaimsInvalid`; `mso_mdoc` meets it by construction, because the `DeviceAuth` over the
-origin-bound `SessionTranscript`, signed with the device key the issuer sealed in the MSO,
-is verified for every document or the response is refused.
 
 ### Matching the credential type: `meta.type_values`
 

@@ -188,6 +188,16 @@ def test_sd_jwt_with_kb_jwt_but_no_sub_has_no_holder_to_report(issuer, holder):
     assert p.holder is None
 
 
+def test_sd_jwt_with_kb_jwt_and_an_empty_sub_reports_no_holder(issuer, holder):
+    """An empty `sub` is no identifier: with the KB-JWT verified, `holder` is None, as the
+    W3C lanes already read an empty subject as absent (adversarial review of #378)."""
+    p = _verify(_presented_sd_jwt(issuer, holder, sub=""), DEFAULT_SD_JWT_DCQL,
+                require_holder_binding=True)
+    assert p.credentials[0].key_bound is True
+    assert p.credentials[0].subject == ""          # the claim as the issuer wrote it …
+    assert p.holder is None                        # … names nobody
+
+
 def test_vct_mismatch_is_reported_before_the_switch(issuer, holder):
     """The lane's own pins (format, typ, vct_values) keep coming first."""
     dcql = {"credentials": [{"id": "q", "format": FORMAT_SD_JWT_VC,
