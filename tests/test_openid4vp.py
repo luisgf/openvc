@@ -287,18 +287,24 @@ def test_empty_binding_inputs_rejected(nonce, client_id):
 
 def test_holder_binding_can_be_waived_by_the_query(issuer, holder):
     """require_cryptographic_holder_binding:false means a bare SD-JWT (no KB-JWT) is
-    accepted — the verifier explicitly opted out of holder binding for this query."""
+    accepted — the verifier explicitly opted out of holder binding for this query. Nobody
+    authenticated the issuer-written `sub`, so it is not reported as the holder (#378)."""
     issuer_key, issuer_did = issuer
     holder_key, _ = holder
     issued = SdJwtVcProofSuite().issue(
-        {"iss": issuer_did, "given_name": "Ada"}, signing_key=issuer_key, vct=VCT,
+        {"iss": issuer_did, "given_name": "Ada", "sub": "did:example:alice"},
+        signing_key=issuer_key, vct=VCT,
         disclosable=["given_name"], holder_jwk=holder_key.public_jwk())   # no KB-JWT presented
     dcql = {"credentials": [{"id": "my_credential", "format": FORMAT_SD_JWT_VC,
                              "meta": {"vct_values": [VCT]},
                              "require_cryptographic_holder_binding": False}]}
     result = verify_vp_token({"my_credential": [issued]}, dcql_query=dcql,
                              nonce=NONCE, client_id=CLIENT_ID)
-    assert result.for_query("my_credential")[0].format == FORMAT_SD_JWT_VC
+    (p,) = result.for_query("my_credential")
+    assert p.format == FORMAT_SD_JWT_VC
+    assert p.credentials[0].key_bound is False
+    assert p.credentials[0].subject == "did:example:alice"   # readable, as the issuer's claim
+    assert p.holder is None                                  # not an authenticated presenter
 
 
 def test_errors_share_one_base():
