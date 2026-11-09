@@ -872,8 +872,10 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   so the input size is the caller's to bound. It is amplification of CPU, not a wrong-accept.
   A document whose permutation upper bound exceeds the budget is refused even if the
   algorithm would have finished quickly (a blank-node id shared by two identical blank-node
-  graphs of ten or more statements each), and a tied graph over the budget is refused even if
-  legitimate (a clique of 8 would have to be hand-built). The JCS suites do no RDF work and
+  graphs of around a dozen statements each; the threshold is not monotone), and a tied graph
+  over the budget is refused even if legitimate (a clique of 8, a tied cycle of 200, or two
+  identical parents with 8 identical children each would have to be hand-built; a cycle of
+  150 and two parents with 7 children pass). The JCS suites do no RDF work and
   are unaffected (`test_rdfc_budget.py`).
 
 ## 10. Out of scope

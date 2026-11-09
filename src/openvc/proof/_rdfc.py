@@ -38,9 +38,9 @@ The numbers come from a measurement of every RDF-canonicalizing fixture in the
 repository (D8, issue #381): at most 5 blank nodes, **0** Hash N-Degree Quads calls and
 0 permutations, i.e. nothing in the fixtures ties.
 The unit is calibrated on the dearest step (an issuer copy, about 0.1 microsecond per
-unit); the other steps cost up to a few times that per unit, so the ceiling is a few seconds
-of one core, not a fixed duration (see the measurements in the wiki). Output is byte-identical to
-``jsonld.normalize(..., algorithm="URDNA2015", format="application/n-quads")``.
+unit); every other step is cheaper per unit (at most about 0.11 microsecond measured), so the
+ceiling is a few seconds of one core at most, not a fixed duration (see the wiki).
+Output is byte-identical to ``jsonld.normalize(..., algorithm="URDNA2015", format="application/n-quads")``.
 """
 from __future__ import annotations
 
@@ -56,9 +56,9 @@ from .errors import ProofMalformed
 # nothing in Hash N-Degree Quads; the cap sizes the issuer copies the work counter charges.
 MAX_BLANK_NODES = 1024
 # Work units (see the module docstring) one canonicalization may spend in Hash N-Degree
-# Quads. A unit is about 0.1 microsecond of the dearest step (an issuer copy) and up to
-# several times that for the cheapest (see the measurements in the wiki), so the ceiling is a
-# few seconds of one core.
+# Quads. A unit is about 0.1 microsecond of the dearest step (an issuer copy); every other
+# step measured is cheaper per unit (at most about 0.11 microsecond), so the ceiling is a few
+# seconds of one core at most.
 MAX_CANONICALIZATION_WORK = 20_000_000
 # Hash N-Degree Quads invocations (recursion included): a coarse backstop; the work counter
 # charges every call, so it binds first.

@@ -203,15 +203,16 @@ because nothing real ties. Documents that tie but are cheap pass: three credenti
 presentation that share an identical sub-object, 255 distinct blank nodes in a ring, a 300-node
 tree, an `@list` of 200 identical items, a tied cycle of 150, a clique of 6 or three disjoint
 ones. What is refused is work: a symmetric graph (a clique of 8, a complete bipartite graph
-K5,5, a 15 by 15 grid), a tied node that carries thousands of statements, or tied nodes that
-each point at one shared node under thousands of predicates. Measured on one core of a
+K5,5, a 15 by 15 grid, a tied cycle of 200, two identical parents with 8 identical children
+each), a tied node that carries thousands of statements, or tied nodes that each point at one
+shared node under thousands of predicates. Measured on one core of a
 developer laptop, a refusal takes 0.3 to 1.1 s for the plain graphs and 1.7 to 2.8 s for the
 documents above half a megabyte (a 4.4 MB document costs 5.5 s, of which 3.4 s is the linear
 cost the same bytes have without ties); a loaded shared runner takes several times that. The
 unit is calibrated on the dearest step, so the time to spend the budget varies by shape. A
 contrived document can be refused that the algorithm would canonicalize quickly, because the
 permutation count is an upper bound (a blank-node id shared by two identical blank-node
-graphs of ten or more statements each). Giving the nodes an `id`, an IRI or a distinguishing
+graphs of around a dozen statements each; the threshold is not monotone). Giving the nodes an `id`, an IRI or a distinguishing
 value keeps them out of the tie-breaking phase. The output of an accepted document is
 byte-identical to pyld's `normalize`.
 

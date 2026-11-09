@@ -196,12 +196,15 @@ def _shared_target_cycle(n: int, predicates: int) -> list:
 @pytest.mark.parametrize("subject", [_shared_target_cycle(100, 200), _shared_target_cycle(50, 500),
                                      _shared_target_cycle(20, 2000)],
                          ids=["cycle100xQ200", "cycle50xQ500", "cycle20xQ2000"])
-def test_singleton_groups_are_charged_for_their_issuer_copies(subject, run, tight):
-    # Without charging the copies of singleton groups these cost 13-31 s while the counter
-    # stood at 4 M of 10 M units, and the document was accepted.
+def test_singleton_groups_are_charged_for_their_issuer_copies(subject, run, monkeypatch):
+    # Without charging the copies of singleton groups these cost 13-31 s while the other
+    # charges (quads, calls) stood at about 4 M units, and the document was accepted. At 6 M
+    # only the copy charge can refuse it, so removing that charge fails this test.
+    from openvc.proof import _rdfc
+    monkeypatch.setattr(_rdfc, "MAX_CANONICALIZATION_WORK", 6_000_000)
     exc, calls = run(lambda: verify_credential(_wrap(subject)))
     assert type(exc).__name__ == BUDGET_ERROR, exc
-    assert calls < 150_000 // 200
+    assert calls < 3_000
 
 
 def test_singleton_copies_decide_a_document_the_other_charges_would_accept(run, monkeypatch):
