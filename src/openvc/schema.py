@@ -35,6 +35,12 @@ carrying a catastrophic-backtracking regex can burn unbounded CPU during
 validation. There is no clean dependency-light in-process bound (a hard timeout
 needs a subprocess; a linear-time engine needs ``re2``); a very deep schema is
 capped only by the recursion limit (surfaced as :class:`SchemaResolutionError`).
+Whatever else the processor raises when a hostile schema meets a hostile value —
+an ``OverflowError`` from ``multipleOf`` on an infinite or a 400-digit number, a
+``ValueError`` from a ``$schema`` URI ``urlsplit`` rejects — surfaces typed too
+(:class:`SchemaResolutionError` while the schema is looked up and built,
+:class:`SchemaValidationError` while the credential is validated against it), so
+one such credential never aborts a :func:`openvc.verify_many` batch.
 Point ``resolve_credential_schema`` at schema hosts you trust, or bound the work
 in the injected fetch. Validation being **opt-in** limits exposure.
 
@@ -78,11 +84,13 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from . import _json
 from .errors import OpenvcError
+from .proof._verify_common import safe_repr
 
 # Fetch a schema URL -> the RAW schema bytes. Bytes (not a parsed dict) so a
 # credentialSchema `digestSRI` can be verified over the exact response before parsing.
@@ -226,13 +234,31 @@ def _extract_json_schema(resource: dict[str, Any]) -> dict[str, Any]:
     return resource
 
 
+# What the jsonschema processor lets escape, besides its own exception types, when an
+# attacker-influenced schema meets an attacker-influenced instance (measured, #387):
+# `multipleOf` divides before its own guard, so an infinite number (`1e400` parses to
+# inf) or a 400-digit integer against a float raises OverflowError (an ArithmeticError);
+# `validator_for` normalises `$schema` with `urlsplit`, which raises ValueError on
+# `http://[::1`; a `pattern` the meta-validation did not refuse compiles to re.error;
+# TypeError is the backstop for an operand a keyword did not expect.
+_PROCESSOR_ESCAPES = (ArithmeticError, ValueError, TypeError, re.error)
+
+
 def _validate_instance(instance: dict[str, Any], schema: dict[str, Any],
                        schema_url: str) -> None:
     """Validate *instance* against *schema*, raising :class:`SchemaValidationError`
     on any mismatch. The validator dialect follows the schema's ``$schema`` (JSON
     Schema draft 2020-12 by default). No remote ``$ref`` fetching is wired, so an
     unresolvable remote ``$ref`` fails closed. ``format`` keywords are treated as
-    annotations (JSON Schema's default), not assertions."""
+    annotations (JSON Schema's default), not assertions.
+
+    Every failure is a typed :class:`SchemaError`, the processor's own types and the
+    bare ones it lets escape alike (:data:`_PROCESSOR_ESCAPES`), attributed by where it
+    surfaced: while the schema is looked up, meta-validated or built, the resource is
+    unusable (:class:`SchemaResolutionError`); while *instance* is validated, its
+    values could not be checked against the schema (:class:`SchemaValidationError`).
+    An unresolvable ``$ref`` and a recursion overflow are the schema's wherever they
+    surface."""
     try:
         import jsonschema
         import referencing
@@ -252,20 +278,24 @@ def _validate_instance(instance: dict[str, Any], schema: dict[str, Any],
         raise SchemaResolutionError(
             f"resource at {schema_url!r} has no $schema and MUST NOT be processed")
 
-    validator_cls = jsonschema.validators.validator_for(
-        schema, default=Draft202012Validator)
-
-    # Meta-validate, build, and run under one guard so every failure from the
-    # attacker-influenced schema stays a typed SchemaError (SchemaError ->
-    # OpenvcError contract). A deep schema can blow the recursion limit in either
+    # Look up the dialect, meta-validate, build, and run under one guard so every
+    # failure from the attacker-influenced schema stays a typed SchemaError
+    # (SchemaError -> OpenvcError contract: a bare exception would abort a whole
+    # verify_many batch). A deep schema can blow the recursion limit in either
     # check_schema or iter_errors, so RecursionError is caught across the whole
-    # region, not just validation. The EMPTY `referencing.Registry` (no retrieve
-    # hook) makes a remote `$ref` fail closed as Unresolvable with NO network call
-    # — jsonschema's *default* registry would urllib.urlopen it, an SSRF vector.
-    # Local (#/…) refs still resolve against the schema document itself.
+    # region, not just validation; so are the bare types the processor lets escape
+    # (_PROCESSOR_ESCAPES), attributed to the schema or to the instance by the phase
+    # they surfaced in. The EMPTY `referencing.Registry` (no retrieve hook) makes a
+    # remote `$ref` fail closed as Unresolvable with NO network call — jsonschema's
+    # *default* registry would urllib.urlopen it, an SSRF vector. Local (#/…) refs
+    # still resolve against the schema document itself.
+    validating = False                  # the phase a bare exception surfaces in
     try:
+        validator_cls = jsonschema.validators.validator_for(
+            schema, default=Draft202012Validator)
         validator_cls.check_schema(schema)
         validator = validator_cls(schema, registry=referencing.Registry())
+        validating = True
         errors = sorted(validator.iter_errors(instance), key=lambda e: list(e.path))
     except JsonSchemaError as exc:
         raise SchemaResolutionError(
@@ -282,6 +312,16 @@ def _validate_instance(instance: dict[str, Any], schema: dict[str, Any],
     except RecursionError as exc:
         raise SchemaResolutionError(
             f"schema {schema_url!r} is too deeply nested to validate") from exc
+    except _PROCESSOR_ESCAPES as exc:
+        # the processor's bare escape, bounded (its text can echo the schema or value)
+        raised = f"{type(exc).__name__}: {safe_repr(str(exc))}"
+        if validating:
+            raise SchemaValidationError(
+                f"could not validate against schema {schema_url!r}: the JSON Schema "
+                f"processor raised {raised}") from exc
+        raise SchemaResolutionError(
+            f"resource at {schema_url!r} could not be processed as a JSON Schema: "
+            f"the processor raised {raised}") from exc
     if errors:
         first = errors[0]
         where = "/".join(str(p) for p in first.path) or "<root>"
