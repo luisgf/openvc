@@ -218,7 +218,10 @@ finite input", with no explicit constant.
   head, so a host sending header bytes slowly held a verifier thread for `timeout_s` ×
   bytes, and the lookup had no bound). *Residual:* the lookup runs on a daemon thread the
   caller abandons at the deadline, so a `getaddrinfo` that never returns keeps that thread
-  and its resolver resources until the OS resolver gives up; the bound is per dereference,
+  and its resolver resources until the OS resolver gives up (glibc: about 5 s × 2 attempts per
+  server; macOS: about 30 s); the threads accumulate at the fetch rate for that long and
+  nothing caps them — the adversarial review of #385 measured 38 abandoned threads after 50
+  refusals at `timeout_s=0.2` against a lookup hanging 8 s; the bound is per dereference,
   so a credential that names several hosts spends one budget per fetch. Query strings
   never logged. `src/openvc/fetch.py` (`_resolve_within`, `_PinnedHTTPSConnection`,
   `_https_get`). See **R5**. Since v1.25.0 it also

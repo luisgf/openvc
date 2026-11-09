@@ -25,7 +25,9 @@ thread the caller waits on only until the deadline, and a watchdog timer shuts t
 socket down at the deadline so a blocked read fails with a typed error. The one
 residual is the lookup itself: a ``getaddrinfo`` that never returns is abandoned
 on its daemon thread (the caller is released; the thread lives until the OS
-resolver gives up). ``timeout_s`` must be a positive, finite number of seconds.
+resolver gives up). ``timeout_s`` must be an ``int`` or ``float`` number of seconds
+greater than 0 and at most one day (``MAX_TIMEOUT_S``), the same ceiling as the EBSI
+client's ``deadline_s``; anything else is refused with the typed error before any lookup.
 
 Dependency-light on purpose: pure stdlib (http.client + ssl + socket +
 ipaddress + threading). Pass ``https_json_fetch`` wherever a ``Fetch`` is
@@ -37,9 +39,9 @@ import asyncio
 import http.client
 import ipaddress
 import json
-import math
 import socket
 import ssl
+import sys
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable
@@ -54,6 +56,7 @@ if TYPE_CHECKING:
     from .did.did_webvh import AsyncDidWebvhResolver, DidWebvhResolver
 
 DEFAULT_TIMEOUT_S = 10.0
+MAX_TIMEOUT_S = 86_400.0  # one day: the ceiling of a wall-clock budget, as the EBSI deadline_s
 MAX_RESPONSE_BYTES = 1_048_576  # 1 MiB — DID documents are small; bound memory.
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _WATCHDOG_THREAD_NAME = "openvc-fetch-watchdog"
@@ -162,6 +165,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self.phase = "TCP connect"
 
     def connect(self) -> None:
+        # The event the stdlib connect() emits, so an audit hook still sees openvc's connects.
+        sys.audit("http.client.connect", self, self.host, self.port)
         # The (hostname, port) address http.client would connect to is ignored.
         raw = socket.create_connection((self._pinned_ip, self.port), timeout=self.timeout)
         self._watch(raw)
@@ -176,6 +181,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             raw, server_hostname=self.host, do_handshake_on_connect=False)
         self._watch(self.sock)
         self.sock.do_handshake()
+        self.phase = "request write"
 
 
 def _https_get(
@@ -279,9 +285,11 @@ def _https_get(
         raise DidResolutionError(f"fetch failed for https://{hostname}{target}: {exc}") from exc
     finally:
         if watchdog is not None:
-            # cancel() alone could leave the callback mid-run while the socket below is
-            # closed; join() makes the shutdown happen-before the close, so it can never
-            # reach a descriptor the OS has since reused. The callback is a few syscalls.
+            # cancel() alone could leave the callback mid-run; join() orders it before the
+            # conn.close() below. http.client closes the descriptor earlier on some paths (a
+            # ConnectionError inside getresponse(), a body that ends under Connection: close):
+            # there the socket object's own invalidation covers it — a closed socket has fd -1,
+            # so the shutdown is EBADF, swallowed, never a descriptor the OS has reused.
             watchdog.cancel()
             watchdog.join()
         if conn is not None:
@@ -302,11 +310,16 @@ def _https_fetch_guarded(
 
     The deadline starts here, before anything is parsed or resolved: DNS, connect,
     TLS, headers and body all spend the one ``timeout_s`` budget."""
-    # A NaN budget would make every deadline comparison false (the deadline would never
-    # fire), inf overflows the timers: both are refused up front, like a non-positive one.
-    if not (timeout_s > 0 and math.isfinite(timeout_s)):
+    # The budget's whole domain is checked up front, typed: a NaN would make every deadline
+    # comparison false (the deadline would never fire), inf or a finite value past ~9.2e9 s
+    # overflows the timers (a bare OverflowError), a non-number is a bare TypeError in the
+    # arithmetic, and bool is not a number of seconds. int or float in (0, one day]; the
+    # chained comparison alone excludes NaN and inf, and never converts a huge int to float.
+    if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+            or not 0 < timeout_s <= MAX_TIMEOUT_S):
         raise DidResolutionError(
-            f"timeout_s must be a positive, finite number of seconds, got {timeout_s!r}")
+            "timeout_s must be an int or float number of seconds greater than 0 and at most "
+            f"{MAX_TIMEOUT_S:g} (one day), got {timeout_s!r}")
     deadline = time.monotonic() + timeout_s
     # ASCII before anything parses it. urlparse NFKC-normalizes a non-ASCII netloc,
     # which is quadratic on CPython <= 3.12 for out-of-order combining marks, even
@@ -479,6 +492,7 @@ def default_async_did_webvh_resolver() -> "AsyncDidWebvhResolver":
 __all__ = [
     "DEFAULT_TIMEOUT_S",
     "MAX_RESPONSE_BYTES",
+    "MAX_TIMEOUT_S",
     "UnsafeUrlError",
     "default_async_did_web_resolver",
     "default_async_did_webvh_resolver",

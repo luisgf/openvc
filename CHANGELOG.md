@@ -11,22 +11,28 @@ All notable changes to **openvc** are documented here. The format follows
 - **`openvc.fetch`: one wall-clock deadline now covers the whole dereference — DNS
   resolution, the TCP connect, the TLS handshake, the status line and headers, and the
   body** ([#385](https://github.com/luisgf/openvc/issues/385)). `_https_get` started its
-  deadline after `getresponse()` returned, so it bounded only the body: the response head
-  was read one socket operation at a time, each allowed the full per-socket `timeout_s`
-  (up to 100 header lines of 65 536 bytes), and `getaddrinfo` had no bound at all, so a
+  deadline after `getresponse()` returned, so it bounded only the body — and not all of it:
+  the response head was read one socket operation at a time, each allowed the full
+  per-socket `timeout_s` (up to 100 header lines of 65 536 bytes), the chunk-size lines and
+  trailers of a chunked body were read the same way inside `read1` (a 1 s budget leaked 6–7 s
+  there too, one case returning OK), and `getaddrinfo` had no bound at all, so a
   host named by any unauthenticated credential (`did:web`, `/.well-known/jwt-vc-issuer`, a
   status list or a schema through the default resolvers) could hold a verifier thread for
   `timeout_s` × bytes by sending header bytes slowly (measured: a 1 s budget returned OK
   after 9.3 s; a 1 KB head at the default 10 s is hours). Now the deadline starts before
   the lookup, which runs on a daemon thread the caller waits on only until the deadline,
   and a watchdog timer shuts the socket down at the deadline, so a read blocked in the
-  handshake or the head fails at once with the typed `DidResolutionError` ("exceeded the
-  wall-clock deadline during the response head"); the body loop keeps its per-read check
-  against the same deadline, and an EOF the watchdog causes is never returned as a complete
-  body. The watchdog is cancelled and joined on every exit path. `timeout_s` must now be a
-  positive, finite number: NaN made every deadline comparison false and `inf` overflowed
-  the socket timeout with a bare `OverflowError`; both are refused up front with the typed
-  error. The async fetches inherit the bound (the same code under `to_thread`). Residual:
+  handshake, the head or a chunk-size line fails at once with the typed `DidResolutionError`
+  naming the phase ("exceeded the wall-clock deadline during the TLS handshake" / "the
+  response head" / "the response body"); the body loop keeps its per-read check against the
+  same deadline, and an EOF the watchdog causes is never returned as a complete body. The
+  watchdog is cancelled and joined on every exit path, and the override of `connect()` still
+  emits the stdlib `http.client.connect` audit event. `timeout_s` must now be an `int` or
+  `float` greater than 0 and at most one day (`MAX_TIMEOUT_S`, the EBSI `deadline_s`
+  ceiling): NaN made every deadline comparison false, `inf` and a finite value past ~9.2e9 s
+  overflowed the timers with a bare `OverflowError`, a non-number was a bare `TypeError`;
+  all are refused up front with the typed error. The async fetches inherit the bound (the
+  same code under `to_thread`). Residual:
   a `getaddrinfo` that never returns is abandoned on its daemon thread, which holds its
   resolver resources until the OS resolver gives up. Found by the internal security review
   of 2026-11-07 (`test_fetch_deadline.py`).

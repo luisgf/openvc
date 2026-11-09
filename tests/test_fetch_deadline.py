@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import decimal
 import socket
 import ssl
 import threading
@@ -342,15 +343,43 @@ def test_async_path_inherits_the_deadline(pinned):
     assert "exceeded the wall-clock deadline" in str(info.value)
 
 
-@pytest.mark.parametrize("timeout_s", [0, -1.0, float("nan"), float("inf")])
+@pytest.mark.parametrize("timeout_s", [
+    0, -1.0, float("nan"), float("inf"),
+    9.3e9, 2 ** 63, 10 ** 400, 86_400.001,  # finite but past the timers (or past the cap)
+    None, "5", b"5", decimal.Decimal("2"),  # not an int or float: bare TypeError before
+    True,                                   # bool is not a number of seconds
+])
 def test_a_degenerate_budget_is_refused_up_front(monkeypatch, timeout_s):
-    # NaN would make every deadline comparison false; inf overflows the timers; a
-    # non-positive budget is already spent. All typed, before any lookup.
+    # NaN would make every deadline comparison false; inf and a finite value past ~9.2e9 s
+    # overflow the timers (a bare OverflowError before); a non-number was a bare TypeError;
+    # a non-positive budget is already spent. All typed, before any lookup.
     monkeypatch.setattr(fetch.socket, "getaddrinfo",
                         lambda *a, **k: pytest.fail("DNS lookup attempted"))
-    with pytest.raises(DidResolutionError, match="positive, finite") as info:
+    with pytest.raises(DidResolutionError, match="at most 86400") as info:
         https_json_fetch(_url(443), timeout_s=timeout_s)
     assert type(info.value) is DidResolutionError
+
+
+def test_the_largest_budget_is_accepted(pinned):
+    # The ceiling itself (one day, MAX_TIMEOUT_S) arms a timer that is cancelled and joined.
+    port = _serve(pinned, _json_ok)
+    assert https_json_fetch(_url(port), timeout_s=fetch.MAX_TIMEOUT_S) == {}
+
+
+def test_connect_emits_the_stdlib_audit_event(monkeypatch):
+    # The connect() override keeps the http.client.connect event the stdlib emits (an audit
+    # hook that logs or denies outbound connects must still see openvc's). sys.audit is
+    # replaced for the test: a real hook can never be removed from the interpreter.
+    events: list[tuple[str, tuple[Any, ...]]] = []
+    monkeypatch.setattr(fetch.sys, "audit", lambda event, *args: events.append((event, args)))
+
+    def no_tcp(address, *args, **kwargs):
+        raise OSError("stop before any connection")
+    monkeypatch.setattr(fetch.socket, "create_connection", no_tcp)
+    with pytest.raises(DidResolutionError, match="stop before any connection"):
+        fetch._https_get(HOST, "127.0.0.1", 443, "/x", timeout=TIMEOUT_S, max_bytes=10)
+    assert [(event, args[1:]) for event, args in events
+            if event == "http.client.connect"] == [("http.client.connect", (HOST, 443))]
 
 
 # --------------------------------------------------------------------------- #
