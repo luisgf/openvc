@@ -32,8 +32,8 @@ from typing import Any, Awaitable, Callable
 from ..errors import OpenvcError
 from ..observability import logger, span
 from ..proof._verify_common import own_identifier
-from ._index import brief, status_index
-from .bitstring import decode_bitstring, get_status_bit
+from ._index import brief, status_index, status_messages, status_size
+from .bitstring import decode_bitstring, get_status_value
 
 # Fetch+verify a status-list credential URL -> the status-list VC as a dict. A custom
 # resolver MUST return the body :func:`openvc.resolvers.authenticated_status_list` gives for
@@ -74,12 +74,16 @@ class StatusEntry:
     index: int                     # this credential's bit position
     purpose: str                   # "revocation" | "suspension" | ...
     entry_type: str
+    status_size: int = 1           # bits per status (REC `statusSize`, 1..8; absent -> 1)
+    # REC `statusMessage` as (status, message) pairs; required when status_size > 1
+    status_message: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
 class StatusEntryResult:
     entry: StatusEntry
-    is_set: bool                   # True if the bit is set (status applies)
+    is_set: bool                   # True if the status value is non-zero (status applies)
+    status_value: int = 0          # the raw `statusSize`-bit value (0 = valid, REC §3.3)
 
 
 @dataclass(frozen=True)
@@ -148,6 +152,8 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
         purpose = raw.get("statusPurpose", PURPOSE_REVOCATION)
         if not isinstance(purpose, str):   # an explicit null would match no purpose
             raise StatusListError(f"statusPurpose must be a string, got {brief(purpose)}")
+        size = status_size(raw["statusSize"]) if "statusSize" in raw else 1
+        messages = status_messages(raw.get("statusMessage"), size=size)
         entries.append(StatusEntry(
             status_list_credential=url,
             # the spec encodes the index as a base-10 string; a JSON integer is
@@ -157,6 +163,8 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
             # deterministic for an entry that carries both recognised types (set order is
             # per-process): the list it reads is decided by this type
             entry_type=min(matched),
+            status_size=size,
+            status_message=messages,
         ))
     return entries
 
@@ -222,10 +230,13 @@ def _type_names(raw: Any) -> set[str]:
 
 
 def _read_status_bit(status_vc: dict[str, Any], entry: StatusEntry) -> StatusEntryResult:
-    """Decode a resolved status-list VC and read this entry's bit (pure — shared by
+    """Decode a resolved status-list VC and read this entry's ``statusSize``-bit value at
+    position ``index * statusSize`` (REC §3.2 step 10; any non-zero value of a revocation or
+    suspension entry means the status applies, step 13) (pure — shared by
     the sync and async checks)."""
     bits = decode_bitstring(_encoded_list(status_vc, entry))
-    return StatusEntryResult(entry=entry, is_set=bool(get_status_bit(bits, entry.index)))
+    value = get_status_value(bits, entry.index, entry.status_size)
+    return StatusEntryResult(entry=entry, is_set=value != 0, status_value=value)
 
 
 def _tally_status(results: list[StatusEntryResult]) -> StatusResult:

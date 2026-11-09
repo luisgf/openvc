@@ -190,3 +190,65 @@ def locate_status(
             f"status index {brief(index)} out of range for a "
             f"{length * per_byte}-{unit} list")
     return byte_index, position
+
+
+# The widest status a W3C Bitstring entry may carry: Bitstring Status List v1.0 §2.1 leaves
+# `statusSize` open (any integer > 0); openvc reads up to a byte, the widest the IETF
+# lane's own `bits` allows too, so a status is one `int` below 256.
+MAX_STATUS_SIZE = 8
+
+
+def status_size(value: Any, *, field: str = "statusSize") -> int:
+    """Return *value* as a W3C ``statusSize`` (an exact ``int`` in
+    1..:data:`MAX_STATUS_SIZE`), or raise :class:`StatusListError`. ``bool``, ``float``,
+    strings and ``null`` are refused, never coerced."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise StatusListError(f"{field} must be an integer, got {brief(value)}")
+    value = plain_int(value)
+    if not 1 <= value <= MAX_STATUS_SIZE:
+        raise StatusListError(
+            f"{field} must be between 1 and {MAX_STATUS_SIZE}, got {brief(value)}")
+    return value
+
+
+def status_messages(
+    value: Any, *, size: int, field: str = "statusMessage"
+) -> tuple[tuple[str, str], ...]:
+    """Validate an entry's ``statusMessage`` (Bitstring Status List v1.0 §2.1) and return
+    it as ``(status, message)`` pairs, or raise :class:`StatusListError`.
+
+    Required when *size* > 1 (``None`` is then an error); for ``statusSize`` 1 an absent
+    one is ``()`` and a present one is validated all the same. It is a non-empty array of
+    at most ``2 ** size`` objects whose ``status`` is a ``0x``-prefixed hexadecimal string
+    below ``2 ** size`` (each once) and whose ``message`` is a string."""
+    if value is None:
+        if size > 1:
+            raise StatusListError(f"{field} is required when statusSize is {size}")
+        return ()
+    if not isinstance(value, list) or not value:
+        raise StatusListError(f"{field} must be a non-empty array, got {brief(value)}")
+    if len(value) > 2 ** size:
+        raise StatusListError(f"{field} has more than {2 ** size} items for statusSize {size}")
+    out: list[tuple[str, str]] = []
+    seen: set[int] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise StatusListError(f"{field} items must be objects, got {brief(item)}")
+        code, message = item.get("status"), item.get("message")
+        if not isinstance(code, str) or not isinstance(message, str):
+            raise StatusListError(f"{field} items need string status and message")
+        code = plain_str(code)
+        digits = code[2:]
+        if (not code.startswith("0x") or not digits or not digits.isascii()
+                or any(c not in "0123456789abcdefABCDEF" for c in digits)
+                or len(digits) > 2):
+            raise StatusListError(
+                f"{field} status must be a 0x-prefixed hexadecimal string, got {brief(code)}")
+        number = int(digits, 16)
+        if number >= 2 ** size or number in seen:
+            raise StatusListError(
+                f"{field} status {brief(code)} is out of range or repeated for "
+                f"statusSize {size}")
+        seen.add(number)
+        out.append((code, plain_str(message)))
+    return tuple(out)

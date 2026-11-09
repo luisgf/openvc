@@ -4,6 +4,30 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] — unreleased
+
+### Fixed
+
+- **W3C Bitstring status lists: `statusSize` is honoured, and a multi-bit status is read as the
+  `statusSize`-bit value at `index * statusSize`, as Bitstring Status List v1.0 §3.2 / §3.3
+  require** ([#380](https://github.com/luisgf/openvc/issues/380)). The check read one bit at
+  `index` and never looked at `statusSize`, so on a 2-bit list a credential whose value was `0b11`
+  was accepted (it read the neighbour's bit), one whose value was `0b00` was rejected
+  `CredentialRevoked`, a position past the list was accepted, and `statusSize` 0, -1, `"2"`, 2.5,
+  64 and `null` were never inspected. `parse_status_entries` now reads `statusSize` into
+  `StatusEntry.status_size` (absent is 1; an `int`, never a `bool`, in 1..8) and `statusMessage`
+  into `StatusEntry.status_message` (required above size 1; a non-empty array of at most
+  `2 ** size` objects with a `0x`-hex `status` below `2 ** size`, each once, and a string
+  `message`); the check reads the value with the new `get_status_value` (range-checked against the
+  list), reports it as `StatusEntryResult.status_value` (add-only) and applies a revocation or
+  suspension when it is non-zero. A malformed size or message, or a position past the list, is a
+  `StatusListError`; a non-zero value on a revocation entry is `CredentialRevoked` through the
+  pipeline. The issuing side mints what the verifier reads: `build_status_list_entry` takes
+  `status_size` (default 1, left out of the entry) and `status_message`, `new_bitstring` takes the
+  status width, and `set_status_value` / `get_status_value` are exported from `openvc.status`.
+  Size-1 entries and lists are unchanged. The IETF Token Status List lane is untouched. Found by
+  the internal security review of 2026-11-07 (`test_status_list_status_size.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
