@@ -64,8 +64,8 @@ Properties worth knowing:
   from the real Commission-signed EU LOTL and the Spanish national TL.
 - **Hardened XML** — stdlib parsing with DTD/DOCTYPE rejected (no XXE, no
   entity-expansion bombs), size-bounded input, and the XML declaration's `encoding`
-  allow-listed to UTF-8 / UTF-16 / ISO-8859-1 / US-ASCII (the declaration is outside the
-  XAdES signature, so a re-labelled list is a typed `TrustListParseError` — a per-TL
+  allow-listed to UTF-8 / US-ASCII, as TS 119 612 Annex B.0 requires UTF-8 (the declaration
+  is outside the XAdES signature, and a UTF-16 / UTF-32 body is refused too, so a re-labelled list is a typed `TrustListParseError` — a per-TL
   `parse` problem in `walk_lotl` — never a bare exception); XAdES verification lives behind
   the `[trustlist]` extra (`signxml`) and pins the signer to the certs the
   parent list vouched for.

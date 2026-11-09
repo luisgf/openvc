@@ -14,8 +14,13 @@ signature is verified — it is what finds the signer certs), so it is hardened:
 * **Declared encoding allow-listed.** The XML declaration is *not* covered by the XAdES
   signature (C14N discards it), so whoever serves the bytes can re-label a genuinely
   signed list. An ``XmlDeclHandler`` (it fires before expat switches encodings) refuses,
-  typed, any declared ``encoding`` outside ``{UTF-8, UTF-16, UTF-16LE, UTF-16BE,
-  ISO-8859-1, US-ASCII}`` (case-insensitive); an absent declaration means UTF-8. expat's
+  typed, any declared ``encoding`` outside ``{UTF-8, US-ASCII}`` (case-insensitive):
+  ETSI TS 119 612 Annex B.0 says "Applications shall use UTF-8 encoding for XML TLs", and
+  any other label lets expat decode differently from the libxml2 that verified the
+  signature (a UTF-8 BOM body re-labelled ``ISO-8859-1`` verifies yet reads as Latin-1).
+  Before expat sees the bytes a document that starts with a UTF-16/UTF-32 BOM, or has a
+  NUL among its first four bytes (expat's UTF-16 autodetection), is refused too, so an
+  absent declaration really means UTF-8; a UTF-8 BOM stays accepted. expat's
   own failures on an exotic label (``ValueError`` for a multi-byte one, ``LookupError``
   for an unknown alias) are typed as well, so ``parse_trust_list`` raises only
   :class:`TrustListParseError` (#388).
@@ -123,8 +128,10 @@ def parse_trust_list(xml: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Trust
 # Hardened XML parse
 # --------------------------------------------------------------------------- #
 
-_ALLOWED_ENCODINGS = frozenset(
-    {"UTF-8", "UTF-16", "UTF-16LE", "UTF-16BE", "ISO-8859-1", "US-ASCII"})
+# TS 119 612 Annex B.0: "Applications shall use UTF-8 encoding for XML TLs". US-ASCII is
+# its strict subset; any wider label lets expat and libxml2 decode differently.
+_ALLOWED_ENCODINGS = frozenset({"UTF-8", "US-ASCII"})
+_NOT_UTF8_BOMS = (b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff")  # UTF-16 / UTF-32 BOMs
 
 
 def _hardened_parse(xml: bytes, *, max_bytes: int,
@@ -135,6 +142,10 @@ def _hardened_parse(xml: bytes, *, max_bytes: int,
     if len(xml) > max_bytes:
         raise TrustListParseError(
             f"trust list is {len(xml)} bytes, over the {max_bytes}-byte cap")
+
+    # expat autodetects UTF-16/32 from a BOM or a leading NUL, before any declaration is read.
+    if bytes(xml[:4]).startswith(_NOT_UTF8_BOMS) or b"\x00" in xml[:4]:
+        raise TrustListParseError("trust lists are UTF-8 (TS 119 612 Annex B.0)")
 
     builder = TreeBuilder()
     parser = expat.ParserCreate(namespace_separator=_NS_SEP)

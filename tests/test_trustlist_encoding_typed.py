@@ -135,12 +135,11 @@ def test_consume_trust_list_hostile_encoding_is_typed(world, enc):
     # the signature still verifies for most labels (lxml decodes the ASCII body the same
     # way) — the failure that matters is the parse, and it must be typed either way
     from openvc.trustlist import TrustListError
-    with pytest.raises(TrustListError) as ei:
+    # (the class depends on whether libxml2/iconv accepts the label first, so the family)
+    with pytest.raises(TrustListError):
         consume_trust_list(_relabel(world["signed"], enc),
                            verify_signature=verify_xades_enveloped,
                            expected_signer_certs=[world["cert_n"]])
-    if enc in ("GB2312", "Shift_JIS", "EUC-JP", "big5", "gbk", "latin-9"):
-        assert type(ei.value) is TrustListParseError
 
 
 def test_walk_lotl_relabelled_tl_is_a_problem_and_the_others_still_anchor(world):
@@ -176,7 +175,7 @@ def test_walk_lotl_hostile_lotl_stops_the_walk_with_one_parse_problem(world):
 # Positives — allow-listed labels parse as before
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("enc", ["UTF-8", "utf-8", "ISO-8859-1", "iso-8859-1", "US-ASCII"])
+@pytest.mark.parametrize("enc", ["UTF-8", "utf-8", "US-ASCII"])
 def test_allowed_labels_parse(world, enc):
     tl = parse_trust_list(_relabel(world["signed"], enc))
     assert tl.territory == "DE" and len(tl.providers) == 1
@@ -186,18 +185,47 @@ def test_no_declaration_parses(world):
     assert parse_trust_list(world["signed"]).territory == "DE"
 
 
+def test_utf8_bom_is_accepted(world):
+    assert parse_trust_list(b"\xef\xbb\xbf" + world["signed"]).territory == "DE"
+
+
 @pytest.mark.parametrize("codec,label", [("utf-16", "UTF-16"), ("utf-16-le", "UTF-16LE"),
-                                         ("utf-16-be", "UTF-16BE")])
-def test_real_utf16_parses(world, codec, label):
+                                         ("utf-16-be", "UTF-16BE"), ("utf-16", None),
+                                         ("utf-16-le", None), ("utf-32", None)])
+def test_utf16_and_utf32_are_refused(world, codec, label):
     text = world["signed"].decode("ascii")
-    doc = f'<?xml version="1.0" encoding="{label}"?>{text}'.encode(codec)
-    if codec == "utf-16":
-        assert doc[:2] in (b"\xff\xfe", b"\xfe\xff")        # a real BOM
-    assert parse_trust_list(doc).territory == "DE"
+    decl = f'<?xml version="1.0" encoding="{label}"?>' if label else ""
+    with pytest.raises(TrustListParseError):
+        parse_trust_list((decl + text).encode(codec))
+
+
+@pytest.mark.parametrize("enc", ["ISO-8859-1", "iso-8859-1", "UTF-16", "UTF-16LE"])
+def test_wider_labels_are_refused(world, enc):
+    with pytest.raises(TrustListParseError, match="unsupported XML encoding"):
+        parse_trust_list(_relabel(world["signed"], enc))
+
+
+def test_bom_relabelled_latin1_is_refused_through_the_walk(world):
+    # the review's divergence: libxml2 keeps the BOM-detected UTF-8 and verifies, expat
+    # used to obey the label and read Latin-1
+    key_o, cert_o = _cert("FR TL Signer")
+    _, ca_fr = _cert("FR Qualified CA")
+    fr = _sign(_national_tl(ca_fr.public_bytes(Encoding.DER), "FR"), key_o, cert_o)
+    lotl = _sign(_lotl([(DE_URL, world["cert_n"].public_bytes(Encoding.DER), "DE"),
+                        (FR_URL, cert_o.public_bytes(Encoding.DER), "FR")]),
+                 world["key_c"], world["cert_c"])
+    bad = b"\xef\xbb\xbf" + _relabel(world["signed"], "ISO-8859-1")
+    store = {LOTL_URL: lotl, DE_URL: bad, FR_URL: fr}
+    res = walk_lotl(LOTL_URL, lotl_signer_certs=[world["cert_c"]],
+                    verify_signature=verify_xades_enveloped,
+                    fetch=lambda u: store[u], now=NOW)
+    assert [(p.location, p.stage) for p in res.problems] == [(DE_URL, "parse")]
+    assert [a.sha256 for a in res.anchors] == [
+        hashlib.sha256(ca_fr.public_bytes(Encoding.DER)).hexdigest()]
 
 
 def test_allowed_relabel_still_verifies_and_consumes(world):
-    tl = consume_trust_list(_relabel(world["signed"], "ISO-8859-1"),
+    tl = consume_trust_list(_relabel(world["signed"], "US-ASCII"),
                             verify_signature=verify_xades_enveloped,
                             expected_signer_certs=[world["cert_n"]])
     assert len(tl.providers) == 1

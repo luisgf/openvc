@@ -304,11 +304,16 @@ All notable changes to **openvc** are documented here. The format follows
   `encoding="GB2312"` (also `Shift_JIS`, `EUC-JP`, `big5`, `gbk`) raised a bare `ValueError`
   (`multi-byte encodings are not supported`) and `latin-9` a bare `LookupError` out of
   `parse_trust_list` (documented to raise `TrustListParseError` only), `consume_trust_list`
-  and `walk_lotl`, which aborted with zero anchors instead of recording that one list as a
-  problem (ADR-0003 D6). No wrong-accept: nothing was trusted. The parser now refuses, from an
+  and `walk_lotl`, where the bare exception propagated out of the walk instead of recording
+  that one list as a problem (ADR-0003 D6). No wrong-accept on those labels. The parser now refuses, from an
   `XmlDeclHandler` that fires before expat switches encodings, any declared `encoding` outside
-  the allow-list `{UTF-8, UTF-16, UTF-16LE, UTF-16BE, ISO-8859-1, US-ASCII}`
-  (case-insensitive; no declaration means UTF-8), and expat's own `ValueError` / `LookupError`
+  the allow-list `{UTF-8, US-ASCII}` (case-insensitive; ETSI TS 119 612 Annex B.0 requires
+  UTF-8) — a wider label let expat decode differently from the libxml2 that verified the
+  signature: a UTF-8-BOM list re-labelled `ISO-8859-1` verified yet read as Latin-1, so its
+  names were not what the signer signed (anchors, URIs and territories are ASCII and were
+  unchanged). A document starting with a UTF-16 / UTF-32 BOM or with a NUL among its first
+  four bytes (expat's UTF-16 autodetection) is refused before expat sees it, so an absent
+  declaration means UTF-8; a UTF-8 BOM stays accepted. expat's own `ValueError` / `LookupError`
   are typed behind it. A caller sees `TrustListParseError` with a bounded message; through
   `walk_lotl` that list contributes no anchors, is recorded as stage `"parse"` and the other
   lists still anchor (a LOTL that fails this way stops the walk with that one problem). The
