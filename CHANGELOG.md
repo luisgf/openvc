@@ -126,6 +126,26 @@ All notable changes to **openvc** are documented here. The format follows
   object `type`. Found by the internal security review of 2026-11-07 (§ M10;
   `test_ebsi_credential_types_shape.py`).
 
+- **A trust list whose XML declaration names an exotic encoding is now a typed
+  `TrustListParseError` — a per-TL `parse` problem in `walk_lotl` — instead of a bare
+  exception that aborted the walk** ([#388](https://github.com/luisgf/openvc/issues/388)).
+  The XML declaration is not covered by the XAdES signature (C14N discards it), so whoever
+  serves the bytes can re-label a genuinely signed, pure-ASCII list without breaking the
+  signature, and `_hardened_parse` caught only `expat.ExpatError`: measured on v1.38.1,
+  `encoding="GB2312"` (also `Shift_JIS`, `EUC-JP`, `big5`, `gbk`) raised a bare `ValueError`
+  (`multi-byte encodings are not supported`) and `latin-9` a bare `LookupError` out of
+  `parse_trust_list` (documented to raise `TrustListParseError` only), `consume_trust_list`
+  and `walk_lotl`, which aborted with zero anchors instead of recording that one list as a
+  problem (ADR-0003 D6). No wrong-accept: nothing was trusted. The parser now refuses, from an
+  `XmlDeclHandler` that fires before expat switches encodings, any declared `encoding` outside
+  the allow-list `{UTF-8, UTF-16, UTF-16LE, UTF-16BE, ISO-8859-1, US-ASCII}`
+  (case-insensitive; no declaration means UTF-8), and expat's own `ValueError` / `LookupError`
+  are typed behind it. A caller sees `TrustListParseError` with a bounded message; through
+  `walk_lotl` that list contributes no anchors, is recorded as stage `"parse"` and the other
+  lists still anchor (a LOTL that fails this way stops the walk with that one problem). The
+  recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
+  security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
