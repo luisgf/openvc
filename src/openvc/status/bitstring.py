@@ -1,8 +1,9 @@
 """
 openvc.status.bitstring — the W3C Bitstring Status List bit encoding.
 
-A status list is a bitstring where each credential owns one bit; a set bit means
-the status applies (revoked / suspended, per the list's statusPurpose). On the
+A status list is a bitstring where each credential owns a ``statusSize``-bit status (one
+bit by default); a non-zero value means the status applies (revoked / suspended, per the
+list's statusPurpose). On the
 wire the bitstring is **GZIP-compressed, base64url-encoded, then multibase-prefixed**
 (``u``) — the ``encodedList``. The W3C v1.0 REC mandates the multibase form;
 :func:`decode_bitstring` also tolerates a legacy prefix-less value.
@@ -95,13 +96,13 @@ def get_status_value(bits: bytes, index: int, size: int = 1) -> int:
     bit read being the most significant of the value. *size* is 1..8 (``1`` is
     :func:`get_status_bit`). :class:`StatusListError` for a bad *index* or *size*, or when
     the last bit lies past the list."""
-    from ._index import status_index, status_size
+    from ._index import brief, status_index, status_size
     size = status_size(size, field="status size")
     index = status_index(index, field="status index", allow_string=False, capped=False)
     first = index * size
     if first + size > len(bits) * 8:
         raise StatusListError(
-            f"status index {index} (statusSize {size}) out of range for a "
+            f"status index {brief(index)} (statusSize {size}) out of range for a "
             f"{len(bits) * 8}-bit list")
     value = 0
     for pos in range(first, first + size):
@@ -126,7 +127,7 @@ def set_status_value(bits: bytearray, index: int, value: int, size: int = 1) -> 
     first = index * size
     if first + size > len(bits) * 8:
         raise StatusListError(
-            f"status index {index} (statusSize {size}) out of range for a "
+            f"status index {brief(index)} (statusSize {size}) out of range for a "
             f"{len(bits) * 8}-bit list")
     for offset in range(size):
         pos = first + offset

@@ -7,7 +7,8 @@ Transport- and proof-agnostic by design: the caller injects
 and returns the **verified** status-list VC as a dict (its signature is the
 caller's concern, since the proof format and the SSRF policy for that host are
 too). This module then parses the entry, decodes the bitstring, and reads the
-bit. So it stays pure stdlib and reusable by any VC profile (OB 3.0, EBSI, EUDI).
+status (one bit, or the ``statusSize``-bit value of a multi-bit Bitstring list). So it stays
+pure stdlib and reusable by any VC profile (OB 3.0, EBSI, EUDI).
 
 Supports ``BitstringStatusListEntry`` and the older ``StatusList2021Entry`` —
 same field names, same bit encoding.
@@ -60,18 +61,18 @@ PURPOSE_SUSPENSION = "suspension"
 
 
 class CredentialRevoked(OpenvcError):
-    """Raised by verifiers that treat a set revocation bit as a hard failure."""
+    """Raised by verifiers that treat a non-zero revocation status as a hard failure."""
 
 
 class CredentialSuspended(OpenvcError):
-    """Raised by verifiers that treat a set suspension bit as a hard failure
+    """Raised by verifiers that treat a non-zero suspension status as a hard failure
     (a suspended credential is temporarily invalid — not currently usable)."""
 
 
 @dataclass(frozen=True)
 class StatusEntry:
     status_list_credential: str    # URL of the status-list VC
-    index: int                     # this credential's bit position
+    index: int                     # this credential's status slot (`status_size` bits wide)
     purpose: str                   # "revocation" | "suspension" | ...
     entry_type: str
     status_size: int = 1           # bits per status (REC `statusSize`, 1..8; absent -> 1)
@@ -83,13 +84,17 @@ class StatusEntry:
 class StatusEntryResult:
     entry: StatusEntry
     is_set: bool                   # True if the status value is non-zero (status applies)
-    status_value: int = 0          # the raw `statusSize`-bit value (0 = valid, REC §3.3)
+    # The raw `statusSize`-bit value (0 = valid, REC §3.3). The verdict (`StatusResult`, the
+    # pipeline) follows it only for the `revocation` and `suspension` purposes; for any other
+    # purpose (`message`, `refresh`, an unknown one) `is_set` / `status_value` are exposed but
+    # never fail verification, and the caller reads `status_value` itself.
+    status_value: int = 0
 
 
 @dataclass(frozen=True)
 class StatusResult:
-    revoked: bool                  # any revocation-purpose bit set
-    suspended: bool                # any suspension-purpose bit set
+    revoked: bool                  # any revocation-purpose status non-zero
+    suspended: bool                # any suspension-purpose status non-zero
     entries: tuple[StatusEntryResult, ...]
 
 
@@ -152,6 +157,14 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
         purpose = raw.get("statusPurpose", PURPOSE_REVOCATION)
         if not isinstance(purpose, str):   # an explicit null would match no purpose
             raise StatusListError(f"statusPurpose must be a string, got {brief(purpose)}")
+        if min(matched) == "StatusList2021Entry":
+            # StatusList2021 defines neither field; a legacy verifier reads one bit, so
+            # reading them here would give the opposite verdict. Refuse, never reinterpret.
+            for field in ("statusSize", "statusMessage"):
+                if field in raw:
+                    raise StatusListError(
+                        f"{field} is not defined by StatusList2021 (a StatusList2021Entry "
+                        f"holds a single bit)")
         size = status_size(raw["statusSize"]) if "statusSize" in raw else 1
         messages = status_messages(raw.get("statusMessage"), size=size)
         entries.append(StatusEntry(
@@ -241,7 +254,7 @@ def _read_status_bit(status_vc: dict[str, Any], entry: StatusEntry) -> StatusEnt
 
 def _tally_status(results: list[StatusEntryResult]) -> StatusResult:
     """Fold per-entry results into a :class:`StatusResult` (revoked/suspended if any
-    matching-purpose bit is set)."""
+    matching-purpose status is non-zero; any other purpose never changes the verdict)."""
     revoked = any(r.is_set and r.entry.purpose == PURPOSE_REVOCATION for r in results)
     suspended = any(r.is_set and r.entry.purpose == PURPOSE_SUSPENSION for r in results)
     logger.debug("status checked: revoked=%s suspended=%s entries=%d",
@@ -253,7 +266,7 @@ def check_credential_status(
     credential: dict[str, Any], *, resolve_status_list: ResolveStatusList
 ) -> StatusResult:
     """Resolve each status-list credential the credential references and read its
-    bit. Returns a :class:`StatusResult`; never raises on a *set* bit (that is a
+    status. Returns a :class:`StatusResult`; never raises on a non-zero status (that is a
     verifier policy decision) — only on malformed data, a resolve failure, or a resolved
     list that is not the one the entry named (its types are not the entry family's, or
     its ``id`` is not the entry's ``statusListCredential``). *resolve_status_list* must
@@ -269,7 +282,7 @@ async def check_credential_status_async(
     credential: dict[str, Any], *, resolve_status_list: AsyncResolveStatusList
 ) -> StatusResult:
     """Async :func:`check_credential_status` — awaits an async ``resolve_status_list``;
-    identical decoding, tally, and fail-closed semantics (the bit-reading is the same
+    identical decoding, tally, and fail-closed semantics (the status-reading is the same
     pure code)."""
     with span("openvc.status"):
         results = [_read_status_bit(await resolve_status_list(e.status_list_credential), e)

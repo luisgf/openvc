@@ -344,6 +344,57 @@ def test_the_builder_requires_a_message_above_size_one_and_a_valid_size():
                                 status_message=[{"status": "0x9", "message": "x"}])
 
 
+@pytest.mark.parametrize("index", [10**5000, 2**70], ids=["10e5000", "2e70"])
+def test_a_huge_index_gets_a_typed_bounded_range_error(index):
+    with pytest.raises(StatusListError) as read:
+        get_status_value(b"\x00" * 4, index, 2)
+    with pytest.raises(StatusListError) as write:
+        set_status_value(bytearray(4), index, 1, 2)
+    assert len(str(read.value)) < 200 and len(str(write.value)) < 200
+
+
+@pytest.mark.parametrize("count", [1, 3, 5])
+def test_the_status_message_length_must_equal_two_to_the_size(count):
+    messages = [{"status": f"0x{i}", "message": "m"} for i in range(count)]
+    with pytest.raises(StatusListError, match="exactly 4"):
+        parse_status_entries({"credentialStatus": _entry(1, statusSize=2, statusMessage=messages)})
+    with pytest.raises(StatusListError, match="exactly 4"):
+        build_status_list_entry(status_list_credential=URL, index=1, status_size=2,
+                                status_message=messages)
+
+
+def test_a_full_status_message_is_accepted():
+    (entry,) = parse_status_entries(
+        {"credentialStatus": _entry(1, statusSize=2, statusMessage=MSG2)})
+    assert len(entry.status_message) == 4
+
+
+@pytest.mark.parametrize("field,value", [("statusSize", 1), ("statusSize", 2),
+                                         ("statusMessage", MSG2), ("statusMessage", None)])
+def test_a_statuslist2021_entry_refuses_status_size_and_message(field, value):
+    entry = {"type": "StatusList2021Entry", "statusPurpose": "revocation",
+             "statusListIndex": "1", "statusListCredential": URL, field: value}
+    with pytest.raises(StatusListError, match="not defined by StatusList2021"):
+        parse_status_entries({"credentialStatus": entry})
+
+
+def test_a_plain_statuslist2021_entry_still_parses():
+    entry = {"type": "StatusList2021Entry", "statusPurpose": "revocation",
+             "statusListIndex": "1", "statusListCredential": URL}
+    assert parse_status_entries({"credentialStatus": entry})[0].status_size == 1
+
+
+def test_an_other_purpose_value_is_exposed_but_never_fails_the_verdict():
+    bits = _two_bit_list((1, 3))
+    entry = _entry(1, statusSize=2, statusMessage=MSG2, statusPurpose="message")
+    vc = _list_vc(bits)
+    vc["credentialSubject"]["statusPurpose"] = "message"
+    result = check_credential_status({"credentialStatus": entry},
+                                     resolve_status_list=lambda u: vc)
+    assert result.revoked is False and result.suspended is False
+    assert result.entries[0].is_set is True and result.entries[0].status_value == 3
+
+
 def test_the_default_entry_is_unchanged():
     assert build_status_list_entry(status_list_credential=URL, index=7) == {
         "type": "BitstringStatusListEntry", "statusPurpose": "revocation",

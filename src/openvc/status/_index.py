@@ -219,7 +219,7 @@ def status_messages(
 
     Required when *size* > 1 (``None`` is then an error); for ``statusSize`` 1 an absent
     one is ``()`` and a present one is validated all the same. It is a non-empty array of
-    at most ``2 ** size`` objects whose ``status`` is a ``0x``-prefixed hexadecimal string
+    exactly ``2 ** size`` objects whose ``status`` is a ``0x``-prefixed hexadecimal string
     below ``2 ** size`` (each once) and whose ``message`` is a string."""
     if value is None:
         if size > 1:
@@ -227,8 +227,10 @@ def status_messages(
         return ()
     if not isinstance(value, list) or not value:
         raise StatusListError(f"{field} must be a non-empty array, got {brief(value)}")
-    if len(value) > 2 ** size:
-        raise StatusListError(f"{field} has more than {2 ** size} items for statusSize {size}")
+    if len(value) != 2 ** size:        # REC §2.1: the length MUST equal 2 ** statusSize
+        raise StatusListError(
+            f"{field} must have exactly {2 ** size} items for statusSize {size}, "
+            f"got {len(value)}")
     out: list[tuple[str, str]] = []
     seen: set[int] = set()
     for item in value:
