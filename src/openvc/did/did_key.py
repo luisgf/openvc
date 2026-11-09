@@ -1,5 +1,5 @@
 """
-openvc.did.did_key — offline resolver for the did:key method (Ed25519, P-256).
+openvc.did.did_key — offline resolver for the did:key method (Ed25519, P-256, P-384).
 
 did:key is self-contained: the public key is encoded in the identifier itself, so
 resolution is pure decoding — no network. Format:
@@ -9,12 +9,14 @@ resolution is pure decoding — no network. Format:
 Supported multicodecs:
     0xed   Ed25519 public key   -> OKP / Ed25519 JWK
     0x1200 P-256   public key   -> EC  / P-256  JWK (from the compressed point)
+    0x1201 P-384   public key   -> EC  / P-384  JWK (from the compressed point)
 
 The identifier is attacker-controlled (a VC-JWT ``iss``, a Data Integrity
 ``verificationMethod``) and nothing upstream bounds its length, so the decoding is
-:mod:`openvc.multibase`'s: its base58 decode (O(n²) big-integer work) is capped at
-``_MAX_B58_LEN`` characters and its varint reader at ``_MAX_VARINT_BYTES`` bytes, and an
-oversized identifier is refused before any big-integer work (#386).
+:mod:`openvc.multibase`'s, whose caps apply: its base58 decode (O(n²) big-integer work)
+refuses more than ``openvc.multibase._MAX_B58_LEN`` characters and its varint reader more
+than ``openvc.multibase._MAX_VARINT_BYTES`` bytes, so an oversized identifier is refused
+before any big-integer work (#386).
 """
 
 from __future__ import annotations
