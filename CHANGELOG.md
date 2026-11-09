@@ -6,7 +6,48 @@ All notable changes to **openvc** are documented here. The format follows
 
 ## [1.39.0] — unreleased
 
+### Security
+
+- **did:key: the identifier is now decoded by the bounded `openvc.multibase` codec — base58
+  input of at most 4 096 characters, a multicodec varint of at most 9 bytes — so an oversized
+  `did:key` `iss` / `verificationMethod` is refused before any big-integer work**
+  ([#386](https://github.com/luisgf/openvc/issues/386)). `DidKeyResolver` kept private
+  copies of the base58 and varint decoders without the caps `multibase` already has (the
+  threat model lists that cap as the control); base58 decoding is O(n²) big-integer work and
+  nothing bounds the length of an `iss` or a `verificationMethod`, so a 100 000-character
+  `did:key` issuer cost about 1.2 s of CPU before any signature check — through
+  `verify_credential` and through the Data Integrity lanes' offline did:key fallback alike —
+  and a 200 000-character one about 5 s. The resolver now calls `b58btc_decode` /
+  `read_varint` and maps `MultibaseError` to the `DidResolutionError` callers already see for
+  a malformed did:key (the message carries the length, never the input); through the pipeline
+  the refusal stays `KeyResolutionFailed` on the JOSE lanes and `KeyResolutionError` on the
+  Data Integrity lanes. Every did:key vector (Ed25519, P-256, P-384) resolves as before.
+  Found by the internal security review of 2026-11-07 (`test_did_key_bounded.py`).
+
 ### Fixed
+
+- **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
+  and abort a whole `verify_many` batch** ([#387](https://github.com/luisgf/openvc/issues/387)).
+  In `openvc.schema` the dialect lookup (`validator_for`) ran outside the guarded region, and
+  the guard caught only the processor's own types (`SchemaError`, `ValidationError`,
+  `Unresolvable`) and `RecursionError`. Measured on v1.38.1 through `verify_many` with
+  `resolve_credential_schema=` set: a schema with `multipleOf: 0.5` met by the number `1e400`
+  (parsed to infinity) or by a 400-digit integer, or `multipleOf: <400-digit integer>` met by
+  a float, raised a bare `OverflowError` out of the processor's `multipleOf`; a `$schema` of
+  `http://[::1` raised a bare `ValueError` (`Invalid IPv6 URL`) out of `urlsplit`. None was an
+  `OpenvcError`, so one such credential — signed by any issuer with a resolvable DID, its
+  `credentialSchema.id` pointing at the issuer's own host — aborted the whole batch instead of
+  becoming that item's `error` (no wrong-accept; schema validation is opt-in). The dialect
+  lookup now runs inside the guard, and `ArithmeticError` (`OverflowError`), `ValueError`,
+  `TypeError` and `re.error` are caught alongside the processor's own types, attributed by the
+  phase they surfaced in: while the schema is looked up, meta-validated or built, the resource
+  is unusable (`SchemaResolutionError`); while the credential is validated, its values could
+  not be checked against the schema (`SchemaValidationError`); an unresolvable `$ref` and a
+  recursion overflow stay `SchemaResolutionError` wherever they surface. The message names the
+  exception type and cuts its text through `safe_repr`. Refusing a non-finite number in the
+  credential before validation is not part of this change (a document-level rule, outside the
+  schema layer). Found by the internal security review of 2026-11-07
+  (`test_schema_typed_failures.py`).
 
 - **W3C Bitstring status lists: `statusSize` is honoured, and a multi-bit status is read as the
   `statusSize`-bit value at `index * statusSize`, as Bitstring Status List v1.0 §3.2 / §3.3
