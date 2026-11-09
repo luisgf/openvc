@@ -89,7 +89,6 @@ All notable changes to **openvc** are documented here. The format follows
   Size-1 entries and lists are unchanged. The IETF Token Status List lane is untouched. Found by
   the internal security review of 2026-11-07 (`test_status_list_status_size.py`).
 
-
 ## [1.38.1] — 2026-11-07
 
 ### Security
