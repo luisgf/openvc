@@ -81,6 +81,120 @@ All notable changes to **openvc** are documented here. The format follows
   EU LOTL / ES TL goldens are unchanged. Found by the internal security review of 2026-11-07
   (`test_trustlist_nextupdate_closed.py`).
 
+- **`openvc.fetch`: one wall-clock deadline now covers the whole dereference — DNS
+  resolution, the TCP connect, the TLS handshake, the status line and headers, and the
+  body** ([#385](https://github.com/luisgf/openvc/issues/385)). `_https_get` started its
+  deadline after `getresponse()` returned, so it bounded only the body — and not all of it:
+  the response head was read one socket operation at a time, each allowed the full
+  per-socket `timeout_s` (up to 100 header lines of 65 536 bytes), the chunk-size lines and
+  trailers of a chunked body were read the same way inside `read1` (a 1 s budget leaked 6–7 s
+  there too, one case returning OK), and `getaddrinfo` had no bound at all, so a
+  host named by any unauthenticated credential (`did:web`, `/.well-known/jwt-vc-issuer`, a
+  status list or a schema through the default resolvers) could hold a verifier thread for
+  `timeout_s` × bytes by sending header bytes slowly (measured: a 1 s budget returned OK
+  after 9.3 s; a 1 KB head at the default 10 s is hours). Now the deadline starts before
+  the lookup, which runs on a daemon thread the caller waits on only until the deadline,
+  and a watchdog timer shuts the socket down at the deadline, so a read blocked in the
+  handshake, the head or a chunk-size line fails at once with the typed `DidResolutionError`
+  naming the phase ("exceeded the wall-clock deadline during the TLS handshake" / "the
+  response head" / "the response body"); the body loop keeps its per-read check against the
+  same deadline, and an EOF the watchdog causes is never returned as a complete body. The
+  watchdog is cancelled and joined on every exit path, and the override of `connect()` still
+  emits the stdlib `http.client.connect` audit event. `timeout_s` must now be an `int` or
+  `float` greater than 0 and at most one day (`MAX_TIMEOUT_S`, the EBSI `deadline_s`
+  ceiling): NaN made every deadline comparison false, `inf` and a finite value past ~9.2e9 s
+  overflowed the timers with a bare `OverflowError`, a non-number was a bare `TypeError`;
+  all are refused up front with the typed error. The async fetches inherit the bound (the
+  same code under `to_thread`). Residual:
+  a `getaddrinfo` that never returns is abandoned on its daemon thread, which holds its
+  resolver resources until the OS resolver gives up. Found by the internal security review
+  of 2026-11-07 (`test_fetch_deadline.py`).
+
+- **did:web: a path segment is now sent as written and must match the method's own grammar
+  — the DID Core `idchar`, `ALPHA / DIGIT / "." / "-" / "_" / pct-encoded` — and a segment
+  that is empty, a dot segment in any spelling, outside that grammar, or a `%XX` escape of a
+  delimiter, `;`, a control character, whitespace or a non-ASCII octet is refused before any
+  fetch** ([#384](https://github.com/luisgf/openvc/issues/384)). The did:web mapping decodes
+  only the port's `%3A`; `_did_web_url` percent-decoded every segment, so an escaped `#`, `?` or
+  `/`, a `..` segment or an escaped control character changed the path the guarded fetch
+  requested — `urlparse` cuts a path at a fragment or a query, so `did.json` was not even
+  asked for — and the trust boundary widened from `<path>/did.json` to any path on the host;
+  such a DID resolves in no conformant resolver. Now the host segment decodes `%3A` alone (any
+  other `%` fails the domain-name syntax), every path segment goes on the wire verbatim, and
+  `_check_segment` refuses, with a `DidResolutionError` naming the DID and the segment through
+  `safe_repr`, a segment that is empty; a dot segment (the set an https issuer identifier is
+  held to: `..`, `%2E%2E`, …); outside the did:web ABNF (did:web §"Method Specific
+  Identifier", which is DID Core 1.0 §3.1 `idchar`) — so `;` (a servlet container strips a
+  path parameter before it normalizes the path, which makes `..;` a dot segment), `/ ? # \`,
+  `@ ~ ! $ & ' ( ) * + , =`, a double quote, `< >`, a backtick, `{ } [ ] | ^`, whitespace, a
+  control character, non-ASCII and a `%` that is not a `%XX` escape; or a `%XX` escape of a
+  delimiter, `;`, `%`, a control character, whitespace or a non-ASCII octet — before any fetch,
+  the caller's own included, on the sync and the async resolver alike. `did:webvh` reuses the
+  mapping and inherits the refusal as a `DidWebvhError`. Through the pipeline the refusal is
+  `KeyResolutionFailed` on the JOSE lanes and `KeyResolutionError` on the Data Integrity lanes.
+  Plain paths and `%3A` ports resolve as before; an escape of any other printable ASCII
+  character (`%40`, `%41`, `%3A` in a path segment) now goes on the wire as written
+  (`/%40evil/did.json`; it used to be decoded to `/@evil/did.json`). A did:web whose path has
+  characters outside `idchar` (`did:web:example.com:~alice`, `:user+x`, `:a!b`, `:a@b`) used to
+  be fetched and is now refused. Found by the internal security review of 2026-11-07; the `;`
+  spelling by the PR's adversarial review (`test_did_web_segments.py`).
+
+- **OpenID4VCI key proofs: the header `jwk` must be spelled in canonical base64url, and the
+  key a proof earns comes back in its minimal RFC 7638 form**
+  ([#379](https://github.com/luisgf/openvc/issues/379); closes
+  [#401](https://github.com/luisgf/openvc/issues/401) too). RFC 7638 digests the JWK member
+  *strings*, while the base64url decoder behind the signature check is tolerant: an explicit
+  `=` padding, a non-alphabet character, the standard `+`/`/` alphabet and non-zero trailing
+  bits all decode to the same coordinate, and a coordinate carrying a leading zero octet
+  decodes to the same integer. One wallet key therefore had many spellings that verified
+  identically and thumbprinted differently — and `verify_credential_request_proofs`
+  deduplicated a batch by thumbprint, so N spellings of one key were N keys to the "no two
+  proofs on the same key" rule, N credentials bound to one; `VerifiedProof.thumbprint` and
+  `public_jwk` carried the spelling received, so every per-key policy downstream (one
+  credential per wallet key, a DPoP `jkt`, a `cnf.jkt`) could be walked around the same way.
+  The header `jwk` was also returned verbatim: a wallet's `kid`, a contradicting `alg`,
+  `use`, `key_ops`, `x5u`/`jku` URLs and any blob up to the proof cap rode into `public_jwk`
+  and, on the documented `SdJwtVcProofSuite.issue(holder_jwk=proof.public_jwk)` path, were
+  signed into the issued credential's `cnf.jwk`. Measured on `main` at 4b25b9d: a
+  `batch_size=3` request with three proofs on one P-256 key spelled three ways was
+  **accepted** with three distinct thumbprints, and an `x5u: http://169.254.169.254/` from
+  the header reached the issued `cnf.jwk`. **What changed** (maintainer decision D9: strict
+  on the proof key, canonical minimal form downstream). The new public helper
+  **`openvc.keys.canonical_public_jwk(jwk, *, strict=False)`** returns a fresh dict of the
+  RFC 7638 members only — EC `P-256` / `P-384` and OKP `Ed25519`, each coordinate decoded
+  through the key backend and re-encoded fixed-width — and under `strict=True` refuses a
+  member whose spelling differs from that (**`NonCanonicalKey`**, an `InvalidKey`, naming
+  the member, never its value); a wrong-width coordinate (RFC 7518 §6.2.1.2 makes the full
+  width a MUST), an off-curve point or an EC coordinate `>= p`, a lone UTF-16 surrogate
+  (named by code point and index), a non-object input or an unsupported key type is a plain
+  `InvalidKey` in either mode. **So is an Ed25519 `x` that is not a canonical point encoding
+  (`y >= p`, RFC 8032 §5.1.3) or is one of the eight small-order points** (libsodium's
+  blocklist): `cryptography` accepts any 32 bytes as an Ed25519 public key, so the identity
+  point alone had four strict-canonical spellings — hence four thumbprints — and a key-proof
+  signature under it needs no private key at all (found by the adversarial review of the PR;
+  pre-existing on `main`, where such a batch was accepted). P-256 / P-384 already refuse a
+  coordinate `>= p` through `from_encoded_point`, now pinned. The header `jwk` of a key
+  proof is checked **strictly**, after the private-member and `alg` binding rules and before
+  any crypto or the nonce: a padded, dirty-bit or non-alphabet coordinate is `ClaimsInvalid`
+  naming the member, and so are a wrong-width coordinate (verified on `main`, as a different
+  thumbprint) and an off-curve point (a `SignatureInvalid` out of the backend on `main`). A
+  key returned by `resolve_proof_key` / `resolve_proof_key_in_context` or taken from an
+  `x5c` leaf is normalised, not refused. The batch rule, the App. D `attested_keys`
+  comparison and `VerifiedProof.thumbprint` work on the canonical form — a key attestation
+  that spells the honest key non-canonically keeps matching, a wrong-width attested key
+  still refuses the proof naming the rule. On that attestation side only the key shapes
+  the proof `alg` can bind to (EC P-256 / P-384, OKP Ed25519) are canonicalised, and a
+  malformed attested key of one of those shapes (wrong width, off-curve) now refuses the
+  proof; an attested key of any other type (the X25519 or RSA sibling of a multi-key
+  attestation) is read as RFC 7638 reads it and passed over, as before, refused only when
+  it cannot be digested at all. **Every attested key is read before any is matched**, so
+  either refusal holds wherever the entry sits in the list (`main` stopped at the first
+  match, so junk listed after it went unread) — and **`VerifiedProof.public_jwk` is the minimal
+  canonical JWK**: nothing beyond `kty`/`crv`/`x`(/`y`) survives into a `cnf.jwk`; the
+  wallet's header stays verbatim in `VerifiedProof.header`. The SD-JWT `cnf.jwk` and JWE
+  `epk` readers keep their tolerant decoding (out of scope). Found by the internal security
+  review of 2026-11-07 (`test_openid4vci_canonical_jwk.py`).
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
@@ -6526,7 +6640,6 @@ verifies (see *Changed*).
   coordinates are full width: 0 failures in 600. openvc never signs XAdES, so trust-list
   verification is unaffected.
 
-
 ## [1.31.3] — 2026-10-13
 
 Tests and docs only: no library code changes.
@@ -6965,7 +7078,6 @@ Side effects of the shared reader, all edge cases:
   typed error.
 - On mdoc, a negative `leeway_s` now counts as 0, as it already did on the Data
   Integrity and WRPRC windows. It used to narrow the window.
-
 
 ## [1.30.4] — 2026-10-13
 

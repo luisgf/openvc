@@ -818,6 +818,10 @@ def test_webvh_update_key_surrogate_through_the_pipeline(key, s):
 
 CI = "https://issuer.example"
 PROOF_KEY = P256.public_jwk()
+# The benign control of row 8: another valid key, which clears the key-shape checks and
+# fails at the signature. Since #379 a coordinate of the wrong width is refused before the
+# signature (RFC 7518 §6.2.1.2), so "the same member plus a byte" no longer gets that far.
+OTHER_PROOF_KEY = P256SigningKey.generate("other").public_jwk()
 
 
 def _proof_jwt(**header_extra) -> str:
@@ -975,8 +979,8 @@ def test_row8_a_valid_non_bmp_member_still_has_a_thumbprint():
 @pytest.mark.parametrize("s", SURROGATES)
 def test_row8_header_jwk_and_attested_key_before_any_signature_check(member, s):
     # the proof header's jwk: read for its thumbprint before the signature is verified. The
-    # control (a benign suffix) gets past the thumbprint and fails at the signature.
-    benign = dict(PROOF_KEY, **{member: PROOF_KEY[member] + "A"})
+    # control (another valid key) gets past the thumbprint and fails at the signature.
+    benign = OTHER_PROOF_KEY
     with pytest.raises(SignatureInvalid) as cexc:
         _verify_proofs(_request(_unsigned_proof(
             {"typ": "openid4vci-proof+jwt", "alg": "ES256", "jwk": benign})))
