@@ -825,6 +825,27 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   reads across nodes (ADR-0009 open question 5): a boundary the recipe states, in
   [EBSI node trust](https://github.com/luisgf/openvc/wiki/EBSI-Node-Trust).
 
+- **R13 — RDF canonicalization cost (blank-node permutations). Bounded in v1.39.0
+  ([#381](https://github.com/luisgf/openvc/issues/381)).** The three RDF suites
+  canonicalize before any key or signature check (eddsa-rdfc-2022 before key resolution
+  too). RDFC-1.0 falls back to permutations over blank nodes whose first-degree hashes tie,
+  and pyld's `URDNA2015` has no limit on it (RDFC-1.0 §4.4 recommends one); openvc bounded
+  only nesting depth and input length. A `credentialSubject` of blank-node objects under an
+  inline `@vocab` builds a regular graph with factorial cost: a clique of 8 (2.5 KB) cost
+  20 s through `verify_credential`, 9 about 240 s, and `verify_many` is sequential, so one
+  item stalled the batch. The same input reaches `ldp_vc` / `ldp_vp` in a `vp_token` and a
+  Data Integrity status-list credential a resolver fetches. **Controls:**
+  `openvc.proof._rdfc` canonicalizes under three ceilings (256 blank nodes, 10 000 Hash
+  N-Degree Quads calls, 10 000 scheduled permutations), each a typed
+  `CanonicalizationBudgetExceeded` (`ProofMalformed`) before any signature check; the numbers
+  come from measuring every RDF fixture in the repository (at most 5 blank nodes, no
+  Hash N-Degree Quads work). **Residual:** the ceilings bound the cost, they do not remove
+  it. A document at the ceiling still costs CPU before the signature is checked (about
+  0.5 to 3 seconds measured on one core: a 225-node grid is the worst found), so this is
+  amplification bounded by the input cap, not a wrong-accept; a symmetric but legitimate
+  document over the ceiling is refused. The JCS suites do no RDF work and are unaffected
+  (`test_rdfc_budget.py`).
+
 ## 10. Out of scope
 
 - Compromise of a trusted anchor, of the host, or of the `SigningKey` backend.

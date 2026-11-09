@@ -48,6 +48,7 @@ from ..cbor import encode as _cbor_encode
 from ..errors import OpenvcError
 from ..keys import P256SigningKey, verify_signature
 from ._context_validation import validate_document
+from ._rdfc import canonicalize_nquads, new_canonicalizer
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -397,8 +398,8 @@ def _deskolemize_document(node: Any) -> Any:
 
 def _canonicalize(nquads_text: str) -> tuple[list[str], dict[str, str]]:
     """(sorted canonical N-Quad lines, {input ``_:bnode`` -> ``_:c14nN``})."""
-    from pyld.jsonld import JsonLdProcessor, URDNA2015
-    issuer = URDNA2015()
+    from pyld.jsonld import JsonLdProcessor
+    issuer = new_canonicalizer()                 # URDNA2015 with the work budget (_rdfc)
     canonical = issuer.main(JsonLdProcessor.parse_nquads(nquads_text), {})
     text = JsonLdProcessor.to_nquads(canonical)
     lines = sorted(ln for ln in text.split("\n") if ln)
@@ -525,8 +526,7 @@ def _proof_config(proof: dict[str, Any], context: Any) -> dict[str, Any]:
 
 def _proof_config_hash(proof: dict[str, Any], context: Any, loader: Any) -> bytes:
     config = _proof_config(proof, context)
-    nquads = _pyld().normalize(
-        config, pyld_options(loader, algorithm="URDNA2015", format="application/n-quads"))
+    nquads = canonicalize_nquads(config, loader)
     return hashlib.sha256(_utf8_nquads(nquads, "the proof configuration N-Quads")).digest()
 
 

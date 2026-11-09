@@ -114,7 +114,9 @@ def test_every_pyld_call_takes_its_options_from_the_helper():
     for path in _source_files():
         for line, name, helper in _pyld_calls(path.read_text(encoding="utf-8")):
             sites.append((f"{path.relative_to(_SRC)}:{line}", name, helper))
-    assert len(sites) >= 10, sites          # the scan sees the calls it is there to police
+    # the scan sees the calls it is there to police (9 since #381: canonicalization goes
+    # through openvc.proof._rdfc, one to_rdf call instead of two normalize calls)
+    assert len(sites) >= 9, sites
     bare = [f"{where} {name}" for where, name, helper in sites if not helper]
     assert not bare, (
         "build the options of these pyld calls with openvc.proof.contexts.pyld_options "
@@ -247,8 +249,11 @@ def test_every_pyld_call_gets_its_own_fresh_resolver_that_is_not_pylds_global_ca
 
     _drive_every_pyld_caller()
 
-    assert {entry["call"] for entry in seen} == {"expand", "compact", "normalize", "to_rdf"}
-    assert len(seen) >= 10, seen            # the recorder sees the calls it is there to police
+    # ``normalize`` is never reached: canonicalization is openvc.proof._rdfc's budgeted
+    # URDNA2015 over ``to_rdf`` (#381), and an unbudgeted ``normalize`` would bring back the
+    # factorial blank-node cost
+    assert {entry["call"] for entry in seen} == {"expand", "compact", "to_rdf"}
+    assert len(seen) >= 9, seen           # the recorder sees the calls it is there to police
     assert all(entry["has_resolver"] for entry in seen), seen
     assert all(entry["private"] for entry in seen), seen
     assert all(entry["fresh"] for entry in seen), seen

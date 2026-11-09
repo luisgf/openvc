@@ -32,6 +32,7 @@ from typing import Any, Mapping
 from .. import _json
 from ..multibase import encode_multibase
 from ._context_validation import validate_document
+from ._rdfc import CanonicalizationBudgetExceeded, canonicalize_nquads
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -48,7 +49,7 @@ from ._verify_common import (
     resolve_verification_key,
     utc_iso,
 )
-from .contexts import DocumentLoaderError, document_loader, pyld_options
+from .contexts import DocumentLoaderError, document_loader
 from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
 from .vc_jwt import SigningKey
 
@@ -95,11 +96,11 @@ def _require_pyld() -> Any:
 
 
 def _canonize(document: dict[str, Any], loader: Any) -> bytes:
-    jsonld = _require_pyld()
+    _require_pyld()
     try:
-        nquads = jsonld.normalize(
-            document,
-            pyld_options(loader, algorithm="URDNA2015", format="application/n-quads"))
+        nquads = canonicalize_nquads(document, loader)
+    except CanonicalizationBudgetExceeded:
+        raise                                  # typed, and it names the ceiling
     except Exception as exc:
         # pyld wraps a loader refusal in its own JsonLdError; surface the clear
         # "unbundled context" error if it caused this, else wrap generically.
