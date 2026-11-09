@@ -29,11 +29,17 @@ All notable changes to **openvc** are documented here. The format follows
   fixed message, no key bytes), `verify` decodes the ephemeral key right after the proof
   value, before canonicalization, key resolution and any signature, and follows the
   whole-document ECDSA suites' rule for the issuer key: its `(kty, crv)` must be P-256
-  (`match_alg`; `ProofMalformed` otherwise, an operator-pinned `public_key_jwk` included),
-  and both signature checks map `InvalidKey` and the other key-load failures to
-  `SignatureInvalid`. A lone surrogate in a disclosed statement is still `ProofMalformed`,
-  a wrong P-256 key is still `SignatureInvalid` with the same message, and the W3C
-  `vc-di-ecdsa` vectors verify unchanged (`test_ecdsa_sd_typed_verify.py`).
+  (`match_alg`; `ProofMalformed` otherwise, an operator-pinned `public_key_jwk` included,
+  and one that is not a JWK object at all is refused by its type name), and both
+  signature checks map `InvalidKey` and the other key-load failures to `SignatureInvalid`.
+  Two consequences are intended: a pinned JWK whose `crv` is not `P-256` is refused even
+  when its coordinates are a genuine P-256 point (the suite hard-coded ES256 and never
+  read `crv`, so such a mislabelled pin verified), and an off-curve ephemeral key combined
+  with a later fault (a malformed `proofPurpose`, an expired window, a foreign key) now
+  reports the key, since it is decoded first. A lone surrogate in a disclosed statement is
+  still `ProofMalformed` (`test_lone_surrogate_typed.py`), a wrong P-256 key is still
+  `SignatureInvalid` with the same message (`test_ecdsa_sd_typed_verify.py`), and the W3C
+  `vc-di-ecdsa` vectors verify unchanged (`test_ecdsa_sd_interop.py`).
 
 ## [1.38.1] — 2026-11-07
 

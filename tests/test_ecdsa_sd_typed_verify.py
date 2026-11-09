@@ -351,13 +351,50 @@ def test_a_verification_method_of_another_curve_is_proof_malformed(other, other_
 
 @pytest.mark.parametrize("jwk", [ED.public_jwk(), P384.public_jwk(),
                                  {"kty": "OKP", "crv": "P-256", "x": "AAAA"},
-                                 {"kty": "EC", "x": "AAAA", "y": "AAAA"}],
-                         ids=["OKP", "P-384", "OKP-under-P-256", "no-crv"])
+                                 {"kty": "EC", "x": "AAAA", "y": "AAAA"},
+                                 dict(P256.public_jwk(), crv="P-384")],
+                         ids=["OKP", "P-384", "OKP-under-P-256", "no-crv",
+                              "p256-coords-under-P-384-crv"])
 def test_a_pinned_key_of_another_type_is_proof_malformed(jwk):
+    # the last one is the genuine issuer key mislabelled P-384: the suite used to hard-code
+    # ES256 and never read crv, so that pin VERIFIED; a mislabelled pin is never legitimate
     with pytest.raises(ProofMalformed) as exc:
         SD.verify(_derived(), public_key_jwk=jwk)
     assert type(exc.value) is ProofMalformed
     assert "ecdsa-sd-2023 does not accept" in str(exc.value)
+
+
+@pytest.mark.parametrize("jwk", [[1], "k", b"k", 1, True, ("kty", "EC")],
+                         ids=["list", "str", "bytes", "int", "bool", "tuple"])
+def test_a_pinned_key_that_is_not_a_jwk_object_is_proof_malformed(jwk):
+    # outside the declared type, so a caller error, not holder bytes — but it must not
+    # fall out of match_alg's first member read as a bare AttributeError
+    with pytest.raises(ProofMalformed) as exc:
+        SD.verify(_derived(), public_key_jwk=jwk)
+    assert type(exc.value) is ProofMalformed
+    assert str(exc.value) == f"ecdsa-sd-2023 needs a JWK object, got {type(jwk).__name__}"
+
+
+def test_a_custom_resolver_key_that_is_not_a_jwk_object_is_proof_malformed():
+    from openvc.did.base import DidDocument, VerificationMethod
+
+    class _Resolver:
+        def supports(self, did):
+            return did.startswith("did:web:")
+
+        def resolve(self, did):
+            vm = VerificationMethod(id=did + "#k", type="JsonWebKey2020", controller=did,
+                                    public_key_jwk=["not", "a", "jwk"])   # type: ignore[arg-type]
+            return DidDocument(id=did, verification_methods=[vm], raw={},
+                               relationships={"assertionMethod": [did + "#k"]})
+
+    hostile = _derived()
+    hostile["proof"]["verificationMethod"] = "did:web:issuer.example#k"
+    hostile["issuer"] = "did:web:issuer.example"
+    with pytest.raises(ProofMalformed) as exc:
+        SD.verify(hostile, resolver=_Resolver())
+    assert type(exc.value) is ProofMalformed
+    assert str(exc.value) == "ecdsa-sd-2023 needs a JWK object, got list"
 
 
 @pytest.mark.parametrize("jwk", [

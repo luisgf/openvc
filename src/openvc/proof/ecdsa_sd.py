@@ -556,7 +556,13 @@ class EcdsaSdProofSuite:
         """``ES256`` when the resolved issuer key is a P-256 EC JWK, else fail closed
         (:class:`ProofMalformed`) — the shared rule of the whole-document ECDSA suites,
         so an Ed25519 or P-384 ``verificationMethod`` is refused before
-        ``verify_signature`` would read a wrong JWK member and raise its own class."""
+        ``verify_signature`` would read a wrong JWK member and raise its own class. A key
+        that is not a JWK object at all (a pinned ``public_key_jwk`` or a custom resolver's
+        ``public_key_jwk`` outside its declared type) is refused the same way, by its type
+        name only, rather than failing on the first member read."""
+        if not isinstance(jwk, Mapping):
+            raise ProofMalformed(
+                f"{CRYPTOSUITE} needs a JWK object, got {type(jwk).__name__}")
         return match_alg(jwk, self._allowed_algs, cryptosuite=CRYPTOSUITE)
 
     def add_base_proof(
