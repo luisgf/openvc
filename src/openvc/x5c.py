@@ -26,11 +26,13 @@ store — the trust anchors are the caller's.
 from __future__ import annotations
 
 import base64
+import warnings
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .errors import OpenvcError
-from .proof._verify_common import utc_instant
+from .proof._verify_common import safe_repr, utc_instant
 
 
 class X5cError(OpenvcError):
@@ -111,6 +113,20 @@ def validate_cert_chain(
     skip the latter, so a non-CA cert cannot be smuggled in as an intermediate); only the
     TLS-specific EKU is relaxed (a VC/mdoc signer cert is not a TLS server cert). Raises
     :class:`X5cError` on any failure; returns ``None`` on success."""
+    _validate_to_anchor(leaf, intermediates, trust_anchors=trust_anchors, now=now)
+
+
+def _validate_to_anchor(
+    leaf: Any,
+    intermediates: Sequence[Any],
+    *,
+    trust_anchors: Sequence[Any],
+    now: datetime | None,
+) -> Any:
+    """The body of :func:`validate_cert_chain`, returning the **matched trust anchor**
+    (the last certificate of the verified chain — matched by key, not by name, so a
+    same-named anchor with another key is never reported). The mdoc adapter needs the
+    anchor for the ISO 18013-5 §9.3.3 subject checks; the JOSE path ignores it."""
     from cryptography import x509
     from cryptography.x509.verification import (
         ExtensionPolicy,
@@ -132,9 +148,13 @@ def validate_cert_chain(
             ee_policy=ExtensionPolicy.permit_all())
     )
     try:
-        builder.build_client_verifier().verify(leaf, list(intermediates))
+        verified = builder.build_client_verifier().verify(leaf, list(intermediates))
     except VerificationError as exc:
         raise X5cError(f"certificate chain did not validate to a trust anchor: {exc}") from exc
+    anchor = verified.chain[-1] if verified.chain else None
+    if anchor is None or anchor not in anchors:          # defensive: never report a non-anchor
+        raise X5cError("certificate chain did not end at one of the given trust anchors")
+    return anchor
 
 
 def resolve_x5c_key(
@@ -230,25 +250,130 @@ def check_mdoc_signed_within_ds_validity(x5chain: Sequence[Any], signed: datetim
                        f"certificate validity [{nb.isoformat()} .. {na.isoformat()}]")
 
 
+# ISO 18013-5 Annex B subject attributes, as the short names the result reports them under.
+_SUBJECT_ATTRIBUTES: tuple[tuple[str, str], ...] = (
+    ("C", "2.5.4.6"),       # countryName           (IACA and DS: mandatory, §9.3.3 equality)
+    ("ST", "2.5.4.8"),      # stateOrProvinceName   (optional; §9.3.3 equality when both carry it)
+    ("CN", "2.5.4.3"),      # commonName            (mandatory; informational here)
+    ("O", "2.5.4.10"),      # organizationName      (optional; informational here)
+)
+
+
+@dataclass(frozen=True)
+class MdocSigner:
+    """A validated mdoc document signer: its *public_jwk*, the subject attributes of the
+    DS certificate (*ds_subject*) and of the IACA anchor it validated to (*anchor_subject*).
+    Each subject is a mapping of the ISO 18013-5 Annex B attributes present — ``C``, ``ST``,
+    ``CN``, ``O`` — to their string value; an attribute the subject lacks is absent."""
+    public_jwk: dict[str, Any]
+    ds_subject: Mapping[str, str]
+    anchor_subject: Mapping[str, str]
+
+
+# The attributes §9.3.3 compares: each must appear exactly once to be comparable. CN / O are
+# reported only — a repeated or odd one is omitted from the mapping, never a refusal.
+_COMPARED = frozenset({"C", "ST"})
+
+
+def _subject_attributes(cert: Any, role: str) -> dict[str, str]:
+    """The Annex B subject attributes of *cert* as ``{"C": ..., "ST": ..., ...}``.
+
+    ``cryptography`` decodes the Name lazily on the first ``.subject`` read — path
+    validation compares issuer and subject as raw DER and never decodes them — so a
+    path-valid certificate with an undecodable attribute raises there (``ValueError``,
+    ``KeyError``, ``TypeError``): the read is guarded into a typed refusal. The same decode
+    warns when a ``countryName`` is not two characters; the warning is silenced and the
+    length is refused explicitly (§9.3.3 compares ISO 3166-1 alpha-2 codes). A ``C`` or
+    ``ST`` that appears more than once is refused — the ISO profile uses each once and the
+    equality is undefined otherwise; ``CN`` / ``O`` are informational: exposed when they
+    appear exactly once, omitted otherwise."""
+    from cryptography import x509
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            subject = cert.subject
+    except (ValueError, TypeError, KeyError) as exc:
+        raise X5cError(f"mdoc {role} certificate subject cannot be decoded") from exc
+    out: dict[str, str] = {}
+    for short, dotted in _SUBJECT_ATTRIBUTES:
+        values = subject.get_attributes_for_oid(x509.ObjectIdentifier(dotted))
+        if not values:
+            continue
+        if len(values) != 1:
+            if short in _COMPARED:
+                raise X5cError(f"mdoc {role} certificate subject carries {len(values)} {short} "
+                               f"attributes; the ISO 18013-5 profile uses each once and the "
+                               f"9.3.3 equality needs one")
+            continue
+        value = values[0].value
+        if not isinstance(value, str):
+            if short in _COMPARED:
+                raise X5cError(f"mdoc {role} certificate subject {short} is not a string")
+            continue
+        out[short] = value
+    country = out.get("C")
+    if country is not None and len(country) != 2:
+        raise X5cError(f"mdoc {role} certificate subject countryName {safe_repr(country)} is "
+                       f"not a 2-character ISO 3166-1 alpha-2 code")
+    return out
+
+
+def _require_same_country_and_state(ds_subject: Mapping[str, str],
+                                    anchor_subject: Mapping[str, str]) -> None:
+    """ISO 18013-5 §9.3.3: the DS and its IACA share ``countryName`` (mandatory on both —
+    absent on either side is a refusal) and ``stateOrProvinceName`` when both carry it
+    (absent on one side: no constraint). Compared as strings, no normalisation."""
+    ds_c, iaca_c = ds_subject.get("C"), anchor_subject.get("C")
+    if ds_c is None or iaca_c is None:
+        side = "document-signer" if ds_c is None else "IACA anchor"
+        raise X5cError(f"mdoc {side} certificate subject has no countryName (C); ISO 18013-5 "
+                       "Annex B requires it on the DS and the IACA")
+    if ds_c != iaca_c:
+        raise X5cError(f"mdoc document-signer countryName {safe_repr(ds_c)} is not its IACA "
+                       f"anchor's {safe_repr(iaca_c)} (ISO 18013-5 9.3.3)")
+    ds_st, iaca_st = ds_subject.get("ST"), anchor_subject.get("ST")
+    if ds_st is not None and iaca_st is not None and ds_st != iaca_st:
+        raise X5cError(f"mdoc document-signer stateOrProvinceName {safe_repr(ds_st)} is not its "
+                       f"IACA anchor's {safe_repr(iaca_st)} (ISO 18013-5 9.3.3)")
+
+
+def resolve_mdoc_signer(
+    x5chain: Sequence[Any],
+    *,
+    trust_anchors: Sequence[Any],
+    now: datetime | None = None,
+) -> MdocSigner:
+    """Validate an mdoc ``IssuerAuth`` ``x5chain`` (COSE label 33: DER certificates,
+    leaf first) to a caller-provided **IACA** anchor set and return the document signer:
+    the leaf's public key as a JWK (P-256 / P-384 / Ed25519) with the DS and matched-anchor
+    subject attributes (:class:`MdocSigner`).
+
+    Unlike :func:`resolve_x5c_key` there is **no** ``iss``→SAN binding: mdoc trust is
+    "the DS cert chains to a trusted IACA root" (ISO 18013-5 §9.1.2), the DS carries the
+    document-signer EKU (Annex B), and — §9.3.3 — the DS subject ``countryName`` equals the
+    matched IACA's (mandatory on both) and so does ``stateOrProvinceName`` when both carry
+    it. The ``docType`` and ``validityInfo`` are bound against the MSO by the mdoc verifier,
+    not the certificate. Raises :class:`X5cError` on a malformed chain, a path-validation
+    failure, a missing DS EKU, a country / state mismatch, or an unusable leaf key."""
+    chain = load_der_chain(x5chain)
+    anchor = _validate_to_anchor(chain[0], chain[1:], trust_anchors=trust_anchors, now=now)
+    _require_mdoc_ds_eku(chain[0])
+    ds_subject = _subject_attributes(chain[0], "document-signer")
+    anchor_subject = _subject_attributes(anchor, "IACA anchor")
+    _require_same_country_and_state(ds_subject, anchor_subject)
+    return MdocSigner(leaf_public_jwk(chain[0]), ds_subject, anchor_subject)
+
+
 def resolve_mdoc_signer_key(
     x5chain: Sequence[Any],
     *,
     trust_anchors: Sequence[Any],
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Validate an mdoc ``IssuerAuth`` ``x5chain`` (COSE label 33: DER certificates,
-    leaf first) to a caller-provided **IACA** anchor set and return the document-signer
-    leaf's public key as a JWK (P-256 / P-384 / Ed25519).
-
-    Unlike :func:`resolve_x5c_key` there is **no** ``iss``→SAN binding: mdoc trust is
-    "the DS cert chains to a trusted IACA root" (ISO 18013-5 §9.1.2). The ``docType`` and
-    ``validityInfo`` are bound against the MSO by the mdoc verifier, not the certificate.
-    Raises :class:`X5cError` on a malformed chain, a path-validation failure, or an
-    unusable leaf key."""
-    chain = load_der_chain(x5chain)
-    validate_cert_chain(chain[0], chain[1:], trust_anchors=trust_anchors, now=now)
-    _require_mdoc_ds_eku(chain[0])
-    return leaf_public_jwk(chain[0])
+    """:func:`resolve_mdoc_signer` reduced to the document-signer leaf's public JWK — the
+    same validation (path, DS EKU, §9.3.3 country / state equality), the key alone. Raises
+    :class:`X5cError` as that function does."""
+    return resolve_mdoc_signer(x5chain, trust_anchors=trust_anchors, now=now).public_jwk
 
 
 __all__ = [
@@ -258,6 +383,8 @@ __all__ = [
     "load_x5c_chain",
     "load_der_chain",
     "leaf_public_jwk",
+    "MdocSigner",
+    "resolve_mdoc_signer",
     "resolve_mdoc_signer_key",
     "check_mdoc_signed_within_ds_validity",
 ]
