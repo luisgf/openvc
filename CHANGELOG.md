@@ -126,6 +126,39 @@ All notable changes to **openvc** are documented here. The format follows
   object `type`. Found by the internal security review of 2026-11-07 (§ M10;
   `test_ebsi_credential_types_shape.py`).
 
+- **An `ecdsa-sd-2023` derived proof whose ephemeral key is not a point on P-256 raises
+  `ProofValueMalformed`, and a wrong-length signature or an issuer key that is not P-256
+  raises a `ProofError`, never `keys.InvalidKey` or a bare `ValueError`**
+  ([#382](https://github.com/luisgf/openvc/issues/382),
+  [#394](https://github.com/luisgf/openvc/issues/394)). Found by the internal security
+  review of 2026-11-07. The holder writes every byte of a derived proof value, and the base
+  signature cannot be relied on to refuse them: a holder can mint a did:key, name it in
+  `proof.verificationMethod` and sign the base over any ephemeral key (the issuer binding
+  runs after the suite). `p256_multikey_to_jwk` checked the multicodec prefix and the
+  35-byte length, then let `cryptography` raise a bare `ValueError` for an x off the curve
+  or a point tag other than `02`/`03`, and `verify` decoded the key only after the base
+  signature verified; one such item escaped `verify_credential` /
+  `verify_credential_async` and aborted a whole `verify_many` / `verify_many_async` batch
+  (threat model I14, I15). Both `verify_signature` calls ran bare too, so a wrong-length
+  base or statement signature, or a `verificationMethod` resolving to an Ed25519 / P-384
+  did:key, surfaced as `openvc.keys.InvalidKey`, an `OpenvcError` outside the `ProofError`
+  family the module promises. No wrong-accept: every case failed closed, untyped. Now
+  `p256_multikey_to_jwk` raises `ProofValueMalformed` for a point that is not on P-256 (a
+  fixed message, no key bytes), `verify` decodes the ephemeral key right after the proof
+  value, before canonicalization, key resolution and any signature, and follows the
+  whole-document ECDSA suites' rule for the issuer key: its `(kty, crv)` must be P-256
+  (`match_alg`; `ProofMalformed` otherwise, an operator-pinned `public_key_jwk` included,
+  and one that is not a JWK object at all is refused by its type name), and both
+  signature checks map `InvalidKey` and the other key-load failures to `SignatureInvalid`.
+  Two consequences are intended: a pinned JWK whose `crv` is not `P-256` is refused even
+  when its coordinates are a genuine P-256 point (the suite hard-coded ES256 and never
+  read `crv`, so such a mislabelled pin verified), and an off-curve ephemeral key combined
+  with a later fault (a malformed `proofPurpose`, an expired window, a foreign key) now
+  reports the key, since it is decoded first. A lone surrogate in a disclosed statement is
+  still `ProofMalformed` (`test_lone_surrogate_typed.py`), a wrong P-256 key is still
+  `SignatureInvalid` with the same message (`test_ecdsa_sd_typed_verify.py`), and the W3C
+  `vc-di-ecdsa` vectors verify unchanged (`test_ecdsa_sd_interop.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
