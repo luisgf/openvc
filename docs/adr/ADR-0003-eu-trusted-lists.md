@@ -117,6 +117,20 @@ explicit account of what didn't. Selection filters (by `ServiceTypeIdentifier`,
 e.g. `…/Svctype/CA/QC`; by `ServiceStatus` = `…/Svcstatus/granted`; by territory)
 are applied during aggregation.
 
+*Addendum (2026-11-09, [#389](https://github.com/luisgf/openvc/issues/389),
+[#407](https://github.com/luisgf/openvc/issues/407)).* "Expired" includes **closed**:
+ETSI TS 119 612 clause 5.3.15 makes a null `NextUpdate` the mark of a closed TL, so the
+XML lane stages it as the LoTE lane always did — zero anchors, an `"expired"` problem
+naming `closed TL (null NextUpdate)`; a closed LOTL stops the walk. A `NextUpdate` that is
+not a UTC date-time of the `YYYY-MM-DDThh:mm:ssZ` form clause 5.1.3 mandates is a
+`TrustListParseError` (a `"parse"` problem in the walk) — never `None`, which the walk
+read as unbounded validity — and a tz-naive value is **not** assumed UTC, so only UTC
+datetimes are ever compared (a naive one used to escape `walk_lotl` as a bare
+`TypeError`). The shape and the fields are read by regex (the LoTE lane's `_DATETIME_Z`,
+with a fraction tolerated and `+00:00` accepted for `Z`), not by `fromisoformat`, so the
+accept set is the same on every interpreter: another offset, the basic format, another
+separator or hour 24 are refused.
+
 ### D7 — Provider interface + SSRF-guarded fetch + short TTL cache
 Fetching a TL is injected (`Callable[[str], bytes]`), so the caller supplies the
 transport and SSRF policy; the blessed default reuses `openvc.fetch.https_bytes_fetch`

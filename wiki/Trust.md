@@ -41,8 +41,13 @@ Properties worth knowing:
 - **Trust is caller-pinned** — you supply the LOTL signer certificates; there
   is no implicit root.
 - **Fail-closed** — a national TL that cannot be fetched, verified, or is
-  expired contributes **zero** anchors and is recorded in `anchors.problems`,
-  never silently trusted.
+  expired — or is **closed** (a null `NextUpdate`, TS 119 612 §5.3.15) —
+  contributes **zero** anchors and is recorded in `anchors.problems`, never
+  silently trusted; a closed or expired LOTL stops the walk. A `NextUpdate` that
+  is not a UTC date-time of the `YYYY-MM-DDThh:mm:ssZ` form §5.1.3 mandates
+  (`+00:00` is accepted for `Z`, a fraction is tolerated; any other offset, a
+  tz-naive value or another layout is never read as UTC) is a parse failure, not
+  unbounded validity.
 - **Selective** — the default selection keeps `granted` qualified-CA services
   (the ones that issue EUDI issuer certs); pass `select=None` for everything, or a
   `Select(service_types=…)` over `ServiceType`. Beyond `CA_QC`, the named types cover
