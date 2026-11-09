@@ -152,9 +152,17 @@ class VerifiedPresentation:
     the embedded credentials for a ``jwt_vc_json`` VP-JWT. *raw* is the underlying
     format-specific object (``VerifiedSdJwt`` or the VP-JWT ``VerifiedPresentation``).
 
+    *holder* is the authenticated presenter, and what that means depends on the lane:
+    the VP signer for ``jwt_vc_json`` / ``ldp_vc``; the issuer-signed ``sub`` for a
+    ``dc+sd-jwt`` whose KB-JWT verified (``credentials[0].key_bound is True``); ``None``
+    for a ``dc+sd-jwt`` presented with no KB-JWT (since 1.39.0 — the ``sub`` is then the
+    issuer's identifier for a holder, not an authenticated presenter, and used to be
+    reported), for a bare credential, and for ``mso_mdoc`` (the ``DeviceAuth`` is
+    verified, but an mdoc carries no holder identifier).
+
     A **bare credential** (a ``jwt_vc_json`` / ``ldp_vc`` query that waived holder
     binding, answered with a Verifiable Credential and no presentation) reports
-    ``holder=None``, as ``mso_mdoc`` does: nothing authenticated a holder. *credentials*
+    ``holder=None``: nothing authenticated a holder. *credentials*
     is the one verified credential and *raw* its suite's own result (``VerifiedCredential``).
     """
     query_id: str
@@ -302,14 +310,21 @@ def verify_vp_token(
     issuer: check each result's ``issuer`` yourself.
 
     Every Presentation is cryptographically holder-bound (the KB-JWT for
-    ``dc+sd-jwt``, the holder signature for ``jwt_vc_json`` and ``ldp_vc``), unless a W3C
-    query waives it and the answer is a bare credential (below). For the W3C
-    VP formats (``jwt_vc_json`` / ``ldp_vc``) the reported ``holder`` is the
-    **authenticated signer** — the controller of the verificationMethod whose key signed,
-    never a self-asserted field. For ``dc+sd-jwt`` it is the issuer-signed ``sub``: the
-    KB-JWT proves the presenter holds the ``cnf`` key the issuer bound to ``sub``, so
-    ``sub`` is trustworthy, though it is the issuer's identifier for the holder rather
-    than the KB signer's own key thumbprint.
+    ``dc+sd-jwt``, the holder signature for ``jwt_vc_json`` and ``ldp_vc``, the
+    ``DeviceAuth`` for ``mso_mdoc``), unless a query waives it and the answer carries no
+    holder proof (a bare W3C credential, below, or a ``dc+sd-jwt`` with no KB-JWT). What
+    the reported ``holder`` means depends on the lane. For the W3C VP formats
+    (``jwt_vc_json`` / ``ldp_vc``) it is the **authenticated signer** — the controller of
+    the verificationMethod whose key signed, never a self-asserted field. For
+    ``dc+sd-jwt`` it is the issuer-signed ``sub`` **when a KB-JWT was presented**
+    (``key_bound=True``): the KB-JWT proves the presenter holds the ``cnf`` key the issuer
+    bound to ``sub``, so ``sub`` is trustworthy, though it is the issuer's identifier for
+    the holder rather than the KB signer's own key thumbprint. With no KB-JWT (a query
+    that waived binding) it is ``None`` since 1.39.0 — ``sub`` is then the issuer's
+    identifier for *a* holder, not an authenticated presenter — where it used to report
+    ``sub``. A bare W3C credential and an ``mso_mdoc`` report ``None`` too: the first
+    authenticates nobody; the second authenticates the device, but an mdoc carries no
+    holder identifier.
 
     For the W3C VP formats, the VP proof alone does not bind the credentials it carries
     to the presenter. So when a Credential Query requires **Cryptographic Holder
@@ -363,8 +378,18 @@ def verify_vp_token(
     JSON boolean (``"false"``, ``1``, ``null``, ``[]``, …) is :class:`VpTokenMalformed`,
     naming the query, for every query, answered or not.
     *require_holder_binding* is the caller's own, stricter switch: whatever the query
-    says, every embedded credential's subject — an SD-JWT VC's ``sub`` included — must
-    be the authenticated holder.
+    says, the presenter must be bound to every credential presented. On the W3C lanes
+    every embedded credential's subject — an SD-JWT VC's ``sub`` included — must be the
+    authenticated signer, and a bare credential cannot meet it. On the ``dc+sd-jwt``
+    lane the SD-JWT VC must carry a KB-JWT bound to this exchange (``key_bound=True``),
+    whatever the query's flag says, else ``ClaimsInvalid``: its ``sub`` is the issuer's
+    identifier, so there is no authenticated holder to hold it to until the KB-JWT proves
+    possession of the ``cnf`` key (since 1.39.0; before, the switch was not read on this
+    lane). The ``mso_mdoc`` lane meets it by construction and does not read the switch:
+    the ``DeviceAuth`` over the origin-bound ``SessionTranscript``, signed with the device
+    key the issuer sealed in the MSO, is verified for every document or the response is
+    refused (``device_signed=True`` on every result), and an mdoc carries no holder
+    identifier to compare.
 
     A KB-JWT that a nested SD-JWT VC does carry must be bound to the **same** audience and
     nonce as the presentation, whatever the flag, or the response is rejected — so a
@@ -715,6 +740,12 @@ def _verify_one(
     fmt = query["format"]
     # mso_mdoc binds the holder through DeviceAuth over a SessionTranscript, not a
     # peekable `aud`, so it is handled before the JOSE / LDP audience is computed.
+    # It does not read require_holder_binding — the documented exemption (#378):
+    # verify_device_response verifies the DeviceAuth over the origin-bound
+    # SessionTranscript, with the device key the issuer sealed in the MSO, for every
+    # document, or refuses the response (MdocDeviceAuthError) — cryptographic holder
+    # binding by construction, device_signed=True on every result. `holder` stays None
+    # because an mdoc carries no holder identifier to report or to compare against.
     if fmt == FORMAT_MSO_MDOC:
         return _verify_mso_mdoc(
             query_id, query, presentation, nonce=nonce, expected_origins=expected_origins,
@@ -762,6 +793,7 @@ def _verify_one(
             query_id, vct_values, presentation, require_binding=require_binding,
             nonce=nonce, client_id=aud, resolver=resolver, now=now, leeway_s=leeway_s,
             kb_max_age_s=kb_max_age_s,
+            require_holder_binding=require_holder_binding,
             jwt_vc_issuer_fetch=jwt_vc_issuer_fetch,
             x5c_trust_anchors=x5c_trust_anchors,
             resolve_status_list=resolve_status_list,
@@ -888,6 +920,7 @@ def _verify_mso_mdoc(
 def _verify_sd_jwt_vc(
     query_id: str, vct_values: list[str] | None, presentation: Any, *, require_binding: bool,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
+    require_holder_binding: bool,
     jwt_vc_issuer_fetch: Any = None,
     x5c_trust_anchors: Any = None,
     resolve_status_list: Any = None,
@@ -936,7 +969,24 @@ def _verify_sd_jwt_vc(
             f"a {FORMAT_SD_JWT_VC} Presentation for {query_id!r} must be an IETF SD-JWT VC "
             f"(issuer JWT typ {FORMAT_SD_JWT_VC!r}, got {safe_repr(issuer_typ)})")
     _check_vct(query_id, vct_values, getattr(result.raw, "vct", None))
-    holder = result.subject
+    # The caller's own switch (#378): the SD-JWT VC must carry a KB-JWT bound to this
+    # exchange, whatever the query's flag says. A present KB-JWT is verified against the
+    # audience + nonce even when the query waived binding (require_key_binding=False), so
+    # key_bound=True always means "bound to this exchange"; anything else is no
+    # authenticated holder, as on the bare W3C lane. Kept after the format / typ / vct
+    # pins so their errors keep coming first. Read like `raw.typ` above: a result that
+    # does not positively report key_bound=True is not bound (fail closed).
+    key_bound = getattr(result, "key_bound", None)
+    if require_holder_binding and key_bound is not True:
+        raise ClaimsInvalid(
+            f"Credential Query {query_id!r}: a {FORMAT_SD_JWT_VC} Presentation with no "
+            f"Key Binding JWT has no authenticated holder, so it cannot meet "
+            f"require_holder_binding")
+    # `sub` is the issuer's identifier for the holder. It names the authenticated
+    # presenter only once the KB-JWT proved possession of the `cnf` key the issuer bound
+    # it to; with no KB-JWT nobody authenticated, so nothing is reported (not `sub`). An
+    # empty `sub` is no identifier either (the W3C lanes read an empty subject as absent).
+    holder = (result.subject or None) if key_bound is True else None
     return VerifiedPresentation(
         query_id=query_id, format=FORMAT_SD_JWT_VC, holder=holder,
         credentials=(result,), raw=result.raw)
@@ -945,7 +995,7 @@ def _verify_sd_jwt_vc(
 def _verify_jwt_vp(
     query_id: str, presentation: Any, *, require_binding: bool,
     nonce: str, client_id: str, resolver: Any, now: datetime | None, leeway_s: int,
-    require_holder_binding: bool = False,
+    require_holder_binding: bool,
     jwt_vc_issuer_fetch: Any = None,
     x5c_trust_anchors: Any = None,
     resolve_status_list: Any = None,

@@ -24,6 +24,63 @@ All notable changes to **openvc** are documented here. The format follows
   Data Integrity lanes. Every did:key vector (Ed25519, P-256, P-384) resolves as before.
   Found by the internal security review of 2026-11-07 (`test_did_key_bounded.py`).
 
+- **`verify_vp_token`'s `require_holder_binding` now reaches the `dc+sd-jwt` lane, which
+  requires a Key Binding JWT under it, and an SD-JWT VC presented with no KB-JWT reports
+  `holder=None`; the `mso_mdoc` lane is exempt by construction**
+  ([#378](https://github.com/luisgf/openvc/issues/378)). The switch is documented as the
+  caller's own, stricter rule — whatever the query says, the presenter must be bound to
+  what they present — but it was read on the W3C lanes only: `_verify_sd_jwt_vc` had no
+  such parameter and reported `holder = sub` unconditionally, and the `mso_mdoc` branch of
+  `_verify_one` returned before the switch was read. So a `dc+sd-jwt` Credential Query
+  that set `require_cryptographic_holder_binding` to `false`, answered with an SD-JWT VC
+  and no KB-JWT, was accepted under `require_holder_binding=True` with `holder` set to the
+  issuer-written `sub` (`key_bound=False`), an identifier nobody had authenticated, where a
+  bare `jwt_vc_json` answer in the same situation was refused. Now, with the switch on,
+  the SD-JWT VC must carry a KB-JWT bound to this exchange (`key_bound=True`), whatever
+  the query's flag says, else `ClaimsInvalid` ("… has no authenticated holder, so it
+  cannot meet require_holder_binding", the bare lane's wording); the check runs after the
+  lane's format, `typ` and `vct_values` pins, so their errors come first as before.
+  **Behaviour change on an accepted input:** a `dc+sd-jwt` presented with no KB-JWT under
+  a query that waived binding, with the switch off, is still accepted but now reports
+  `holder=None` instead of `sub` — the `sub` is the issuer's identifier for the holder,
+  not an authenticated presenter, and stays readable as `credentials[0].subject`; with a
+  KB-JWT verified, `holder` is `sub` as before, except that an empty-string `sub` is no
+  identifier and reports `None` too (it used to report `""`). The `mso_mdoc` lane does not read the
+  switch, by decision: `verify_device_response` verifies the `DeviceAuth` over the
+  origin-bound `SessionTranscript`, signed with the device key the issuer sealed in the
+  MSO, for every document or refuses the response (`MdocDeviceAuthError`), which is
+  cryptographic holder binding by construction (`device_signed=True` on every result);
+  `holder` stays `None` because an mdoc carries no holder identifier. The `verify_vp_token`
+  and `VerifiedPresentation` docstrings and the Presentations wiki page now say what
+  `holder` means on each lane and what the switch enforces where. Found by the internal
+  security review of 2026-11-07 (`test_openid4vp_holder_binding_lanes.py`).
+
+- **EU trusted lists, TS 119 612 XML lane: a null `NextUpdate` now closes the list, and a
+  `NextUpdate` that is not a UTC date-time of the mandated `Z` form is refused — neither
+  reads as unbounded validity any more** ([#389](https://github.com/luisgf/openvc/issues/389),
+  [#407](https://github.com/luisgf/openvc/issues/407)). ETSI TS 119 612 clause 5.3.15 makes
+  a null `NextUpdate` the mark of a **closed** TL and has a verifier discard a TL whose Next
+  update is in the past "as a measure to reduce the risk of a substitution by an attacker
+  with an old TL"; clause 5.1.3 mandates every TL date-time as ISO 8601 **UTC** with the `Z`
+  designator. The parser turned a `<NextUpdate/>` without `dateTime` **and** any `dateTime`
+  that `fromisoformat` rejected into `None`, which the walk read as "never expires", so a
+  closed national TL — or one whose `NextUpdate` had been damaged into garbage — kept
+  contributing anchors indefinitely, and a tz-naive value escaped `walk_lotl` as a bare
+  `TypeError` (#407). Now, mirroring the LoTE lane: `parse_trust_list` keeps `None` only for
+  a *null* `NextUpdate` (element absent, without `<dateTime>`, or empty) and raises
+  `TrustListParseError` for anything but the `YYYY-MM-DDThh:mm:ssZ` shape clause 5.1.3
+  mandates (a fraction of a second is tolerated and `+00:00` is accepted for `Z`; a
+  tz-naive value — **not** read as UTC — another offset, the basic format or another
+  separator are refused; the fields are read by regex, not by `fromisoformat`, so the accept
+  set is the same on every interpreter) — and `walk_lotl` stages a null `NextUpdate` as
+  `"expired"` with a problem naming `closed TL (null NextUpdate)` (a closed LOTL stops the
+  walk, a closed national TL contributes nothing) and a malformed one as a `"parse"`
+  problem, so only UTC datetimes are ever compared. `consume_trust_list` returns the closed signal (`next_update is None`)
+  to a direct caller, as `consume_lote` does, and its docstring now says, as `consume_lote`'s
+  does, that freshness is the walk's job; `TrustList`'s shape is unchanged. The recorded
+  EU LOTL / ES TL goldens are unchanged. Found by the internal security review of 2026-11-07
+  (`test_trustlist_nextupdate_closed.py`).
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
@@ -68,6 +125,39 @@ All notable changes to **openvc** are documented here. The format follows
   `expected_types` given the core suite's `ClaimsInvalid` still comes first for a scalar or
   object `type`. Found by the internal security review of 2026-11-07 (§ M10;
   `test_ebsi_credential_types_shape.py`).
+
+- **An `ecdsa-sd-2023` derived proof whose ephemeral key is not a point on P-256 raises
+  `ProofValueMalformed`, and a wrong-length signature or an issuer key that is not P-256
+  raises a `ProofError`, never `keys.InvalidKey` or a bare `ValueError`**
+  ([#382](https://github.com/luisgf/openvc/issues/382),
+  [#394](https://github.com/luisgf/openvc/issues/394)). Found by the internal security
+  review of 2026-11-07. The holder writes every byte of a derived proof value, and the base
+  signature cannot be relied on to refuse them: a holder can mint a did:key, name it in
+  `proof.verificationMethod` and sign the base over any ephemeral key (the issuer binding
+  runs after the suite). `p256_multikey_to_jwk` checked the multicodec prefix and the
+  35-byte length, then let `cryptography` raise a bare `ValueError` for an x off the curve
+  or a point tag other than `02`/`03`, and `verify` decoded the key only after the base
+  signature verified; one such item escaped `verify_credential` /
+  `verify_credential_async` and aborted a whole `verify_many` / `verify_many_async` batch
+  (threat model I14, I15). Both `verify_signature` calls ran bare too, so a wrong-length
+  base or statement signature, or a `verificationMethod` resolving to an Ed25519 / P-384
+  did:key, surfaced as `openvc.keys.InvalidKey`, an `OpenvcError` outside the `ProofError`
+  family the module promises. No wrong-accept: every case failed closed, untyped. Now
+  `p256_multikey_to_jwk` raises `ProofValueMalformed` for a point that is not on P-256 (a
+  fixed message, no key bytes), `verify` decodes the ephemeral key right after the proof
+  value, before canonicalization, key resolution and any signature, and follows the
+  whole-document ECDSA suites' rule for the issuer key: its `(kty, crv)` must be P-256
+  (`match_alg`; `ProofMalformed` otherwise, an operator-pinned `public_key_jwk` included,
+  and one that is not a JWK object at all is refused by its type name), and both
+  signature checks map `InvalidKey` and the other key-load failures to `SignatureInvalid`.
+  Two consequences are intended: a pinned JWK whose `crv` is not `P-256` is refused even
+  when its coordinates are a genuine P-256 point (the suite hard-coded ES256 and never
+  read `crv`, so such a mislabelled pin verified), and an off-curve ephemeral key combined
+  with a later fault (a malformed `proofPurpose`, an expired window, a foreign key) now
+  reports the key, since it is decoded first. A lone surrogate in a disclosed statement is
+  still `ProofMalformed` (`test_lone_surrogate_typed.py`), a wrong P-256 key is still
+  `SignatureInvalid` with the same message (`test_ecdsa_sd_typed_verify.py`), and the W3C
+  `vc-di-ecdsa` vectors verify unchanged (`test_ecdsa_sd_interop.py`).
 
 - **W3C Bitstring status lists: `statusSize` is honoured, and a multi-bit status is read as the
   `statusSize`-bit value at `index * statusSize`, as Bitstring Status List v1.0 §3.2 / §3.3
