@@ -10,10 +10,12 @@ own domain:
 
 The mapping is the spec's and nothing more: ``:`` becomes ``/``, the port's ``%3A``
 is the only percent-escape that is decoded, and every path segment goes on the wire
-as written. A segment that could not be sent as written, or that two URL parsers
-would read differently (empty, ``.`` / ``..`` in any spelling, a delimiter, a control
-character, whitespace, non-ASCII, or a ``%`` escape of any of those), is refused as a
-typed error before any fetch — see :func:`_check_segment`.
+as written. A segment must match the method's own grammar (did:web §"Method Specific
+Identifier", the DID Core 1.0 §3.1 ``idchar``: ``ALPHA / DIGIT / "." / "-" / "_" /
+pct-encoded``), must not be empty or a dot segment in any spelling, and must not
+percent-encode a delimiter, a control character, whitespace or a non-ASCII octet;
+anything else is refused as a typed error before any fetch — see
+:func:`_check_segment`.
 
 SSRF note
 ---------
@@ -44,15 +46,22 @@ _PORT = re.compile(r"[0-9]{1,5}")
 _NUMERIC_LABEL = re.compile(r"[0-9]+|0[xX][0-9A-Fa-f]*")
 # The one escape did:web decodes: the ``:`` before an explicit port, in the host segment.
 _PORT_ESCAPE = re.compile(r"%3[Aa]")
-# In a path segment: a ``%`` that does not start a ``%XX`` escape, and the ``XX`` of each
+# A did:web path segment: one or more ``idchar`` of the method's ABNF (did:web §"Method
+# Specific Identifier" = DID Core 1.0 §3.1), ``ALPHA / DIGIT / "." / "-" / "_" /
+# pct-encoded`` with ``pct-encoded = "%" HEXDIG HEXDIG``. The two branches share no
+# character, so the match is linear in the segment.
+_SEGMENT = re.compile(r"(?:[A-Za-z0-9._-]|%[0-9A-Fa-f]{2})+")
+# A ``%`` that does not start a ``%XX`` escape (for the message), and the ``XX`` of each
 # one that does.
 _BARE_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _ESCAPED_OCTET = re.compile(r"%([0-9A-Fa-f]{2})")
-# The characters a path segment may neither contain nor percent-encode: a segment
-# boundary, the query and fragment delimiters (``urlparse`` cuts the path at them, so
-# ``did.json`` would never be requested), the backslash a WHATWG parser reads as ``/``,
-# and ``%`` itself (an escape of an escape decodes twice on some servers).
-_SEGMENT_DELIMITERS = frozenset("/?#\\%")
+# The characters a path segment may not percent-encode either (none is an ``idchar``, so
+# none can be written literally): a segment boundary, the query and fragment delimiters
+# (``urlparse`` cuts the path at them, so ``did.json`` would never be requested), the
+# backslash a WHATWG parser reads as ``/``, ``%`` itself (an escape of an escape decodes
+# twice on some servers) and ``;``, which a servlet container strips as a path parameter
+# before it normalizes the path (``..;`` is ``..`` to Tomcat).
+_SEGMENT_DELIMITERS = frozenset("/?#\\%;")
 
 
 def _check_host(host: str, did: str) -> None:
@@ -91,60 +100,60 @@ def _check_host(host: str, did: str) -> None:
 
 
 def _check_segment(segment: str, did: str) -> None:
-    """Reject a did:web path segment that cannot go on the wire as written.
+    """Reject a did:web path segment the method's grammar does not allow.
 
     did:web decodes no escape in a path segment: ``did:web:host:a:b`` is
-    ``https://host/a/b/did.json`` with ``a`` and ``b`` sent verbatim. So a segment is
-    accepted only when every URL parser reads it the same way, and the request it
-    produces is ``<path>/did.json`` on that host and nothing else. Refused, as a
-    :class:`DidResolutionError` before any fetch runs (the caller's own fetch
-    included), is a segment that is:
+    ``https://host/a/b/did.json`` with ``a`` and ``b`` sent verbatim. A segment is
+    accepted only when it matches the method's own ABNF (did:web §"Method Specific
+    Identifier", which is the DID Core 1.0 §3.1 grammar) — one or more ``idchar``,
+    ``idchar = ALPHA / DIGIT / "." / "-" / "_" / pct-encoded`` — so that the request it
+    produces is ``<path>/did.json`` on that host and no parser reads it as another path
+    or host. Refused, as a :class:`DidResolutionError` before any fetch runs (the
+    caller's own fetch included), is a segment that is:
 
     * empty (``did:web:host::x``, a trailing ``:``), which would send ``//``;
     * a dot segment in any spelling (``.``, ``..``, ``%2E%2E``, …: the set an https
       issuer identifier is held to), which a WHATWG parser resolves away;
-    * not ASCII, or a control character or whitespace: the identifier policy of the
-      host — ASCII only, an IDN as its ``xn--`` A-label, nothing ``urlsplit`` would
-      strip — applies to the path too, and ``\\t\\r\\n`` are silently dropped by
-      ``urlsplit``, so two identifiers would name one URL;
-    * a ``/``, ``?``, ``#``, ``\\`` or ``%`` not written as an escape: ``urlparse``
-      cuts the path at ``?`` and ``#`` (``did.json`` is never requested), WHATWG reads
-      ``\\`` as ``/``, and a ``%`` that is not ``%XX`` is read as an escape by some
-      servers and as a literal by others;
-    * a ``%XX`` escape of any of the above (``%2F``, ``%3F``, ``%23``, ``%5C``,
-      ``%25``, ``%00``–``%20``, ``%7F``, ``%80`` and up): kept verbatim here, but
-      decoded by a server into the very character this refuses.
+    * outside the grammar: that one rule refuses ``;`` (``..;`` is ``..`` to a servlet
+      container, which strips path parameters before it normalizes), the delimiters
+      ``/ ? # \\`` (``urlparse`` cuts the path at ``?`` and ``#``, so ``did.json`` is never
+      requested; WHATWG reads ``\\`` as ``/``), every other reserved or unsafe character
+      (``@ ~ ! $ & ' ( ) * + , = " < > { } [ ] | ^`` and the backtick), whitespace, a
+      control character (``urlsplit`` drops ``\\t\\r\\n``, so two identifiers would name
+      one URL), non-ASCII
+      (the identifier policy of the host — ASCII only, an IDN as its ``xn--`` A-label —
+      applies to the path too) and a ``%`` that is not a ``%XX`` escape;
+    * a ``%XX`` escape of a delimiter, ``;``, ``%``, a control character, whitespace or a
+      non-ASCII octet (``%2F``, ``%3F``, ``%23``, ``%5C``, ``%3B``, ``%25``,
+      ``%00``–``%20``, ``%7F``, ``%80`` and up): kept verbatim here, but decoded by a
+      server into the very character the grammar keeps out.
 
-    Everything else — letters, digits, ``-``, ``_``, ``.``, ``~``, ``+``, ``!``,
-    ``@`` and an escape of a printable ASCII character such as ``%40`` — is sent as
-    written. Each check is linear in the segment and the message names it through
-    ``safe_repr``: a segment can be megabytes long.
+    An escape of any other printable ASCII character (``%40``, ``%41``, ``%3A``) is
+    grammatical and is sent as written, never decoded. Each check is linear in the
+    segment, and the message names the DID and the segment through ``safe_repr``, built
+    only on refusal: both can be megabytes long.
     """
-    shown = safe_repr(did)
+    def refuse(reason: str) -> DidResolutionError:
+        return DidResolutionError(f"did:web {safe_repr(did)} {reason}")
+
     if not segment:
-        raise DidResolutionError(f"did:web {shown} has an empty path segment")
+        raise refuse("has an empty path segment")
     if segment.lower() in _DOT_SEGMENTS:
-        raise DidResolutionError(
-            f"did:web {shown} has a dot path segment {safe_repr(segment)}")
-    if not segment.isascii():
-        raise DidResolutionError(
-            f"did:web {shown} path segment {safe_repr(segment)} is not ASCII")
-    if not segment.isprintable() or " " in segment:
-        raise DidResolutionError(
-            f"did:web {shown} path segment {safe_repr(segment)} contains a control "
-            f"character or whitespace")
-    if any(delimiter in segment for delimiter in "/?#\\"):
-        raise DidResolutionError(
-            f"did:web {shown} path segment {safe_repr(segment)} contains a URL delimiter")
-    if _BARE_PERCENT.search(segment):
-        raise DidResolutionError(
-            f"did:web {shown} path segment {safe_repr(segment)} has a % that is not a "
-            f"%XX escape")
+        raise refuse(f"has a dot path segment {safe_repr(segment)}")
+    if not _SEGMENT.fullmatch(segment):
+        if not segment.isascii():
+            raise refuse(f"path segment {safe_repr(segment)} is not ASCII")
+        if _BARE_PERCENT.search(segment):
+            raise refuse(
+                f"path segment {safe_repr(segment)} has a % that is not a %XX escape")
+        raise refuse(
+            f"path segment {safe_repr(segment)} is outside the did:web idchar grammar "
+            f"(ALPHA / DIGIT / . - _ / %XX)")
     for octet in {int(hexpair, 16) for hexpair in set(_ESCAPED_OCTET.findall(segment))}:
         if octet < 0x21 or octet > 0x7E or chr(octet) in _SEGMENT_DELIMITERS:
-            raise DidResolutionError(
-                f"did:web {shown} path segment {safe_repr(segment)} percent-encodes "
-                f"%{octet:02X}, a delimiter, control character or non-ASCII octet")
+            raise refuse(
+                f"path segment {safe_repr(segment)} percent-encodes %{octet:02X}, a "
+                f"delimiter, control character or non-ASCII octet")
 
 
 def _did_web_url(did: str) -> str:

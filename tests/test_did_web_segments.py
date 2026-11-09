@@ -10,9 +10,13 @@ strips (two identifiers, one URL) and ``::`` sent ``//``. The trust boundary wid
 from ``<path>/did.json`` to any path on the host, and such a DID resolves in no
 conformant resolver.
 
-Now the host decodes ``%3A`` alone, every segment is used verbatim, and a segment that
-is empty, a dot segment in any spelling, non-ASCII, a control character or whitespace,
-a URL delimiter (``/ ? # \\ %``) or a ``%XX`` escape of any of those is a typed
+Now the host decodes ``%3A`` alone, every segment is used verbatim and must match the
+method's own grammar — did:web §"Method Specific Identifier", the DID Core 1.0 §3.1
+``idchar = ALPHA / DIGIT / "." / "-" / "_" / pct-encoded`` — and a segment that is empty,
+a dot segment in any spelling, outside that grammar (``;`` — ``..;`` is ``..`` to a servlet
+container —, ``/ ? # \\``, ``@ ~ ! + =`` and the other reserved or unsafe characters,
+whitespace, a control character, non-ASCII, a bare ``%``) or a ``%XX`` escape of a
+delimiter, ``;``, a control character, whitespace or a non-ASCII octet is a typed
 ``DidResolutionError`` before any fetch — the caller's own fetch included — on the sync
 and the async resolver alike. did:webvh reuses the mapping and inherits the rule. (#384)
 
@@ -22,6 +26,7 @@ tests fail it if anything reaches DNS or TCP.
 from __future__ import annotations
 
 import asyncio
+import string
 import time
 
 import pytest
@@ -82,6 +87,35 @@ HOSTILE_SEGMENTS = [
     "did:web:example.com:a%zzb",
     "did:web:example.com:a%4Gb",
     "did:web:example.com:%",
+    # outside the idchar grammar: ``;`` (a servlet container strips it as a path parameter
+    # before it normalizes, so ``..;`` is ``..``), the reserved and unsafe characters a
+    # WHATWG parser percent-encodes, and the ``~ + ! @ =`` did:web never allowed
+    "did:web:example.com:official:..;:uploads:evil",
+    "did:web:example.com:official:..;jsessionid=1:uploads:evil",
+    "did:web:example.com:a:.;:b",
+    "did:web:example.com:a:%2e%2e;:b",
+    "did:web:example.com:a:..%3B:b",
+    "did:web:example.com:a;b",
+    "did:web:example.com:a%3Bb",
+    "did:web:example.com:a%3bb",
+    "did:web:example.com:a@b",
+    "did:web:example.com:~alice",
+    "did:web:example.com:user+x",
+    "did:web:example.com:a!b",
+    "did:web:example.com:a=b",
+    "did:web:example.com:a$b",
+    "did:web:example.com:a&b",
+    "did:web:example.com:a'b",
+    "did:web:example.com:a(b)",
+    "did:web:example.com:a*b",
+    "did:web:example.com:a,b",
+    'did:web:example.com:a"b',
+    "did:web:example.com:a<b>",
+    "did:web:example.com:a`b",
+    "did:web:example.com:a{b}",
+    "did:web:example.com:a[b]",
+    "did:web:example.com:a|b",
+    "did:web:example.com:a^b",
     # a control character or whitespace, literal and escaped (urlsplit strips \t\r\n)
     "did:web:example.com:a b",
     "did:web:example.com:a\tb",
@@ -116,7 +150,8 @@ ESCAPED_HOSTS = [
     "did:web:example.com%3A%38443",               # decoded to port 8443
 ]
 
-# Unchanged mappings, and escapes of printable ASCII that are now sent as written.
+# Unchanged mappings, the whole literal idchar set, and escapes of printable ASCII that
+# are now sent as written (they used to be decoded).
 VERBATIM = [
     ("did:web:example.com", "https://example.com/.well-known/did.json"),
     ("did:web:example.com:user:alice", "https://example.com/user/alice/did.json"),
@@ -125,12 +160,10 @@ VERBATIM = [
     ("did:web:example.com%3A8443:issuers:physics",
      "https://example.com:8443/issuers/physics/did.json"),
     ("did:web:EXAMPLE.com:Users", "https://EXAMPLE.com/Users/did.json"),
-    ("did:web:example.com:~alice", "https://example.com/~alice/did.json"),
-    ("did:web:example.com:user+x", "https://example.com/user+x/did.json"),
-    ("did:web:example.com:a!b", "https://example.com/a!b/did.json"),
-    ("did:web:example.com:a@b", "https://example.com/a@b/did.json"),
-    ("did:web:example.com:a=b", "https://example.com/a=b/did.json"),
     ("did:web:example.com:a-b_c.d", "https://example.com/a-b_c.d/did.json"),
+    ("did:web:example.com:" + string.ascii_letters + string.digits + "._-",
+     "https://example.com/" + string.ascii_letters + string.digits + "._-/did.json"),
+    ("did:web:example.com:a%2Bb", "https://example.com/a%2Bb/did.json"),
     ("did:web:example.com:a%3Ab", "https://example.com/a%3Ab/did.json"),
     ("did:web:example.com:a%41b", "https://example.com/a%41b/did.json"),
     ("did:web:example.com:%40evil", "https://example.com/%40evil/did.json"),
@@ -140,18 +173,32 @@ VERBATIM = [
 ]
 
 # One spelling per refusal, so that removing one check fails a named test.
+GRAMMAR = "is outside the did:web idchar grammar (ALPHA / DIGIT / . - _ / %XX)"
 NAMED_REFUSALS = [
     ("did:web:example.com::admin", "has an empty path segment"),
     ("did:web:example.com:%2E%2E:x", "has a dot path segment '%2E%2E'"),
-    ("did:web:example.com:münchen", "is not ASCII"),
-    ("did:web:example.com:a\tb", "contains a control character or whitespace"),
-    ("did:web:example.com:a b", "contains a control character or whitespace"),
-    ("did:web:example.com:a#b", "contains a URL delimiter"),
+    ("did:web:example.com:m\u00fcnchen", "is not ASCII"),
     ("did:web:example.com:c%2", "has a % that is not a %XX escape"),
+    ("did:web:example.com:a\tb", GRAMMAR),
+    ("did:web:example.com:a b", GRAMMAR),
+    ("did:web:example.com:a#b", GRAMMAR),
+    ("did:web:example.com:a;b", GRAMMAR),
+    ("did:web:example.com:official:..;:x", GRAMMAR),
+    ("did:web:example.com:a@b", GRAMMAR),
+    ("did:web:example.com:~alice", GRAMMAR),
+    ('did:web:example.com:a"b', GRAMMAR),
     ("did:web:example.com:api%23x", "percent-encodes %23"),
+    ("did:web:example.com:a%3Bb", "percent-encodes %3B"),
     ("did:web:example.com:a%0Ab", "percent-encodes %0A"),
     ("did:web:example.com:a%C3%BCb", "percent-encodes %C3"),
 ]
+
+# The whole rule, character by character: a literal is allowed iff it is an idchar (``:``
+# is the segment separator, not a segment character); a ``%XX`` escape is allowed iff its
+# octet is printable ASCII and not a delimiter, ``;`` or ``%``.
+ALLOWED_LITERALS = frozenset(string.ascii_letters + string.digits + "._-")
+REFUSED_OCTETS = (frozenset(range(0x21)) | {0x7F} | frozenset(range(0x80, 0x100))
+                  | frozenset(ord(char) for char in "/?#\\%;"))
 
 WEBVH_HOSTILE = [
     "did:webvh:QmScid:example.com:api%23x",
@@ -159,6 +206,7 @@ WEBVH_HOSTILE = [
     "did:webvh:QmScid:example.com:..:other",
     "did:webvh:QmScid:example.com%3A8443:a%2Fb",
     "did:webvh:QmScid:example.com:a%0Ab",
+    "did:webvh:QmScid:example.com:official:..;:x",
 ]
 
 
@@ -307,6 +355,7 @@ def test_dot_segments_are_the_https_issuer_set():
     "%2F" * 700_000,                    # an escaped delimiter, repeated
     "%" * 2_000_000,                    # bare percents
     "一" * 2_000_000,               # non-ASCII
+    "a" * 2_000_000 + ";",              # outside the grammar at the very end
 ])
 def test_a_huge_hostile_segment_is_refused_fast_with_a_bounded_message(segment):
     did = "did:web:example.com:" + segment
@@ -322,6 +371,42 @@ def test_a_huge_valid_segment_is_checked_fast():
     url = _did_web_url(did)
     assert time.perf_counter() - start < 2.0
     assert url == "https://example.com/" + "%41" * 700_000 + "/did.json"
+
+
+# --------------------------------------------------------------------------- #
+# the grammar, exhaustively
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("code", [c for c in range(0x80) if c != ord(":")])
+def test_an_ascii_character_is_allowed_literally_iff_it_is_an_idchar(code):
+    did = f"did:web:example.com:a{chr(code)}b"
+    if chr(code) in ALLOWED_LITERALS:
+        assert _did_web_url(did) == f"https://example.com/a{chr(code)}b/did.json"
+    else:
+        with pytest.raises(DidResolutionError):
+            _did_web_url(did)
+
+
+@pytest.mark.parametrize("octet", range(0x100))
+def test_an_escape_is_allowed_iff_its_octet_is_printable_ascii_and_not_a_delimiter(octet):
+    did = f"did:web:example.com:a%{octet:02X}b"
+    if octet in REFUSED_OCTETS:
+        with pytest.raises(DidResolutionError):
+            _did_web_url(did)
+    else:
+        assert _did_web_url(did) == f"https://example.com/a%{octet:02X}b/did.json"
+
+
+class _Sub(str):
+    """A caller's str subclass: safe_repr copies it, so the message must be built lazily."""
+
+
+def test_a_str_subclass_did_with_many_segments_is_checked_in_linear_time():
+    did = _Sub("did:web:example.com:" + ":".join(["a"] * 500_000))      # ~1 MB
+    start = time.perf_counter()
+    url = _did_web_url(did)
+    assert time.perf_counter() - start < 3.0
+    assert url.endswith("/a/a/did.json")
 
 
 # --------------------------------------------------------------------------- #
