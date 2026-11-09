@@ -8,6 +8,108 @@ All notable changes to **openvc** are documented here. The format follows
 
 ### Security
 
+- **did:key: the identifier is now decoded by the bounded `openvc.multibase` codec — base58
+  input of at most 4 096 characters, a multicodec varint of at most 9 bytes — so an oversized
+  `did:key` `iss` / `verificationMethod` is refused before any big-integer work**
+  ([#386](https://github.com/luisgf/openvc/issues/386)). `DidKeyResolver` kept private
+  copies of the base58 and varint decoders without the caps `multibase` already has (the
+  threat model lists that cap as the control); base58 decoding is O(n²) big-integer work and
+  nothing bounds the length of an `iss` or a `verificationMethod`, so a 100 000-character
+  `did:key` issuer cost about 1.2 s of CPU before any signature check — through
+  `verify_credential` and through the Data Integrity lanes' offline did:key fallback alike —
+  and a 200 000-character one about 5 s. The resolver now calls `b58btc_decode` /
+  `read_varint` and maps `MultibaseError` to the `DidResolutionError` callers already see for
+  a malformed did:key (the message carries the length, never the input); through the pipeline
+  the refusal stays `KeyResolutionFailed` on the JOSE lanes and `KeyResolutionError` on the
+  Data Integrity lanes. Every did:key vector (Ed25519, P-256, P-384) resolves as before.
+  Found by the internal security review of 2026-11-07 (`test_did_key_bounded.py`).
+
+- **`verify_vp_token`'s `require_holder_binding` now reaches the `dc+sd-jwt` lane, which
+  requires a Key Binding JWT under it, and an SD-JWT VC presented with no KB-JWT reports
+  `holder=None`; the `mso_mdoc` lane is exempt by construction**
+  ([#378](https://github.com/luisgf/openvc/issues/378)). The switch is documented as the
+  caller's own, stricter rule — whatever the query says, the presenter must be bound to
+  what they present — but it was read on the W3C lanes only: `_verify_sd_jwt_vc` had no
+  such parameter and reported `holder = sub` unconditionally, and the `mso_mdoc` branch of
+  `_verify_one` returned before the switch was read. So a `dc+sd-jwt` Credential Query
+  that set `require_cryptographic_holder_binding` to `false`, answered with an SD-JWT VC
+  and no KB-JWT, was accepted under `require_holder_binding=True` with `holder` set to the
+  issuer-written `sub` (`key_bound=False`), an identifier nobody had authenticated, where a
+  bare `jwt_vc_json` answer in the same situation was refused. Now, with the switch on,
+  the SD-JWT VC must carry a KB-JWT bound to this exchange (`key_bound=True`), whatever
+  the query's flag says, else `ClaimsInvalid` ("… has no authenticated holder, so it
+  cannot meet require_holder_binding", the bare lane's wording); the check runs after the
+  lane's format, `typ` and `vct_values` pins, so their errors come first as before.
+  **Behaviour change on an accepted input:** a `dc+sd-jwt` presented with no KB-JWT under
+  a query that waived binding, with the switch off, is still accepted but now reports
+  `holder=None` instead of `sub` — the `sub` is the issuer's identifier for the holder,
+  not an authenticated presenter, and stays readable as `credentials[0].subject`; with a
+  KB-JWT verified, `holder` is `sub` as before, except that an empty-string `sub` is no
+  identifier and reports `None` too (it used to report `""`). The `mso_mdoc` lane does not read the
+  switch, by decision: `verify_device_response` verifies the `DeviceAuth` over the
+  origin-bound `SessionTranscript`, signed with the device key the issuer sealed in the
+  MSO, for every document or refuses the response (`MdocDeviceAuthError`), which is
+  cryptographic holder binding by construction (`device_signed=True` on every result);
+  `holder` stays `None` because an mdoc carries no holder identifier. The `verify_vp_token`
+  and `VerifiedPresentation` docstrings and the Presentations wiki page now say what
+  `holder` means on each lane and what the switch enforces where. Found by the internal
+  security review of 2026-11-07 (`test_openid4vp_holder_binding_lanes.py`).
+
+- **EU trusted lists, TS 119 612 XML lane: a null `NextUpdate` now closes the list, and a
+  `NextUpdate` that is not a UTC date-time of the mandated `Z` form is refused — neither
+  reads as unbounded validity any more** ([#389](https://github.com/luisgf/openvc/issues/389),
+  [#407](https://github.com/luisgf/openvc/issues/407)). ETSI TS 119 612 clause 5.3.15 makes
+  a null `NextUpdate` the mark of a **closed** TL and has a verifier discard a TL whose Next
+  update is in the past "as a measure to reduce the risk of a substitution by an attacker
+  with an old TL"; clause 5.1.3 mandates every TL date-time as ISO 8601 **UTC** with the `Z`
+  designator. The parser turned a `<NextUpdate/>` without `dateTime` **and** any `dateTime`
+  that `fromisoformat` rejected into `None`, which the walk read as "never expires", so a
+  closed national TL — or one whose `NextUpdate` had been damaged into garbage — kept
+  contributing anchors indefinitely, and a tz-naive value escaped `walk_lotl` as a bare
+  `TypeError` (#407). Now, mirroring the LoTE lane: `parse_trust_list` keeps `None` only for
+  a *null* `NextUpdate` (element absent, without `<dateTime>`, or empty) and raises
+  `TrustListParseError` for anything but the `YYYY-MM-DDThh:mm:ssZ` shape clause 5.1.3
+  mandates (a fraction of a second is tolerated and `+00:00` is accepted for `Z`; a
+  tz-naive value — **not** read as UTC — another offset, the basic format or another
+  separator are refused; the fields are read by regex, not by `fromisoformat`, so the accept
+  set is the same on every interpreter) — and `walk_lotl` stages a null `NextUpdate` as
+  `"expired"` with a problem naming `closed TL (null NextUpdate)` (a closed LOTL stops the
+  walk, a closed national TL contributes nothing) and a malformed one as a `"parse"`
+  problem, so only UTC datetimes are ever compared. `consume_trust_list` returns the closed signal (`next_update is None`)
+  to a direct caller, as `consume_lote` does, and its docstring now says, as `consume_lote`'s
+  does, that freshness is the walk's job; `TrustList`'s shape is unchanged. The recorded
+  EU LOTL / ES TL goldens are unchanged. Found by the internal security review of 2026-11-07
+  (`test_trustlist_nextupdate_closed.py`).
+
+- **`openvc.fetch`: one wall-clock deadline now covers the whole dereference — DNS
+  resolution, the TCP connect, the TLS handshake, the status line and headers, and the
+  body** ([#385](https://github.com/luisgf/openvc/issues/385)). `_https_get` started its
+  deadline after `getresponse()` returned, so it bounded only the body — and not all of it:
+  the response head was read one socket operation at a time, each allowed the full
+  per-socket `timeout_s` (up to 100 header lines of 65 536 bytes), the chunk-size lines and
+  trailers of a chunked body were read the same way inside `read1` (a 1 s budget leaked 6–7 s
+  there too, one case returning OK), and `getaddrinfo` had no bound at all, so a
+  host named by any unauthenticated credential (`did:web`, `/.well-known/jwt-vc-issuer`, a
+  status list or a schema through the default resolvers) could hold a verifier thread for
+  `timeout_s` × bytes by sending header bytes slowly (measured: a 1 s budget returned OK
+  after 9.3 s; a 1 KB head at the default 10 s is hours). Now the deadline starts before
+  the lookup, which runs on a daemon thread the caller waits on only until the deadline,
+  and a watchdog timer shuts the socket down at the deadline, so a read blocked in the
+  handshake, the head or a chunk-size line fails at once with the typed `DidResolutionError`
+  naming the phase ("exceeded the wall-clock deadline during the TLS handshake" / "the
+  response head" / "the response body"); the body loop keeps its per-read check against the
+  same deadline, and an EOF the watchdog causes is never returned as a complete body. The
+  watchdog is cancelled and joined on every exit path, and the override of `connect()` still
+  emits the stdlib `http.client.connect` audit event. `timeout_s` must now be an `int` or
+  `float` greater than 0 and at most one day (`MAX_TIMEOUT_S`, the EBSI `deadline_s`
+  ceiling): NaN made every deadline comparison false, `inf` and a finite value past ~9.2e9 s
+  overflowed the timers with a bare `OverflowError`, a non-number was a bare `TypeError`;
+  all are refused up front with the typed error. The async fetches inherit the bound (the
+  same code under `to_thread`). Residual:
+  a `getaddrinfo` that never returns is abandoned on its daemon thread, which holds its
+  resolver resources until the OS resolver gives up. Found by the internal security review
+  of 2026-11-07 (`test_fetch_deadline.py`).
+
 - **did:web: a path segment is now sent as written and must match the method's own grammar
   — the DID Core `idchar`, `ALPHA / DIGIT / "." / "-" / "_" / pct-encoded` — and a segment
   that is empty, a dot segment in any spelling, outside that grammar, or a `%XX` escape of a
@@ -36,6 +138,84 @@ All notable changes to **openvc** are documented here. The format follows
   characters outside `idchar` (`did:web:example.com:~alice`, `:user+x`, `:a!b`, `:a@b`) used to
   be fetched and is now refused. Found by the internal security review of 2026-11-07; the `;`
   spelling by the PR's adversarial review (`test_did_web_segments.py`).
+
+### Fixed
+
+- **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
+  and abort a whole `verify_many` batch** ([#387](https://github.com/luisgf/openvc/issues/387)).
+  In `openvc.schema` the dialect lookup (`validator_for`) ran outside the guarded region, and
+  the guard caught only the processor's own types (`SchemaError`, `ValidationError`,
+  `Unresolvable`) and `RecursionError`. Measured on v1.38.1 through `verify_many` with
+  `resolve_credential_schema=` set: a schema with `multipleOf: 0.5` met by the number `1e400`
+  (parsed to infinity) or by a 400-digit integer, or `multipleOf: <400-digit integer>` met by
+  a float, raised a bare `OverflowError` out of the processor's `multipleOf`; a `$schema` of
+  `http://[::1` raised a bare `ValueError` (`Invalid IPv6 URL`) out of `urlsplit`. None was an
+  `OpenvcError`, so one such credential — signed by any issuer with a resolvable DID, its
+  `credentialSchema.id` pointing at the issuer's own host — aborted the whole batch instead of
+  becoming that item's `error` (no wrong-accept; schema validation is opt-in). The dialect
+  lookup now runs inside the guard, and `ArithmeticError` (`OverflowError`), `ValueError`,
+  `TypeError` and `re.error` are caught alongside the processor's own types, attributed by the
+  phase they surfaced in: while the schema is looked up, meta-validated or built, the resource
+  is unusable (`SchemaResolutionError`); while the credential is validated, its values could
+  not be checked against the schema (`SchemaValidationError`); an unresolvable `$ref` and a
+  recursion overflow stay `SchemaResolutionError` wherever they surface. The message names the
+  exception type and cuts its text through `safe_repr`. Refusing a non-finite number in the
+  credential before validation is not part of this change (a document-level rule, outside the
+  schema layer). Found by the internal security review of 2026-11-07
+  (`test_schema_typed_failures.py`).
+
+- **`verify_ebsi_badge` refuses, typed, a credential `type` that is neither a string nor a
+  list of strings** ([#359](https://github.com/luisgf/openvc/issues/359)). `_credential_types`
+  in `openvc_ebsi/verify.py` treated a `str` as one type and otherwise iterated the value, after
+  the signature verified (so the value is the issuer's) and with the default
+  `expected_types=None` (the core suite's own type check does not run then). Measured on
+  v1.38.1: a signed `"type"` of `7`, `null`, `true` or `1.5` was a bare `TypeError` out of both
+  trust modes, with `require_trust=False` too, and out of `EbsiNodeClient.run`, whose failover
+  loop catches `EbsiError` only; `{"OpenBadgeCredential": 1}` was read as the list of the
+  object's keys and trusted; `["X", 3]` was read as `["X"]`, the non-string dropped in silence.
+  VCDM 1.1 and 2.0 both define `type` as a string or an array of strings. Now any other shape
+  is **`CredentialTypeMalformed`**, a new `EbsiVerificationError` subclass, raised before any
+  registry request in both trust modes whatever `require_trust` says (a credential whose types
+  cannot be read is malformed, not untrusted), with the value cut through `safe_repr` and the
+  offending entry of a list named by its index; a list with one non-string entry is rejected,
+  not filtered (fail closed, #352's rule). Unchanged: a string is a one-element list (`""` is one
+  type that no accreditation lists), `[]` and an absent `type` are no types (#367), and with
+  `expected_types` given the core suite's `ClaimsInvalid` still comes first for a scalar or
+  object `type`. Found by the internal security review of 2026-11-07 (§ M10;
+  `test_ebsi_credential_types_shape.py`).
+
+- **An `ecdsa-sd-2023` derived proof whose ephemeral key is not a point on P-256 raises
+  `ProofValueMalformed`, and a wrong-length signature or an issuer key that is not P-256
+  raises a `ProofError`, never `keys.InvalidKey` or a bare `ValueError`**
+  ([#382](https://github.com/luisgf/openvc/issues/382),
+  [#394](https://github.com/luisgf/openvc/issues/394)). Found by the internal security
+  review of 2026-11-07. The holder writes every byte of a derived proof value, and the base
+  signature cannot be relied on to refuse them: a holder can mint a did:key, name it in
+  `proof.verificationMethod` and sign the base over any ephemeral key (the issuer binding
+  runs after the suite). `p256_multikey_to_jwk` checked the multicodec prefix and the
+  35-byte length, then let `cryptography` raise a bare `ValueError` for an x off the curve
+  or a point tag other than `02`/`03`, and `verify` decoded the key only after the base
+  signature verified; one such item escaped `verify_credential` /
+  `verify_credential_async` and aborted a whole `verify_many` / `verify_many_async` batch
+  (threat model I14, I15). Both `verify_signature` calls ran bare too, so a wrong-length
+  base or statement signature, or a `verificationMethod` resolving to an Ed25519 / P-384
+  did:key, surfaced as `openvc.keys.InvalidKey`, an `OpenvcError` outside the `ProofError`
+  family the module promises. No wrong-accept: every case failed closed, untyped. Now
+  `p256_multikey_to_jwk` raises `ProofValueMalformed` for a point that is not on P-256 (a
+  fixed message, no key bytes), `verify` decodes the ephemeral key right after the proof
+  value, before canonicalization, key resolution and any signature, and follows the
+  whole-document ECDSA suites' rule for the issuer key: its `(kty, crv)` must be P-256
+  (`match_alg`; `ProofMalformed` otherwise, an operator-pinned `public_key_jwk` included,
+  and one that is not a JWK object at all is refused by its type name), and both
+  signature checks map `InvalidKey` and the other key-load failures to `SignatureInvalid`.
+  Two consequences are intended: a pinned JWK whose `crv` is not `P-256` is refused even
+  when its coordinates are a genuine P-256 point (the suite hard-coded ES256 and never
+  read `crv`, so such a mislabelled pin verified), and an off-curve ephemeral key combined
+  with a later fault (a malformed `proofPurpose`, an expired window, a foreign key) now
+  reports the key, since it is decoded first. A lone surrogate in a disclosed statement is
+  still `ProofMalformed` (`test_lone_surrogate_typed.py`), a wrong P-256 key is still
+  `SignatureInvalid` with the same message (`test_ecdsa_sd_typed_verify.py`), and the W3C
+  `vc-di-ecdsa` vectors verify unchanged (`test_ecdsa_sd_interop.py`).
 
 ## [1.38.1] — 2026-11-07
 
@@ -6382,7 +6562,6 @@ verifies (see *Changed*).
   coordinates are full width: 0 failures in 600. openvc never signs XAdES, so trust-list
   verification is unaffected.
 
-
 ## [1.31.3] — 2026-10-13
 
 Tests and docs only: no library code changes.
@@ -6821,7 +7000,6 @@ Side effects of the shared reader, all edge cases:
   typed error.
 - On mdoc, a negative `leeway_s` now counts as 0, as it already did on the Data
   Integrity and WRPRC windows. It used to narrow the window.
-
 
 ## [1.30.4] — 2026-10-13
 

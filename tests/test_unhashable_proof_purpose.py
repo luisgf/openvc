@@ -77,11 +77,15 @@ def _ed25519_did_key() -> tuple[str, str]:
 
 def _ecdsa_sd_proof_value() -> str:
     """A well-formed derived ecdsa-sd-2023 proofValue (zero signatures): enough to
-    reach the key lookup, which runs before the base signature is checked."""
+    reach the key lookup, which runs before the base signature is checked. The ephemeral
+    key is a genuine P-256 point: since #382 it is decoded before the key lookup, and 35
+    zero bytes would be refused there (``ProofValueMalformed``) first."""
     from openvc import cbor
     from openvc.proof.ecdsa_sd import DERIVED_PROOF_HEADER
 
-    return "u" + _b64(DERIVED_PROOF_HEADER + cbor.encode([bytes(64), bytes(35), [], {}, []]))
+    ephemeral = bytes((0x80, 0x24)) + ec.generate_private_key(ec.SECP256R1()).public_key(
+    ).public_bytes(serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint)
+    return "u" + _b64(DERIVED_PROOF_HEADER + cbor.encode([bytes(64), ephemeral, [], {}, []]))
 
 
 DI_SUITES = [pytest.param("eddsa-rdfc-2022", marks=_needs_pyld), "eddsa-jcs-2022",
