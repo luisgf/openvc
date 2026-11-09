@@ -241,6 +241,13 @@ Example-based, but broad. Representative anchors:
   The client itself refuses any port but 443 on a listed host, and any userinfo, typed and
   before any request, for every URL it is given, the walk's or not (#318,
   `test_ebsi_guard_origin.py`).
+- **EBSI verify glue (plugin)** — a signed credential `type` that is neither a string nor a
+  list of strings (`7`, `null`, `true`, `1.5`, an object, a list with a non-string entry, a
+  list of 100 000 entries ending in one) is `CredentialTypeMalformed` with a bounded message
+  in both trust modes, with `require_trust=False` and through `EbsiNodeClient.run`, before
+  any registry request, where it was a bare `TypeError` or an object's keys read as types;
+  `""`, `[]`, an absent `type` and a 100 000-character string keep their meaning (#359,
+  `test_ebsi_credential_types_shape.py`).
 - **EBSI exact-bytes path and the list host (plugin)** — `get_bytes` shares the request
   loop of `get_json`, and the guard, `InvalidURL`, retry, 404 and unexpected-status rows
   run against both with the same exact classes (`test_ebsi_http.py`). On the bytes path:
