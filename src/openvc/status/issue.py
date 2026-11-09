@@ -95,7 +95,14 @@ from ..proof._verify_common import (
 from ..proof.errors import ClaimsInvalid
 from ..proof.vc_jwt import SigningKey, _carries_sd_jwt_marker
 from ._decompress import MAX_DECOMPRESSED_BYTES
-from ._index import brief, plain_int, plain_str, status_index
+from ._index import (
+    brief,
+    plain_int,
+    plain_str,
+    status_index,
+    status_messages,
+    status_size as _status_size,
+)
 from .bitstring import StatusListError, encode_bitstring
 from .token_status_list import _check_bits, encode_status_list
 
@@ -483,6 +490,8 @@ def build_status_list_entry(
     index: int,
     status_purpose: str = "revocation",
     id: str | None = None,
+    status_size: int = 1,
+    status_message: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build a ``BitstringStatusListEntry`` for a credential's ``credentialStatus``.
 
@@ -499,8 +508,19 @@ def build_status_list_entry(
 
     *id* is the entry's own identifier: ``None`` (the default) leaves it out, and an
     explicit value is a non-empty string (``""``, ``0`` and ``[]`` raise, they are not
-    "absent"). Nothing reads it back, so it is not checked for a URI shape."""
+    "absent"). Nothing reads it back, so it is not checked for a URI shape.
+
+    *status_size* (``statusSize``, 1..8, default 1) is the width in bits of this credential's
+    status in the list: the entry then sits at bits ``index * status_size`` onward, so
+    build the list with ``new_bitstring(n, status_size)`` and write a value with
+    :func:`~openvc.status.bitstring.set_status_value`. It is left out of the entry at 1
+    (the REC's default). Above 1, *status_message* is required (REC §2.1): a list of
+    ``{"status": "0x1", "message": "..."}`` objects, ``status`` a hexadecimal below
+    ``2 ** status_size``; the verifier's own rule, so a pointer built here reads back.
+    Anything else raises :class:`~openvc.status.bitstring.StatusListError`."""
     index = status_index(index, field="statusListIndex", allow_string=False)
+    size = _status_size(status_size, field="statusSize")
+    messages = status_messages(status_message, size=size, field="statusMessage")
     status_list_credential = _text(status_list_credential, field="statusListCredential")
     status_purpose = _text(status_purpose, field="statusPurpose")
     if id is not None:                               # tested with ``is``: "" and 0 are errors
@@ -513,6 +533,10 @@ def build_status_list_entry(
     }
     if id is not None:
         entry["id"] = id
+    if size > 1:
+        entry["statusSize"] = size
+    if messages:
+        entry["statusMessage"] = [{"status": c, "message": m} for c, m in messages]
     return entry
 
 

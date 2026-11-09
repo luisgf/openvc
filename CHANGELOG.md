@@ -54,6 +54,35 @@ All notable changes to **openvc** are documented here. The format follows
   and `VerifiedPresentation` docstrings and the Presentations wiki page now say what
   `holder` means on each lane and what the switch enforces where. Found by the internal
   security review of 2026-11-07 (`test_openid4vp_holder_binding_lanes.py`).
+- **mdoc: the document signer must share its IACA anchor's subject `countryName`, and its
+  `stateOrProvinceName` when both carry it, as ISO/IEC 18013-5 §9.3.3 requires; the result
+  now exposes both subjects** ([#383](https://github.com/luisgf/openvc/issues/383)).
+  `resolve_mdoc_signer_key` path-validated the `x5chain` to a caller-provided IACA anchor
+  and required the DS EKU, but never compared the DS subject with the anchor the chain
+  validated to, so a verifier that trusts several IACAs (every member state's, in an EUDI
+  deployment) accepted a DS issued under one country's anchor for a document naming another;
+  and `VerifiedMdoc` exposed only `issuer_key`, so a caller could not cross-check the
+  disclosed `issuing_country` either. Now the new `openvc.x5c.resolve_mdoc_signer` (which
+  `resolve_mdoc_signer_key` wraps, same checks, key only) requires, after path validation and
+  the DS EKU, a `countryName` on both the DS and the matched anchor — absent on either side
+  is a refusal, Annex B mandates it on both — and equal, and `stateOrProvinceName` equal when
+  both carry it (absent on one side: no constraint); compared as decoded text, no
+  normalisation; a `C` or `ST` that appears more than once is refused (the ISO profile uses
+  each once), while `CN` / `O` are informational and omitted when repeated; a `C` that is not
+  a 2-character ISO 3166-1 alpha-2 code is refused, with cryptography's `UserWarning` about it
+  silenced; and a DS or anchor subject that cannot be decoded is a typed refusal — the Name
+  decodes lazily on the first read, after path validation, so on `main` such a path-valid DS
+  was accepted silently, and before this guard it escaped as a bare `ValueError` / `KeyError`
+  / `TypeError`. The refusal is `X5cError`, and
+  `MdocTrustError` through `verify_device_response`, `verify_issuer_signed` and
+  `verify_vp_token`, naming both values cut by `safe_repr`. `VerifiedMdoc` gains, add-only and
+  defaulting to empty, `ds_subject` and `anchor_subject` — the `C`, `ST`, `CN` and `O`
+  attributes each subject carries, as strings — so the caller can compare the disclosed
+  `issuing_country` (Table B.1) with `ds_subject["C"]`; that data-element cross-check is
+  deliberately left to the caller (the wiki shows it). A single-anchor deployment with a
+  conformant DS/IACA pair and the Annex D golden vector are unchanged; the self-generated
+  test certificates gained the `C` the profile mandates. Found by the internal security review
+  of 2026-11-07 (`test_mdoc_iaca_country.py`).
 
 - **EU trusted lists, TS 119 612 XML lane: a null `NextUpdate` now closes the list, and a
   `NextUpdate` that is not a UTC date-time of the mandated `Z` form is refused — neither
@@ -303,6 +332,53 @@ All notable changes to **openvc** are documented here. The format follows
   still `ProofMalformed` (`test_lone_surrogate_typed.py`), a wrong P-256 key is still
   `SignatureInvalid` with the same message (`test_ecdsa_sd_typed_verify.py`), and the W3C
   `vc-di-ecdsa` vectors verify unchanged (`test_ecdsa_sd_interop.py`).
+
+- **W3C Bitstring status lists: `statusSize` is honoured, and a multi-bit status is read as the
+  `statusSize`-bit value at `index * statusSize`, as Bitstring Status List v1.0 §3.2 / §3.3
+  require** ([#380](https://github.com/luisgf/openvc/issues/380)). The check read one bit at
+  `index` and never looked at `statusSize`, so on a 2-bit list a credential whose value was `0b11`
+  was accepted (it read the neighbour's bit), one whose value was `0b00` was rejected
+  `CredentialRevoked`, a position past the list was accepted, and `statusSize` 0, -1, `"2"`, 2.5,
+  64 and `null` were never inspected. `parse_status_entries` now reads `statusSize` into
+  `StatusEntry.status_size` (absent is 1; an `int`, never a `bool`, in 1..8) and `statusMessage`
+  into `StatusEntry.status_message` (required above size 1; an array of exactly
+  `2 ** size` objects with a `0x`-hex `status` below `2 ** size`, each once, and a string
+  `message`); the check reads the value with the new `get_status_value` (range-checked against the
+  list), reports it as `StatusEntryResult.status_value` (add-only) and applies a revocation or
+  suspension when it is non-zero. A malformed size or message, or a position past the list, is a
+  `StatusListError`; a non-zero value on a revocation entry is `CredentialRevoked` through the
+  pipeline. The issuing side mints what the verifier reads: `build_status_list_entry` takes
+  `status_size` (default 1, left out of the entry) and `status_message`, `new_bitstring` takes the
+  status width, and `set_status_value` / `get_status_value` are exported from `openvc.status`.
+  A `StatusList2021Entry` carrying `statusSize` or `statusMessage` (neither is defined by
+  StatusList2021) is refused. A non-zero value of any purpose other than `revocation` /
+  `suspension` is exposed but never fails verification. Size-1 Bitstring entries and lists are unchanged. The IETF Token Status List lane is untouched. Found by
+  the internal security review of 2026-11-07 (`test_status_list_status_size.py`).
+
+- **A trust list whose XML declaration names an exotic encoding is now a typed
+  `TrustListParseError` — a per-TL `parse` problem in `walk_lotl` — instead of a bare
+  exception that aborted the walk** ([#388](https://github.com/luisgf/openvc/issues/388)).
+  The XML declaration is not covered by the XAdES signature (C14N discards it), so whoever
+  serves the bytes can re-label a genuinely signed, pure-ASCII list without breaking the
+  signature, and `_hardened_parse` caught only `expat.ExpatError`: measured on v1.38.1,
+  `encoding="GB2312"` (also `Shift_JIS`, `EUC-JP`, `big5`, `gbk`) raised a bare `ValueError`
+  (`multi-byte encodings are not supported`) and `latin-9` a bare `LookupError` out of
+  `parse_trust_list` (documented to raise `TrustListParseError` only), `consume_trust_list`
+  and `walk_lotl`, where the bare exception propagated out of the walk instead of recording
+  that one list as a problem (ADR-0003 D6). No wrong-accept on those labels. The parser now refuses, from an
+  `XmlDeclHandler` that fires before expat switches encodings, any declared `encoding` outside
+  the allow-list `{UTF-8, US-ASCII}` (case-insensitive; ETSI TS 119 612 Annex B.0 requires
+  UTF-8) — a wider label let expat decode differently from the libxml2 that verified the
+  signature: a UTF-8-BOM list re-labelled `ISO-8859-1` verified yet read as Latin-1, so its
+  names were not what the signer signed (anchors, URIs and territories are ASCII and were
+  unchanged). A document starting with a UTF-16 / UTF-32 BOM or with a NUL among its first
+  four bytes (expat's UTF-16 autodetection) is refused before expat sees it, so an absent
+  declaration means UTF-8; a UTF-8 BOM stays accepted. expat's own `ValueError` / `LookupError`
+  are typed behind it. A caller sees `TrustListParseError` with a bounded message; through
+  `walk_lotl` that list contributes no anchors, is recorded as stage `"parse"` and the other
+  lists still anchor (a LOTL that fails this way stops the walk with that one problem). The
+  recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
+  security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
 
 ## [1.38.1] — 2026-11-07
 

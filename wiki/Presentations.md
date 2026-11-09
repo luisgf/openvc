@@ -524,9 +524,11 @@ defines:
 
 - **Issuer data authentication** — the `IssuerAuth` `COSE_Sign1` over the Mobile
   Security Object; the document-signer `x5chain` (COSE label 33) path-validated to a
-  caller-provided **IACA** trust anchor; the MSO `docType` and `validityInfo` window;
-  and, for every disclosed element, the recomputed digest matched against the MSO
-  `valueDigests`.
+  caller-provided **IACA** trust anchor, carrying the document-signer EKU, and sharing
+  that anchor's subject `countryName` (and `stateOrProvinceName`, when both carry it —
+  ISO 18013-5 §9.3.3; a DS issued under one country's IACA cannot vouch for another); the
+  MSO `docType` and `validityInfo` window; and, for every disclosed element, the
+  recomputed digest matched against the MSO `valueDigests`.
 - **Device authentication (holder binding)** — the `DeviceSignature` over the
   origin-bound `SessionTranscript` (OpenID4VP 1.0 Appendix B / ISO 18013-7). openvc
   builds the transcript from your `expected_origins` and the request `nonce`, and tries
@@ -550,6 +552,20 @@ result = verify_vp_token(
 mdl = result.for_query("mdl")[0].credentials[0]      # a VerifiedMdoc
 assert mdl.device_signed                             # holder binding verified
 name = mdl.elements("org.iso.18013.5.1")["family_name"]
+```
+
+Each result also carries `ds_subject` and `anchor_subject`: the `C`, `ST`, `CN` and `O`
+attributes of the document-signer certificate and of the IACA anchor it validated to, as
+strings (`CN` and `O` are informational — present when the certificate carries them exactly
+once). openvc has already required the two countries to be equal (exact, case-sensitive);
+what the *document*
+claims about itself is yours to compare — ISO 18013-5 Table B.1 ties the `issuing_country`
+element to the IACA's country:
+
+<!-- docs: no-run -->
+```python
+elements = mdl.elements("org.iso.18013.5.1")
+assert elements["issuing_country"] == mdl.ds_subject["C"]   # Table B.1 ↔ the DS certificate
 ```
 
 To verify the **issuer seal alone** of an mdoc at rest (no holder binding),
