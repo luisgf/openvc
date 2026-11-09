@@ -45,6 +45,7 @@ from .. import _json
 from ..cbor import CborError, CborTag
 from ..cbor import decode as _cbor_decode
 from ..cbor import encode as _cbor_encode
+from ..errors import OpenvcError
 from ..keys import P256SigningKey, verify_signature
 from ._context_validation import validate_document
 from ._verify_common import (
@@ -57,6 +58,7 @@ from ._verify_common import (
     check_proof_purpose,
     check_validity_window,
     leeway_seconds,
+    match_alg,
     resolve_verification_key,
     safe_repr,
     utc_iso,
@@ -167,12 +169,21 @@ def p256_public_multikey(jwk: dict[str, Any]) -> bytes:
 
 
 def p256_multikey_to_jwk(multikey: bytes) -> dict[str, Any]:
-    """A 35-byte P-256 multikey -> public JWK."""
+    """A 35-byte P-256 multikey -> public JWK.
+
+    The 33 bytes after the multicodec prefix must be a compressed SEC1 point **on**
+    P-256: a point tag other than ``0x02`` / ``0x03`` (``0x04`` cannot fit in 33 bytes
+    either) or an x with no square root on the curve is :class:`ProofValueMalformed`,
+    never the bare ``ValueError`` ``cryptography`` raises. The holder writes these bytes
+    into a derived proof, so a verifier must be able to refuse them typed."""
     from cryptography.hazmat.primitives.asymmetric import ec
     if not multikey.startswith(_P256_MULTIKEY_PREFIX) or len(multikey) != 35:
         raise ProofValueMalformed("not a 35-byte P-256 multikey")
-    pub = ec.EllipticCurvePublicKey.from_encoded_point(
-        ec.SECP256R1(), multikey[len(_P256_MULTIKEY_PREFIX):])
+    try:
+        pub = ec.EllipticCurvePublicKey.from_encoded_point(
+            ec.SECP256R1(), multikey[len(_P256_MULTIKEY_PREFIX):])
+    except ValueError as exc:                 # off-curve x, or a tag other than 02/03
+        raise ProofValueMalformed("ephemeral public key is not a point on P-256") from exc
     nums = pub.public_numbers()
     return {"kty": "EC", "crv": "P-256",
             "x": _b64url_encode(nums.x.to_bytes(32, "big")),
@@ -536,8 +547,17 @@ class EcdsaSdProofSuite:
     """Issue (base), derive (holder), and verify ecdsa-sd-2023 selective-disclosure
     Data Integrity proofs over P-256."""
 
+    _allowed_algs = frozenset({"ES256"})          # ecdsa-sd-2023 is P-256 / SHA-256 only
+
     def __init__(self, *, leeway_s: int = DEFAULT_LEEWAY_S) -> None:
         self._leeway = leeway_seconds(leeway_s)       # fail closed, up front (0..MAX_LEEWAY_S)
+
+    def _match_alg(self, jwk: dict[str, Any]) -> str:
+        """``ES256`` when the resolved issuer key is a P-256 EC JWK, else fail closed
+        (:class:`ProofMalformed`) — the shared rule of the whole-document ECDSA suites,
+        so an Ed25519 or P-384 ``verificationMethod`` is refused before
+        ``verify_signature`` would read a wrong JWK member and raise its own class."""
+        return match_alg(jwk, self._allowed_algs, cryptosuite=CRYPTOSUITE)
 
     def add_base_proof(
         self,
@@ -743,6 +763,12 @@ class EcdsaSdProofSuite:
             # decode_derived_proof types every part; this is the backstop for a shape
             # it does not foresee, so the error never leaves the ProofError family.
             raise ProofValueMalformed(f"malformed derived proof value: {exc}") from exc
+        # The ephemeral key is 35 holder-chosen bytes that must decode to a point on
+        # P-256. Decode it here, before canonicalization, key resolution and any
+        # signature: a holder can mint a did:key, name it in verificationMethod and sign
+        # proofHash ‖ bogusPublicKey ‖ mandatoryHash with it (issuer binding runs after
+        # this suite), so the base signature cannot be relied on to refuse these bytes.
+        ephemeral_jwk = p256_multikey_to_jwk(parsed["public_key"])
 
         loader = document_loader(extra_contexts)
         try:
@@ -780,18 +806,34 @@ class EcdsaSdProofSuite:
             proof_purpose=proof.get("proofPurpose"),
             resolver=resolver,
         )
-        if not verify_signature(alg="ES256", public_jwk=issuer_jwk,
-                                signing_input=to_verify, signature=parsed["base_signature"]):
+        # The resolved key's (kty, crv) must be P-256 — rejecting an Ed25519 / P-384
+        # verificationMethod before verify_signature would read a wrong JWK member and
+        # raise outside the ProofError family (the whole-document ECDSA suites' rule).
+        alg = self._match_alg(issuer_jwk)
+        # Both signature checks are guarded as in di_jcs / di_ecdsa_rdfc: a wrong-length
+        # R‖S or a key that cannot be loaded is keys.InvalidKey, an OpenvcError but not a
+        # ProofError — the holder writes every signature byte, so it must surface typed.
+        try:
+            ok = verify_signature(alg=alg, public_jwk=issuer_jwk,
+                                  signing_input=to_verify, signature=parsed["base_signature"])
+        except (OpenvcError, ValueError, KeyError) as exc:   # e.g. wrong-length R‖S, bad key
+            raise SignatureInvalid(f"base signature does not verify: {exc}") from exc
+        if not ok:
             raise SignatureInvalid("base signature does not verify")
 
-        ephemeral_jwk = p256_multikey_to_jwk(parsed["public_key"])
         if len(parsed["signatures"]) != len(non_mandatory):
             raise SignatureInvalid("disclosed statement / signature count mismatch")
         for line, sig in zip(non_mandatory, parsed["signatures"]):
-            if not verify_signature(
-                    alg="ES256", public_jwk=ephemeral_jwk,
-                    signing_input=_utf8_nquads(line + "\n", "a disclosed statement"),
-                    signature=sig):
+            # the UTF-8 encode stays outside the guard: a lone surrogate in a disclosed
+            # statement is ProofMalformed, its own class, not a signature failure
+            statement = _utf8_nquads(line + "\n", "a disclosed statement")
+            try:
+                ok = verify_signature(alg=alg, public_jwk=ephemeral_jwk,
+                                      signing_input=statement, signature=sig)
+            except (OpenvcError, ValueError, KeyError) as exc:   # e.g. a 10-byte signature
+                raise SignatureInvalid(
+                    f"a disclosed statement signature does not verify: {exc}") from exc
+            if not ok:
                 raise SignatureInvalid("a disclosed statement signature does not verify")
         # The signatures cover the disclosed RDF statements; the checks below read the
         # JSON. Context validation (VC-DI §2.4.1) makes the two agree first.
