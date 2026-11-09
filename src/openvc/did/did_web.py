@@ -8,6 +8,13 @@ own domain:
     did:web:example.edu:issuers:physics -> https://example.edu/issuers/physics/did.json
     did:web:example.edu%3A3000          -> https://example.edu:3000/.well-known/did.json
 
+The mapping is the spec's and nothing more: ``:`` becomes ``/``, the port's ``%3A``
+is the only percent-escape that is decoded, and every path segment goes on the wire
+as written. A segment that could not be sent as written, or that two URL parsers
+would read differently (empty, ``.`` / ``..`` in any spelling, a delimiter, a control
+character, whitespace, non-ASCII, or a ``%`` escape of any of those), is refused as a
+typed error before any fetch — see :func:`_check_segment`.
+
 SSRF note
 ---------
 did:web is *intentionally* cross-host — the whole point is to resolve a controller's
@@ -21,8 +28,8 @@ from __future__ import annotations
 
 import re
 from typing import Any, Awaitable, Callable
-from urllib.parse import unquote
 
+from ..jwt_vc_issuer import _DOT_SEGMENTS  # the spellings a WHATWG parser resolves away
 from ..proof._verify_common import safe_repr
 from .base import DidDocument, DidResolutionError, parse_did_document
 
@@ -35,15 +42,28 @@ _LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _PORT = re.compile(r"[0-9]{1,5}")
 # A last label a WHATWG parser reads as an IPv4 number: decimal, or 0x hex.
 _NUMERIC_LABEL = re.compile(r"[0-9]+|0[xX][0-9A-Fa-f]*")
+# The one escape did:web decodes: the ``:`` before an explicit port, in the host segment.
+_PORT_ESCAPE = re.compile(r"%3[Aa]")
+# In a path segment: a ``%`` that does not start a ``%XX`` escape, and the ``XX`` of each
+# one that does.
+_BARE_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_ESCAPED_OCTET = re.compile(r"%([0-9A-Fa-f]{2})")
+# The characters a path segment may neither contain nor percent-encode: a segment
+# boundary, the query and fragment delimiters (``urlparse`` cuts the path at them, so
+# ``did.json`` would never be requested), the backslash a WHATWG parser reads as ``/``,
+# and ``%`` itself (an escape of an escape decodes twice on some servers).
+_SEGMENT_DELIMITERS = frozenset("/?#\\%")
 
 
 def _check_host(host: str, did: str) -> None:
-    """Reject a decoded did:web host that is not a domain name with an optional port.
+    """Reject a did:web host that is not a domain name with an optional port.
 
     The spec defines the host by RFC 1035/1123 domain-name syntax, which is ASCII,
     and forbids IP addresses. Checking it here keeps a hostile host (a bad port, an
     IP literal, a control character, ``@`` or ``/``) a typed error before any fetch
-    runs, the caller's own fetch included.
+    runs, the caller's own fetch included. *host* arrives with only the port's
+    ``%3A`` decoded, so any other ``%`` fails the label syntax below: did:web decodes
+    nothing else of the host.
 
     An internationalized host must be written as its A-label (``xn--…``). A Unicode
     host is refused rather than converted: Python's IDNA codec is IDNA2003, which
@@ -70,15 +90,79 @@ def _check_host(host: str, did: str) -> None:
             f"did:web {shown} host {name!r} is an IP address, which did:web forbids")
 
 
+def _check_segment(segment: str, did: str) -> None:
+    """Reject a did:web path segment that cannot go on the wire as written.
+
+    did:web decodes no escape in a path segment: ``did:web:host:a:b`` is
+    ``https://host/a/b/did.json`` with ``a`` and ``b`` sent verbatim. So a segment is
+    accepted only when every URL parser reads it the same way, and the request it
+    produces is ``<path>/did.json`` on that host and nothing else. Refused, as a
+    :class:`DidResolutionError` before any fetch runs (the caller's own fetch
+    included), is a segment that is:
+
+    * empty (``did:web:host::x``, a trailing ``:``), which would send ``//``;
+    * a dot segment in any spelling (``.``, ``..``, ``%2E%2E``, …: the set an https
+      issuer identifier is held to), which a WHATWG parser resolves away;
+    * not ASCII, or a control character or whitespace: the identifier policy of the
+      host — ASCII only, an IDN as its ``xn--`` A-label, nothing ``urlsplit`` would
+      strip — applies to the path too, and ``\\t\\r\\n`` are silently dropped by
+      ``urlsplit``, so two identifiers would name one URL;
+    * a ``/``, ``?``, ``#``, ``\\`` or ``%`` not written as an escape: ``urlparse``
+      cuts the path at ``?`` and ``#`` (``did.json`` is never requested), WHATWG reads
+      ``\\`` as ``/``, and a ``%`` that is not ``%XX`` is read as an escape by some
+      servers and as a literal by others;
+    * a ``%XX`` escape of any of the above (``%2F``, ``%3F``, ``%23``, ``%5C``,
+      ``%25``, ``%00``–``%20``, ``%7F``, ``%80`` and up): kept verbatim here, but
+      decoded by a server into the very character this refuses.
+
+    Everything else — letters, digits, ``-``, ``_``, ``.``, ``~``, ``+``, ``!``,
+    ``@`` and an escape of a printable ASCII character such as ``%40`` — is sent as
+    written. Each check is linear in the segment and the message names it through
+    ``safe_repr``: a segment can be megabytes long.
+    """
+    shown = safe_repr(did)
+    if not segment:
+        raise DidResolutionError(f"did:web {shown} has an empty path segment")
+    if segment.lower() in _DOT_SEGMENTS:
+        raise DidResolutionError(
+            f"did:web {shown} has a dot path segment {safe_repr(segment)}")
+    if not segment.isascii():
+        raise DidResolutionError(
+            f"did:web {shown} path segment {safe_repr(segment)} is not ASCII")
+    if not segment.isprintable() or " " in segment:
+        raise DidResolutionError(
+            f"did:web {shown} path segment {safe_repr(segment)} contains a control "
+            f"character or whitespace")
+    if any(delimiter in segment for delimiter in "/?#\\"):
+        raise DidResolutionError(
+            f"did:web {shown} path segment {safe_repr(segment)} contains a URL delimiter")
+    if _BARE_PERCENT.search(segment):
+        raise DidResolutionError(
+            f"did:web {shown} path segment {safe_repr(segment)} has a % that is not a "
+            f"%XX escape")
+    for octet in {int(hexpair, 16) for hexpair in set(_ESCAPED_OCTET.findall(segment))}:
+        if octet < 0x21 or octet > 0x7E or chr(octet) in _SEGMENT_DELIMITERS:
+            raise DidResolutionError(
+                f"did:web {shown} path segment {safe_repr(segment)} percent-encodes "
+                f"%{octet:02X}, a delimiter, control character or non-ASCII octet")
+
+
 def _did_web_url(did: str) -> str:
-    """Map a ``did:web`` identifier to its https DID-document URL (pure)."""
+    """Map a ``did:web`` identifier to its https DID-document URL (pure).
+
+    The host segment has only the port's ``%3A`` decoded and is checked by
+    :func:`_check_host`; each path segment is checked by :func:`_check_segment` and
+    used as written. Both refuse before any fetch runs.
+    """
     msi = did[len("did:web:"):]
     if not msi:
         raise DidResolutionError("empty did:web identifier")
     parts = msi.split(":")                          # ':' separates path segments
-    host = unquote(parts[0])                        # %3A -> ':' for an explicit port
+    host = _PORT_ESCAPE.sub(":", parts[0])          # %3A -> ':' for an explicit port
     _check_host(host, did)
-    segments = [unquote(p) for p in parts[1:]]
+    segments = parts[1:]
+    for segment in segments:
+        _check_segment(segment, did)
     if segments:
         return f"https://{host}/" + "/".join(segments) + "/did.json"
     return f"https://{host}/.well-known/did.json"

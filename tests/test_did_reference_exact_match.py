@@ -383,10 +383,11 @@ NOT_A_DID = {
     "a-plus": "did:web:example.com:user+x",
     "a-bang": "did:web:example.com:a!b",
     "an-at": "did:web:example.com:a@b",
+    # not fetched: did:web refuses a segment with a bare % before any fetch (#384,
+    # test_did_web_segments.py), so only the document-id rule applies to it
     "a-short-escape": "did:web:example.com:c%2",
 }
-WEB_NOT_A_DID = {k: NOT_A_DID[k] for k in ("a-tilde", "a-plus", "a-bang", "an-at",
-                                           "a-short-escape")}
+WEB_NOT_A_DID = {k: NOT_A_DID[k] for k in ("a-tilde", "a-plus", "a-bang", "an-at")}
 
 
 @pytest.mark.parametrize("doc_id", NOT_A_DID.values(), ids=NOT_A_DID)

@@ -4,6 +4,31 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] — unreleased
+
+### Security
+
+- **did:web: a path segment is now sent as written, and a segment that could not be — empty,
+  a dot segment in any spelling, non-ASCII, a control character or whitespace, a URL
+  delimiter or a `%XX` escape of any of those — is refused before any fetch**
+  ([#384](https://github.com/luisgf/openvc/issues/384)). The did:web mapping decodes only
+  the port's `%3A`; `_did_web_url` percent-decoded every segment, so an escaped `#`, `?` or
+  `/`, a `..` segment or an escaped control character changed the path the guarded fetch
+  requested — `urlparse` cuts a path at a fragment or a query, so `did.json` was not even
+  asked for — and the trust boundary widened from `<path>/did.json` to any path on the host;
+  such a DID resolves in no conformant resolver. Now the host segment decodes `%3A` alone
+  (any other `%` fails the domain-name syntax), every path segment goes on the wire verbatim,
+  and `_check_segment` refuses, with a `DidResolutionError` naming the segment through
+  `safe_repr`, a segment that is empty, a dot segment (the set an https issuer identifier is
+  held to), not printable ASCII, a `/`, `?`, `#`, `\`, a `%` that is not a `%XX` escape, or
+  an escape of a delimiter, a control character, whitespace or a non-ASCII octet — before any
+  fetch, the caller's own included, on the sync and the async resolver alike. `did:webvh`
+  reuses the mapping and inherits the refusal as a `DidWebvhError`. Through the pipeline the
+  refusal is `KeyResolutionFailed` on the JOSE lanes and `KeyResolutionError` on the Data
+  Integrity lanes. Plain paths, `%3A` ports and an escape of a printable ASCII character
+  (`%40`) are unchanged. Found by the internal security review of 2026-11-07
+  (`test_did_web_segments.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security

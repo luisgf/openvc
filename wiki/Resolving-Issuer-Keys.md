@@ -44,6 +44,14 @@ doc = resolver.resolve("did:web:issuer.example")
 vm = doc.key_by_kid("did:web:issuer.example#key-1")
 ```
 
+A `did:web` path is sent as written: `did:web:issuer.example:issuers:physics` requests
+`https://issuer.example/issuers/physics/did.json`, and the port's `%3A` is the only
+percent-escape the mapping decodes. A segment that is empty, a dot segment in any
+spelling (`..`, `%2E%2E`), non-ASCII, a control character or whitespace, a `/`, `?`, `#`
+or `\`, a `%` that does not start a `%XX` escape, or a `%XX` escape of any of those is
+refused with `DidResolutionError` before any fetch, so the request is always
+`<path>/did.json` on that host; `did:webvh` reuses the mapping and inherits the rule.
+
 ### `did:webvh` — did:web with verifiable history
 
 [`did:webvh`](https://identity.foundation/didwebvh/v1.0/) (a DIF **Recommended** DID
@@ -172,7 +180,7 @@ look the key up by the JWS `kid` and still accept a bare or `#`-relative `kid`, 
 A `#key-1` resolves only against a document `id` that is a DID by the DID Core 1.0 §3.1
 syntax: `did:`, a method name of lower-case letters and digits, and a method-specific id
 of letters, digits, `.`, `-`, `_`, `:` and valid `%XX` escapes. `did:web` fetches some
-DIDs that fail it, such as a path segment with `~`, `+`, `!`, `@` or an invalid `%`-escape
+DIDs that fail it, such as a path segment with `~`, `+`, `!` or `@`
 (`did:web:example.com:~alice`). Such a `did:web` must use absolute method ids and
 relationship entries (`did:web:example.com:~alice#key-1`): a `#key-1` in its document
 selects and grants nothing, so a proof fails closed with `KeyResolutionError` (or
@@ -191,8 +199,9 @@ A malformed host never gets that far. A `did:web` / `did:webvh` host must be an
 ASCII domain name (RFC 1123 labels, at most 253 characters), with an optional
 `%3A`-encoded port from 1 to 65535. Anything else raises `DidResolutionError`
 before any fetch, your own fetch included: a bad port, an IP address (dotted,
-numeric, hex or bracketed; the spec forbids them), a control character, or an
-`@`, `/` or `#` decoded from the host. The guarded fetch
+numeric, hex or bracketed; the spec forbids them), a control character, or any `%`
+escape other than the port's `%3A` (`%40`, `%2F`, `%23`: the host is decoded no further,
+so they fail the label syntax). The guarded fetch
 raises `UnsafeUrlError` for any URL it cannot parse. Both are `OpenvcError`s, so in
 `verify_many` a hostile issuer becomes that credential's `error` and the rest of
 the batch still verifies.
