@@ -18,6 +18,10 @@ Trust has two modes (see ``verify_ebsi_badge``):
   is walked and every accreditation's signature verified, up to a trusted anchor
   (:mod:`openvc_ebsi.trust`).
 
+Between the signature and the trust check, the credential's ``type`` must be a string or a
+list of strings: any other shape is :class:`CredentialTypeMalformed`, in both trust modes and
+whatever ``require_trust`` says (#359).
+
 Credential revocation is checked too when a ``resolve_status_list`` is supplied
 (a set revocation bit raises :class:`~openvc.status.CredentialRevoked`).
 """
