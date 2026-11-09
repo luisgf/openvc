@@ -4,6 +4,26 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] — unreleased
+
+### Security
+
+- **did:key: the identifier is now decoded by the bounded `openvc.multibase` codec — base58
+  input of at most 4 096 characters, a multicodec varint of at most 9 bytes — so an oversized
+  `did:key` `iss` / `verificationMethod` is refused before any big-integer work**
+  ([#386](https://github.com/luisgf/openvc/issues/386)). `DidKeyResolver` kept private
+  copies of the base58 and varint decoders without the caps `multibase` already has (the
+  threat model lists that cap as the control); base58 decoding is O(n²) big-integer work and
+  nothing bounds the length of an `iss` or a `verificationMethod`, so a 100 000-character
+  `did:key` issuer cost about 1.2 s of CPU before any signature check — through
+  `verify_credential` and through the Data Integrity lanes' offline did:key fallback alike —
+  and a 200 000-character one about 5 s. The resolver now calls `b58btc_decode` /
+  `read_varint` and maps `MultibaseError` to the `DidResolutionError` callers already see for
+  a malformed did:key (the message carries the length, never the input); through the pipeline
+  the refusal stays `KeyResolutionFailed` on the JOSE lanes and `KeyResolutionError` on the
+  Data Integrity lanes. Every did:key vector (Ed25519, P-256, P-384) resolves as before.
+  Found by the internal security review of 2026-11-07 (`test_did_key_bounded.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
