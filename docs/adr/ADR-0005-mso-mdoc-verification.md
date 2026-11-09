@@ -158,3 +158,28 @@ verifier proven only against shapes it also produces proves nothing.
   ISO/IEC 18013-7 + OpenID4VP (online SessionTranscript / handover).
 - RFC 9052 / 9053 (COSE: `COSE_Sign1` tag 18, `COSE_Mac0` tag 17, `COSE_Key`);
   RFC 8949 (CBOR, deterministic encoding).
+
+## Notes (2026-11-09)
+
+Added with [#383](https://github.com/luisgf/openvc/issues/383) (internal security review of
+2026-11-07, § M6); the decisions above are unchanged and the text above is not rewritten.
+
+- **D5 (the mdoc adapter over the shared path validation) now also enforces the ISO
+  18013-5 §9.3.3 subject rule.** The adapter, `x5c.resolve_mdoc_signer`, keeps the anchor
+  the chain validated to and requires the document signer's `countryName` to be present and
+  equal to the anchor's (absent on either side is a refusal: Annex B mandates it on both)
+  and its `stateOrProvinceName` equal when both carry it (absent on one side: no
+  constraint); compared as strings, no normalisation; a subject attribute that appears more
+  than once is refused. Without it a verifier trusting several IACAs accepted a DS issued
+  under one country's anchor for a document naming another. The JOSE `x5c` path is
+  unchanged: `validate_cert_chain` keeps its contract (`None` on success), its body moved
+  into the private helper that returns the matched anchor. `resolve_mdoc_signer_key` stays,
+  as the key-only view of the same validation.
+- **The result exposes what it checked.** `VerifiedMdoc` gains `ds_subject` and
+  `anchor_subject` — the `C`, `ST`, `CN` and `O` attributes each subject carries, as
+  strings; add-only, defaulting to empty. The Table B.1 cross-check of the disclosed
+  `issuing_country` / `issuing_jurisdiction` against them is deliberately the caller's: the
+  data elements are the document's own claim and live in a docType-specific namespace, while
+  the certificate rule is uniform; the wiki shows the two-line comparison.
+- The rest of the Annex B profile (DS key usage, CRL distribution point, the IACA's own
+  fields) is still not enforced; D7's experimental label stands.

@@ -4,6 +4,34 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] — unreleased
+
+### Security
+
+- **mdoc: the document signer must share its IACA anchor's subject `countryName`, and its
+  `stateOrProvinceName` when both carry it, as ISO/IEC 18013-5 §9.3.3 requires; the result
+  now exposes both subjects** ([#383](https://github.com/luisgf/openvc/issues/383)).
+  `resolve_mdoc_signer_key` path-validated the `x5chain` to a caller-provided IACA anchor
+  and required the DS EKU, but never compared the DS subject with the anchor the chain
+  validated to, so a verifier that trusts several IACAs (every member state's, in an EUDI
+  deployment) accepted a DS issued under one country's anchor for a document naming another;
+  and `VerifiedMdoc` exposed only `issuer_key`, so a caller could not cross-check the
+  disclosed `issuing_country` either. Now the new `openvc.x5c.resolve_mdoc_signer` (which
+  `resolve_mdoc_signer_key` wraps, same checks, key only) requires, after path validation and
+  the DS EKU, a `countryName` on both the DS and the matched anchor — absent on either side
+  is a refusal, Annex B mandates it on both — and equal, and `stateOrProvinceName` equal when
+  both carry it (absent on one side: no constraint); compared as strings, no normalisation; a
+  subject attribute that appears more than once is refused. The refusal is `X5cError`, and
+  `MdocTrustError` through `verify_device_response`, `verify_issuer_signed` and
+  `verify_vp_token`, naming both values cut by `safe_repr`. `VerifiedMdoc` gains, add-only and
+  defaulting to empty, `ds_subject` and `anchor_subject` — the `C`, `ST`, `CN` and `O`
+  attributes each subject carries, as strings — so the caller can compare the disclosed
+  `issuing_country` (Table B.1) with `ds_subject["C"]`; that data-element cross-check is
+  deliberately left to the caller (the wiki shows it). A single-anchor deployment with a
+  conformant DS/IACA pair and the Annex D golden vector are unchanged; the self-generated
+  test certificates gained the `C` the profile mandates. Found by the internal security review
+  of 2026-11-07 (`test_mdoc_iaca_country.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
