@@ -118,8 +118,8 @@ def _distinct_permutations(related: list[str], cap: int) -> int:
 @functools.lru_cache(maxsize=1)
 def _budgeted_class() -> Any:
     # Built on first use: the core imports without pyld, the subclass needs it.
-    from pyld.identifier_issuer import IdentifierIssuer
-    from pyld.jsonld import URDNA2015
+    # Both live in pyld.jsonld in 2.0.4 and are imported there in 3.x
+    from pyld.jsonld import URDNA2015, IdentifierIssuer
 
     class _ChargingIssuer(IdentifierIssuer):
         """An identifier issuer whose every deep copy is charged to the budget of the

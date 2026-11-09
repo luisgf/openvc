@@ -218,7 +218,7 @@ def test_the_issuer_copy_charge_is_per_copy_and_per_entry(monkeypatch):
     import copy
 
     from openvc.proof import _rdfc
-    from pyld.identifier_issuer import IdentifierIssuer
+    from pyld.jsonld import IdentifierIssuer
 
     canon = _rdfc.new_canonicalizer()
     canon.blank_node_info = {"_:x": {"quads": []}}
