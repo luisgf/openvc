@@ -158,3 +158,49 @@ verifier proven only against shapes it also produces proves nothing.
   ISO/IEC 18013-7 + OpenID4VP (online SessionTranscript / handover).
 - RFC 9052 / 9053 (COSE: `COSE_Sign1` tag 18, `COSE_Mac0` tag 17, `COSE_Key`);
   RFC 8949 (CBOR, deterministic encoding).
+
+## Notes (2026-11-09)
+
+Added with [#383](https://github.com/luisgf/openvc/issues/383) (internal security review of
+2026-11-07, § M6); the decisions above are unchanged and the text above is not rewritten.
+
+- **D5 (the mdoc adapter over the shared path validation) now also enforces the ISO
+  18013-5 §9.3.3 subject rule.** The adapter, `x5c.resolve_mdoc_signer`, keeps the anchor
+  the chain validated to and requires the document signer's `countryName` to be present and
+  equal to the anchor's (absent on either side is a refusal: Annex B mandates it on both)
+  and its `stateOrProvinceName` equal when both carry it (absent on one side: no
+  constraint). The comparison is of the decoded text, exact and **case-sensitive**, with no
+  normalisation of it (the ASN.1 string type — UTF8String, PrintableString — is normalised
+  away by the decode): a DS `C=ut` under an anchor `C=UT` is refused — ISO 3166-1 alpha-2
+  codes are upper-case, so a lower-case value is non-conformant on its own, and RFC 5280's
+  case-folding is a name-chaining rule, not §9.3.3. A
+  `C` or `ST` that appears more than once in either subject is refused: the ISO profile uses
+  each once and the equality is undefined otherwise; `CN` and `O` are informational — exposed
+  when they appear exactly once, omitted otherwise, never a refusal. A `C` that is not a
+  2-character ISO 3166-1 alpha-2 code is refused (that is what §9.3.3 compares), and the
+  `UserWarning` cryptography emits about it is silenced on the read. The Name decodes lazily
+  on the first `.subject` read — path validation compares issuer and subject as raw DER — so
+  a path-valid certificate with an undecodable attribute raised a bare `ValueError` there;
+  that read is guarded into the same typed refusal (review of 2026-11-09). Without the rule a
+  verifier trusting several IACAs accepted a DS issued under one country's anchor for a
+  document naming another. The JOSE `x5c` path is unchanged: `validate_cert_chain` keeps its
+  contract (`None` on success), its body moved into the private helper that returns the
+  matched anchor. `resolve_mdoc_signer_key` stays, as the key-only view of the same
+  validation.
+- **`ST` present on one side only is accepted.** This follows the audit's reading of §9.3.3
+  ("when present in both"); confirm it against the ISO text when available — if the clause
+  reads "if the IACA carries `stateOrProvinceName`, the DS shall carry the same", the
+  anchor-only case should refuse instead.
+- **Cross-signed intermediates.** The anchor compared is the one of the first path
+  `cryptography` builds, so with a sub-CA cross-signed by two IACAs of different countries
+  the verdict can depend on the order of the holder-supplied intermediates: fail-closed (a
+  valid same-country path may be refused), and outside the ISO profile, where a DS is issued
+  directly by a self-signed IACA.
+- **The result exposes what it checked.** `VerifiedMdoc` gains `ds_subject` and
+  `anchor_subject` — the `C`, `ST`, `CN` and `O` attributes each subject carries, as
+  strings; add-only, defaulting to empty. The Table B.1 cross-check of the disclosed
+  `issuing_country` / `issuing_jurisdiction` against them is deliberately the caller's: the
+  data elements are the document's own claim and live in a docType-specific namespace, while
+  the certificate rule is uniform; the wiki shows the two-line comparison.
+- The rest of the Annex B profile (DS key usage, CRL distribution point, the IACA's own
+  fields) is still not enforced; D7's experimental label stands.

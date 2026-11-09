@@ -6,10 +6,11 @@ checks the two authentications ISO 18013-5 §9.1 defines and nothing more (ADR-0
 
 * **Issuer data authentication** — the ``IssuerAuth`` ``COSE_Sign1`` over the
   ``MobileSecurityObject`` (MSO); the document-signer ``x5chain`` (COSE label 33)
-  path-validated to a caller-provided **IACA** trust anchor; the MSO ``docType`` and
-  ``validityInfo`` window; and, for every disclosed ``IssuerSignedItem``, the recomputed
-  digest matched against ``MobileSecurityObject.valueDigests`` (the mdoc analogue of
-  SD-JWT disclosure hashing).
+  path-validated to a caller-provided **IACA** trust anchor, carrying the DS EKU, and
+  sharing that anchor's subject ``countryName`` (and ``stateOrProvinceName`` when both
+  carry it — ISO 18013-5 §9.3.3); the MSO ``docType`` and ``validityInfo`` window; and,
+  for every disclosed ``IssuerSignedItem``, the recomputed digest matched against
+  ``MobileSecurityObject.valueDigests`` (the mdoc analogue of SD-JWT disclosure hashing).
 * **Device authentication (holder binding)** — the ``DeviceSignature`` (``COSE_Sign1``)
   or ``DeviceMac`` (``COSE_Mac0``) over the ``DeviceAuthentication`` structure built from
   the OpenID4VP / ISO 18013-7 **SessionTranscript** (the caller supplies its bytes — see
@@ -26,14 +27,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from . import cbor, cose
 from .errors import OpenvcError
 from .proof._verify_common import leeway_seconds, utc_window
-from .x5c import X5cError, check_mdoc_signed_within_ds_validity, resolve_mdoc_signer_key
+from .x5c import X5cError, check_mdoc_signed_within_ds_validity, resolve_mdoc_signer
 
 __all__ = [
     "MdocError",
@@ -85,7 +86,10 @@ class MdocMalformed(MdocError):
 
 
 class MdocTrustError(MdocError):
-    """The document-signer chain did not path-validate to an IACA trust anchor."""
+    """The document-signer chain did not path-validate to an IACA trust anchor, or the
+    document signer does not fit the ISO 18013-5 profile under the anchor it validated to
+    (no DS EKU; a subject ``countryName`` / ``stateOrProvinceName`` that is not the
+    IACA's — §9.3.3)."""
 
 
 class MdocSignatureInvalid(MdocError):
@@ -128,12 +132,23 @@ class VerifiedMdoc:
     only the items whose digest matched the issuer's seal. *device_signed* is ``True`` when
     holder binding (DeviceAuth) was verified; it is ``False`` for a result from
     :func:`verify_issuer_signed`, which checks issuer data authentication only.
+
+    *ds_subject* and *anchor_subject* are the ISO 18013-5 Annex B subject attributes of
+    the document-signer certificate and of the IACA anchor it validated to — the
+    attributes present among ``C`` (countryName), ``ST`` (stateOrProvinceName), ``CN`` and
+    ``O``, as strings. The verifier has already required ``C`` on both and equal, and
+    ``ST`` equal when both carry it (§9.3.3). What it does **not** check is the document's
+    own claim: compare the disclosed ``issuing_country`` (Table B.1) with
+    ``ds_subject["C"]`` yourself. Both default to empty so an older positional
+    construction keeps working.
     """
     doc_type: str
     namespaces: dict[str, dict[str, Any]]
     device_signed: bool
     issuer_key: dict[str, Any]
     validity: MdocValidity
+    ds_subject: Mapping[str, str] = field(default_factory=dict)
+    anchor_subject: Mapping[str, str] = field(default_factory=dict)
 
     def elements(self, namespace: str) -> dict[str, Any]:
         """The disclosed ``{elementIdentifier: elementValue}`` for *namespace* (empty if
@@ -148,6 +163,8 @@ class _IssuerParts:
     issuer_key: dict[str, Any]
     validity: MdocValidity
     mso: dict[Any, Any]
+    ds_subject: Mapping[str, str]
+    anchor_subject: Mapping[str, str]
 
 
 # --------------------------------------------------------------------------- #
@@ -193,7 +210,8 @@ def verify_device_response(
         _verify_device_auth(document, parts, session_transcript, device_mac_key)
         results.append(VerifiedMdoc(
             doc_type=parts.doc_type, namespaces=parts.namespaces, device_signed=True,
-            issuer_key=parts.issuer_key, validity=parts.validity))
+            issuer_key=parts.issuer_key, validity=parts.validity,
+            ds_subject=parts.ds_subject, anchor_subject=parts.anchor_subject))
     return results
 
 
@@ -222,7 +240,8 @@ def verify_issuer_signed(
         expected_doc_type=expected_doc_type)
     return VerifiedMdoc(
         doc_type=parts.doc_type, namespaces=parts.namespaces, device_signed=False,
-        issuer_key=parts.issuer_key, validity=parts.validity)
+        issuer_key=parts.issuer_key, validity=parts.validity,
+        ds_subject=parts.ds_subject, anchor_subject=parts.anchor_subject)
 
 
 # --------------------------------------------------------------------------- #
@@ -277,10 +296,11 @@ def _verify_issuer_signed(
         raise MdocMalformed(f"issuerAuth: {exc}") from exc
     instant, leeway = utc_window(now, leeway_s, error=MdocError)   # a bad pin is typed
     try:
-        issuer_key = resolve_mdoc_signer_key(chain, trust_anchors=trust_anchors, now=instant)
+        signer = resolve_mdoc_signer(chain, trust_anchors=trust_anchors, now=instant)
     except X5cError as exc:
-        raise MdocTrustError(
-            f"document-signer chain did not validate to an IACA anchor: {exc}") from exc
+        raise MdocTrustError(f"document-signer chain is not trusted under an IACA anchor: "
+                             f"{exc}") from exc
+    issuer_key = signer.public_jwk
     if issuer_auth.payload is None:
         raise MdocMalformed("IssuerAuth has a detached payload (no MSO)")
     try:
@@ -306,7 +326,8 @@ def _verify_issuer_signed(
         except X5cError as exc:
             raise MdocValidityError(str(exc)) from exc
     namespaces = _verify_value_digests(issuer_signed, mso, hasher)
-    return _IssuerParts(doc_type, namespaces, issuer_key, validity, mso)
+    return _IssuerParts(doc_type, namespaces, issuer_key, validity, mso,
+                        signer.ds_subject, signer.anchor_subject)
 
 
 def _decode_mso(payload: bytes) -> dict[Any, Any]:

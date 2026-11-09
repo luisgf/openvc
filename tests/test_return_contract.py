@@ -14,6 +14,7 @@ import dataclasses as dc
 
 import pytest
 
+from openvc.mdoc import VerifiedMdoc
 from openvc.openid4vci import (
     CredentialIssuerMetadata,
     CredentialOffer,
@@ -46,6 +47,8 @@ CONTRACT = {
     VerifiedSdJwt: ["claims", "issuer", "vct", "key_bound", "confirmation", "expired",
                     "vcdm", "typ"],
     VerifiedPresentation: ["holder", "credentials", "claims", "vp"],
+    VerifiedMdoc: ["doc_type", "namespaces", "device_signed", "issuer_key", "validity",
+                   "ds_subject", "anchor_subject"],
     VerifiedProof: ["public_jwk", "thumbprint", "alg", "key_source", "issued_at",
                     "nonce", "client_id", "key_attestation", "header", "claims"],
     CredentialRequest: ["credential_configuration_id", "credential_identifier",
