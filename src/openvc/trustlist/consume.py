@@ -7,9 +7,10 @@ Commission keys — there is no implicit root, ADR-0003 D5), verifies the LOTL's
 signature via an **injected** ``verify_signature`` callback (fail-closed — a list is
 never trusted unverified), follows each pointer to a national TL, verifies *that*
 TL against the signer certs the LOTL vouched for, and collects the selected trust
-services' certificates. A TL that cannot be fetched, verified, or is expired
-contributes **zero** anchors and is recorded in :attr:`TrustAnchorSet.problems` —
-never silently trusted, never aborting the walk (ADR-0003 D6).
+services' certificates. A TL that cannot be fetched, verified, or is expired — or
+is **closed** (a null ``NextUpdate``, ETSI TS 119 612 clause 5.3.15) — contributes
+**zero** anchors and is recorded in :attr:`TrustAnchorSet.problems` — never
+silently trusted, never aborting the walk (ADR-0003 D6).
 
 XML-signature verification is not in core (ETSI XAdES is heavy): pass a
 ``verify_signature`` — the ``[trustlist]`` extra ships a reference one, or inject
@@ -152,9 +153,12 @@ def walk_lotl(
     TL's XML signature is verified via *verify_signature* (fail-closed). *select*
     filters the trust services (default: ``granted`` qualified-CA — pass ``None`` for
     all); *fetch* performs the SSRF-guarded GETs. A TL that cannot be fetched /
-    verified / is expired contributes no anchors and is recorded in the result's
-    ``problems`` — never silently trusted (ADR-0003 D6). Pass *now* to pin the
-    expiry evaluation instant."""
+    verified / is expired — or is **closed** (a null ``NextUpdate``, clause 5.3.15:
+    stage ``"expired"``; a ``NextUpdate`` that is not an aware UTC date-time is a
+    ``"parse"`` problem) — contributes no anchors and is recorded in the result's
+    ``problems`` — never silently trusted (ADR-0003 D6). A closed or expired LOTL
+    stops the walk with that one problem. Pass *now* to pin the expiry evaluation
+    instant."""
     instant = utc_instant(now, error=TrustListError)   # naive is UTC; a bad pin is typed
     problems: list[TrustListProblem] = []
 
@@ -170,10 +174,10 @@ def walk_lotl(
     except TrustListError as exc:
         return TrustAnchorSet(
             anchors=(), problems=(TrustListProblem(lotl_url, _stage(exc), str(exc)),))
-    if _expired(lotl, instant):
-        return TrustAnchorSet(anchors=(), problems=(
-            TrustListProblem(lotl_url, "expired",
-                             f"LOTL NextUpdate {lotl.next_update} is in the past"),))
+    stale = _staleness(lotl, instant)
+    if stale:
+        return TrustAnchorSet(
+            anchors=(), problems=(TrustListProblem(lotl_url, "expired", f"LOTL: {stale}"),))
 
     anchors: list[TrustServiceAnchor] = []
     for pointer in lotl.pointers:
@@ -195,10 +199,9 @@ def walk_lotl(
         except TrustListError as exc:
             problems.append(TrustListProblem(pointer.location, _stage(exc), str(exc)))
             continue
-        if _expired(tl, instant):
-            problems.append(TrustListProblem(
-                pointer.location, "expired",
-                f"NextUpdate {tl.next_update} is in the past"))
+        stale = _staleness(tl, instant)
+        if stale:
+            problems.append(TrustListProblem(pointer.location, "expired", stale))
             continue
         for provider in tl.providers:
             for svc in provider.services:
@@ -216,8 +219,22 @@ def _stage(exc: TrustListError) -> str:
     return "consume"
 
 
-def _expired(tl: TrustList, now: datetime) -> bool:
-    return tl.next_update is not None and tl.next_update < now
+def _staleness(tl: TrustList, now: datetime) -> str | None:
+    """Why *tl* must contribute no anchors at *now* — or ``None`` when it is current.
+
+    ETSI TS 119 612 clause 5.3.15: a TL "with a Next update occurring in the past
+    shall be discarded as expired" (substitution with an old TL), and a **null**
+    ``NextUpdate`` marks a **closed** TL — it anchors nothing either (it used to read
+    as unbounded validity; #389). Mirrors ``lote._staleness``. ``next_update`` is
+    aware by construction (:func:`~openvc.trustlist.parse.parse_trust_list` refuses a
+    naive one) and *now* is :func:`utc_instant`'s, so the comparison cannot raise
+    (#407)."""
+    if tl.next_update is None:
+        return ("closed TL (null NextUpdate): ETSI TS 119 612 clause 5.3.15 — "
+                "a closed list contributes no anchors")
+    if tl.next_update < now:
+        return f"NextUpdate {tl.next_update.isoformat()} is in the past"
+    return None
 
 
 __all__ = [

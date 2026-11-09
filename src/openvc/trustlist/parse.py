@@ -12,6 +12,10 @@ signature is verified — it is what finds the signer certs), so it is hardened:
 * **Bounded input.** A configurable byte cap (default 16 MiB — a national TL is a
   few MB) rejects an oversize document before parsing.
 * **Namespace by URI, never by prefix.** Elements are matched on ``{uri}local``.
+* **Date-times fail closed.** ``NextUpdate`` is read as an **aware** ``datetime`` or
+  as *null* (a closed TL, clause 5.3.15); a value that is not an ISO 8601 UTC
+  date-time (clause 5.1.3) is a :class:`TrustListParseError`, never ``None`` —
+  the walk would otherwise read it as unbounded validity (#389, #407).
 
 No signature logic lives here (that is an injected callback — see
 :mod:`openvc.trustlist.consume`).
@@ -24,6 +28,7 @@ from datetime import datetime
 from typing import Any
 from xml.etree.ElementTree import Element, TreeBuilder
 
+from ..proof._verify_common import safe_repr
 from .errors import TrustListParseError
 from .model import TrustList, TrustServiceAnchor, TrustServiceProvider, TslPointer
 
@@ -67,8 +72,11 @@ def parse_trust_list(xml: bytes, *, max_bytes: int = DEFAULT_MAX_BYTES) -> Trust
         seq = _int(_text(scheme, _q("TSLSequenceNumber")))
         version = _int(_text(scheme, _q("TSLVersionIdentifier")))
         issue = _text(scheme, _q("ListIssueDateTime"))
+        # Clause 5.3.15: a null NextUpdate (no <dateTime>, or none at all) marks a
+        # **closed** TL — kept as None for the walk to stage; a malformed one raises.
         nu = scheme.find(_q("NextUpdate"))
-        next_update = _parse_datetime(_text(nu, _q("dateTime"))) if nu is not None else None
+        next_update = (_parse_datetime(_text(nu, _q("dateTime")), "NextUpdate")
+                       if nu is not None else None)
         ptrs = scheme.find(_q("PointersToOtherTSL"))
         if ptrs is not None:
             for op in ptrs.findall(_q("OtherTSLPointer")):
@@ -246,13 +254,35 @@ def _int(value: str | None) -> int | None:
         return None
 
 
-def _parse_datetime(value: str | None) -> datetime | None:
+def _parse_datetime(value: str | None, ctx: str) -> datetime | None:
+    """A TL date-time as an **aware** ``datetime``, or ``None`` for a *null* value.
+
+    ETSI TS 119 612 clause 5.1.3: every TL date-time is ISO 8601, expressed as
+    **UTC** with the ``Z`` designator. *value* is the stripped text of the
+    ``<dateTime>`` element (``None`` / empty when the element is absent or empty —
+    the null that clause 5.3.15 uses to mark a closed TL; the caller stages that).
+
+    Anything else is :class:`TrustListParseError` — never ``None``, which the walk
+    would read as unbounded validity (#389): a string ``fromisoformat`` rejects,
+    and a parseable one **without** a UTC designator or offset. A naive value is
+    not read as UTC: the profile mandates the ``Z`` form, and a guessed zone would
+    hand the expiry comparison an attacker-shaped instant (and used to escape
+    ``walk_lotl`` as a bare ``TypeError`` — #407). The ``+00:00`` spelling of UTC is
+    accepted alongside ``Z``; the echoed value is cut by :func:`safe_repr`."""
     if not value:
         return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise TrustListParseError(
+            f"{ctx} dateTime {safe_repr(value)} is not an ISO 8601 date-time "
+            f"(ETSI TS 119 612 clause 5.1.3)") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise TrustListParseError(
+            f"{ctx} dateTime {safe_repr(value)} carries no UTC designator: clause 5.1.3 "
+            f"mandates UTC with 'Z', and a naive value is not read as UTC")
+    return parsed
 
 
 __all__ = ["parse_trust_list", "TSL", "ADD", "DEFAULT_MAX_BYTES"]

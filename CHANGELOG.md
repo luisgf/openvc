@@ -4,6 +4,33 @@ All notable changes to **openvc** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project aims for
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] — unreleased
+
+### Security
+
+- **EU trusted lists, TS 119 612 XML lane: a null `NextUpdate` now closes the list, and a
+  `NextUpdate` that is not an aware UTC date-time is refused — neither reads as unbounded
+  validity any more** ([#389](https://github.com/luisgf/openvc/issues/389),
+  [#407](https://github.com/luisgf/openvc/issues/407)). ETSI TS 119 612 clause 5.3.15 makes
+  a null `NextUpdate` the mark of a **closed** TL and has a verifier discard a TL whose Next
+  update is in the past "as a measure to reduce the risk of a substitution by an attacker
+  with an old TL"; clause 5.1.3 mandates every TL date-time as ISO 8601 **UTC** with the `Z`
+  designator. The parser turned a `<NextUpdate/>` without `dateTime` **and** any `dateTime`
+  that `fromisoformat` rejected into `None`, which the walk read as "never expires", so a
+  closed national TL — or one whose `NextUpdate` had been damaged into garbage — kept
+  contributing anchors indefinitely, and a tz-naive value escaped `walk_lotl` as a bare
+  `TypeError` (#407). Now, mirroring the LoTE lane: `parse_trust_list` keeps `None` only for
+  a *null* `NextUpdate` (element absent, without `<dateTime>`, or empty) and raises
+  `TrustListParseError` for a value that is unparseable or carries no UTC designator /
+  offset — a naive value is **not** read as UTC; `+00:00` is accepted alongside `Z` — and
+  `walk_lotl` stages a null `NextUpdate` as `"expired"` with a problem naming
+  `closed TL (null NextUpdate)` (a closed LOTL stops the walk, a closed national TL
+  contributes nothing) and a malformed one as a `"parse"` problem, so only aware datetimes
+  are ever compared. `consume_trust_list` returns the closed signal (`next_update is None`)
+  to a direct caller, as `consume_lote` does; `TrustList`'s shape is unchanged. The recorded
+  EU LOTL / ES TL goldens are unchanged. Found by the internal security review of 2026-11-07
+  (`test_trustlist_nextupdate_closed.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
