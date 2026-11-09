@@ -377,8 +377,9 @@ NOT_A_DID = {
     "trailing-colon": f"{DID}:",
     "a-space": "did:web:issuer example",
     "a-bad-escape": "did:web:issuer%zz.example",
-    # DIDs that did:web still fetches (https://example.com/<path>/did.json): their
-    # documents must use absolute ids, which the did:web test below pins
+    # did:web ids whose path has a character outside the idchar grammar: did:web used to
+    # fetch them (https://example.com/<path>/did.json) and refuses them before any fetch
+    # since #384, which the did:web test below pins; here only the document-id rule applies
     "a-tilde": "did:web:example.com:~alice",
     "a-plus": "did:web:example.com:user+x",
     "a-bang": "did:web:example.com:a!b",
@@ -409,25 +410,28 @@ def test_a_relative_method_id_names_nothing_when_the_document_id_is_not_a_did(do
 
 
 @pytest.mark.parametrize("did", WEB_NOT_A_DID.values(), ids=WEB_NOT_A_DID)
-def test_a_did_web_outside_the_did_syntax_needs_absolute_ids(did):
-    # did:web resolves these DIDs, but they fail DID Core 1.0 §3.1, so a '#k' in their
-    # document resolves to nothing (fail closed); the absolute id still verifies
+def test_a_did_web_outside_idchar_is_refused_before_any_fetch(did):
+    # did:web used to fetch these DIDs although they fail DID Core 1.0 §3.1 (their path
+    # has a character outside idchar). Since #384 the resolver refuses them before any
+    # fetch: a DidResolutionError at the resolver, KeyResolutionError through the pipeline,
+    # and the injected fetch is never called — even for a document that would verify.
+    def never(url):
+        raise AssertionError(f"fetch called with {url!r}")
+
+    async def never_async(url):
+        raise AssertionError(f"fetch called with {url!r}")
+    with pytest.raises(DidResolutionError) as info:
+        DidWebResolver(fetch=never).resolve(did)
+    assert type(info.value) is DidResolutionError
+    with pytest.raises(DidResolutionError) as info:
+        asyncio.run(AsyncDidWebResolver(fetch=never_async).resolve(did))
+    assert type(info.value) is DidResolutionError
+
     vm_id = f"{did}#k"
     credential = _signed(AUTH_KEY, vm_id)
-    relative_id = _doc(did=did, methods=[_method("#k", AUTH_KEY, did)],
-                       assertionMethod=["#k"])
-    _refused(credential, _sync(relative_id), _async(relative_id), KeyResolutionError,
-             NOT_IN_DOC)
-    relative_ref = _doc(did=did, methods=[_method(vm_id, AUTH_KEY, did)],
-                        assertionMethod=["#k"])
-    _refused(credential, _sync(relative_ref), _async(relative_ref), ProofPurposeMismatch,
-             f"{PURPOSE_DENIED} 'assertionMethod'")
-    absolute = _doc(did=did, methods=[_method(vm_id, AUTH_KEY, did)],
-                    assertionMethod=[vm_id])
-    assert verify_credential(credential, resolver=_sync(absolute), policy=POLICY).issuer == did
-    result = asyncio.run(verify_credential_async(credential, resolver=_async(absolute),
-                                                 policy=POLICY))
-    assert result.issuer == did
+    _refused(credential, DidResolverRegistry([DidWebResolver(fetch=never)]),
+             AsyncDidResolverRegistry([AsyncDidWebResolver(fetch=never_async)]),
+             KeyResolutionError, "did:web")
 
 
 def test_a_did_document_id_resolves_a_relative_reference():

@@ -13,8 +13,10 @@ from .bitstring import (
     decode_bitstring,
     encode_bitstring,
     get_status_bit,
+    get_status_value,
     new_bitstring,
     set_status_bit,
+    set_status_value,
 )
 from .issue import (
     STATUS_LIST_JWT_TYP,
@@ -60,8 +62,10 @@ __all__ = [
     "decode_bitstring",
     "encode_bitstring",
     "get_status_bit",
+    "get_status_value",
     "new_bitstring",
     "set_status_bit",
+    "set_status_value",
     "CredentialRevoked",
     "CredentialSuspended",
     "AsyncResolveStatusList",
