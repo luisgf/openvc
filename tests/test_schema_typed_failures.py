@@ -170,18 +170,20 @@ def test_every_bare_type_raised_while_validating_is_a_validation_error(monkeypat
     pytest.importorskip("jsonschema")
     from jsonschema import Draft202012Validator
     real = Draft202012Validator.iter_errors
+    credential = _cred("1")
 
     def boom(self, instance, *args, **kwargs):
         # check_schema meta-validates the SCHEMA through this same method (the build
-        # phase); only the credential's own validation is made to raise.
-        if isinstance(instance, dict) and "credentialSubject" in instance:
+        # phase, and on some jsonschema releases its descent too); only the call on the
+        # credential object itself is made to raise.
+        if instance is credential:
             raise bare("x" * 10_000)
         return real(self, instance, *args, **kwargs)
 
     monkeypatch.setattr(Draft202012Validator, "iter_errors", boom)
     with pytest.raises(SchemaValidationError) as info:
         validate_credential_schema(
-            _cred("1"), resolve_credential_schema=lambda u: _schema_bytes('{"type": "number"}'))
+            credential, resolve_credential_schema=lambda u: _schema_bytes('{"type": "number"}'))
     assert type(info.value.__cause__) is bare
     assert bare.__name__ in str(info.value)
     assert len(str(info.value)) < 400
