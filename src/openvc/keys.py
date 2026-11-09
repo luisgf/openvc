@@ -57,6 +57,17 @@ class KeyBackendError(OpenvcError): ...
 class InvalidKey(KeyBackendError): ...
 
 
+class NonCanonicalKey(InvalidKey):
+    """A public JWK that decodes to a valid key but is not spelled canonically.
+
+    Raised only by :func:`canonical_public_jwk` with ``strict=True``: a binary member
+    carries ``=`` padding, a non-alphabet character, the standard ``+``/``/`` alphabet or
+    non-zero trailing bits. The message names the member, never its value. Distinct from
+    a plain :class:`InvalidKey` (which it also is) so a caller can tell "send it
+    canonically" apart from "this is not a key".
+    """
+
+
 # --------------------------------------------------------------------------- #
 # base64url + integer helpers
 # --------------------------------------------------------------------------- #
@@ -565,6 +576,159 @@ def jwk_thumbprint(
 
 
 # --------------------------------------------------------------------------- #
+# Canonical public JWK — the RFC 7638 members, fixed-width unpadded base64url
+# --------------------------------------------------------------------------- #
+
+# RFC 7518 §6.2.1.2 / §6.2.1.3 and RFC 8037 §2: the exact octet length of every binary
+# member, per curve. A coordinate of any other length is not another spelling of the
+# key — the RFC makes the full fixed width a MUST — so it is refused, never widened or
+# trimmed into shape.
+_CANONICAL_WIDTHS: dict[tuple[str, str], int] = {
+    ("EC", "P-256"): P256_COORD_BYTES,
+    ("EC", "P-384"): P384_COORD_BYTES,
+    ("OKP", "Ed25519"): 32,
+}
+_EC_CURVES = {"P-256": ec.SECP256R1, "P-384": ec.SECP384R1}
+
+# edwards25519's field prime, and the y-coordinate of each of its eight small-order points
+# (the torsion subgroup): 1 is the identity, p-1 the point of order 2, 0 the two points of
+# order 4 (x = ±sqrt(-1), told apart by the sign bit) and the last two the four points of
+# order 8 (each with either sign bit). libsodium's `ge25519_has_small_order` blocklist, in
+# little-endian hex 26e8958f…fc05 and c7176a70…037a; a test re-derives them from the curve
+# constants. `Ed25519PublicKey.from_public_bytes` checks only the length, so without this
+# the identity point alone has four 32-byte spellings — y = 1 and y = 1 + p, each with
+# either sign bit — all "canonical" base64url, all distinct thumbprints, and a signature
+# under it needs no private key at all (RFC 8032 §5.1.3 would refuse three of the four).
+_ED25519_P = 2**255 - 19
+_ED25519_SMALL_ORDER_Y: frozenset[int] = frozenset({
+    0, 1, _ED25519_P - 1,
+    2707385501144840649318225287225658788936804267575313519463743609750303402022,
+    55188659117513257062467267217118295137698188065244968500265048394206261417927,
+})
+
+
+def _check_ed25519_point(enc: bytes) -> None:
+    """Refuse a 32-byte Ed25519 encoding that is not a canonical, usable public key.
+
+    RFC 8032 §5.1.3: decoding fails for y >= p (the top bit is the sign of x, the other 255
+    bits are y) and for x = 0 with the sign bit set — the only points with x = 0 are the
+    identity (y = 1) and the point of order 2 (y = p - 1), both in the small-order set
+    below, so that rule is covered there. The eight small-order points are refused as
+    libsodium does: a "key" of order 8 or less signs nothing anyone holds, and its
+    alternate encodings are exactly the spellings a canonical form exists to remove.
+    """
+    y = int.from_bytes(enc, "little") & ((1 << 255) - 1)
+    if y >= _ED25519_P:
+        raise InvalidKey(
+            "JWK member 'x' is not a canonical Ed25519 point encoding "
+            "(y >= p, RFC 8032 §5.1.3)")
+    if y in _ED25519_SMALL_ORDER_Y:
+        raise InvalidKey(
+            "JWK member 'x' is a small-order Ed25519 point, not a usable public key")
+
+
+def _shown(value: Any) -> str:
+    """A key-type label fit for an error message: the string itself when short, else only
+    its type — the value is the peer's and may be arbitrarily long."""
+    return repr(value) if isinstance(value, str) and len(value) <= 32 else type(value).__name__
+
+
+def canonical_public_jwk(jwk: Mapping[str, Any], *, strict: bool = False) -> dict[str, Any]:
+    """The minimal canonical form of an EC or OKP public JWK.
+
+    Returns a fresh dict holding **only** the RFC 7638 thumbprint members of the key type
+    (``kty``/``crv``/``x``/``y`` for EC, ``kty``/``crv``/``x`` for OKP), each binary member
+    decoded through the key backend and re-encoded as fixed-width, unpadded base64url —
+    the spelling the ``public_jwk()`` of every backend here emits. ``kid``, ``alg``,
+    ``use``, ``key_ops``, ``x5u``/``jku``/``x5c`` and any member this function has never
+    heard of are dropped by construction, which is what makes the result safe to copy into
+    a ``cnf.jwk`` or to deduplicate wallet keys by.
+
+    Why it exists: RFC 7638 digests the member *strings*, while the tolerant base64url
+    decoder behind signature verification accepts an explicit ``=`` padding, a
+    non-alphabet character, the standard ``+``/``/`` alphabet and non-zero trailing bits.
+    One key therefore has many spellings that verify identically and thumbprint
+    differently; thumbprinting *this* form instead gives one digest per key.
+
+    *strict*: when ``True``, a binary member whose spelling is not already the canonical
+    one — padding, a non-alphabet character, non-zero trailing bits — raises
+    :class:`NonCanonicalKey` (an :class:`InvalidKey`) naming the member, never echoing its
+    value. Use it on a JWK the peer chose, where the rule is "send it canonically or be
+    refused"; leave it ``False`` to normalise material from a trusted source (a
+    certificate, a key attestation).
+
+    Supports the curves the backends decode: EC ``P-256`` / ``P-384`` and OKP
+    ``Ed25519``. Fails closed with :class:`InvalidKey` for anything else (RSA, ``oct``,
+    the AKP ML-DSA shape, an unknown ``crv``), a non-object input, a missing or non-string
+    member, a member that is not base64url at all (a lone UTF-16 surrogate included —
+    named by code point and index, as :func:`jwk_thumbprint_bytes` does), a member of the
+    wrong width (RFC 7518 §6.2.1.2), an EC point that is not on the curve or has a
+    coordinate >= p, and an Ed25519 encoding that is not a canonical point (y >= p, RFC
+    8032 §5.1.3) or is one of the eight small-order points. Messages name a member, never
+    echo its value.
+    """
+    if not isinstance(jwk, Mapping):
+        raise InvalidKey(f"JWK must be a JSON object, got {type(jwk).__name__}")
+    kty = jwk.get("kty")
+    if not isinstance(kty, str):
+        raise InvalidKey("JWK has no string 'kty'; cannot canonicalize it")
+    if kty not in _THUMBPRINT_MEMBERS:
+        raise InvalidKey(f"unsupported JWK kty {_shown(kty)} for a canonical public key")
+    crv = jwk.get("crv")
+    if not isinstance(crv, str) or (kty, crv) not in _CANONICAL_WIDTHS:
+        raise InvalidKey(
+            f"no canonical public form for kty={_shown(kty)} crv={_shown(crv)}: "
+            "EC P-256 / P-384 and OKP Ed25519 only")
+    width = _CANONICAL_WIDTHS[(kty, crv)]
+    # Reuse the thumbprint's member sets rather than restating them: the binary members
+    # are exactly the RFC 7638 members that are not the key-type labels.
+    binary = [name for name in _THUMBPRINT_MEMBERS[kty] if name not in ("kty", "crv")]
+
+    decoded: dict[str, bytes] = {}
+    for name in binary:
+        value = jwk.get(name)
+        if not isinstance(value, str):
+            raise InvalidKey(f"JWK of kty {kty!r} needs a string {name!r} member")
+        # A lone surrogate (JSON "\ud800") has no UTF-8 form; name the code point and its
+        # index, never the text, before the base64 decoder gets to complain about it.
+        _json.utf8(value, error=InvalidKey, what=f"JWK member {name!r}")
+        try:
+            raw = _b64url_decode(value)
+        except (ValueError, TypeError) as exc:            # binascii.Error is a ValueError
+            raise InvalidKey(f"JWK member {name!r} is not base64url: {exc}") from exc
+        if len(raw) != width:
+            raise InvalidKey(
+                f"JWK member {name!r} must decode to the {width}-byte fixed width of "
+                f"{crv} (RFC 7518 §6.2.1.2), got {len(raw)} bytes")
+        decoded[name] = raw
+
+    # Are these bytes a key at all? For EC the backend decides — `from_encoded_point`
+    # refuses an off-curve point and a coordinate >= p (which `EllipticCurvePublicNumbers`
+    # would silently reduce). For Ed25519 `from_public_bytes` checks only the length, so
+    # the RFC 8032 decoding rules and the small-order blocklist are applied here first.
+    try:
+        if kty == "EC":
+            ec.EllipticCurvePublicKey.from_encoded_point(
+                _EC_CURVES[crv](), b"\x04" + decoded["x"] + decoded["y"])
+        else:
+            _check_ed25519_point(decoded["x"])
+            ed25519.Ed25519PublicKey.from_public_bytes(decoded["x"])
+    except (ValueError, TypeError) as exc:
+        raise InvalidKey(f"JWK is not a valid {crv} public key: {exc}") from exc
+
+    canonical: dict[str, Any] = {"kty": kty, "crv": crv}
+    for name in binary:
+        canonical[name] = _b64url_encode(decoded[name])
+    if strict:
+        off = [name for name in binary if jwk[name] != canonical[name]]
+        if off:
+            raise NonCanonicalKey(
+                f"JWK member(s) {off} are not canonical base64url (RFC 7515 §2: the "
+                "URL-safe alphabet, no padding, zero trailing bits)")
+    return canonical
+
+
+# --------------------------------------------------------------------------- #
 # Dependency-light verification (for did:key self-contained verify + tests)
 # --------------------------------------------------------------------------- #
 
@@ -647,9 +811,11 @@ __all__ = [
     "KeyBackendError",
     "MLDSA_ALGS",
     "MLDSASigningKey",
+    "NonCanonicalKey",
     "P256KeyAgreementKey",
     "P256SigningKey",
     "P384SigningKey",
+    "canonical_public_jwk",
     "jwk_thumbprint",
     "jwk_thumbprint_bytes",
     "mldsa_available",
