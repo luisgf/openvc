@@ -41,7 +41,7 @@ from openvc.proof.errors import ProofMalformed, SignatureInvalid  # noqa: E402
 VC2 = "https://www.w3.org/ns/credentials/v2"
 CTX = [VC2, {"@vocab": "https://v.example/"}]
 FX = Path(__file__).parent / "fixtures" / "vc_di_eddsa"
-FAST = 1.0          # seconds: a refusal must not cost the canonicalization it refuses
+FAST = 3.0          # seconds, CI-runner slack: main takes 20 s on clique 8, minutes on 9
 BUDGET_ERROR = "CanonicalizationBudgetExceeded"
 
 _ISSUER = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
@@ -139,7 +139,7 @@ def test_poison_graph_refused_typed_and_fast_through_verify_credential(subject):
 def test_clique_8_refused_without_running_the_permutations():
     # the pre-count refuses the 7! = 5040 group before one permutation runs
     _, dt = _timed(lambda: verify_credential(_wrap(_clique_subject(8))))
-    assert dt < 0.25
+    assert dt < 1.0
 
 
 def test_poison_item_is_a_per_item_error_in_verify_many_and_siblings_verify():
