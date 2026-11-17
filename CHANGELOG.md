@@ -380,6 +380,26 @@ All notable changes to **openvc** are documented here. The format follows
   recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
   security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
 
+- **VC-JWT refuses a `vc.type` that is not a non-empty string or an array of non-empty
+  strings** ([#433](https://github.com/luisgf/openvc/issues/433)). **A VC-JWT with a malformed
+  `type` verified before and is refused now.** `VcJwtProofSuite.verify` never looked at the
+  shape of the signed `vc.type`: a `type` of `5`, `null`, `true`, `""`,
+  `{"VerifiableCredential": 1}`, `[["VerifiableCredential"]]` or `["VerifiableCredential", 5]`
+  verified under the default policy and `result.credential["type"]` handed it to the caller
+  (with `expected_types` pinned only `["VerifiableCredential", 5]` also verified; the rest were
+  `TypeMismatch`). Now a **present** `type` of any other shape is `ClaimsInvalid` right after
+  the signature verifies, on the classic and the ML-DSA lane, sync and async, the message naming
+  the shape through `safe_repr` and never the value; with `expected_types` set, that refusal
+  replaces the `TypeMismatch` the same credential got. Through `verify_ebsi_badge` such a
+  credential now fails with the core's `ClaimsInvalid` before the EBSI guard runs, and `""`,
+  which that function read as one type no accreditation lists, is refused too. The guard
+  (`CredentialTypeMalformed`, new in this unreleased version, #359) stays as defence in depth,
+  but no shape reaches it through the public API with `VcJwtProofSuite` as the `proof_suite`:
+  the core refuses every shape the guard does. Not changed, and not decided here: on VC-JWT an
+  absent `type`, `[]` and a `type` without `VerifiableCredential` still verify; Data Integrity
+  and `vc+sd-jwt` (where #275 ignores non-string entries on purpose) are untouched
+  (`test_credential_type_shape.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
