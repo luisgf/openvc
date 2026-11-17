@@ -255,6 +255,15 @@ All notable changes to **openvc** are documented here. The format follows
   `jsonld.normalize`, the goldens included. Found by the internal security review of
   2026-11-07 (`test_rdfc_budget.py`).
 
+- **status: under `require_status=True` a `credentialStatus` entry of an unrecognised type now
+  fails closed even when the credential also carries a recognised entry.** The gate only fired
+  when no entry was recognised, so an issuer publishing revocation through a mechanism openvc
+  does not implement and suspension through a Bitstring list had its revocations skipped by the
+  default policy. `StatusUnavailable` is raised before any resolver is called, on the sync and
+  async pipelines; `require_status=False` and `check_credential_status` keep skipping such
+  entries, and `openvc.status.unrecognised_status_entries` counts them. Found by the internal
+  security review of 2026-11-17 (#427, `test_status_unrecognised_entry.py`).
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
