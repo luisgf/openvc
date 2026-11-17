@@ -264,13 +264,20 @@ All notable changes to **openvc** are documented here. The format follows
   (`key_by_kid`: a bare, `#fragment` or absolute `kid` still selects); then, when the
   resolved document **declares** the relationship, the method must be referenced by it, else
   `KeyResolutionFailed`: `assertionMethod` for a VC-JWT, an SD-JWT VC issuer JWT and a
-  status-list token (sync and async), `authentication` for a VP-JWT holder key (also through
+  status-list token (sync and async); `authentication` for a VP-JWT holder key, which
+  surfaces as `ClaimsInvalid` with the `KeyResolutionFailed` as its cause (also through
   `verify_vp_token`). A document that does not declare the relationship stays accepted, so a
   minimal `did:web` and every `did:key` / `did:jwk` verify as before; a declared but empty
   relationship refuses. The check is the new `DidDocument.grants`, the grant half of
   `key_for_purpose`. Untouched: KB-JWT, the https `/.well-known/jwt-vc-issuer` path, x5c, a
   resolver's own document type and the EBSI lane (`openvc_ebsi`; whether it follows is a
-  separate decision). `needs-human` issue, implemented as the recommended option
+  separate decision). **What stops verifying**, by the document's own declaration: a declared
+  but empty `assertionMethod` (all five resolvable did:webvh golden documents list their key
+  under `authentication` with `"assertionMethod": []`), a relationship entry or method `id`
+  written as a bare string (`key-1`), and a `#relative` id in a document whose own `id` is not
+  a DID. A hand-built `DidDocument` whose `relationships` is not a mapping reads as "not
+  declared", and a declared entry that is not a list grants nothing (`key_for_purpose` now
+  returns a value for those inputs where it raised a bare exception). `needs-human` issue, implemented as the recommended option
   (`test_jose_key_purpose.py`).
 
 ### Fixed

@@ -12,24 +12,28 @@ import asyncio
 import base64
 import json
 import time
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
 from openvc import verify_credential
-from openvc.aio import verify_credential_async
+from openvc.aio import verify_credential_async, verify_many_async
 from openvc.did.base import (
     AsyncDidResolverRegistry,
     DidResolverRegistry,
     as_async_resolver,
     parse_did_document,
 )
+from openvc.did.base import DidDocument, VerificationMethod
+from openvc.did.did_jwk import DidJwkResolver
 from openvc.did.did_key import DidKeyResolver
-from openvc.errors import OpenvcError
+from openvc.did.did_webvh import DidWebvhResolver
 from openvc.keys import Ed25519SigningKey, P256SigningKey
 from openvc.multibase import encode_multibase
 from openvc.openid4vp import verify_vp_token
+from openvc.proof.errors import ClaimsInvalid
 from openvc.proof.sd_jwt import SdJwtVcProofSuite
 from openvc.proof.vp_jwt import VpJwtProofSuite
 from openvc.resolvers import (
@@ -37,7 +41,7 @@ from openvc.resolvers import (
     default_status_list_token_resolver_async,
 )
 from openvc.status import build_status_list_token, new_status_list
-from openvc.verify import KeyResolutionFailed, _resolve_jose_key
+from openvc.verify import KeyResolutionFailed, _resolve_jose_key, verify_many
 
 V2 = "https://www.w3.org/ns/credentials/v2"
 DID = "did:web:issuer.example"
@@ -238,9 +242,11 @@ def test_vp_jwt_holder_authentication_key_verifies_control():
 
 @pytest.mark.parametrize("signer", [K_ASSERT, K_AGREE], ids=["assertionMethod", "keyAgreement"])
 def test_vp_jwt_holder_key_not_in_authentication_is_refused(signer):
-    with pytest.raises(OpenvcError) as exc:
+    with pytest.raises(ClaimsInvalid) as exc:
         VpJwtProofSuite().verify(
             _vp(signer), audience=AUD, nonce=NONCE, resolver=_vp_resolver())
+    assert type(exc.value) is ClaimsInvalid
+    assert type(exc.value.__cause__) is KeyResolutionFailed
     assert "not authorized for authentication" in str(exc.value)
 
 
@@ -251,10 +257,12 @@ def test_vp_token_holder_key_not_in_authentication_is_refused():
         {"q": [_vp(K_AUTH)]}, dcql_query=query, nonce=NONCE, client_id=AUD,
         resolver=_vp_resolver())
     assert ok
-    with pytest.raises(OpenvcError) as exc:
+    with pytest.raises(ClaimsInvalid) as exc:
         verify_vp_token(
             {"q": [_vp(K_ASSERT)]}, dcql_query=query, nonce=NONCE, client_id=AUD,
             resolver=_vp_resolver())
+    assert type(exc.value) is ClaimsInvalid
+    assert type(exc.value.__cause__) is KeyResolutionFailed
     assert "not authorized for authentication" in str(exc.value)
 
 
@@ -291,3 +299,101 @@ def test_status_token_signed_by_other_relationship_is_refused(signer):
     with pytest.raises(KeyResolutionFailed):
         asyncio.run(default_status_list_token_resolver_async(
             resolver=async_reg(), fetch=_afetch(token))(URI))
+
+
+# --------------------------------------------------------------------------- #
+# did:jwk control, recorded did:webvh documents, hand-built documents
+# --------------------------------------------------------------------------- #
+
+def test_did_jwk_credential_still_verifies():
+    sk = P256SigningKey.generate(kid="_")
+    did = "did:jwk:" + b64u(json.dumps(sk.public_jwk()).encode())
+    signer = P256SigningKey(sk._sk, kid=f"{did}#0")
+    reg = DidResolverRegistry([DidJwkResolver()])
+    assert verify_credential(vc_jwt(signer, did), resolver=reg).format
+    areg = AsyncDidResolverRegistry([as_async_resolver(DidJwkResolver())])
+    assert asyncio.run(verify_credential_async(vc_jwt(signer, did), resolver=areg)).format
+
+
+WEBVH = Path(__file__).parent / "fixtures" / "didwebvh"
+
+
+def test_recorded_webvh_document_with_empty_assertion_method_is_refused():
+    # the didwebvh-rs golden document lists its sole key under `authentication` and
+    # declares `"assertionMethod": []`: a consequence of the document's own declaration,
+    # the same answer the Data Integrity lane gives
+    log = (WEBVH / "basic-create.jsonl").read_text()
+    did = json.loads(log.splitlines()[-1])["state"]["id"]
+    resolver = DidWebvhResolver(fetch=lambda url: log)
+    doc = resolver.resolve(did)
+    assert doc.relationships["assertionMethod"] == []
+    method = doc.verification_methods[0]
+    assert method.id in doc.relationships["authentication"]
+    reg = DidResolverRegistry([resolver])
+    throwaway = Ed25519SigningKey.generate(kid=method.id)
+    with pytest.raises(KeyResolutionFailed) as exc:
+        verify_credential(vc_jwt(throwaway, did), resolver=reg)
+    assert type(exc.value) is KeyResolutionFailed
+    # control: the same method as a holder key is granted (authentication)
+    assert _resolve_jose_key(reg, did, method.id, purpose="authentication") == \
+        method.public_key_jwk
+
+
+def _hand_built(relationships):
+    class Custom:
+        def supports(self, did):
+            return did == DID
+
+        def resolve(self, did):
+            return DidDocument(
+                id=DID,
+                verification_methods=[VerificationMethod(
+                    f"{DID}#assert", "JsonWebKey", DID, K_ASSERT.public_jwk())],
+                raw={}, relationships=relationships)
+    return Custom()
+
+
+@pytest.mark.parametrize("relationships, accepted", [
+    pytest.param(None, True, id="relationships-none"),
+    pytest.param([], True, id="relationships-list"),
+    pytest.param({"assertionMethod": None}, True, id="entry-none"),
+    pytest.param({"assertionMethod": 7}, False, id="entry-int"),
+    pytest.param({"assertionMethod": "x"}, False, id="entry-str"),
+    pytest.param({"assertionMethod": {"a": 1}}, False, id="entry-dict"),
+    pytest.param({"assertionMethod": [7, None, f"{DID}#assert"]}, True, id="non-string-members"),
+])
+def test_hand_built_relationships_never_raise_a_bare_exception(relationships, accepted):
+    custom = _hand_built(relationships)
+    token = vc_jwt(K_ASSERT)
+    good_did, good_signer = _did_key(Ed25519SigningKey)
+    good = vc_jwt(good_signer, good_did)
+    batch = [good, token, good]
+    reg = DidResolverRegistry([custom, DidKeyResolver()])
+    areg = AsyncDidResolverRegistry(
+        [as_async_resolver(custom), as_async_resolver(DidKeyResolver())])
+    if accepted:
+        assert verify_credential(token, resolver=reg).format
+        assert asyncio.run(verify_credential_async(token, resolver=areg)).format
+    else:
+        with pytest.raises(KeyResolutionFailed) as exc:
+            verify_credential(token, resolver=reg)
+        assert type(exc.value) is KeyResolutionFailed
+        with pytest.raises(KeyResolutionFailed):
+            asyncio.run(verify_credential_async(token, resolver=areg))
+    for results in (verify_many(batch, resolver=reg),
+                    asyncio.run(verify_many_async(batch, resolver=areg))):
+        assert [r.ok for r in results] == [True, accepted, True]
+        if not accepted:
+            assert type(results[1].error) is KeyResolutionFailed
+
+
+@pytest.mark.parametrize("relationships, expected", [
+    pytest.param(None, True, id="relationships-none"),
+    pytest.param({"assertionMethod": 7}, False, id="entry-int"),
+    pytest.param({"assertionMethod": f"{DID}#assert"}, False, id="entry-str"),
+])
+def test_key_for_purpose_and_grants_on_malformed_relationships(relationships, expected):
+    doc = _hand_built(relationships).resolve(DID)
+    got = doc.key_for_purpose(f"{DID}#assert", "assertionMethod")
+    assert (got is not None) is expected
+    assert doc.grants(doc.verification_methods[0], "assertionMethod") is expected

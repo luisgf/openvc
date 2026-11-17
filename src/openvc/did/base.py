@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import re
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any, Awaitable, Protocol, runtime_checkable
 
 from .. import _json
@@ -205,9 +206,14 @@ class DidDocument:
         computed here when not given; the cost is linear in the document size."""
         if not isinstance(proof_purpose, str):
             return False
-        refs = self.relationships.get(proof_purpose)
+        rels = self.relationships
+        # a hand-built document (a custom resolver) may not be dict[str, list[str]]: a
+        # mapping that is not one reads as "not declared", never a bare exception
+        refs = rels.get(proof_purpose) if isinstance(rels, Mapping) else None
         if refs is None:                       # relationship not declared -> lenient
             return True
+        if not isinstance(refs, (list, tuple)):   # declared, but not a list: grants nothing
+            return False
         if base is None:
             base = self._base()
         # an unresolvable method id has no spellings, so nothing grants it
@@ -338,7 +344,7 @@ def parse_did_document(raw: dict[str, Any]) -> DidDocument:
     :class:`DidResolutionError` — never read as an absent member, since an undeclared
     relationship leaves the key purpose unenforced. The check is per document, not per
     lane: a relationship that is not an array rejects the whole document, even for a
-    lane that never reads relationships. A method whose ``id`` is not a string is dropped
+    lane that does not read it. A method whose ``id`` is not a string is dropped
     and a relationship entry that is neither an id string nor an object with a string
     ``id`` is dropped. A dropped method is never selected, by ``kid`` or by purpose, and
     a dropped entry grants nothing. The ``kid``-less fallback to the sole key counts the
