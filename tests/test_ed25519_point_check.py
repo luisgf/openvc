@@ -675,57 +675,77 @@ def test_vc_jwt_did_web_document_with_d_still_verifies_as_on_main():
 
 
 @pytest.mark.parametrize("name", POINT_IDS)
-def test_vc_jwt_hostile_point_is_refused_even_with_d_absent_or_present(name):
-    """A hostile `x` without `d` is the refusal; with `d`, PyJWT derives the public key from
-    `d` and ignores `x`, so the key that verifies is the real one (genuine forged-signature
-    failure, not the point refusal)."""
-    _, _, jwk, token = _private_jwk_fixture()
+def test_vc_jwt_hostile_x_without_d_is_the_point_refusal(name):
+    """No `d`: nothing here depends on PyJWT, so exact class and point text."""
     with pytest.raises(SignatureInvalid) as info:
         VcJwtProofSuite().verify(_forged_vc_jwt("did:example:x"),
                                  public_key_jwk=_jwk(POINTS[name]))
     assert _says_point(info.value)
-    with pytest.raises(SignatureInvalid) as info2:
-        VcJwtProofSuite().verify(_forged_vc_jwt("did:example:x"),
-                                 public_key_jwk=dict(jwk, x=_b64u(POINTS[name])))
-    assert not _says_point(info2.value)
 
 
-# class and message recorded on origin/main for each bad-key shape on this lane
+@pytest.mark.parametrize("name", POINT_IDS)
+def test_vc_jwt_hostile_x_next_to_d_is_never_accepted(name):
+    """A hostile `x` next to a real `d`. What happens first depends on PyJWT, so this branches
+    on what the library did with the JWK, not on a version string: PyJWT 2.13.0 loads it from
+    `d` and ignores `x`; newer releases refuse the JWK ("Public key does not match private
+    key") before the point check runs. Either way the forged credential is refused with a
+    `ProofError` and is never accepted."""
+    from jwt.algorithms import OKPAlgorithm
+
+    _, _, jwk, _ = _private_jwk_fixture()
+    hostile = dict(jwk, x=_b64u(POINTS[name]))
+    try:
+        OKPAlgorithm.from_jwk(json.dumps(hostile))
+        loads = True
+    except Exception:
+        loads = False
+    with pytest.raises(ProofError) as info:
+        VcJwtProofSuite().verify(_forged_vc_jwt("did:example:x"), public_key_jwk=hostile)
+    if loads:
+        # the verifying key is the one derived from `d`: the forged signature fails as a
+        # plain signature failure, and the hostile `x` was never the key
+        assert type(info.value) is SignatureInvalid
+        assert not _says_point(info.value)
+    else:
+        assert type(info.value) is ProofError
+        assert str(info.value).startswith(_LOAD)
+
+
+# class and openvc's own text recorded on origin/main for each bad-key shape on this lane.
+# Text that PyJWT or `cryptography` wrote after "could not load EdDSA key from JWK: " is NOT
+# pinned: it differs between PyJWT releases ("a string value" / "a string or bytes value"), and
+# only the openvc part is ours to hold constant.
+_LOAD = "could not load EdDSA key from JWK: "
+_PIN = "EdDSA requires an OKP Ed25519 key, got "
 _MAIN_SHAPES = {
-    "x31": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": _b64u(bytes(31))},
-            "could not load EdDSA key from JWK: Invalid key parameter"),
-    "x33": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": _b64u(g + b"\0")},
-            "could not load EdDSA key from JWK: Invalid key parameter"),
-    "x-empty": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": ""},
-                "could not load EdDSA key from JWK: Invalid key parameter"),
-    "x-missing": (lambda g: {"kty": "OKP", "crv": "Ed25519"},
-                  'could not load EdDSA key from JWK: OKP should have "x" parameter'),
-    "x-int": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": 5},
-              "could not load EdDSA key from JWK: Expected a string value"),
-    "x-null": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": None},
-               "could not load EdDSA key from JWK: Expected a string value"),
-    "x-notb64": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": "!!!"},
-                 "could not load EdDSA key from JWK: Invalid key parameter"),
+    "x31": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": _b64u(bytes(31))}, _LOAD),
+    "x33": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": _b64u(g + b"\0")}, _LOAD),
+    "x-empty": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": ""}, _LOAD),
+    "x-missing": (lambda g: {"kty": "OKP", "crv": "Ed25519"}, _LOAD),
+    "x-int": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": 5}, _LOAD),
+    "x-null": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": None}, _LOAD),
+    "x-notb64": (lambda g: {"kty": "OKP", "crv": "Ed25519", "x": "!!!"}, _LOAD),
     "crv-x25519": (lambda g: {"kty": "OKP", "crv": "X25519", "x": _b64u(g)},
-                   "EdDSA requires an OKP Ed25519 key, got kty='OKP' crv='X25519'"),
+                   _PIN + "kty='OKP' crv='X25519'"),
     "crv-ed448": (lambda g: {"kty": "OKP", "crv": "Ed448", "x": _b64u(g)},
-                  "EdDSA requires an OKP Ed25519 key, got kty='OKP' crv='Ed448'"),
+                  _PIN + "kty='OKP' crv='Ed448'"),
     "kty-ec": (lambda g: {"kty": "EC", "crv": "Ed25519", "x": _b64u(g)},
-               "EdDSA requires an OKP Ed25519 key, got kty='EC' crv='Ed25519'"),
+               _PIN + "kty='EC' crv='Ed25519'"),
     "none": (lambda g: None, "EdDSA requires a JWK object, got NoneType"),
     "list": (lambda g: [1], "EdDSA requires a JWK object, got list"),
-    "empty": (lambda g: {}, "EdDSA requires an OKP Ed25519 key, got kty=None crv=None"),
+    "empty": (lambda g: {}, _PIN + "kty=None crv=None"),
 }
 
 
 @pytest.mark.parametrize("shape", list(_MAIN_SHAPES))
-def test_vc_jwt_other_bad_keys_keep_main_class_and_message(shape):
-    make, message = _MAIN_SHAPES[shape]
+def test_vc_jwt_other_bad_keys_keep_main_class_and_openvc_text(shape):
+    make, prefix = _MAIN_SHAPES[shape]
     _, key, _, token = _private_jwk_fixture()
     with pytest.raises(ProofError) as info:
         VcJwtProofSuite().verify(token, public_key_jwk=make(key.public_key_raw()))
     assert type(info.value) is ProofError
-    assert str(info.value) == message
+    assert str(info.value).startswith(prefix)
+    assert not _says_point(info.value)
 
 
 # ----------------------------------------------- F2: check_ed25519_point is total #
