@@ -391,6 +391,16 @@ All notable changes to **openvc** are documented here. The format follows
   way. The wording and the exception classes are unchanged, and an ordinary identifier is
   still quoted in full (`test_bounded_identifier_echo.py`).
 
+- **A resolver failure that is not `socket.gaierror` no longer escapes `openvc.fetch` as a
+  bare `OSError`** ([#425](https://github.com/luisgf/openvc/issues/425)).
+  `_resolve_public_ips` typed only `socket.gaierror` (and `ValueError`); CPython reports
+  `EAI_SYSTEM` as a plain `OSError` carrying the errno (`EMFILE`, `ENOMEM`, ...), which left
+  `https_json_fetch` / `https_text_fetch` — and a `did:web` `verify_credential`, and the whole
+  `verify_many` batch — with an untyped exception. Every `OSError` from the lookup is now an
+  `UnsafeUrlError` (`KeyResolutionFailed` through the pipeline, one item's error in a batch).
+  `MemoryError` and other non-`OSError` `BaseException`s still propagate unchanged
+  (`test_fetch_resolver_errors.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
