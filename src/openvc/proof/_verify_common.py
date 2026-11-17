@@ -157,22 +157,18 @@ def own_identifier(obj: Any, *, error: type[Exception]) -> tuple[bool, Any]:
     return True, obj[present[0]]
 
 
-def type_shape_problem(value: Any, *, members_only: bool = False) -> str | None:
+def type_shape_problem(value: Any) -> str | None:
     """Why a credential's *present* ``type`` value is malformed, or None when its shape is
     fine (VCDM 2.0 §4.5: a string or an array of strings). The reason names the shape
     through :func:`safe_repr`, never an attacker-sized value.
 
     Well-formed: a non-empty string, or an array whose every member is a non-empty string.
     An empty array is not judged here (whether ``[]`` or a ``type`` without
-    ``VerifiableCredential`` is refused is a separate conformance question). With
-    *members_only* a scalar is left to the caller and only an array's members are judged:
-    the one shape the Data Integrity and SD-JWT lanes accepted before this rule."""
+    ``VerifiableCredential`` is refused is a separate conformance question)."""
     if isinstance(value, list):
         for index, member in enumerate(value):
             if not isinstance(member, str) or not str.__str__(member):
                 return f"member {index} of the array is {safe_repr(member)}"
-        return None
-    if members_only:
         return None
     if isinstance(value, str) and str.__str__(value):
         return None
