@@ -54,6 +54,7 @@ All notable changes to **openvc** are documented here. The format follows
   and `VerifiedPresentation` docstrings and the Presentations wiki page now say what
   `holder` means on each lane and what the switch enforces where. Found by the internal
   security review of 2026-11-07 (`test_openid4vp_holder_binding_lanes.py`).
+
 - **mdoc: the document signer must share its IACA anchor's subject `countryName`, and its
   `stateOrProvinceName` when both carry it, as ISO/IEC 18013-5 §9.3.3 requires; the result
   now exposes both subjects** ([#383](https://github.com/luisgf/openvc/issues/383)).
@@ -255,6 +256,15 @@ All notable changes to **openvc** are documented here. The format follows
   `jsonld.normalize`, the goldens included. Found by the internal security review of
   2026-11-07 (`test_rdfc_budget.py`).
 
+- **status: under `require_status=True` a `credentialStatus` entry of an unrecognised type now
+  fails closed even when the credential also carries a recognised entry.** The gate only fired
+  when no entry was recognised, so an issuer publishing revocation through a mechanism openvc
+  does not implement and suspension through a Bitstring list had its revocations skipped by the
+  default policy. `StatusUnavailable` is raised before any resolver is called, on the sync and
+  async pipelines; `require_status=False` and `check_credential_status` keep skipping such
+  entries, and `openvc.status.unrecognised_status_entries` counts them. Found by the internal
+  security review of 2026-11-17 (#427, `test_status_unrecognised_entry.py`).
+
 - **The JOSE lanes hold the selected key to its DID-document verification relationship**
   ([#428](https://github.com/luisgf/openvc/issues/428)). VC-JWT, SD-JWT VC and the
   status-list token resolvers accepted a signature by any key of the issuer's document, even
@@ -404,6 +414,28 @@ All notable changes to **openvc** are documented here. The format follows
   lists still anchor (a LOTL that fails this way stops the walk with that one problem). The
   recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
   security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
+
+- **Key-resolution errors no longer echo an attacker-sized identifier whole**
+  ([#431](https://github.com/luisgf/openvc/issues/431)). A credential with a megabyte-long
+  `iss` or `verificationMethod` produced a megabyte-long exception message before any
+  signature was checked, and callers log the message. The quoted value now goes through
+  `safe_repr` (200 characters) in `resolve_verification_key`, the two DID resolver
+  registries (`no resolver for …`), the issuer and status-issuer binding refusals, the
+  `did:webvh` `versionId` refusals, the JSON-LD context loader's refusal and the async
+  twins; in `openvc.fetch` the URL of `unexpected status … for …` and the request target
+  (and the library's own echo of it) in `fetch failed for https://host…` are cut the same
+  way. The wording and the exception classes are unchanged, and an ordinary identifier is
+  still quoted in full (`test_bounded_identifier_echo.py`).
+
+- **A resolver failure that is not `socket.gaierror` no longer escapes `openvc.fetch` as a
+  bare `OSError`** ([#425](https://github.com/luisgf/openvc/issues/425)).
+  `_resolve_public_ips` typed only `socket.gaierror` (and `ValueError`); CPython reports
+  `EAI_SYSTEM` as a plain `OSError` carrying the errno (`EMFILE`, `ENOMEM`, ...), which left
+  `https_json_fetch` / `https_text_fetch` — and a `did:web` `verify_credential`, and the whole
+  `verify_many` batch — with an untyped exception. Every `OSError` from the lookup is now an
+  `UnsafeUrlError` (`KeyResolutionFailed` through the pipeline, one item's error in a batch).
+  `MemoryError` and other non-`OSError` `BaseException`s still propagate unchanged
+  (`test_fetch_resolver_errors.py`).
 
 ## [1.38.1] — 2026-11-07
 

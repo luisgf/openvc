@@ -23,7 +23,9 @@ checked against **both** status conventions — the W3C ``credentialStatus`` and
 IETF token ``status`` reference — so a status declared in the shape that does not
 match the proof format is not silently skipped. If a status is declared and no
 matching resolver is supplied, verification *fails* (:class:`StatusUnavailable`)
-rather than skipping revocation — you opt out explicitly, not by omission. A
+rather than skipping revocation — you opt out explicitly, not by omission. So does
+a ``credentialStatus`` entry of a type we cannot check, even next to one we can (it is
+refused before any resolver is called). A
 resolved *revoked* status raises :class:`~openvc.status.CredentialRevoked`; a
 *suspended* one raises :class:`~openvc.status.CredentialSuspended`.
 
@@ -86,6 +88,7 @@ from .status import (
     check_credential_status,
     check_token_status,
     parse_status_entries,
+    unrecognised_status_entries,
     parse_token_status_ref,
 )
 
@@ -770,7 +773,8 @@ def _bind_issuer_to_verification_method(verified: Any) -> None:
         raise IssuerBindingError("Data Integrity credential has no issuer to bind the key to")
     if not isinstance(vm, str) or vm.split("#", 1)[0] != issuer:
         raise IssuerBindingError(
-            f"proof verificationMethod {vm!r} is not controlled by issuer {issuer!r}")
+            f"proof verificationMethod {safe_repr(vm)} is not controlled by issuer "
+            f"{safe_repr(issuer)}")
 
 
 def _check_types(credential: dict[str, Any], expected: Sequence[str] | None) -> None:
@@ -848,7 +852,8 @@ def _enforce_status_issuer(status_obj: Any, field: str,
     if policy.status_issuer_allowlist and si in policy.status_issuer_allowlist:
         return
     raise StatusListIssuerUntrusted(
-        f"status list issuer {si!r} is not the credential issuer {credential_issuer!r} "
+        f"status list issuer {safe_repr(si)} is not the credential issuer "
+        f"{safe_repr(credential_issuer)} "
         "nor an allow-listed delegate (require_status_issuer_binding)")
 
 
@@ -891,6 +896,14 @@ def _check_status(
     result: Union[StatusResult, TokenStatusResult, None] = None
 
     entries = parse_status_entries(w3c_source)
+    unrecognised = unrecognised_status_entries(w3c_source)
+    if unrecognised and policy.require_status:
+        # an entry we cannot check fails closed even when others can be checked, and
+        # before any resolver is called (the issuer may publish revocation through it)
+        raise StatusUnavailable(
+            f"credential declares {unrecognised} credentialStatus entr"
+            f"{'y' if unrecognised == 1 else 'ies'} of an unrecognised type "
+            "(set policy.require_status=False to skip)")
     if entries:
         if resolve_status_list is None:
             _fail_closed(policy, "credentialStatus", "resolve_status_list")
@@ -903,11 +916,6 @@ def _check_status(
                 raise CredentialSuspended(
                     f"credential {_as_str(w3c_source.get('id'))!r} is suspended")
             result = w3c
-    elif w3c_source.get("credentialStatus") and policy.require_status:
-        # a credentialStatus is declared but of an entry type we cannot check
-        raise StatusUnavailable(
-            "credential declares a credentialStatus of an unrecognised type "
-            "(set policy.require_status=False to skip)")
 
     if ietf_source is not None:
         ref = parse_token_status_ref(ietf_source)
