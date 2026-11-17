@@ -875,7 +875,8 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   is per canonicalization and bounds the cost, it does not remove it. On one core of a
   developer laptop the worst refusals measured are 1.1 s (a clique of 8), 2.8 s (a fat
   clique, 0.97 MB) and 2.3 s (the shared-target cycle, 0.94 MB), 5.5 s for a 4.4 MB document
-  of which 3.4 s is the linear cost the same bytes have without ties; a loaded shared runner
+  of which 3.4 s is the cost the same bytes have without ties (linear in the tie-breaking
+  phase; the conversion before it is bounded separately, below); a loaded shared runner
   takes several times that, because the unit is calibrated on the dearest step and the time to
   spend the budget varies by shape. A presentation of N credentials multiplies it by N + 1,
   and a parsed credential has no size cap of its own (the 1 MiB cap is on fetched documents),
@@ -887,6 +888,17 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   identical parents with 8 identical children each would have to be hand-built; a cycle of
   150 and two parents with 7 children pass). The JCS suites do no RDF work and
   are unaffected (`test_rdfc_budget.py`).
+  **The conversion before it (R13, second bound).** The work above is the *tie-breaking*
+  phase. Before it, pyld's JSON-LD to RDF conversion has a cost of its own that is **not** linear: its node map checks each new value of a
+  (subject, property) against all the values already there, so N values of one property cost
+  N**2/2 comparisons (8 000 values, 71 KB, 10.4 s on v1.38.1; also N same-`@id` node objects,
+  N `type` values, N IRI objects) and ran before the signature check
+  ([#426](https://github.com/luisgf/openvc/issues/426)). `_rdfc` now expands the document
+  and counts the comparisons pyld will make, refusing over `MAX_CONVERSION_COMPARISONS`
+  (1 000 000, about a third of a second) with the same `CanonicalizationBudgetExceeded`
+  before the conversion runs; the count is checked against pyld's real calls by
+  `test_rdf_conversion_budget.py`. **Residual of this bound:** expansion itself is linear but
+  not free (a 1 MB document refuses in about 0.3 s, 6 MB in 1.4 s), and the same one-core caveat applies.
 
 ## 10. Out of scope
 

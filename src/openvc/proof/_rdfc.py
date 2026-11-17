@@ -31,6 +31,13 @@ that names the ceiling and quotes no document text:
   sizes the issuer copies the work counter already charges for);
 * ``MAX_HNDQ_CALLS`` — a ceiling on the recursion itself.
 
+Before any of that, pyld's JSON-LD to RDF conversion has a cost of its own: its node-map
+builder checks each new value of a (subject, property) against every value already there, so
+N values under one property cost about N**2/2 comparisons (a 71 KB credential, 10 s), and
+the RDF suites run it before the signature. :func:`_conversion_cost` replays that merge on
+the *expanded* document (linear) and counts the comparisons pyld will make, refusing above
+``MAX_CONVERSION_COMPARISONS`` before ``to_rdf`` runs (issue #426).
+
 The budget is **per canonicalization**, not per credential or per presentation: a VP
 carrying N credentials canonicalizes N+1 documents, each with its own budget.
 
@@ -46,6 +53,7 @@ Output is byte-identical to
 from __future__ import annotations
 
 import functools
+import json
 import math
 from collections import Counter
 from typing import Any
@@ -53,6 +61,11 @@ from typing import Any
 from .contexts import pyld_options
 from .errors import ProofMalformed
 
+# Value comparisons (pyld ``compare_values`` calls) the JSON-LD to RDF conversion may make,
+# counted before it runs (see :func:`_conversion_cost`). A comparison costs about 0.3
+# microsecond, so the ceiling is a fraction of a second of one core; the repository's RDF
+# fixtures need a few hundred at most (see the wiki).
+MAX_CONVERSION_COMPARISONS = 1_000_000
 # Distinct blank nodes in one canonicalized dataset. Without ties a blank node costs
 # nothing in Hash N-Degree Quads; the cap sizes the issuer copies the work counter charges.
 MAX_BLANK_NODES = 1024
@@ -85,10 +98,145 @@ class CanonicalizationBudgetExceeded(ProofMalformed):
     Refused before any signature check; never a statement about the signature."""
 
 
-def _exceeded(what: str, limit: int) -> CanonicalizationBudgetExceeded:
+def _exceeded(what: str, limit: int, why: str = "the document's blank-node graph is too "
+              "large or too symmetric") -> CanonicalizationBudgetExceeded:
     return CanonicalizationBudgetExceeded(
-        f"RDF canonicalization budget exceeded: {what} (limit {limit}); "
-        "the document's blank-node graph is too large or too symmetric to canonicalize")
+        f"RDF canonicalization budget exceeded: {what} (limit {limit}); {why} to canonicalize")
+
+
+_KEYWORDS = frozenset((
+    "@base", "@container", "@context", "@default", "@direction", "@embed", "@explicit",
+    "@first", "@graph", "@id", "@import", "@included", "@index", "@json", "@language",
+    "@list", "@nest", "@none", "@omitDefault", "@propagate", "@protected", "@preserve",
+    "@requireAll", "@reverse", "@set", "@type", "@value", "@version", "@vocab"))  # pyld's list
+
+
+class _Slot:
+    """The values pyld has stored under one (graph, subject, property): how many, and where
+    the first one of each kind sits."""
+
+    __slots__ = ("size", "first")
+
+    def __init__(self) -> None:
+        self.size = 0
+        self.first: dict[Any, int] = {}
+
+
+class _ConversionCounter:
+    """A dry run of pyld's ``_create_node_map`` that only counts ``compare_values`` calls.
+
+    Every ``add_value(..., allowDuplicate=False)`` pyld makes walks the values already stored
+    under the same (graph, subject, property) until one compares equal, so it costs at most
+    the number already there; ``allowDuplicate=True`` (``@list`` objects) costs nothing but
+    still enlarges what later adds walk. Node objects with the same ``@id`` (a blank node label
+    included) merge into one subject; a node without ``@id`` stands alone. A value is deemed
+    equal to an earlier one only when it is *identical* (a finer relation than pyld's), so the
+    count can only be above what pyld does, never below: a duplicate costs its position, a new
+    value costs everything already stored."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.cost = 0
+        self.slots: dict[tuple[Any, Any, str], _Slot] = {}
+        self.fresh = 0
+
+    def _add(self, graph: Any, node: Any, prop: str, key: Any, allow_duplicate: bool) -> None:
+        slot = self.slots.get((graph, node, prop))
+        if slot is None:
+            slot = self.slots[(graph, node, prop)] = _Slot()
+        if allow_duplicate:
+            slot.size += 1
+            return
+        found = slot.first.get(key)
+        if found is not None:
+            self.cost += found + 1
+        else:
+            self.cost += slot.size
+            slot.first[key] = slot.size
+            slot.size += 1
+        if self.cost > self.limit:
+            raise _exceeded("JSON-LD to RDF conversion work", self.limit,
+                            "too many values under one property of one subject")
+
+    def _value_key(self, value: dict) -> Any:
+        """A key that is equal for two values only when pyld's ``compare_values`` is sure to
+        call them equal (it compares ``@value`` with ``==``, so NaN never matches itself and
+        ``1 == 1.0``; a value without a safe key gets one nothing else shares)."""
+        raw = value.get("@value")
+        if type(raw) in (str, bool, int) or (type(raw) is float and math.isfinite(raw)):
+            try:
+                rest = json.dumps({k: v for k, v in value.items() if k != "@value"},
+                                  sort_keys=True)
+            except (TypeError, ValueError):
+                rest = None
+            if rest is not None:
+                return ("v", type(raw), raw, rest)
+        self.fresh += 1
+        return ("u", self.fresh)
+
+    def walk(self, item: Any, graph: Any, subject: Any, prop: Any, in_list: bool,
+             reverse_of: Any = None) -> None:
+        """Mirror of one ``_create_node_map`` call: *subject* is the id of the node the item
+        hangs from (``None`` at the top, under ``@graph`` and ``@included``), *reverse_of* the
+        node a ``@reverse`` item points back at."""
+        if isinstance(item, list):
+            for element in item:
+                self.walk(element, graph, subject, prop, in_list, reverse_of)
+            return
+        if not isinstance(item, dict):
+            return
+        if "@value" in item:
+            if subject is not None and not in_list and reverse_of is None:
+                self._add(graph, subject, prop, self._value_key(item), False)
+            return
+        if "@list" in item:
+            if subject is not None and not in_list and reverse_of is None:
+                self._add(graph, subject, prop, None, True)
+            self.walk(item["@list"], graph, subject, prop, True, reverse_of)
+            return
+        raw = item.get("@id")
+        if raw is None:
+            self.fresh += 1
+            node: Any = ("fresh", self.fresh)
+        else:
+            node = ("id", str(raw))      # an IRI or a blank node label: same string, same node
+        if reverse_of is not None:
+            self._add(graph, node, prop, ("@id", reverse_of), False)
+        elif prop is not None:
+            if subject is not None and not in_list:
+                self._add(graph, subject, prop, ("@id", node), False)
+        for name, objects in sorted(item.items()):
+            if name == "@id":
+                continue
+            if name == "@reverse":
+                for reverse_property, items in objects.items():
+                    self.walk(items, graph, None, reverse_property, False, node)
+                continue
+            if name == "@graph":
+                # a graph named like a keyword (``@default``) is pyld's default graph
+                named = "@default" if node[0] == "id" and node[1].startswith("@") else node
+                self.walk(objects, named, None, None, False)
+                continue
+            if name == "@included":
+                self.walk(objects, graph, None, None, False)
+                continue
+            if name in _KEYWORDS:
+                if name != "@type":
+                    continue
+                for element in objects:
+                    self._add(graph, node, "@type", ("t", element), False)
+                continue
+            for element in objects:
+                self.walk(element, graph, node, name, False)
+
+
+def _conversion_cost(expanded: Any, limit: int) -> int:
+    """The ``compare_values`` calls pyld's JSON-LD to RDF conversion will make for the
+    *expanded* document, or a refusal (:class:`CanonicalizationBudgetExceeded`) as soon as the
+    count passes *limit*. Linear in the size of the document."""
+    counter = _ConversionCounter(limit)
+    counter.walk(expanded, "@default", None, None, False)
+    return counter.cost
 
 
 def _distinct_permutations(related: list[str], cap: int) -> int:
@@ -202,6 +350,25 @@ def new_canonicalizer() -> Any:
     return _budgeted_class()()
 
 
+def to_rdf(document: Any, loader: Any, **options: Any) -> Any:
+    """pyld's ``jsonld.to_rdf`` of a JSON-LD *document*, refused first if its cost (see
+    :func:`_conversion_cost`) is over ``MAX_CONVERSION_COMPARISONS``. *options* are the
+    ``to_rdf`` options (the loader's resolver is added); the result is pyld's, untouched.
+
+    Raises :class:`CanonicalizationBudgetExceeded` over budget, before the conversion runs;
+    whatever pyld raises for a document it cannot process is left to the caller."""
+    from pyld import jsonld
+
+    try:
+        # Linear: the cost of the conversion below is counted before it is paid (#426).
+        expanded = jsonld.expand(document, pyld_options(loader))
+    except jsonld.JsonLdError:
+        pass                          # to_rdf expands again and raises the error callers expect
+    else:
+        _conversion_cost(expanded, MAX_CONVERSION_COMPARISONS)
+    return jsonld.to_rdf(document, pyld_options(loader, **options))
+
+
 def canonicalize_nquads(document: Any, loader: Any) -> str:
     """Canonical N-Quads of a JSON-LD *document*: a drop-in for
     ``jsonld.normalize(document, pyld_options(loader, algorithm="URDNA2015",
@@ -209,7 +376,5 @@ def canonicalize_nquads(document: Any, loader: Any) -> str:
 
     Raises :class:`CanonicalizationBudgetExceeded` over budget; whatever pyld raises
     for a document it cannot process is left to the caller, as with ``normalize``."""
-    from pyld import jsonld
-
-    dataset = jsonld.to_rdf(document, pyld_options(loader, produceGeneralizedRdf=False))
+    dataset = to_rdf(document, loader, produceGeneralizedRdf=False)
     return str(new_canonicalizer().main(dataset, {"format": "application/n-quads"}))

@@ -255,6 +255,27 @@ All notable changes to **openvc** are documented here. The format follows
   `jsonld.normalize`, the goldens included. Found by the internal security review of
   2026-11-07 (`test_rdfc_budget.py`).
 
+- **The JSON-LD to RDF conversion the three RDF suites run before the signature is now
+  bounded: a document whose conversion would exceed 1 000 000 value comparisons is refused as
+  `CanonicalizationBudgetExceeded` before pyld runs it** ([#426](https://github.com/luisgf/openvc/issues/426)).
+  pyld builds its node map with a duplicate check per value, so N values of one property of
+  one subject cost about N**2/2 `compare_values` calls: on v1.38.1 a 71 KB credential (8 000
+  values) cost 10.4 s through `verify_credential` with a garbage `proofValue` (the proof is
+  canonicalized before the key is even resolved), 191 KB cost 171 s, and the same cost is
+  reached by N node objects with the same `@id` (they merge), N `type` values, N IRI objects
+  and N values of a bundled term; on the async API it stalled the event loop. The #381
+  budget only started after the conversion. `openvc.proof._rdfc` now expands the document
+  (linear) and replays pyld's node-map merge, counting the comparisons it will make grouped by
+  graph, subject `@id` and property (`@type`, `@reverse`, `@included`, `@graph`, `@list`,
+  repeated blank-node labels included), and refuses over `MAX_CONVERSION_COMPARISONS` before
+  `to_rdf` is called; the same check guards the `to_rdf` calls of `ecdsa-sd-2023`. The count
+  is an upper bound (a duplicate costs its position, a new value everything already stored),
+  and a test checks it against the real `compare_values` calls of pyld over a corpus of
+  shapes and a seeded fuzz. The ceiling is about a third of a second of one core; the
+  repository's RDF fixtures need at most 2 comparisons. Output of an accepted document is
+  byte-identical to `jsonld.normalize`. `eddsa-jcs-2022` / `ecdsa-jcs-2019` are unaffected
+  (`test_rdf_conversion_budget.py`). Found by an internal security review of 2026-11-17.
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —

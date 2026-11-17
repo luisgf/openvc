@@ -216,6 +216,19 @@ graphs of around a dozen statements each; the threshold is not monotone). Giving
 value keeps them out of the tie-breaking phase. The output of an accepted document is
 byte-identical to pyld's `normalize`.
 
+A second, earlier bound covers pyld's **JSON-LD to RDF conversion**. pyld checks each new value
+of a property against every value already stored under that property of that subject, so N
+values of one property cost about N**2/2 comparisons (8 000 values in a 71 KB credential took
+10 seconds, with a garbage proof, because the conversion runs before the signature is looked
+at). The same cost is reached by many node objects with the same `id`, many `type` values and
+many IRI objects. openvc expands the document (linear), replays that merge and counts the
+comparisons pyld will make, per graph, subject and property, and refuses over
+`MAX_CONVERSION_COMPARISONS` (1 000 000, about a third of a second on one core) with the same
+`CanonicalizationBudgetExceeded`, before the conversion runs. The repository's RDF fixtures
+need at most 2; a credential with about 1 400 distinct values under one property is the
+largest that passes. `ecdsa-sd-2023`'s own conversions are guarded the same way, and the JCS suites do no
+RDF work.
+
 ## The JSON must be what was signed
 
 The RDF suites (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `ecdsa-sd-2023`) sign the **RDF
