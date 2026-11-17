@@ -140,6 +140,11 @@ verifier that asked for `urn:example:eudi:pid` and received
 `urn:example:eudi:pid:aendgard:1` with that URN in `aka_vcts` still has to make
 that comparison itself.
 
+**Wire form.** A presentation is `<issuer-jwt>~<disclosure>~…~<disclosure>~<kb-jwt or empty>`
+(RFC 9901 §4): every disclosure is a non-empty base64url segment. An empty segment between
+the issuer JWT and the last one (`<jwt>~d1~~d2~`, `<jwt>~~`) is refused with `MalformedToken`,
+as is a string with no `~` at all; an empty segment is never silently dropped, because the KB-JWT `sd_hash` covers the string as presented.
+
 The pipeline also accepts SD-JWT presentations directly —
 `verify_credential(presentation, ...)` detects the format and resolves the
 issuer key from `iss` (see

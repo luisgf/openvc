@@ -104,8 +104,9 @@ class _OfflineLoader:
         try:
             document = self.contexts[url]
         except KeyError:
+            from .._verify_common import safe_repr  # lazily: this package loads first
             raise DocumentLoaderError(
-                f"refusing to fetch JSON-LD context over the network: {url!r} "
+                f"refusing to fetch JSON-LD context over the network: {safe_repr(url)} "
                 f"(bundle it or pass it via extra_contexts)") from None
         loaded: dict[str, Any] = {
             "contextUrl": None,

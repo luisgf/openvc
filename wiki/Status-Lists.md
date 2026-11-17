@@ -290,6 +290,16 @@ result = verify_credential(
 )
 ```
 
+Every `credentialStatus` entry has to be checkable, not just one of them: under
+`require_status=True` an entry whose `type` is not `BitstringStatusListEntry` /
+`StatusList2021Entry` raises `StatusUnavailable` **even when the credential also
+carries a recognised entry**, before any resolver is called (an issuer may publish
+revocation through a mechanism openvc does not implement and suspension through a
+Bitstring list). With `require_status=False` the recognised entries are checked and
+the others skipped, and the lower-level `check_credential_status` always skips them:
+`openvc.status.unrecognised_status_entries(credential)` counts what it skipped, so
+that is your call there.
+
 Opting *out* (accepting a credential without checking its declared status) is
 an explicit policy decision, not a default. To keep checking status but accept a
 revoked credential anyway, set `VerificationPolicy(require_not_revoked=False)`
