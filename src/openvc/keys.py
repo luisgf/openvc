@@ -57,6 +57,15 @@ class KeyBackendError(OpenvcError): ...
 class InvalidKey(KeyBackendError): ...
 
 
+class UnusablePublicKey(InvalidKey):
+    """A public key whose bytes are a point that is no usable public key: a small-order
+    point, or an encoding that is not canonical (RFC 8032 section 5.1.3).
+
+    Raised by :func:`check_ed25519_point`. Each lane maps it to its own family (the proof
+    suites to ``SignatureInvalid``, did:webvh to ``DidWebvhError``, COSE to ``CoseError``);
+    any other bad key keeps the class it always had."""
+
+
 class NonCanonicalKey(InvalidKey):
     """A public JWK that decodes to a valid key but is not spelled canonically.
 
@@ -621,16 +630,17 @@ def check_ed25519_point(enc: bytes) -> None:
     from_public_bytes`` checks only the length, and under a small-order key a signature
     needs no private key at all (``R`` = the identity, ``S`` = 0 verifies for every message
     under the identity key). Called by :func:`canonical_public_jwk`, :func:`verify_signature`,
-    the VC-JWT PyJWT lane and ``eddsa-rdfc-2022``. Raises :class:`InvalidKey`; *enc* is
+    the VC-JWT PyJWT lane and ``eddsa-rdfc-2022``. Raises :class:`UnusablePublicKey` (an
+    :class:`InvalidKey`); *enc* is
     expected to be 32 bytes, so call it after the length is established.
     """
     y = int.from_bytes(enc, "little") & ((1 << 255) - 1)
     if y >= _ED25519_P:
-        raise InvalidKey(
+        raise UnusablePublicKey(
             "JWK member 'x' is not a canonical Ed25519 point encoding "
             "(y >= p, RFC 8032 §5.1.3)")
     if y in _ED25519_SMALL_ORDER_Y:
-        raise InvalidKey(
+        raise UnusablePublicKey(
             "JWK member 'x' is a small-order Ed25519 point, not a usable public key")
 
 
@@ -748,7 +758,8 @@ def verify_signature(
     The VC verification path uses the proof suite instead; this is complementary.
 
     An Ed25519 key that is a small-order point or a non-canonical encoding (y >= p) is
-    refused with :class:`InvalidKey` before any signature is checked, never answered with
+    refused with :class:`UnusablePublicKey` (an :class:`InvalidKey`) before any signature is
+    checked, never answered with
     ``False`` (see :func:`check_ed25519_point`). A wrong-length ``x`` stays the "malformed
     public key" :class:`InvalidKey`.
     """
@@ -828,6 +839,7 @@ __all__ = [
     "MLDSA_ALGS",
     "MLDSASigningKey",
     "NonCanonicalKey",
+    "UnusablePublicKey",
     "P256KeyAgreementKey",
     "P256SigningKey",
     "P384SigningKey",

@@ -264,16 +264,23 @@ All notable changes to **openvc** are documented here. The format follows
   token or a Key Binding JWT under such a key needed no private key, and the identity had four
   spellings with four thumbprints. Measured on `main` through `verify_credential` (a `did:jwk`
   issuer, no private key anywhere): the identity, the point of order 2, the order-4 point
-  and the identity spelled with `y >= p` were each accepted on the first payload. The rule is now one public helper, `openvc.keys.check_ed25519_point`
-  (`InvalidKey`), called by `keys.verify_signature` before the signature is checked (SD-JWT
-  issuer JWT and a KB-JWT under `cnf.jwk`, VP-JWT, status tokens, `eddsa-jcs-2022`,
-  did:webvh `updateKeys`, COSE, LoTE, WRPRC), by the VC-JWT PyJWT lane and by
-  `eddsa-rdfc-2022`. Each lane keeps its error family: `ProofError` on VC-JWT and the
-  SD-JWT lanes, `SignatureInvalid` on status tokens, VP-JWT and the JCS suites,
-  `ProofMalformed` on `eddsa-rdfc-2022`; COSE and did:webvh pass the `InvalidKey` through as
-  it is (still an `OpenvcError`, so `verify_many` returns it for that item; #391 tracks the
-  COSE mapping). A valid key and every Ed25519 golden are unchanged; P-256 and P-384 need no
-  change. Found by a security review of `main` on 2026-11-17 (`test_ed25519_point_check.py`).
+  and the identity spelled with `y >= p` were each accepted on the first payload. The rule is
+  now one public helper, `openvc.keys.check_ed25519_point`, which raises the new
+  `openvc.keys.UnusablePublicKey` (an `InvalidKey`, so `canonical_public_jwk` is unchanged);
+  `keys.verify_signature` applies it before the signature is checked and raises it, never
+  `False`. The class is uniform: **every proof suite raises `SignatureInvalid`** for it
+  (VC-JWT, SD-JWT VC issuer JWT and KB-JWT, VP-JWT, status-list token, `eddsa-jcs-2022`,
+  `eddsa-rdfc-2022`; a `ProofError`, so code that catches the family is unaffected), and
+  **every other lane raises its own family**, never a bare `InvalidKey`: did:webvh a
+  `DidWebvhError` (`KeyResolutionFailed` / `KeyResolutionError` through the pipeline, as for
+  any log the resolver refuses; before, the `InvalidKey` left the resolver outside
+  `DidError`), COSE a `CoseError` (mdoc reports it as `MdocSignatureInvalid` for IssuerAuth
+  and `MdocDeviceAuthError` for DeviceAuth), WRPRC an `RpRegistrationError` and LoTE a
+  `TrustListSignatureError`. Any other bad key (wrong-length `x`, wrong curve, a missing
+  member) keeps the class and message it had, and the general `KeyBackendError` mapping of
+  `cose.verify_sign1` stays with #391. A valid key and every Ed25519 golden are unchanged; P-256
+  and P-384 need no change. Found by a security review of `main` on 2026-11-17
+  (`test_ed25519_point_check.py`).
 
 ### Fixed
 

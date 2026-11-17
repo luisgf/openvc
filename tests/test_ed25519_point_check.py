@@ -65,6 +65,14 @@ POINT_IDS = list(POINTS)
 FORGED_SIG = bytes([1]) + bytes(31) + bytes(32)         # R = identity, S = 0
 
 
+def _unusable():
+    """The refusal's class, imported late so the rest of the file collects on a tree
+    that predates it (the behavioural tests must fail on their merits there)."""
+    from openvc.keys import UnusablePublicKey
+
+    return UnusablePublicKey
+
+
 def _b64u(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
@@ -105,8 +113,9 @@ def _forged_vc_jwt(did: str, jti: str = "urn:uuid:1") -> str:
 @pytest.mark.parametrize("name", POINT_IDS)
 def test_helper_refuses_every_hostile_encoding(name):
     from openvc.keys import check_ed25519_point      # inside: the rest must collect on main
-    with pytest.raises(InvalidKey):
+    with pytest.raises(InvalidKey) as info:
         check_ed25519_point(POINTS[name])
+    assert type(info.value) is _unusable()
 
 
 def test_helper_accepts_a_real_key():
@@ -122,7 +131,7 @@ def test_verify_signature_refuses_typed_never_false(name, alg):
     with pytest.raises(InvalidKey) as info:
         verify_signature(alg=alg, public_jwk=_jwk(POINTS[name]),
                          signing_input=b"anything", signature=FORGED_SIG)
-    assert type(info.value) is InvalidKey
+    assert type(info.value) is _unusable()
     # not re-wrapped into the generic "malformed public key" message of the wrapper
     assert "malformed public key" not in str(info.value)
 
@@ -152,8 +161,8 @@ def test_vc_jwt_refuses_through_verify_credential(name, make_did):
     token = _forged_vc_jwt(did)
     with pytest.raises(ProofError) as info:
         verify_credential(token)
-    assert type(info.value) is ProofError
-    assert "could not load" in str(info.value)
+    assert type(info.value) is SignatureInvalid
+    assert "small-order" in str(info.value) or "canonical" in str(info.value)
 
 
 @pytest.mark.parametrize("name", POINT_IDS)
@@ -161,7 +170,7 @@ def test_vc_jwt_suite_refuses_a_pinned_key(name):
     with pytest.raises(ProofError) as info:
         VcJwtProofSuite().verify(_forged_vc_jwt("did:example:x"),
                                  public_key_jwk=_jwk(POINTS[name]))
-    assert type(info.value) is ProofError
+    assert type(info.value) is SignatureInvalid
 
 
 def test_vc_jwt_control_valid_key_same_forged_signature():
@@ -200,7 +209,16 @@ def test_verify_many_returns_a_per_item_error():
     assert [r.ok for r in out] == [False, True, False]
     for r in (out[0], out[2]):
         assert isinstance(r.error, OpenvcError)
-        assert type(r.error) is ProofError
+        assert type(r.error) is SignatureInvalid
+
+
+def test_vc_jwt_wrong_length_x_keeps_its_class():
+    """Rule C: a bad key that is not the new refusal keeps the class it had."""
+    did = _did_jwk(bytes(31))
+    with pytest.raises(ProofError) as info:
+        verify_credential(_forged_vc_jwt(did))
+    assert type(info.value) is ProofError
+    assert "could not load EdDSA key from JWK" in str(info.value)
 
 
 # ------------------------------------------------------ SD-JWT VC issuer JWT and KB-JWT #
@@ -217,7 +235,7 @@ def test_sd_jwt_issuer_jwt_refuses(name):
     with pytest.raises(ProofError) as info:
         SdJwtVcProofSuite().verify(_sd_jwt_with_forged_issuer_signature(),
                                    public_key_jwk=_jwk(POINTS[name]))
-    assert type(info.value) is ProofError
+    assert type(info.value) is SignatureInvalid
     assert "could not verify" in str(info.value)
 
 
@@ -248,6 +266,25 @@ def test_kb_jwt_under_a_small_order_cnf_jwk_refuses(name):
     with pytest.raises(ProofError) as info:
         SdJwtVcProofSuite().verify(
             _sd_jwt_bound_to(POINTS[name], issuer), public_key_jwk=ipub,
+            audience="https://verifier.example", nonce="n-1", require_key_binding=True)
+    assert type(info.value) is SignatureInvalid
+    assert "KB-JWT" in str(info.value)
+
+
+def test_sd_jwt_wrong_length_x_keeps_its_class():
+    with pytest.raises(ProofError) as info:
+        SdJwtVcProofSuite().verify(_sd_jwt_with_forged_issuer_signature(),
+                                   public_key_jwk=_jwk(bytes(31)))
+    assert type(info.value) is ProofError
+    assert "could not verify" in str(info.value)
+
+
+def test_kb_jwt_wrong_length_cnf_x_keeps_its_class():
+    issuer = Ed25519SigningKey.generate(kid="i")
+    with pytest.raises(ProofError) as info:
+        SdJwtVcProofSuite().verify(
+            _sd_jwt_bound_to(bytes(31), issuer),
+            public_key_jwk=_jwk(issuer.public_key_raw()),
             audience="https://verifier.example", nonce="n-1", require_key_binding=True)
     assert type(info.value) is ProofError
     assert "KB-JWT" in str(info.value)
@@ -324,6 +361,13 @@ def test_eddsa_jcs_refuses(name):
     assert "small-order" in str(info.value) or "canonical" in str(info.value)
 
 
+def test_eddsa_jcs_wrong_length_x_keeps_its_class():
+    signer = Ed25519SigningKey.generate(kid="s")
+    suite = EddsaJcsProofSuite()
+    with pytest.raises(SignatureInvalid, match="malformed public key"):
+        suite.verify(_forged_di(suite, signer), public_key_jwk=_jwk(bytes(31)), now=NOW)
+
+
 def test_eddsa_jcs_control():
     signer = Ed25519SigningKey.generate(kid="s")
     suite = EddsaJcsProofSuite()
@@ -340,10 +384,20 @@ def test_eddsa_rdfc_refuses(name):
     pytest.importorskip("pyld")
     signer = Ed25519SigningKey.generate(kid="s")
     suite = DataIntegrityProofSuite()
-    with pytest.raises(ProofMalformed) as info:
+    with pytest.raises(ProofError) as info:
         suite.verify(_forged_di(suite, signer), public_key_jwk=_jwk(POINTS[name]), now=NOW)
-    assert type(info.value) is ProofMalformed
+    assert type(info.value) is SignatureInvalid
     assert "unusable Ed25519 public key" in str(info.value)
+
+
+def test_eddsa_rdfc_wrong_length_x_keeps_its_class():
+    pytest.importorskip("pyld")
+    signer = Ed25519SigningKey.generate(kid="s")
+    suite = DataIntegrityProofSuite()
+    with pytest.raises(ProofMalformed) as info:
+        suite.verify(_forged_di(suite, signer), public_key_jwk=_jwk(bytes(31)), now=NOW)
+    assert type(info.value) is ProofMalformed
+    assert "malformed Ed25519 public key" in str(info.value)
 
 
 def test_eddsa_rdfc_control():
@@ -403,10 +457,12 @@ def _webvh_genesis_log(update_key_raw: bytes) -> tuple[str, str]:
 
 @pytest.mark.parametrize("name", POINT_IDS)
 def test_webvh_update_key_of_small_order_is_refused(name):
+    """The resolver's own family (a DidError), not a bare InvalidKey leaking out of it."""
     did, log = _webvh_genesis_log(POINTS[name])
     with pytest.raises(OpenvcError) as info:
         DidWebvhResolver(fetch=lambda _url: log).resolve(did)
-    assert type(info.value) is InvalidKey
+    assert type(info.value) is DidWebvhError
+    assert "not a usable Ed25519 key" in str(info.value)
 
 
 def test_webvh_control_valid_update_key_same_forged_proof():
@@ -415,25 +471,17 @@ def test_webvh_control_valid_update_key_same_forged_proof():
         DidWebvhResolver(fetch=lambda _url: log).resolve(did)
 
 
-# -------------------------------------------------------------------------- COSE #
-
-@pytest.mark.parametrize("name", POINT_IDS)
-def test_cose_sign1_refuses_with_the_key_class(name):
-    """COSE hands the key error through as it is (an OpenvcError; #391 tracks mapping it)."""
-    from openvc import cbor, cose
-
-    protected = cbor.encode({1: -8})        # alg: EdDSA
-    sign1 = cose.CoseSign1(protected=protected, protected_header={1: -8}, unprotected={},
-                           payload=b"p", signature=FORGED_SIG)
-    with pytest.raises(InvalidKey) as info:
-        cose.verify_sign1(sign1, public_jwk=_jwk(POINTS[name]))
-    assert type(info.value) is InvalidKey
+def test_webvh_wrong_length_update_key_keeps_its_class():
+    did, log = _webvh_genesis_log(bytes(31))
+    with pytest.raises(DidWebvhError, match="not an Ed25519 multikey"):
+        DidWebvhResolver(fetch=lambda _url: log).resolve(did)
 
 
 def test_webvh_issuer_in_a_batch_is_a_per_item_error():
-    """Through the pipeline: the InvalidKey of a small-order updateKey is not swallowed into
-    a pass and does not abort the batch; verify_many returns it as that item's error."""
+    """Through the pipeline a refused log is KeyResolutionFailed, like any log the resolver
+    refuses; verify_many returns it per item and the batch carries on."""
     from openvc.did.base import DidResolverRegistry
+    from openvc.verify import KeyResolutionFailed
 
     did, log = _webvh_genesis_log(POINTS["identity"])
     resolver = DidResolverRegistry([DidWebvhResolver(fetch=lambda _url: log)])
@@ -441,5 +489,135 @@ def test_webvh_issuer_in_a_batch_is_a_per_item_error():
     out = verify_many([token, token], policy=VerificationPolicy(), resolver=resolver)
     assert [r.ok for r in out] == [False, False]
     for r in out:
-        assert isinstance(r.error, OpenvcError)
-        assert type(r.error) is InvalidKey
+        assert type(r.error) is KeyResolutionFailed
+        assert "not a usable Ed25519 key" in str(r.error)
+
+
+# -------------------------------------------------------------------------- COSE #
+
+def _sign1(protected_alg: int = -8):
+    from openvc import cbor, cose
+
+    return cose.CoseSign1(protected=cbor.encode({1: protected_alg}),
+                          protected_header={1: protected_alg}, unprotected={},
+                          payload=b"p", signature=FORGED_SIG)
+
+
+@pytest.mark.parametrize("name", POINT_IDS)
+def test_cose_sign1_refuses_with_coseerror(name):
+    from openvc import cose
+
+    with pytest.raises(OpenvcError) as info:
+        cose.verify_sign1(_sign1(), public_jwk=_jwk(POINTS[name]))
+    assert type(info.value) is cose.CoseError
+    assert "unusable" in str(info.value)
+
+
+def test_cose_sign1_wrong_length_x_is_still_the_key_class():
+    """Rule C: the general KeyBackendError mapping of verify_sign1 is #391's, not this PR's."""
+    from openvc import cose
+
+    with pytest.raises(InvalidKey) as info:
+        cose.verify_sign1(_sign1(), public_jwk=_jwk(bytes(31)))
+    assert type(info.value) is InvalidKey
+
+
+def _device_auth_inputs(device_x: bytes):
+    from types import SimpleNamespace
+
+    from openvc import cbor
+
+    inner = cbor.encode({})
+    ns_tag = cbor.CborTag(cbor.TAG_ENCODED_CBOR, inner,
+                          raw=cbor.encode(cbor.CborTag(cbor.TAG_ENCODED_CBOR, inner)))
+    sign1 = [cbor.encode({1: -8}), {}, None, FORGED_SIG]
+    document = {"deviceSigned": {"nameSpaces": ns_tag,
+                                 "deviceAuth": {"deviceSignature": sign1}}}
+    parts = SimpleNamespace(
+        doc_type="org.iso.18013.5.1.mDL",
+        mso={"deviceKeyInfo": {"deviceKey": {1: 1, -1: 6, -2: device_x}}})
+    return document, parts
+
+
+@pytest.mark.parametrize("name", POINT_IDS)
+def test_mdoc_device_auth_maps_the_cose_refusal(name):
+    """mdoc turns the CoseError into its own MdocDeviceAuthError (holder binding failed)."""
+    from openvc.mdoc import MdocDeviceAuthError, _verify_device_auth
+
+    document, parts = _device_auth_inputs(POINTS[name])
+    with pytest.raises(OpenvcError) as info:
+        _verify_device_auth(document, parts, b"\x80", None)
+    assert type(info.value) is MdocDeviceAuthError
+    assert "could not be checked" in str(info.value)
+
+
+def test_mdoc_device_auth_control_valid_key():
+    from openvc.mdoc import MdocDeviceAuthError, _verify_device_auth
+
+    document, parts = _device_auth_inputs(_valid_raw())
+    with pytest.raises(MdocDeviceAuthError, match="does not verify"):
+        _verify_device_auth(document, parts, b"\x80", None)
+
+
+# --------------------------------------------------------------------- VP-JWT / WRPRC #
+
+@pytest.mark.parametrize("name", POINT_IDS)
+def test_vp_jwt_holder_key_refuses(name):
+    from openvc.proof.vp_jwt import VpJwtProofSuite
+
+    now = int(time.time())
+    token = _forged_jws({"alg": "EdDSA", "typ": "JWT"},
+                        {"iss": "did:example:h", "aud": "https://v.example", "nonce": "n",
+                         "iat": now, "nbf": now, "vp": {"type": ["VerifiablePresentation"]}})
+    with pytest.raises(ProofError) as info:
+        VpJwtProofSuite().verify(token, audience="https://v.example", nonce="n",
+                                 holder_key_jwk=_jwk(POINTS[name]))
+    assert type(info.value) is SignatureInvalid
+    assert "small-order" in str(info.value) or "canonical" in str(info.value)
+
+
+@pytest.mark.parametrize("name", POINT_IDS)
+def test_wrprc_signature_check_maps_it_to_its_own_family(name):
+    """The WRPRC lane maps every KeyBackendError to RpRegistrationError; pinned on its
+    signature step (the registrar key is a JWK by then). LoTE is not pinned: its signer key
+    is read from a certificate, and no certificate carries a small-order SPKI here."""
+    from openvc.rp_registration import RpRegistrationError, _verify_signature
+
+    with pytest.raises(OpenvcError) as info:
+        _verify_signature("jwt", {"alg": "EdDSA"}, _jwk(POINTS[name]),
+                          signing_input=b"x.y", signature=FORGED_SIG, sign1=None)
+    assert type(info.value) is RpRegistrationError
+
+
+def test_wrprc_cose_form_maps_it_too():
+    from openvc.rp_registration import RpRegistrationError, _verify_signature
+
+    with pytest.raises(OpenvcError) as info:
+        _verify_signature("cwt", {}, _jwk(POINTS["identity"]),
+                          signing_input=b"", signature=b"", sign1=_sign1())
+    assert type(info.value) is RpRegistrationError
+
+
+# ------------------------------------------------------------- P-256 is untouched #
+
+def test_p256_vc_jwt_still_verifies():
+    from openvc.keys import P256SigningKey
+
+    key = P256SigningKey.generate(kid="p")
+    vc = {"@context": [V2], "type": ["VerifiableCredential"], "issuer": "did:example:p",
+          "credentialSubject": {"id": "did:example:holder"}}
+    token = VcJwtProofSuite().sign(vc, signing_key=key)
+    assert VcJwtProofSuite().verify(
+        token, public_key_jwk=key.public_jwk()).issuer == "did:example:p"
+
+
+def test_ecdsa_jcs_2019_still_verifies():
+    from openvc.keys import P256SigningKey
+    from openvc.proof.di_jcs import EcdsaJcsProofSuite
+
+    key = P256SigningKey.generate(kid="p")
+    suite = EcdsaJcsProofSuite()
+    secured = suite.add_proof(_unsigned_vc(), signing_key=key,
+                              verification_method="did:example:issuer#k", created=NOW)
+    result = suite.verify(secured, public_key_jwk=key.public_jwk(), now=NOW)
+    assert result.issuer == "did:example:issuer"

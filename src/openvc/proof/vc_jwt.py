@@ -56,7 +56,7 @@ from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 # The proof error taxonomy lives in openvc.proof.errors; these are re-exported for
 # back-compat (old imports like `from openvc.proof.vc_jwt import SignatureInvalid`).
 from .. import _json
-from ..keys import check_ed25519_point
+from ..keys import UnusablePublicKey, check_ed25519_point
 from .errors import (  # noqa: F401
     ClaimsInvalid,
     MalformedToken,
@@ -626,11 +626,13 @@ class VcJwtProofSuite:
                 return ECAlgorithm.from_jwk(json.dumps(jwk))
             key = OKPAlgorithm.from_jwk(json.dumps(jwk))    # EdDSA / Ed25519 (Ed25519 only)
             # PyJWT checks only the length: refuse a small-order / non-canonical point, the
-            # one rule of keys.verify_signature (a ProofError below, like any bad key)
+            # one rule of keys.verify_signature (SignatureInvalid, as on every proof suite)
             if not isinstance(key, Ed25519PublicKey):   # the curve is pinned above; defence
                 raise ValueError("not an Ed25519 public key")
             check_ed25519_point(key.public_bytes_raw())   # the bytes PyJWT loaded
             return key
+        except UnusablePublicKey as exc:               # the suite's one class for it
+            raise SignatureInvalid(f"could not verify {alg} signature: {exc}") from exc
         except Exception as exc:
             raise ProofError(f"could not load {alg} key from JWK: {exc}") from exc
 
