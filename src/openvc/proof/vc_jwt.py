@@ -50,7 +50,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import jwt as pyjwt
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
 # The proof error taxonomy lives in openvc.proof.errors; these are re-exported for
@@ -627,9 +627,16 @@ class VcJwtProofSuite:
             key = OKPAlgorithm.from_jwk(json.dumps(jwk))    # EdDSA / Ed25519 (Ed25519 only)
             # PyJWT checks only the length: refuse a small-order / non-canonical point, the
             # one rule of keys.verify_signature (SignatureInvalid, as on every proof suite)
-            if not isinstance(key, Ed25519PublicKey):   # the curve is pinned above; defence
-                raise ValueError("not an Ed25519 public key")
-            check_ed25519_point(key.public_bytes_raw())   # the bytes PyJWT loaded
+            # PyJWT verifies with the public half of a JWK that carries `d` (it returns a
+            # private key object); that half is the key whose point is checked, and what
+            # PyJWT returned is what is returned, as before.
+            if isinstance(key, Ed25519PrivateKey):
+                verifying = key.public_key()
+            elif isinstance(key, Ed25519PublicKey):
+                verifying = key
+            else:
+                raise ValueError("not an Ed25519 key")
+            check_ed25519_point(verifying.public_bytes_raw())
             return key
         except UnusablePublicKey as exc:               # the suite's one class for it
             raise SignatureInvalid(f"could not verify {alg} signature: {exc}") from exc

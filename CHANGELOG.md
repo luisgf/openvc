@@ -273,13 +273,18 @@ All notable changes to **openvc** are documented here. The format follows
   `eddsa-rdfc-2022`; a `ProofError`, so code that catches the family is unaffected), and
   **every other lane raises its own family**, never a bare `InvalidKey`: did:webvh a
   `DidWebvhError` (`KeyResolutionFailed` / `KeyResolutionError` through the pipeline, as for
-  any log the resolver refuses; before, the `InvalidKey` left the resolver outside
-  `DidError`), COSE a `CoseError` (mdoc reports it as `MdocSignatureInvalid` for IssuerAuth
+  any log the resolver refuses; on `main` such a log was accepted, and a second entry signed
+  by no one could swap the document's keys), COSE a `CoseError` (mdoc reports it as `MdocSignatureInvalid` for IssuerAuth
   and `MdocDeviceAuthError` for DeviceAuth), WRPRC an `RpRegistrationError` and LoTE a
   `TrustListSignatureError`. Any other bad key (wrong-length `x`, wrong curve, a missing
   member) keeps the class and message it had, and the general `KeyBackendError` mapping of
-  `cose.verify_sign1` stays with #391. A valid key and every Ed25519 golden are unchanged; P-256
-  and P-384 need no change. Found by a security review of `main` on 2026-11-17
+  `cose.verify_sign1` stays with #391. A valid key and every Ed25519 golden are unchanged (a JWK that
+  also carries the private member `d` still verifies on VC-JWT, as before); P-256 and P-384
+  need no change. What the rule leaves out: a mixed-order key (a small-order component added
+  to a prime-order point) is accepted; did:key and did:jwk still *resolve* a refused point
+  (the refusal comes when the key verifies something); a did:webvh `updateKey` that is listed
+  but never signs is not examined. The refusal text names "the Ed25519 public key", except
+  from `canonical_public_jwk`, which keeps "JWK member 'x'". Found by a security review of `main` on 2026-11-17
   (`test_ed25519_point_check.py`).
 
 ### Fixed

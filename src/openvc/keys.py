@@ -616,7 +616,7 @@ _ED25519_SMALL_ORDER_Y: frozenset[int] = frozenset({
 })
 
 
-def check_ed25519_point(enc: bytes) -> None:
+def check_ed25519_point(enc: bytes, *, what: str = "the Ed25519 public key") -> None:
     """Refuse a 32-byte Ed25519 encoding that is not a canonical, usable public key.
 
     RFC 8032 §5.1.3: decoding fails for y >= p (the top bit is the sign of x, the other 255
@@ -630,18 +630,27 @@ def check_ed25519_point(enc: bytes) -> None:
     from_public_bytes`` checks only the length, and under a small-order key a signature
     needs no private key at all (``R`` = the identity, ``S`` = 0 verifies for every message
     under the identity key). Called by :func:`canonical_public_jwk`, :func:`verify_signature`,
-    the VC-JWT PyJWT lane and ``eddsa-rdfc-2022``. Raises :class:`UnusablePublicKey` (an
-    :class:`InvalidKey`); *enc* is
-    expected to be 32 bytes, so call it after the length is established.
+    the VC-JWT PyJWT lane and ``eddsa-rdfc-2022``.
+
+    Total on its input: anything that is not exactly 32 ``bytes`` / ``bytearray`` is a plain
+    :class:`InvalidKey` (it is not a point at all); a point that is small-order or not
+    canonical raises :class:`UnusablePublicKey` (an :class:`InvalidKey`). *what* names the
+    key in the message (``canonical_public_jwk`` passes ``"JWK member 'x'"``; the other
+    lanes have no JWK, so the default is neutral).
+
+    Scope: a mixed-order key (a small-order component added to a prime-order point) is
+    accepted: this is a blocklist of the eight torsion points, not a prime-order-subgroup test.
     """
+    if not isinstance(enc, (bytes, bytearray)) or len(enc) != 32:
+        got = f"{len(enc)} bytes" if isinstance(enc, (bytes, bytearray)) else type(enc).__name__
+        raise InvalidKey(f"an Ed25519 public key is exactly 32 bytes, got {got}")
     y = int.from_bytes(enc, "little") & ((1 << 255) - 1)
     if y >= _ED25519_P:
         raise UnusablePublicKey(
-            "JWK member 'x' is not a canonical Ed25519 point encoding "
-            "(y >= p, RFC 8032 §5.1.3)")
+            f"{what} is not a canonical Ed25519 point encoding (y >= p, RFC 8032 §5.1.3)")
     if y in _ED25519_SMALL_ORDER_Y:
         raise UnusablePublicKey(
-            "JWK member 'x' is a small-order Ed25519 point, not a usable public key")
+            f"{what} is a small-order Ed25519 point, not a usable public key")
 
 
 def _shown(value: Any) -> str:
@@ -728,7 +737,7 @@ def canonical_public_jwk(jwk: Mapping[str, Any], *, strict: bool = False) -> dic
             ec.EllipticCurvePublicKey.from_encoded_point(
                 _EC_CURVES[crv](), b"\x04" + decoded["x"] + decoded["y"])
         else:
-            check_ed25519_point(decoded["x"])
+            check_ed25519_point(decoded["x"], what="JWK member 'x'")
             ed25519.Ed25519PublicKey.from_public_bytes(decoded["x"])
     except (ValueError, TypeError) as exc:
         raise InvalidKey(f"JWK is not a valid {crv} public key: {exc}") from exc
