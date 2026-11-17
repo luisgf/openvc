@@ -6,7 +6,7 @@
     <TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUlistofthelists</TSLType>
     <SchemeOperatorName><Name xml:lang="en">European Commission</Name></SchemeOperatorName>
     <SchemeTerritory>EU</SchemeTerritory>
-    <ListIssueDateTime>2026-01-01T00:00:00Z</ListIssueDateTime>
+    <ListIssueDateTime>2098-10-01T00:00:00Z</ListIssueDateTime>
     <NextUpdate><dateTime>2099-01-01T00:00:00Z</dateTime></NextUpdate>
     <PointersToOtherTSL>
       <OtherTSLPointer>
