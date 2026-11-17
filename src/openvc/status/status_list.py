@@ -118,12 +118,27 @@ def _as_entry_list(raw: Any) -> list[dict]:
 def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
     """Parse the credential's ``credentialStatus`` into typed entries. Entries
     whose type is not a recognised status-list entry are skipped (a credential
-    may carry unrelated status types); a member that is not an object at all (an
+    may carry unrelated status types) — the *caller* decides whether that is
+    acceptable; :func:`unrecognised_status_entries` counts them, and
+    :func:`~openvc.verify.verify_credential` refuses them under
+    ``policy.require_status``. A member that is not an object at all (an
     array, a string reference, ``null``) or an object with no ``type`` raises
     :class:`~openvc.status.bitstring.StatusListError` instead, since its entries
     could not be read."""
+    return _scan_status_entries(credential)[0]
+
+
+def unrecognised_status_entries(credential: dict[str, Any]) -> int:
+    """How many ``credentialStatus`` entries :func:`parse_status_entries` skips
+    because their type is not a recognised status-list entry. Same shape rules and
+    :class:`~openvc.status.bitstring.StatusListError` as the parser."""
+    return _scan_status_entries(credential)[1]
+
+
+def _scan_status_entries(credential: dict[str, Any]) -> tuple[list[StatusEntry], int]:
     from .bitstring import StatusListError
     entries: list[StatusEntry] = []
+    skipped = 0
     for raw in _as_entry_list(credential.get("credentialStatus")):
         types = raw.get("type")
         if types is None or types == "" or types == []:
@@ -143,6 +158,7 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
         # the set intersection with a bare TypeError — it is skipped like any unrelated type.
         matched = _ENTRY_TYPES.intersection(t for t in types if isinstance(t, str))
         if not matched:
+            skipped += 1
             continue
         url = raw.get("statusListCredential")
         index = raw.get("statusListIndex")
@@ -179,7 +195,7 @@ def parse_status_entries(credential: dict[str, Any]) -> list[StatusEntry]:
             status_size=size,
             status_message=messages,
         ))
-    return entries
+    return entries, skipped
 
 
 def _encoded_list(status_vc: dict[str, Any], entry: StatusEntry) -> str:
@@ -301,4 +317,5 @@ __all__ = [
     "check_credential_status",
     "check_credential_status_async",
     "parse_status_entries",
+    "unrecognised_status_entries",
 ]
