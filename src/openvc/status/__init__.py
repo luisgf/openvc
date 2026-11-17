@@ -37,6 +37,7 @@ from .status_list import (
     check_credential_status,
     check_credential_status_async,
     parse_status_entries,
+    unrecognised_status_entries,
 )
 from .token_status_list import (
     STATUS_INVALID,
@@ -76,6 +77,7 @@ __all__ = [
     "check_credential_status",
     "check_credential_status_async",
     "parse_status_entries",
+    "unrecognised_status_entries",
     # IETF Token Status List
     "STATUS_VALID",
     "STATUS_INVALID",

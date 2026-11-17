@@ -23,7 +23,9 @@ checked against **both** status conventions — the W3C ``credentialStatus`` and
 IETF token ``status`` reference — so a status declared in the shape that does not
 match the proof format is not silently skipped. If a status is declared and no
 matching resolver is supplied, verification *fails* (:class:`StatusUnavailable`)
-rather than skipping revocation — you opt out explicitly, not by omission. A
+rather than skipping revocation — you opt out explicitly, not by omission. So does
+a ``credentialStatus`` entry of a type we cannot check, even next to one we can (it is
+refused before any resolver is called). A
 resolved *revoked* status raises :class:`~openvc.status.CredentialRevoked`; a
 *suspended* one raises :class:`~openvc.status.CredentialSuspended`.
 
@@ -86,6 +88,7 @@ from .status import (
     check_credential_status,
     check_token_status,
     parse_status_entries,
+    unrecognised_status_entries,
     parse_token_status_ref,
 )
 
@@ -887,6 +890,14 @@ def _check_status(
     result: Union[StatusResult, TokenStatusResult, None] = None
 
     entries = parse_status_entries(w3c_source)
+    unrecognised = unrecognised_status_entries(w3c_source)
+    if unrecognised and policy.require_status:
+        # an entry we cannot check fails closed even when others can be checked, and
+        # before any resolver is called (the issuer may publish revocation through it)
+        raise StatusUnavailable(
+            f"credential declares {unrecognised} credentialStatus entr"
+            f"{'y' if unrecognised == 1 else 'ies'} of an unrecognised type "
+            "(set policy.require_status=False to skip)")
     if entries:
         if resolve_status_list is None:
             _fail_closed(policy, "credentialStatus", "resolve_status_list")
@@ -899,11 +910,6 @@ def _check_status(
                 raise CredentialSuspended(
                     f"credential {_as_str(w3c_source.get('id'))!r} is suspended")
             result = w3c
-    elif w3c_source.get("credentialStatus") and policy.require_status:
-        # a credentialStatus is declared but of an entry type we cannot check
-        raise StatusUnavailable(
-            "credential declares a credentialStatus of an unrecognised type "
-            "(set policy.require_status=False to skip)")
 
     if ietf_source is not None:
         ref = parse_token_status_ref(ietf_source)
