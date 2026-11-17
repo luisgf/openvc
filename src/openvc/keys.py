@@ -607,7 +607,7 @@ _ED25519_SMALL_ORDER_Y: frozenset[int] = frozenset({
 })
 
 
-def _check_ed25519_point(enc: bytes) -> None:
+def check_ed25519_point(enc: bytes) -> None:
     """Refuse a 32-byte Ed25519 encoding that is not a canonical, usable public key.
 
     RFC 8032 §5.1.3: decoding fails for y >= p (the top bit is the sign of x, the other 255
@@ -616,6 +616,13 @@ def _check_ed25519_point(enc: bytes) -> None:
     below, so that rule is covered there. The eight small-order points are refused as
     libsodium does: a "key" of order 8 or less signs nothing anyone holds, and its
     alternate encodings are exactly the spellings a canonical form exists to remove.
+
+    The one rule for every place an Ed25519 public key is built: ``Ed25519PublicKey.
+    from_public_bytes`` checks only the length, and under a small-order key a signature
+    needs no private key at all (``R`` = the identity, ``S`` = 0 verifies for every message
+    under the identity key). Called by :func:`canonical_public_jwk`, :func:`verify_signature`,
+    the VC-JWT PyJWT lane and ``eddsa-rdfc-2022``. Raises :class:`InvalidKey`; *enc* is
+    expected to be 32 bytes, so call it after the length is established.
     """
     y = int.from_bytes(enc, "little") & ((1 << 255) - 1)
     if y >= _ED25519_P:
@@ -711,7 +718,7 @@ def canonical_public_jwk(jwk: Mapping[str, Any], *, strict: bool = False) -> dic
             ec.EllipticCurvePublicKey.from_encoded_point(
                 _EC_CURVES[crv](), b"\x04" + decoded["x"] + decoded["y"])
         else:
-            _check_ed25519_point(decoded["x"])
+            check_ed25519_point(decoded["x"])
             ed25519.Ed25519PublicKey.from_public_bytes(decoded["x"])
     except (ValueError, TypeError) as exc:
         raise InvalidKey(f"JWK is not a valid {crv} public key: {exc}") from exc
@@ -739,11 +746,20 @@ def verify_signature(
 
     Handy for did:key (where the key is inside the DID) and for round-trip tests.
     The VC verification path uses the proof suite instead; this is complementary.
+
+    An Ed25519 key that is a small-order point or a non-canonical encoding (y >= p) is
+    refused with :class:`InvalidKey` before any signature is checked, never answered with
+    ``False`` (see :func:`check_ed25519_point`). A wrong-length ``x`` stays the "malformed
+    public key" :class:`InvalidKey`.
     """
     try:
         if alg in ED25519_ALG_NAMES:                       # "EdDSA" or RFC 9864 "Ed25519"
             raw = _b64url_decode(public_jwk["x"])
-            ed25519.Ed25519PublicKey.from_public_bytes(raw).verify(signature, signing_input)
+            ed_key = ed25519.Ed25519PublicKey.from_public_bytes(raw)    # length first
+            # A small-order or non-canonical point is refused, typed, never a False: the
+            # InvalidKey is no ValueError/KeyError/TypeError, so the wrapper below leaves it be.
+            check_ed25519_point(raw)
+            ed_key.verify(signature, signing_input)
             return True
         if alg == "ES256":
             if len(signature) != 2 * P256_COORD_BYTES:
@@ -816,6 +832,7 @@ __all__ = [
     "P256SigningKey",
     "P384SigningKey",
     "canonical_public_jwk",
+    "check_ed25519_point",
     "jwk_thumbprint",
     "jwk_thumbprint_bytes",
     "mldsa_available",
