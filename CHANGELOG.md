@@ -380,6 +380,24 @@ All notable changes to **openvc** are documented here. The format follows
   recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
   security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
 
+- **SD-JWT: an empty disclosure segment (`~~`) is refused, not dropped**
+  ([#434](https://github.com/luisgf/openvc/issues/434)). RFC 9901 §4 gives
+  `SD-JWT = JWT "~" *(DISCLOSURE "~")` with `DISCLOSURE = BASE64URL` (one or more
+  characters), but `SdJwtVcProofSuite._split` filtered empty segments out, and the KB-JWT
+  `sd_hash` is computed over the re-joined form, so one presentation had many accepted
+  spellings (`<jwt>~d1~~d2~`, `<jwt>~~d1~d2~`, `<jwt>~d1~d2~~~`, and `<jwt>~~` with no
+  disclosure at all); a holder-bound one verified with `key_bound=True` when sent with extra
+  `~`, so anything keyed on the presented string (a replay cache, an audit log) saw several
+  values for one presentation. **A presentation with a doubled `~` verified before and is
+  refused now**, as `MalformedToken` ("an SD-JWT disclosure segment is empty") through
+  `verify_credential`, `verify_credential_async`, `verify_vp_token` (`dc+sd-jwt` and nested in
+  a VP-JWT) and `SdJwtVcProofSuite.verify` / `create_presentation`. The last segment keeps its
+  meaning (empty = no KB-JWT), `<jwt>~d1~d2` with no trailing `~` was already refused, and
+  `issue()` / `create_presentation()` already emit the canonical form; every recorded SD-JWT
+  vector (IETF examples, the EUDI capture) verifies unchanged. Nothing else in the library
+  reads the `~` structure past the first or last segment, so no other lane needed a change.
+  Found by a security review of `main` on 2026-11-17 (`test_sd_jwt_empty_segments.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security
