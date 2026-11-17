@@ -97,12 +97,18 @@ _ip_is_forbidden = ip_is_forbidden
 
 def _resolve_public_ips(host: str, port: int) -> list[str]:
     """Resolve *host* and return its addresses, raising if ANY is SSRF-sensitive
-    (fail closed: one bad address rejects the host)."""
+    (fail closed: one bad address rejects the host).
+
+    Every ``OSError`` from the resolver is typed, not only ``socket.gaierror``: CPython
+    reports ``EAI_SYSTEM`` as a plain ``OSError`` carrying the errno (``EMFILE``,
+    ``ENOMEM``, ...). ``MemoryError`` and other non-``OSError`` ``BaseException``s are
+    deliberately not caught here and propagate unchanged through
+    :func:`_resolve_within`."""
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     # ValueError covers the UnicodeError the IDNA codec raises on a host it cannot
     # encode (an empty label, or one over 63 characters) before any DNS query.
-    except (socket.gaierror, ValueError) as exc:
+    except (OSError, ValueError) as exc:  # socket.gaierror is an OSError
         raise UnsafeUrlError(f"cannot resolve host {host!r}: {exc}") from exc
     ips = [str(info[4][0]) for info in infos]
     if not ips:
