@@ -140,6 +140,17 @@ boundary is attacker-controlled until a signature verifies.
   on the validity window and the consistency checks, but is not enough to be read as a
   credential. The trade-off is in the §4 replay row. See **R1** in
   §9 for the recursion caveat.
+- **Key purpose on the JOSE lanes** — a JWS `kid` is a hint, so the key is still selected by
+  `DidDocument.key_by_kid` (bare, `#fragment` and absolute all select); then, when the resolved
+  document declares the relationship, the selected method must be referenced by it
+  (`DidDocument.grants`, DID Core 1.0 §5.3, the grant half of `key_for_purpose`), else
+  `KeyResolutionFailed`: `assertionMethod` for a VC-JWT, an SD-JWT VC issuer JWT and a status-list
+  token, `authentication` for a VP-JWT holder key. A relationship the document does not declare is
+  not enforced (as on Data Integrity), so a key listed only under `authentication` /
+  `keyAgreement` no longer issues a VC-JWT or an SD-JWT VC (#428). Not covered: a KB-JWT
+  (`cnf.jwk`), the https `/.well-known/jwt-vc-issuer` path, x5c, a resolver's own non-`DidDocument`
+  type, and the EBSI lane (`openvc_ebsi` still selects with `key_by_kid` alone)
+  (`test_jose_key_purpose.py`).
 - **Data Integrity** — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (RDF-canonical),
   `eddsa-jcs-2022` / `ecdsa-jcs-2019` (JCS), and selective-disclosure
   `ecdsa-sd-2023`. `verificationMethod`↔`issuer` binding (`src/openvc/verify.py:628-641`);

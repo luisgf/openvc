@@ -72,8 +72,10 @@ class DidDocument:
     def key_by_kid(self, kid: str | None) -> VerificationMethod | None:
         """Match on the full verificationMethod id or its fragment (a JWS `kid`
         may carry either). If kid is None, fall back to the sole key if unique.
-        This is the JOSE lanes' lookup; a Data Integrity proof's key is selected by
-        the stricter, exact-id :meth:`key_for_purpose`."""
+        This is the JOSE lanes' *selection* (a JWS ``kid`` is only a hint); they then
+        hold the selected method to its verification relationship with
+        :meth:`grants`. A Data Integrity proof's key is selected by the stricter,
+        exact-id :meth:`key_for_purpose`."""
         if kid is None:
             return self.verification_methods[0] if len(self.verification_methods) == 1 else None
         if not isinstance(kid, str):
@@ -187,14 +189,30 @@ class DidDocument:
             vm = matches[0] if len(matches) == 1 else None
         if vm is None:
             return None
+        return vm if self.grants(vm, proof_purpose, base) else None
+
+    def grants(
+        self, vm: VerificationMethod, proof_purpose: str, base: str | None = None,
+    ) -> bool:
+        """Whether the already-selected method *vm* may be used for *proof_purpose*:
+        the grant half of :meth:`key_for_purpose` (CID 1.0 §3.3 step 11), shared with
+        the JOSE lanes, which select by :meth:`key_by_kid` and then ask this.
+
+        When the document declares the relationship, one of its references (a string,
+        or the ``id`` of an embedded method) must resolve to *vm*'s absolute ``id``; a
+        declared but empty relationship grants nothing. A relationship the document
+        does not declare at all is not enforced (``True``). *base* is :meth:`_base`,
+        computed here when not given; the cost is linear in the document size."""
+        if not isinstance(proof_purpose, str):
+            return False
         refs = self.relationships.get(proof_purpose)
         if refs is None:                       # relationship not declared -> lenient
-            return vm
+            return True
+        if base is None:
+            base = self._base()
         # an unresolvable method id has no spellings, so nothing grants it
         spellings = self._spellings(self._absolute(vm.id, base), base)
-        if any(isinstance(ref, str) and ref in spellings for ref in refs):
-            return vm
-        return None
+        return any(isinstance(ref, str) and ref in spellings for ref in refs)
 
 
 # --------------------------------------------------------------------------- #

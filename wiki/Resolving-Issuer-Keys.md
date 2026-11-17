@@ -179,7 +179,13 @@ case-sensitive string, else `ProofPurposeMismatch`. An entry for another DID, an
 version or a path grants nothing, even when its fragment matches. A relationship the
 document does not declare at all is not enforced. The JOSE lanes (VC-JWT, SD-JWT VC)
 look the key up by the JWS `kid` and still accept a bare or `#`-relative `kid`, since a
-`kid` is only a hint; they check no relationship.
+`kid` is only a hint. They then hold the selected key to its relationship, but only when
+the document declares it: `assertionMethod` for a VC-JWT, an SD-JWT VC issuer JWT and a
+status-list token, `authentication` for a VP-JWT holder key, else `KeyResolutionFailed`
+(DID Core 1.0 §5.3). A key listed only under `authentication` or `keyAgreement` cannot sign
+a credential, and a document with no such member still verifies. A KB-JWT (`cnf.jwk`), the
+https `/.well-known/jwt-vc-issuer` path and x5c have no DID relationships and are not
+checked; neither is the EBSI lane (`openvc_ebsi`), which selects by `kid` alone.
 
 A `#key-1` resolves only against a document `id` that is a DID by the DID Core 1.0 §3.1
 syntax: `did:`, a method name of lower-case letters and digits, and a method-specific id

@@ -273,7 +273,7 @@ class VpJwtProofSuite:
             raise MalformedToken("VP-JWT has no holder (iss / vp.holder) to resolve")
         from ..verify import KeyResolutionFailed, _resolve_jose_key
         try:
-            return _resolve_jose_key(resolver, holder, kid)
+            return _resolve_jose_key(resolver, holder, kid, purpose="authentication")
         except KeyResolutionFailed as exc:
             raise ClaimsInvalid(f"could not resolve holder key: {exc}") from exc
 

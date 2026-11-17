@@ -255,6 +255,24 @@ All notable changes to **openvc** are documented here. The format follows
   `jsonld.normalize`, the goldens included. Found by the internal security review of
   2026-11-07 (`test_rdfc_budget.py`).
 
+- **The JOSE lanes hold the selected key to its DID-document verification relationship**
+  ([#428](https://github.com/luisgf/openvc/issues/428)). VC-JWT, SD-JWT VC and the
+  status-list token resolvers accepted a signature by any key of the issuer's document, even
+  one listed only under `authentication` or `keyAgreement`, while the Data Integrity lane
+  refuses the same key (`ProofPurposeMismatch`); a party holding only an authentication key
+  could issue credentials openvc accepted (DID Core 1.0 §5.3). Selection is unchanged
+  (`key_by_kid`: a bare, `#fragment` or absolute `kid` still selects); then, when the
+  resolved document **declares** the relationship, the method must be referenced by it, else
+  `KeyResolutionFailed`: `assertionMethod` for a VC-JWT, an SD-JWT VC issuer JWT and a
+  status-list token (sync and async), `authentication` for a VP-JWT holder key (also through
+  `verify_vp_token`). A document that does not declare the relationship stays accepted, so a
+  minimal `did:web` and every `did:key` / `did:jwk` verify as before; a declared but empty
+  relationship refuses. The check is the new `DidDocument.grants`, the grant half of
+  `key_for_purpose`. Untouched: KB-JWT, the https `/.well-known/jwt-vc-issuer` path, x5c, a
+  resolver's own document type and the EBSI lane (`openvc_ebsi`; whether it follows is a
+  separate decision). `needs-human` issue, implemented as the recommended option
+  (`test_jose_key_purpose.py`).
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
