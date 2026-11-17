@@ -379,6 +379,17 @@ All notable changes to **openvc** are documented here. The format follows
   lists still anchor (a LOTL that fails this way stops the walk with that one problem). The
   recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
   security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
+- **Key-resolution errors no longer echo an attacker-sized identifier whole**
+  ([#431](https://github.com/luisgf/openvc/issues/431)). A credential with a megabyte-long
+  `iss` or `verificationMethod` produced a megabyte-long exception message before any
+  signature was checked, and callers log the message. The quoted value now goes through
+  `safe_repr` (200 characters) in `resolve_verification_key`, the two DID resolver
+  registries (`no resolver for …`), the issuer and status-issuer binding refusals, the
+  `did:webvh` `versionId` refusals, the JSON-LD context loader's refusal and the async
+  twins; in `openvc.fetch` the URL of `unexpected status … for …` and the request target
+  (and the library's own echo of it) in `fetch failed for https://host…` are cut the same
+  way. The wording and the exception classes are unchanged, and an ordinary identifier is
+  still quoted in full (`test_bounded_identifier_echo.py`).
 
 ## [1.38.1] — 2026-11-07
 

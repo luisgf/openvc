@@ -404,7 +404,7 @@ class _OneShotResolver:
 
     def resolve(self, did: str) -> Any:
         if did != self._did:
-            raise DidResolutionError(f"unknown DID {did!r}")
+            raise DidResolutionError(f"unknown DID {safe_repr(did)}")
         return self._doc
 
 
@@ -432,7 +432,7 @@ async def _preresolved_di_resolver(doc: dict[str, Any], resolver: Any) -> Any:
     except UnsupportedDidMethod:
         return None
     except DidResolutionError as exc:
-        raise KeyResolutionError(f"could not resolve {did!r}: {exc}") from exc
+        raise KeyResolutionError(f"could not resolve {safe_repr(did)}: {exc}") from exc
     return _OneShotResolver(did, did_doc)
 
 
