@@ -767,7 +767,8 @@ def _bind_issuer_to_verification_method(verified: Any) -> None:
         raise IssuerBindingError("Data Integrity credential has no issuer to bind the key to")
     if not isinstance(vm, str) or vm.split("#", 1)[0] != issuer:
         raise IssuerBindingError(
-            f"proof verificationMethod {vm!r} is not controlled by issuer {issuer!r}")
+            f"proof verificationMethod {safe_repr(vm)} is not controlled by issuer "
+            f"{safe_repr(issuer)}")
 
 
 def _check_types(credential: dict[str, Any], expected: Sequence[str] | None) -> None:
@@ -845,7 +846,8 @@ def _enforce_status_issuer(status_obj: Any, field: str,
     if policy.status_issuer_allowlist and si in policy.status_issuer_allowlist:
         return
     raise StatusListIssuerUntrusted(
-        f"status list issuer {si!r} is not the credential issuer {credential_issuer!r} "
+        f"status list issuer {safe_repr(si)} is not the credential issuer "
+        f"{safe_repr(credential_issuer)} "
         "nor an allow-listed delegate (require_status_issuer_binding)")
 
 
