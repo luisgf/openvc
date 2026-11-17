@@ -379,6 +379,20 @@ All notable changes to **openvc** are documented here. The format follows
   lists still anchor (a LOTL that fails this way stops the walk with that one problem). The
   recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
   security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
+- **A certificate that chains to a trusted anchor but carries a malformed EKU, an unsupported
+  SAN name form or an unusable public key is now a typed refusal, not a bare `cryptography`
+  exception** ([#430](https://github.com/luisgf/openvc/issues/430)). `cryptography` decodes a
+  certificate's extension values, SAN name forms and SPKI on first access, and path validation
+  never reads them on the end entity, so the readers that run after the chain validated —
+  the mdoc DS-EKU check, the `iss`→SAN binding, the leaf-key-to-JWK step (mdoc, WRPRC, LoTE,
+  OpenID4VCI key proofs) and the WRPRC EKU gate — let `ValueError`, `UnsupportedGeneralNameType`
+  or `UnsupportedAlgorithm` out of `verify_credential`, `verify_vp_token` and `verify_many`
+  (aborting a batch). Each lazily parsed field now has one guarded accessor in `openvc.x5c`
+  mapping those to `X5cError` with a message that names the field and quotes nothing from the
+  certificate; the path verifier's own SAN decode is guarded the same way. The callers'
+  existing mapping applies (`MdocTrustError`, `KeyResolutionFailed`, `RpRegistrationError`,
+  `TrustListSignatureError`); a missing EKU / SAN keeps its own message
+  (`test_x5c_lazy_fields.py`).
 
 ## [1.38.1] — 2026-11-07
 
