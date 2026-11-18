@@ -48,7 +48,7 @@ from ..cbor import encode as _cbor_encode
 from ..errors import OpenvcError
 from ..keys import P256SigningKey, verify_signature
 from ._context_validation import validate_document
-from ._rdfc import canonicalize_nquads, new_canonicalizer
+from ._rdfc import canonicalize_nquads, new_canonicalizer, to_rdf
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -486,8 +486,7 @@ def _relabel(lines: Iterable[str], mapping: dict[str, str]) -> list[str]:
 
 
 def _to_nquads(document: Any, loader: Any) -> str:
-    return _pyld().to_rdf(
-        document, pyld_options(loader, format="application/n-quads"))
+    return to_rdf(document, loader, format="application/n-quads")   # bounded (_rdfc, #426)
 
 
 @dataclass

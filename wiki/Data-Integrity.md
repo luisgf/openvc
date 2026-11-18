@@ -216,6 +216,42 @@ graphs of around a dozen statements each; the threshold is not monotone). Giving
 value keeps them out of the tie-breaking phase. The output of an accepted document is
 byte-identical to pyld's `normalize`.
 
+A second, earlier bound charges the node-map comparisons of pyld's **JSON-LD to RDF conversion**
+on all three RDF suites. pyld checks each new value
+of a property against every value already stored under that property of that subject, so N
+values of one property cost about N**2/2 comparisons (8 000 values in a 71 KB credential took
+10 seconds, with a garbage proof, because the conversion runs before the signature is looked
+at). The same cost is reached by many node objects with the same `id`, many `type` values,
+many IRI objects, many nodes whose `id` is keyword-like (`"@a"`, which expands to a null `@id`
+and merges), graphs named by a keyword and blank-node property names. openvc expands the
+document, replays that merge (mirroring which graph, subject and property each value
+lands in) and counts the comparisons pyld will make, refusing over
+`MAX_CONVERSION_COMPARISONS` (1 000 000, about a third of a second of comparisons on one core)
+with the same `CanonicalizationBudgetExceeded`, before the conversion runs. The count is
+**summed over the whole document**, not per property, so it has several cliffs: one property
+with about 1 400 distinct values; any array of more than about 1 400 node objects (each is a
+distinct reference); 51 subjects of 200 values each; three properties of 1 000 values; and a
+sub-object of k values repeated n times costs about n k²/2. A presentation secured with an RDF
+suite is **one** converted document: its count is the sum over the credentials it embeds, so
+three credentials of 1 000 values each verify alone and are refused together (at the holder
+that signs it and at the verifier), and a verifier that expects large RDF-signed presentations
+meets the ceiling on the sum. A presentation secured with a JCS suite or a VP-JWT converts only
+each credential, one document at a time. The repository's RDF fixtures need at most 2.
+`ecdsa-sd-2023`'s own `to_rdf` calls are charged the same way, and the JCS suites do no RDF
+work.
+
+**What this does not bound** (the lanes are not bounded end to end): (1) JSON-LD *expansion*
+([#446](https://github.com/luisgf/openvc/issues/446)), which runs first and is pyld's. (2) On
+`ecdsa-sd-2023`, the N-Quads text is parsed again after the conversion; that step is
+not charged here, and it is linear since
+[#447](https://github.com/luisgf/openvc/issues/447) (next paragraph). About expansion: it is not linear: a scoped context (an inline term with its own `@context`) is processed again for every
+node that uses it, so K terms used by N nodes cost N x K, and the same holds for the bundled VC
+v2 type-scoped contexts on a megabyte of typed nodes (seconds). The document is expanded twice
+now (once to count, once inside the conversion, which has to be given the document as written),
+so that cost is about doubled: on a megabyte of typed nodes 2.7 s became 5.2 s, and an inline
+scoped context of 1 750 terms used by 1 000 nodes (47 KB) 6.5 s became 13 s. Size limits on the
+document you pass in remain the caller's.
+
 `ecdsa-sd-2023` has one more step before the signature check: it reads its N-Quads back into a
 dataset, and pyld's own parser keeps each graph's triples unique by comparing every new triple
 with all those before it, which is quadratic in the number of quads (a derived credential with
