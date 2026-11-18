@@ -39,7 +39,17 @@ OTHER = "https://other-rp.example"
 WAIVED = VerificationPolicy(require_not_expired=False)
 POLICIES = [pytest.param(None, id="default"), pytest.param(WAIVED, id="waived")]
 TEMPORAL = pytest.mark.parametrize("check_temporal", [True, False], ids=["temporal", "waived"])
-NOW = int(time.time())
+NOW: int = None  # type: ignore[assignment]  # set per test by _clock(); None fails at import
+
+
+@pytest.fixture(autouse=True)
+def _clock():
+    """Read the wall clock when the test runs, not when pytest imports the module: on a
+    slow run collection and execution are many minutes apart."""
+    global NOW
+    NOW = int(time.time())
+
+
 MALFORMED = {"null": "null", "number": "5", "object": "{}", "true": "true",
              "mixed-array": f'["{RP}", 5]', "nested-array": f'[["{RP}"]]'}
 

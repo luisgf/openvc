@@ -86,7 +86,17 @@ from openvc.verify import default_resolver
 
 # Only for the helper tests, which pass it as `now=` themselves. The builders read the
 # clock when they run: a CI run is minutes long, and an import-time instant goes stale.
-NOW = int(time.time())
+NOW: int = None  # type: ignore[assignment]  # set per test by _clock(); None fails at import
+
+
+@pytest.fixture(autouse=True)
+def _clock():
+    """Read the wall clock when the test runs, not when pytest imports the module: on a
+    slow run collection and execution are many minutes apart."""
+    global NOW
+    NOW = int(time.time())
+
+
 VC2 = "https://www.w3.org/ns/credentials/v2"
 VCT = "https://credentials.example/membership"
 STATUS_URI = "https://status.example/1"
