@@ -18,6 +18,7 @@ your own. Without it, consumption raises :class:`TrustListSignatureUnavailable`.
 """
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Sequence
@@ -30,7 +31,7 @@ from .errors import (
     TrustListSignatureUnavailable,
 )
 from .model import TrustAnchorSet, TrustList, TrustListProblem, TrustServiceAnchor
-from .parse import DEFAULT_MAX_BYTES, parse_trust_list
+from .parse import DEFAULT_MAX_BYTES, _parse_datetime, parse_trust_list
 
 # Verify a TL's enveloped XML signature over *xml* against the expected signer
 # certificate(s); MUST raise on any failure and return None on success.
@@ -164,9 +165,11 @@ def walk_lotl(
     stage ``"expired"``; a ``NextUpdate`` that is not a UTC date-time of the
     ``YYYY-MM-DDThh:mm:ssZ`` form clause 5.1.3 mandates is a ``"parse"`` problem) —
     contributes no anchors and is recorded in the result's
-    ``problems`` — never silently trusted (ADR-0003 D6). A closed or expired LOTL
-    stops the walk with that one problem. Pass *now* to pin the expiry evaluation
-    instant."""
+    ``problems`` — as is a list whose ``NextUpdate`` is more than six calendar months
+    after its ``ListIssueDateTime`` (clause 5.3.15), or whose ``ListIssueDateTime`` is
+    absent or not a UTC date-time (stage ``"expired"``, #432) — never silently
+    trusted (ADR-0003 D6). A closed or expired LOTL stops the walk with that one problem.
+    Pass *now* to pin the expiry evaluation instant."""
     instant = utc_instant(now, error=TrustListError)   # naive is UTC; a bad pin is typed
     problems: list[TrustListProblem] = []
 
@@ -219,6 +222,20 @@ def walk_lotl(
     return TrustAnchorSet(anchors=tuple(anchors), problems=tuple(problems))
 
 
+def _plus_months(dt: datetime, months: int) -> datetime:
+    """*dt* shifted by *months* calendar months (the day clamps to the month's end).
+    Shared with :mod:`openvc.trustlist.lote`, which imports this module."""
+    month = dt.month - 1 + months
+    year = dt.year + month // 12
+    month = month % 12 + 1
+    return dt.replace(year=year, month=month,
+                      day=min(dt.day, calendar.monthrange(year, month)[1]))
+
+
+# ETSI TS 119 612 clause 5.3.15: NextUpdate - ListIssueDateTime <= 6 months.
+_MAX_UPDATE_MONTHS = 6
+
+
 def _stage(exc: TrustListError) -> str:
     if isinstance(exc, (TrustListSignatureError, TrustListSignatureUnavailable)):
         return "signature"
@@ -236,12 +253,33 @@ def _staleness(tl: TrustList, now: datetime) -> str | None:
     as unbounded validity; #389). Mirrors ``lote._staleness``. ``next_update`` is
     aware by construction (:func:`~openvc.trustlist.parse.parse_trust_list` refuses a
     naive one) and *now* is :func:`utc_instant`'s, so the comparison cannot raise
-    (#407)."""
+    (#407). The list's own ``ListIssueDateTime`` bounds the window (#432); every
+    failure here is reported under stage ``"expired"``."""
     if tl.next_update is None:
         return ("closed TL (null NextUpdate): ETSI TS 119 612 clause 5.3.15 — "
                 "a closed list contributes no anchors")
     if tl.next_update < now:
         return f"NextUpdate {tl.next_update.isoformat()} is in the past"
+    # The same clause bounds the window: a list whose NextUpdate is more than six
+    # months after its ListIssueDateTime never expires in practice (#432). The issue
+    # instant is read as strictly as NextUpdate (UTC, clause 5.1.3); absent or
+    # malformed -> the window cannot be evaluated -> fail closed, as a problem.
+    try:
+        issued = _parse_datetime(tl.issue_datetime, "ListIssueDateTime")
+    except TrustListParseError as exc:
+        return f"ListIssueDateTime is unusable, the update window cannot be checked: {exc}"
+    if issued is None:
+        return ("ListIssueDateTime is absent, the six-month update window "
+                "(clause 5.3.15) cannot be checked")
+    try:
+        ceiling = _plus_months(issued, _MAX_UPDATE_MONTHS)
+    except ValueError:                  # year overflow: cannot evaluate -> fail closed
+        return (f"ListIssueDateTime {issued.isoformat()} is too far in the future "
+                f"to evaluate the {_MAX_UPDATE_MONTHS}-month update window")
+    if tl.next_update > ceiling:
+        return (f"NextUpdate {tl.next_update.isoformat()} is more than "
+                f"{_MAX_UPDATE_MONTHS} months after ListIssueDateTime "
+                f"{issued.isoformat()} (ETSI TS 119 612 clause 5.3.15)")
     return None
 
 

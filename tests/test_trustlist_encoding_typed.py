@@ -65,6 +65,7 @@ def _national_tl(ca_der, territory="DE"):
     si = _el(root, "SchemeInformation")
     _el(si, "TSLType", "http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUgeneric")
     _el(si, "SchemeTerritory", territory)
+    _el(si, "ListIssueDateTime", "2098-10-01T00:00:00Z")
     _el(_el(si, "NextUpdate"), "dateTime", "2099-01-01T00:00:00Z")
     tsp = _el(_el(root, "TrustServiceProviderList"), "TrustServiceProvider")
     name = _el(_el(_el(tsp, "TSPInformation"), "TSPName"), "Name", "Example TSP")
@@ -82,6 +83,7 @@ def _lotl(pointers):
     si = _el(root, "SchemeInformation")
     _el(si, "TSLType", "http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUlistofthelists")
     _el(si, "SchemeTerritory", "EU")
+    _el(si, "ListIssueDateTime", "2098-10-01T00:00:00Z")
     _el(_el(si, "NextUpdate"), "dateTime", "2099-01-01T00:00:00Z")
     ptrs = _el(si, "PointersToOtherTSL")
     for url, signer_der, territory in pointers:

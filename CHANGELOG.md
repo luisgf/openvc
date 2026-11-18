@@ -445,6 +445,21 @@ All notable changes to **openvc** are documented here. The format follows
   `TrustListSignatureError`); a missing EKU / SAN keeps its own message
   (`test_x5c_lazy_fields.py`).
 
+- **XML trusted lists: a `NextUpdate` more than six calendar months after the
+  `ListIssueDateTime` now makes the list contribute no anchors**
+  ([#432](https://github.com/luisgf/openvc/issues/432)). ETSI TS 119 612 clause 5.3.15
+  bounds the update window at six months and discards a list whose `NextUpdate` is past as
+  expired; the XML lane only checked the second half, so a signed list with a far
+  `NextUpdate` (the repository's own fixtures used 2099) kept yielding `granted` anchors
+  indefinitely, defeating the expiry rule. `walk_lotl` now records such a list — the LOTL
+  included, which stops the walk — as an `"expired"` problem, zero anchors, the walk
+  continuing; `NextUpdate` exactly at `ListIssueDateTime` plus six calendar months still
+  passes. An absent, malformed, tz-naive or non-UTC `ListIssueDateTime` fails the same way
+  (the window cannot be evaluated). The recorded real EU LOTL and Spanish TL are inside the
+  window. The synthetic fixtures' `ListIssueDateTime` moved to 2098-10-01 to stay inside it.
+  The LoTE lane is unchanged. Found by the internal security review of 2026-11-17
+  (`test_trustlist_update_window.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security

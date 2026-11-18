@@ -18,7 +18,8 @@ Both lists carry `TSLVersionIdentifier = 6` (TLv6, mandatory since 29 Apr 2026).
   XML and recovered by the parser.
 
 All certs are self-signed EC P-256 with a 2026→2099 validity window; the lists'
-`NextUpdate` is 2099 so they never expire in tests (expiry is tested by pinning a
+`NextUpdate` is 2099 (and `ListIssueDateTime` 2098-10-01, so the six-month
+update window of clause 5.3.15 holds) so they never expire in tests (expiry is tested by pinning a
 future `now`). The **real** XAdES signature is not exercised here — that is the
 `[trustlist]` extra's own recorded test (ADR-0003, PR 2). Regenerate from the repo
 root with `python tests/fixtures/trustlist/generate.py` if the shape must change.
