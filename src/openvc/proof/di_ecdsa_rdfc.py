@@ -32,7 +32,7 @@ from typing import Any, Mapping
 from ..errors import OpenvcError
 from ..keys import verify_signature
 from ..multibase import encode_multibase
-from ._context_validation import check_before_expansion, validate_document
+from ._context_validation import check_context_before_expansion, validate_document
 from ._verify_common import (
     ALG_PROFILE,
     DEFAULT_LEEWAY_S,
@@ -187,8 +187,7 @@ class EcdsaRdfcProofSuite:
             secured, proof_type=PROOF_TYPE, cryptosuite=ECDSA_RDFC_CRYPTOSUITE)
 
         unsecured = _unsecured(secured)
-        # Before the key is resolved and before anything expands the document (issue #446).
-        check_before_expansion(unsecured, proof, extra_contexts)
+        check_context_before_expansion(unsecured)        # cheap and exact; before any pyld work
         jwk = public_key_jwk or resolve_verification_key(
             proof.get("verificationMethod"),
             proof_purpose=proof.get("proofPurpose"),

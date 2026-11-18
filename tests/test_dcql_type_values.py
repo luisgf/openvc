@@ -260,7 +260,8 @@ def test_recursion_in_expansion_is_typed(monkeypatch):
 
     def boom(*_a, **_k):
         raise RecursionError("too deep")
-    monkeypatch.setattr(jsonld, "expand", boom)
+    # expansion goes through the context-budgeted JsonLdProcessor (#446), not jsonld.expand
+    monkeypatch.setattr(jsonld.JsonLdProcessor, "expand", boom)
     with pytest.raises(ClaimsInvalid, match="RecursionError"):
         _verify("jwt_vc_json", _present("jwt_vc_json", [DEGREE_V2]), [[VC_IRI]])
 

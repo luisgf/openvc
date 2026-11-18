@@ -40,9 +40,11 @@ the *expanded* document and counts the ``compare_values`` calls pyld will make, 
 the whole document** (every slot of every subject of every graph), and it is exact only when
 its (graph, subject, property) partition is pyld's own, which is why the rules that decide it
 are mirrored rather than approximated. It bounds the node-map comparisons and nothing else:
-JSON-LD *expansion* (before the count, #446) and pyld's later steps (on ecdsa-sd-2023 the
-N-Quads parsing, #447) are not bounded by it, and expansion is not linear (an inline scoped
-context costs time proportional to the nodes that use it times its size). A presentation
+pyld's later steps (on ecdsa-sd-2023 the N-Quads parsing, #447) are not bounded by it.
+JSON-LD *expansion* has its own budget (#446): pyld re-processes a scoped context for every
+node that uses its term, so :func:`new_processor` counts the term definitions a call creates
+(``MAX_CONTEXT_WORK``) and every expansion and compaction an attacker's bytes reach goes
+through it (:func:`budgeted_expand`, :func:`budgeted_compact`, :func:`to_rdf`). A presentation
 secured with an RDF suite is one converted document: its count is the sum over the
 credentials it embeds.
 
@@ -74,6 +76,14 @@ from .errors import ProofMalformed
 # microsecond, so the ceiling is a fraction of a second of one core; the repository's RDF
 # fixtures need 2 at most (see the wiki).
 MAX_CONVERSION_COMPARISONS = 1_000_000
+# JSON-LD context work one pyld call may do (see :func:`_budgeted_processor_class`): term
+# definitions created, plus one unit per ``_MAPPINGS_PER_UNIT`` term entries copied when an
+# active context is cloned. pyld re-processes a scoped context for every place its term is
+# used, so one inline definition of K terms used N times costs K x N definitions, and an
+# attacker's document reaches that before any signature check (issue #446). A definition costs
+# about 4 microseconds (3.9 to 10 measured), a copied entry about 7 nanoseconds.
+MAX_CONTEXT_WORK = 200_000
+_MAPPINGS_PER_UNIT = 512
 # Distinct blank nodes in one canonicalized dataset. Without ties a blank node costs
 # nothing in Hash N-Degree Quads; the cap sizes the issuer copies the work counter charges.
 MAX_BLANK_NODES = 1024
@@ -110,6 +120,87 @@ def _exceeded(what: str, limit: int, why: str = "the document's blank-node graph
               "large or too symmetric") -> CanonicalizationBudgetExceeded:
     return CanonicalizationBudgetExceeded(
         f"RDF canonicalization budget exceeded: {what} (limit {limit}); {why} to canonicalize")
+
+
+def _context_work_exceeded(limit: int) -> CanonicalizationBudgetExceeded:
+    return CanonicalizationBudgetExceeded(
+        f"JSON-LD context budget exceeded (limit {limit} term definitions): the document's "
+        f"scoped contexts cost too much to expand")
+
+
+@functools.lru_cache(maxsize=1)
+def _budgeted_processor_class() -> Any:
+    """pyld's ``JsonLdProcessor`` with a ceiling on the **context work** one instance does
+    (one instance per call, nothing global: build it with :func:`new_processor`).
+
+    The cost of JSON-LD expansion and compaction that an attacker controls is pyld
+    processing a scoped context (a term definition's own ``@context``) again for every node
+    that uses the term: K terms used by N nodes cost K x N term definitions. Every one of
+    them goes through ``_create_term_definition`` (pyld 2.0.4 and 3.x alike), which is
+    counted here; the copy of the active context that each scoped context starts from is
+    counted too, one unit per ``_MAPPINGS_PER_UNIT`` entries. Over ``MAX_CONTEXT_WORK`` raises
+    :class:`CanonicalizationBudgetExceeded` from inside pyld, so the work stops where it is;
+    the error is also kept in ``tripped``, because pyld 2.0.4 wraps whatever a scoped context
+    raises into a ``JsonLdError`` (:func:`_guarded` re-raises it). The output is pyld's own:
+    only the counting is added."""
+    from pyld.jsonld import JsonLdProcessor
+
+    class _BudgetedProcessor(JsonLdProcessor):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.limit = MAX_CONTEXT_WORK
+            self.terms = 0
+            self.copied = 0
+            self.tripped: CanonicalizationBudgetExceeded | None = None
+
+        def _charge(self) -> None:
+            if self.terms + self.copied // _MAPPINGS_PER_UNIT > self.limit:
+                self.tripped = self.tripped or _context_work_exceeded(self.limit)
+                raise self.tripped
+
+        def _create_term_definition(self, *args: Any, **kwargs: Any) -> Any:
+            self.terms += 1
+            self._charge()
+            return super()._create_term_definition(*args, **kwargs)
+
+        def _clone_active_context(self, active_ctx: Any) -> Any:
+            self.copied += len(active_ctx.get("mappings") or ())
+            self._charge()
+            return super()._clone_active_context(active_ctx)
+
+    return _BudgetedProcessor
+
+
+def new_processor() -> Any:
+    """A fresh context-budgeted ``JsonLdProcessor``; its work counters are its own, so use
+    one per call (calls that share one share the budget)."""
+    return _budgeted_processor_class()()
+
+
+def _guarded(processor: Any, call: Any) -> Any:
+    try:
+        return call()
+    except Exception:
+        if processor.tripped is not None:
+            raise processor.tripped from None      # pyld 2.0.4 may have re-wrapped it
+        raise
+
+
+def budgeted_expand(document: Any, loader: Any, processor: Any = None, **options: Any) -> Any:
+    """``jsonld.expand(document, pyld_options(loader, **options))`` under the context
+    budget (of *processor* when given, so one document's calls can share it): the same
+    output, :class:`CanonicalizationBudgetExceeded` over it."""
+    processor = processor or new_processor()
+    return _guarded(processor, lambda: processor.expand(
+        document, pyld_options(loader, **options)))
+
+
+def budgeted_compact(expanded: Any, context: Any, loader: Any, processor: Any = None) -> Any:
+    """``jsonld.compact(expanded, context, pyld_options(loader))`` under the context budget
+    (of *processor* when given, so one document's calls can share it)."""
+    processor = processor or new_processor()
+    return _guarded(processor, lambda: processor.compact(
+        expanded, context, pyld_options(loader)))
 
 
 _KEYWORDS = frozenset((
@@ -415,20 +506,25 @@ def to_rdf(document: Any, loader: Any, **options: Any) -> Any:
     ``to_rdf`` the expanded form would save that, but on pyld 3.x a second expansion is not the
     identity: it resolves a relative ``@id`` that a ``"@base": null`` context kept relative
     against the default base, which changes the signed dataset (the forged-type document of
-    ``test_dcql_type_values.py``). Expansion is pyld's and is not bounded here: an inline
-    scoped context costs it time proportional to the nodes that use it times its size.
+    ``test_dcql_type_values.py``). Both expansions share one context budget
+    (``MAX_CONTEXT_WORK``, :func:`new_processor`): an inline scoped context costs pyld time
+    proportional to the nodes that use it times its size (issue #446).
 
     Raises :class:`CanonicalizationBudgetExceeded` over budget, before the conversion runs;
     whatever pyld raises for a document it cannot process is left to the caller."""
     from pyld import jsonld
 
+    processor = new_processor()       # both expansions below spend the one context budget
     try:
-        expanded = jsonld.expand(document, pyld_options(loader))
+        expanded = processor.expand(document, pyld_options(loader))
     except jsonld.JsonLdError:
-        pass                          # to_rdf expands again and raises the error callers expect
+        if processor.tripped is not None:
+            raise processor.tripped from None
+        # to_rdf expands again and raises the error callers expect
     else:
         _conversion_cost(expanded, MAX_CONVERSION_COMPARISONS)
-    return jsonld.to_rdf(document, pyld_options(loader, **options))
+    return _guarded(processor, lambda: processor.to_rdf(
+        document, pyld_options(loader, **options)))
 
 
 def canonicalize_nquads(document: Any, loader: Any) -> str:

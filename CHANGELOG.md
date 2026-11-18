@@ -362,6 +362,38 @@ All notable changes to **openvc** are documented here. The format follows
   `eddsa-jcs-2022` / `ecdsa-jcs-2019` are unaffected (`test_rdf_conversion_budget.py`). Found
   by an internal security review of 2026-11-17.
 
+- **JSON-LD expansion is bounded by a context work budget, and an inline term definition
+  in the document `@context` is refused before pyld is entered**
+  ([#446](https://github.com/luisgf/openvc/issues/446)). pyld processes a term's scoped
+  context again for every node that uses the term, so a scoped context of K terms used by N
+  nodes cost K x N term definitions, before any signature check on `eddsa-rdfc-2022`,
+  `ecdsa-rdfc-2019` and `ecdsa-sd-2023` (K = N = 2 000, 87 KB: 14 s through
+  `verify_credential`; a node typed `T` N times, 4 bytes a use: 41 KB 26 s, 102 KB 159 s; the
+  same through `verify_many`, an `ldp_vc` answer and the async API's event loop). The shape is
+  one the signature-time validation refuses, but its exemptions are exactly where it cannot
+  help: an `@context` key under any key named like a served `@json` term (with an inline
+  `@vocab`), the credentials a presentation embeds (a credential may add
+  `VerifiablePresentation` to its `type`), and the `meta.type_values` match, which expands a
+  self-signed JCS or VC-JWT credential's context on lanes with no RDF suite. So the bound is
+  the work: `openvc.proof._rdfc.new_processor()` is pyld's `JsonLdProcessor` (one per call,
+  nothing global, pyld 2.0.4 and 3.x, output byte-identical) counting every term definition
+  plus one unit per 512 entries of every active-context copy, and refuses over
+  `MAX_CONTEXT_WORK` (200 000: 0.75 to 0.85 s on every shape measured, from inside pyld so
+  the work stops there) with the existing `CanonicalizationBudgetExceeded`
+  (`ProofMalformed`). Every expansion and compaction an attacker's bytes reach is charged:
+  the RDF suites' conversion (its two expansions share one budget), `ecdsa-sd-2023`'s
+  derivation and verification, context validation, `missing_types` and the `type_values`
+  match; a test fails on any other call of pyld's entry points in the source. In front of it,
+  the document's `@context` rule of the later validation (same class and message) runs before
+  any pyld work. Calibration: every RDF fixture and golden needs at most 486 units, a
+  credential with 1 000 densely typed nodes about 28 000, 1 MiB of such nodes 138 000 (69 %);
+  a document of more than about 700 KB of densely typed nodes, or a `@context` repeating a
+  served URL more than about 1 900 times, is now refused. **Residual:** the cost is bounded
+  per document (under a second of event-loop time), not removed; a plain document with no
+  scoped context expands in linear time with no size cap here; `ecdsa-sd-2023`'s N-Quads
+  parsing stays #447. Found by the adversarial review of #445
+  (`test_di_context_before_expansion.py`).
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —

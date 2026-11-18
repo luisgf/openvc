@@ -28,10 +28,11 @@ otherwise serialise N blocking fetches.
 ``verificationMethod`` synchronously; the async path resolves that DID *first*
 (awaiting the injected resolver) and hands the suite a one-shot in-memory resolver,
 so the suite's own resolution does no I/O. The canonicalisation + signature check
-then run inline on the event loop. The RDF suites charge two budgets before the signature
-check (``openvc.proof._rdfc``: canonicalization work, and the node-map comparisons of the
-JSON-LD to RDF conversion), but the CPU is not bounded end to end: JSON-LD *expansion* (#446)
-and, on ecdsa-sd-2023, pyld's N-Quads parsing (#447) are pyld's and are not covered.
+then run inline on the event loop. The RDF suites charge three budgets before the signature
+check (``openvc.proof._rdfc``: canonicalization work, the node-map comparisons of the
+JSON-LD to RDF conversion, and the context work of JSON-LD expansion, #446), each a ceiling
+of about a second at most that still runs inline on the event loop; the CPU is not bounded
+end to end: on ecdsa-sd-2023 pyld's N-Quads parsing (#447) is pyld's and is not covered.
 """
 from __future__ import annotations
 

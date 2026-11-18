@@ -928,11 +928,40 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   again by pyld's `parse_nquads` after the conversion, quadratic in the number of quads and
   charged 0 (78 KiB, 10.5 s before the base signature;
   [#447](https://github.com/luisgf/openvc/issues/447)). (2) JSON-LD expansion
-  ([#446](https://github.com/luisgf/openvc/issues/446)), which runs first, is pyld's, is
-  not linear (a scoped context of K terms used by N nodes costs N x K: 94 KB of document, 27 s
-  on main before this change) and is not bounded here. It now runs twice per RDF-suite
-  conversion (once to count, once inside pyld's `to_rdf`, which must be given the document as
-  written), so that pre-existing cost is about doubled until it is bounded on its own.
+  ([#446](https://github.com/luisgf/openvc/issues/446)), which runs first, is bounded by the
+  third budget below.
+  **JSON-LD expansion (R13, third bound, [#446](https://github.com/luisgf/openvc/issues/446)).**
+  pyld processes a term's scoped context again for every node that uses the term, so a scoped
+  context of K terms used by N nodes costs K x N term definitions (K = N = 2 000, 87 KB, 14 s;
+  one node typed `T` N times spends 4 bytes a use: 102 KB took 159 s), and the RDF suites
+  expand before the signature. Shape rules cannot bound that: the later validation accepts an
+  `@context` key inside an `@json` literal (so under any key named like one, with an inline
+  `@vocab`) and ignores the embedded credentials of a presentation (a credential may add
+  `VerifiablePresentation` to its `type`), and `meta.type_values` expands a self-signed JCS or
+  VC-JWT credential's context on lanes with no RDF suite at all. So the unit is the work
+  itself: `_rdfc.new_processor()` is pyld's `JsonLdProcessor` (one per call, nothing global,
+  pyld 2.0.4 and 3.x) counting every `_create_term_definition`, plus one unit per 512 entries
+  of every active-context copy, and refuses over `MAX_CONTEXT_WORK` (200 000, about 0.8 s)
+  with the same `CanonicalizationBudgetExceeded`, from inside pyld so the work stops where it
+  is. Every expansion and compaction an attacker's bytes reach is charged (the RDF suites'
+  conversion, whose two expansions share one budget; `ecdsa-sd-2023`'s derivation and
+  verification; context validation and `missing_types`; the `type_values` match). The cheap
+  exact part stays in front: the document's `@context` rule of the later validation
+  (`check_context_before_expansion`) runs before any pyld work. **Calibration** (a unit is
+  about 4 microseconds; every RDF fixture and golden of the repository needs at most 486 units,
+  13 186 calls measured): 1 000 typed nodes of the densest bundled type 28 000 (14 %); 256 KiB
+  of such nodes 35 000; 1 MiB 138 000 (69 %); a presentation of 100 credentials 7 300; so the
+  ceiling is 4x or more up to about 700 KB of densely typed nodes and about 1.4x at 1 MiB.
+  A refusal costs 0.75 to 0.85 s on every shape measured (the issue's rows, the nested and
+  `jwk`-named variants at 87 to 135 KB, an `ldp_vc` presentation, a credential typed
+  `VerifiablePresentation`, the `type_values` route). **Residuals:** the budget bounds the cost
+  per document, it does not remove it: under a second of event-loop time per document on the
+  async lane, and a presentation embeds its credentials in one document, whose cost is the
+  sum. A document of more than about 700 KB of densely typed nodes, or a `@context` that
+  repeats a served URL more than about 1 900 times, is refused though it verified before.
+  Expansion that creates no term definition (a large plain document) is linear and not capped
+  by size; pyld's N-Quads parsing is #447. `add_proof` and `derive_proof` run the same budget
+  (a base credential another party issued is refused before its derivation).
 
 ## 10. Out of scope
 

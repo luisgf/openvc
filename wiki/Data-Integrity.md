@@ -240,17 +240,33 @@ each credential, one document at a time. The repository's RDF fixtures need at m
 `ecdsa-sd-2023`'s own `to_rdf` calls are charged the same way, and the JCS suites do no RDF
 work.
 
-**What this does not bound** (the lanes are not bounded end to end): (1) JSON-LD *expansion*
-([#446](https://github.com/luisgf/openvc/issues/446)), which runs first and is pyld's. (2) On
-`ecdsa-sd-2023`, the N-Quads text is parsed again by pyld's `parse_nquads` after the conversion,
-and that is quadratic in the number of quads and charged 0 here
-([#447](https://github.com/luisgf/openvc/issues/447)). About expansion: it is not linear: a scoped context (an inline term with its own `@context`) is processed again for every
-node that uses it, so K terms used by N nodes cost N x K, and the same holds for the bundled VC
-v2 type-scoped contexts on a megabyte of typed nodes (seconds). The document is expanded twice
-now (once to count, once inside the conversion, which has to be given the document as written),
-so that cost is about doubled: on a megabyte of typed nodes 2.7 s became 5.2 s, and an inline
-scoped context of 1 750 terms used by 1 000 nodes (47 KB) 6.5 s became 13 s. Size limits on the
-document you pass in remain the caller's.
+A third bound charges the **JSON-LD expansion** that runs before both
+([#446](https://github.com/luisgf/openvc/issues/446)). pyld processes a term's scoped context
+again for every node that uses the term, so a scoped context of K terms used by N nodes costs
+K x N term definitions (K = N = 2 000, an 87 KB credential, took 14 seconds with a garbage
+proof; a node typed `T` N times spends 4 bytes a use and 102 KB took 159 seconds). openvc counts
+the term definitions pyld creates, plus one unit per 512 entries of every active-context copy,
+and refuses over `MAX_CONTEXT_WORK` (200 000, about 0.8 seconds on one core) with the same
+`CanonicalizationBudgetExceeded`, from inside pyld, so the work stops where it is. The count
+is per call and nothing is shared between calls. It covers every expansion and compaction the
+RDF suites, `ecdsa-sd-2023` (issuing, deriving and verifying), context validation,
+`expected_types` and the `meta.type_values` match of `verify_vp_token` run, including a
+credential that a presentation embeds and a self-signed JCS or VC-JWT credential. The two
+expansions of the conversion share one budget. The document's `@context` is also checked
+first, before any pyld work (an inline term definition is refused outright, as it is after the
+signature). The repository's RDF fixtures need at most 486 units; a credential with 1 000
+nodes of the densest bundled type about 28 000; 1 MiB of such nodes about 138 000. So a
+document of more than about 700 KB of densely typed nodes is refused (the node-map budget
+above refuses one property with more than about 1 400 values first), and so is a `@context`
+that repeats a served URL more than about 1 900 times.
+
+**What this does not bound** (the lanes are not bounded end to end): (1) The budgets bound the
+cost per document, they do not remove it: a refusal still costs up to about a second of one
+core, which on the async API is event-loop time, and a plain document with no scoped context
+expands in time linear in its size, with no cap here (size limits on the document you pass in
+remain the caller's). (2) On `ecdsa-sd-2023`, the N-Quads text is parsed again by pyld's
+`parse_nquads` after the conversion, and that is quadratic in the number of quads and charged
+0 here ([#447](https://github.com/luisgf/openvc/issues/447)).
 
 ## The JSON must be what was signed
 
@@ -266,12 +282,7 @@ raises `ProofMalformed`:
   passed through `extra_contexts`). After that, every entry is either a context URL the
   offline loader serves (bundled, or yours through `extra_contexts`) or an inline object
   that carries **only** `@vocab`, set to an absolute IRI. Inline term definitions are
-  refused. Publish them as a context and pass it through `extra_contexts`. The
-  verifier applies this rule before it expands the document, so before it checks a
-  signature, because JSON-LD expansion costs time proportional to the size of an inline
-  scoped context times the number of nodes that use it. For the same reason a nested
-  `@context` anywhere in the document or the proof is refused up front, except inside an
-  `@json` literal (such as `cnf.jwk`) and inside the credentials a presentation embeds.
+  refused. Publish them as a context and pass it through `extra_contexts`.
 - **Every member is spelled the way JSON-LD compaction would spell it.** A term no
   context defines is refused, because JSON-LD drops it from the dataset and the
   signature never covers its value. These are refused too:

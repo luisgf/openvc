@@ -47,8 +47,15 @@ from ..cbor import decode as _cbor_decode
 from ..cbor import encode as _cbor_encode
 from ..errors import OpenvcError
 from ..keys import P256SigningKey, verify_signature
-from ._context_validation import validate_document
-from ._rdfc import canonicalize_nquads, new_canonicalizer, to_rdf
+from ._context_validation import check_context_before_expansion, validate_document
+from ._rdfc import (
+    budgeted_compact,
+    budgeted_expand,
+    canonicalize_nquads,
+    new_canonicalizer,
+    new_processor,
+    to_rdf,
+)
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -64,7 +71,7 @@ from ._verify_common import (
     safe_repr,
     utc_iso,
 )
-from .contexts import document_loader, pyld_options
+from .contexts import document_loader
 from .errors import ProofError, ProofMalformed, SignatureInvalid, UnsupportedCryptosuite
 from .vc_jwt import SigningKey
 
@@ -424,11 +431,11 @@ class _Transform:
 
 
 def _transform(document: dict[str, Any], hmac_key: bytes, loader: Any) -> _Transform:
-    jsonld = _pyld()
-    expanded = jsonld.expand(document, pyld_options(loader))
+    _pyld()                                    # pyld missing -> the typed install hint
+    processor = new_processor()                # the expansion and the compaction share it
+    expanded = budgeted_expand(document, loader, processor)
     skolemized = _skolemize(expanded, [0])
-    compacted = jsonld.compact(
-        skolemized, document.get("@context"), pyld_options(loader))
+    compacted = budgeted_compact(skolemized, document.get("@context"), loader, processor)
     lines, id_map = _canonicalize(_deskolemize_nquads(_to_nquads(skolemized, loader)))
     c14n_to_hmac = {c14n: "_:" + hmac_label(hmac_key, c14n[len("_:"):])
                     for c14n in set(id_map.values())}
@@ -775,9 +782,10 @@ class EcdsaSdProofSuite:
         # this suite), so the base signature cannot be relied on to refuse these bytes.
         ephemeral_jwk = p256_multikey_to_jwk(parsed["public_key"])
 
+        unsecured = {k: v for k, v in derived.items() if k != "proof"}
+        check_context_before_expansion(unsecured)        # cheap and exact; before any pyld work
         loader = document_loader(extra_contexts)
         try:
-            unsecured = {k: v for k, v in derived.items() if k != "proof"}
             # The document as presented, as VC-DI-ECDSA's verifier canonicalizes it: no
             # deskolemization. A `urn:bnid:` IRI here is an IRI. Turning it into a blank
             # node would let the holder merge it with one of the document's own blank

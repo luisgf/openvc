@@ -96,7 +96,7 @@ def _pyld_calls(source):
         receiver = _dotted(node.func.value)
         if receiver.split(".")[-1] not in {
                 "jsonld", "pyld", "_pyld()", "_require_pyld()", "JsonLdProcessor",
-                "JsonLdProcessor()"}:
+                "JsonLdProcessor()", "processor", "new_processor()"}:
             continue
         arguments = list(node.args) + [keyword.value for keyword in node.keywords]
         helper = any(isinstance(arg, ast.Call) and _dotted(arg.func) == "pyld_options"
@@ -114,9 +114,10 @@ def test_every_pyld_call_takes_its_options_from_the_helper():
     for path in _source_files():
         for line, name, helper in _pyld_calls(path.read_text(encoding="utf-8")):
             sites.append((f"{path.relative_to(_SRC)}:{line}", name, helper))
-    # the scan sees the calls it is there to police (9 since #381: canonicalization goes
-    # through openvc.proof._rdfc, one to_rdf call instead of two normalize calls)
-    assert len(sites) >= 9, sites
+    # the scan sees the calls it is there to police (since #446 every call goes through the
+    # context-budgeted processor of openvc.proof._rdfc: four sites there, and every other
+    # module calls its helpers)
+    assert len(sites) >= 4, sites
     bare = [f"{where} {name}" for where, name, helper in sites if not helper]
     assert not bare, (
         "build the options of these pyld calls with openvc.proof.contexts.pyld_options "
@@ -148,6 +149,8 @@ def test_only_the_helper_builds_pyld_options_or_resolvers():
     ('_pyld().to_rdf(d, pyld_options(loader, format="f"))', [True]),
     ("pyld.jsonld.frame(d, f, opts)", [False]),
     ("JsonLdProcessor().expand(d, opts)", [False]),
+    ("processor.expand(d, opts)", [False]),
+    ("processor.to_rdf(d, pyld_options(loader))", [True]),
     ("jsonld.expand(d, wrap(pyld_options(loader)))", [False]),     # not the options itself
     ("re_match.expand(template)", []),                              # not a pyld receiver
     ("JsonLdProcessor.to_nquads(dataset)", []),                     # no loader involved
@@ -244,8 +247,11 @@ def test_every_pyld_call_gets_its_own_fresh_resolver_that_is_not_pylds_global_ca
             return original(*args, **kwargs)
         return recorder
 
-    for name in ("expand", "compact", "normalize", "to_rdf"):
-        monkeypatch.setattr(jsonld, name, record(name, getattr(jsonld, name)))
+    # every call goes through the context-budgeted JsonLdProcessor (#446), not the module
+    # functions, which build an unbudgeted one
+    for name in ("expand", "compact", "to_rdf"):
+        monkeypatch.setattr(
+            jsonld.JsonLdProcessor, name, record(name, getattr(jsonld.JsonLdProcessor, name)))
 
     _drive_every_pyld_caller()
 
