@@ -26,7 +26,6 @@ import asyncio
 import base64
 import json
 import secrets
-import time
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -51,8 +50,11 @@ from openvc.proof.sd_jwt import (
 V2 = "https://www.w3.org/ns/credentials/v2"
 VCT = "https://credentials.example/identity"
 STATUS_URI = "https://status.example/1"
-FUTURE = int(time.time()) + 86400 * 365
-PAST = int(time.time()) - 3600
+# Fixed instants, not offsets from the clock: nothing here depends on how near "now" they
+# are, only on PAST being lapsed and FUTURE being ahead (an import-time read of the clock
+# would be stale by the time a slow run gets to the test).
+PAST = 1_577_836_800                        # 2020-01-01T00:00:00Z
+FUTURE = 4_102_444_800                      # 2100-01-01T00:00:00Z
 
 
 def _b64(data: bytes) -> str:
