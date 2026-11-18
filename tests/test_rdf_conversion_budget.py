@@ -592,6 +592,18 @@ def test_hostile_shapes_are_refused_typed_before_pyld_compares_anything(
     assert pyld_calls[0] == 0              # refused by the count, pyld never ran the quadratic part
 
 
+def test_the_ceiling_is_enforced_on_duplicate_hits_too(pyld_calls):
+    # The flood sorts last in pyld's walk (the key "zz:p" follows everything else) and every
+    # one of its values after the first is a duplicate, so no *new* value is stored once the
+    # budget is spent. A check that ran only when a new value is stored never fires: the
+    # document cost 8.8 s (#445 review, round 2). Refused by the count, zero real comparisons.
+    doc = _vc2_credential({"zz:p": [{"@list": []}] * 400 + ["v"] * 3000}, "eddsa-rdfc-2022")
+    with pytest.raises(ProofMalformed) as ei:
+        verify_credential(doc)
+    assert type(ei.value).__name__ == BUDGET_ERROR, ei.value
+    assert pyld_calls[0] == 0
+
+
 def test_nan_values_that_never_compare_equal_are_charged_in_full(pyld_calls):
     # pyld finds NaN unequal to itself, so N of them cost N**2/2 and a key by printed value
     # would charge N
@@ -742,18 +754,65 @@ def test_the_message_says_the_budget_is_summed_over_the_document_and_quotes_noth
     assert "marker" not in message and "urn:" not in message
 
 
-def test_a_presentation_of_credentials_is_counted_per_document():
-    # the budget is per converted document: three credentials of 1 000 distinct values each cost
-    # 3 x 499 500 comparisons in one presentation and none of them is refused
-    values = [f"v{i}" for i in range(1000)]
-    one = _vc2_credential({"credentialSubject": {"id": "did:example:s", "urn:p": values}},
-                          "eddsa-rdfc-2022")
-    loader = document_loader(None)
-    costs = [_rdfc._conversion_cost(jsonld.expand(d, pyld_options(loader)), 10**9)
-             for d in (one, one, one)]
-    assert costs == [1000 * 999 // 2] * 3 and sum(costs) > _rdfc.MAX_CONVERSION_COMPARISONS
-    for d in (one, one, one):
-        _rdfc.canonicalize_nquads({k: v for k, v in d.items() if k != "proof"}, loader)
+def _presentation(holder_suite, n_credentials=3, n_values=900):
+    """``n_credentials`` RDF-signed credentials of ``n_values`` distinct values each (each
+    below the ceiling: n*(n-1)/2 = 404 550 comparisons, 3 of them 1.2 million), and a
+    presentation of them signed by the holder with ``holder_suite``. The holder signs with the
+    ceiling lifted, so the verifier is what is tested."""
+    isk, idid, ivm = _ed_key()
+    hsk, hdid, hvm = _ed_key()
+    credentials = [DataIntegrityProofSuite().add_proof(
+        {"@context": CTX, "type": ["VerifiableCredential"], "issuer": idid,
+         "credentialSubject": {"id": hdid, "p": [f"v{j}-{i}" for i in range(n_values)]}},
+        signing_key=isk, verification_method=ivm) for j in range(n_credentials)]
+    return credentials, {"@context": CTX, "type": ["VerifiablePresentation"], "holder": hdid,
+                         "verifiableCredential": credentials}, (hsk, hvm)
+
+
+def _sign_presentation(suite, presentation, holder, monkeypatch=None):
+    """Sign with the holder's key; with *monkeypatch* the ceiling is lifted while signing."""
+    hsk, hvm = holder
+
+    def sign():
+        return suite.add_proof(presentation, signing_key=hsk, verification_method=hvm,
+                               proof_purpose="authentication", challenge="n1",
+                               domain="x509_san_dns:verifier.example")
+    if monkeypatch is None:
+        return sign()
+    with monkeypatch.context() as patch:
+        patch.setattr(_rdfc, "MAX_CONVERSION_COMPARISONS", 10**12)
+        return sign()
+
+
+def _verify_presentation(signed):
+    from openvc.openid4vp import verify_vp_token
+    return verify_vp_token(
+        {"c1": [signed]}, dcql_query={"credentials": [{"id": "c1", "format": "ldp_vc"}]},
+        nonce="n1", client_id="x509_san_dns:verifier.example")
+
+
+def test_a_presentation_signed_with_an_rdf_suite_is_one_document_whose_count_is_the_sum(
+        monkeypatch, pyld_calls):
+    credentials, presentation, holder = _presentation(DataIntegrityProofSuite())
+    for credential in credentials:                  # each credential alone is under the ceiling
+        assert verify_credential(credential)
+    signed = _sign_presentation(DataIntegrityProofSuite(), presentation, holder, monkeypatch)
+    pyld_calls[0] = 0
+    with pytest.raises(ProofMalformed) as ei:       # the presentation converts them all at once
+        _verify_presentation(signed)
+    assert type(ei.value).__name__ == BUDGET_ERROR, ei.value
+    assert pyld_calls[0] == 0
+    # and the holder cannot sign it either: the same conversion
+    with pytest.raises(ProofMalformed) as ei:
+        _sign_presentation(DataIntegrityProofSuite(), presentation, holder)
+    assert type(ei.value).__name__ == BUDGET_ERROR, ei.value
+
+
+def test_the_same_credentials_under_a_jcs_signed_presentation_verify(monkeypatch):
+    from openvc.proof.di_jcs import EddsaJcsProofSuite
+    credentials, presentation, holder = _presentation(EddsaJcsProofSuite())
+    signed = _sign_presentation(EddsaJcsProofSuite(), presentation, holder, monkeypatch)
+    assert _verify_presentation(signed)             # only each credential is converted
 
 
 # --------------------------------------------------------------------------- #

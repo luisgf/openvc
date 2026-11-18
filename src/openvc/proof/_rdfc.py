@@ -40,9 +40,11 @@ the *expanded* document and counts the ``compare_values`` calls pyld will make, 
 the whole document** (every slot of every subject of every graph), and it is exact only when
 its (graph, subject, property) partition is pyld's own, which is why the rules that decide it
 are mirrored rather than approximated. It bounds the node-map comparisons and nothing else:
-JSON-LD *expansion* (before the count) and pyld's later steps are not bounded by it, and
-expansion is not linear (an inline scoped context costs time proportional to the nodes that
-use it times its size).
+JSON-LD *expansion* (before the count, #446) and pyld's later steps (on ecdsa-sd-2023 the
+N-Quads parsing, #447) are not bounded by it, and expansion is not linear (an inline scoped
+context costs time proportional to the nodes that use it times its size). A presentation
+secured with an RDF suite is one converted document: its count is the sum over the
+credentials it embeds.
 
 The budget is **per canonicalization**, not per credential or per presentation: a VP
 carrying N credentials canonicalizes N+1 documents, each with its own budget.
@@ -70,7 +72,7 @@ from .errors import ProofMalformed
 # Value comparisons (pyld ``compare_values`` calls) the JSON-LD to RDF conversion may make,
 # counted before it runs (see :func:`_conversion_cost`). A comparison costs about 0.3
 # microsecond, so the ceiling is a fraction of a second of one core; the repository's RDF
-# fixtures need a few hundred at most (see the wiki).
+# fixtures need 2 at most (see the wiki).
 MAX_CONVERSION_COMPARISONS = 1_000_000
 # Distinct blank nodes in one canonicalized dataset. Without ties a blank node costs
 # nothing in Hash N-Degree Quads; the cap sizes the issuer copies the work counter charges.
@@ -224,9 +226,9 @@ class _ConversionCounter:
                 self._add(graph, subject, prop, self._value_key(item), False)
             return
         if "@list" in item:
+            self.walk(item["@list"], graph, subject, prop, True, reverse_of)
             if subject is not None and not in_list and reverse_of is None:
                 self._add(graph, subject, prop, None, True)
-            self.walk(item["@list"], graph, subject, prop, True, reverse_of)
             return
         for kind in item.get("@type", ()):      # pyld labels blank-node types first
             if isinstance(kind, str) and kind.startswith("_:"):

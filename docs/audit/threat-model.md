@@ -919,10 +919,16 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   ([#426](https://github.com/luisgf/openvc/issues/426)). `_rdfc` now expands the document
   and counts the comparisons pyld will make, mirroring pyld's slot partition (graph, subject,
   property), and refuses over `MAX_CONVERSION_COMPARISONS` (1 000 000) with the same
-  `CanonicalizationBudgetExceeded` before the conversion runs; the count is checked against
-  pyld's real calls by `test_rdf_conversion_budget.py`. The count is a document-wide sum (51
-  subjects of 200 values are refused), per converted document. **Residual of this bound:** it
-  covers the node-map comparisons only. JSON-LD expansion, which runs first, is pyld's, is
+  `CanonicalizationBudgetExceeded` before the conversion runs, on all three RDF suites; the
+  count is checked against pyld's real calls by `test_rdf_conversion_budget.py`. The count is
+  a document-wide sum (51 subjects of 200 values are refused), per converted document: a
+  presentation secured with an RDF suite is one document, whose count is the sum over the
+  credentials it embeds. **Residuals of this bound (the lanes are not bounded end to end):** it
+  covers the node-map comparisons only. (1) On `ecdsa-sd-2023` the N-Quads text is parsed
+  again by pyld's `parse_nquads` after the conversion, quadratic in the number of quads and
+  charged 0 (78 KiB, 10.5 s before the base signature;
+  [#447](https://github.com/luisgf/openvc/issues/447)). (2) JSON-LD expansion
+  ([#446](https://github.com/luisgf/openvc/issues/446)), which runs first, is pyld's, is
   not linear (a scoped context of K terms used by N nodes costs N x K: 94 KB of document, 27 s
   on main before this change) and is not bounded here. It now runs twice per RDF-suite
   conversion (once to count, once inside pyld's `to_rdf`, which must be given the document as
