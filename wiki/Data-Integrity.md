@@ -216,6 +216,15 @@ graphs of around a dozen statements each; the threshold is not monotone). Giving
 value keeps them out of the tie-breaking phase. The output of an accepted document is
 byte-identical to pyld's `normalize`.
 
+`ecdsa-sd-2023` has one more step before the signature check: it reads its N-Quads back into a
+dataset, and pyld's own parser keeps each graph's triples unique by comparing every new triple
+with all those before it, which is quadratic in the number of quads (a derived credential with
+8 000 extra one-valued properties, 80 KB, took 10 s and the work budget charges nothing for
+it). openvc parses one line at a time with pyld's parser and keeps the uniqueness in a set, so
+the cost is linear (0.13 s for that document) and the canonical lines and blank-node labels are
+byte-identical to what pyld alone produced; a malformed line is still pyld's `JsonLdError`,
+which `verify` turns into `ProofMalformed`.
+
 ## The JSON must be what was signed
 
 The RDF suites (`eddsa-rdfc-2022`, `ecdsa-rdfc-2019`, `ecdsa-sd-2023`) sign the **RDF

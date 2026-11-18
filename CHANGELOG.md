@@ -321,6 +321,19 @@ All notable changes to **openvc** are documented here. The format follows
   but never signs is not examined. The refusal text names "the Ed25519 public key", except
   from `canonical_public_jwk`, which keeps "JWK member 'x'". Found by a security review of `main` on 2026-11-17
   (`test_ed25519_point_check.py`).
+- **ecdsa-sd-2023: the N-Quads are parsed in linear time before the signature check.** The
+  suite read its document's N-Quads back through pyld's `parse_nquads` — twice, because
+  `URDNA2015.main` re-parses when given no `format` — and pyld keeps each graph's triples unique
+  by comparing every new triple with all those already parsed, so N distinct quads cost N²/2
+  comparisons. A derived credential with 8 000 extra one-valued properties (80 KB) cost 10 s
+  through `verify_credential` before the base signature was looked at, a cost neither RDF
+  budget counts; it now costs 0.13 s. The parse is one pyld `parse_nquads` per line with a set
+  for the uniqueness, so the grammar, the literal unescaping and the `JsonLdError` for a
+  malformed line stay pyld's, and the canonical lines and the blank-node label map are
+  byte-identical to before (differential tests against a copy of the old code over a fuzzed
+  corpus, the W3C vc-di-ecdsa vectors, and the pyld 2.0.4 and 3.x semantics). The other two RDF
+  suites never parsed N-Quads. Found by the review of #445
+  (`test_ecdsa_sd_nquads_parse.py`).
 
 ### Fixed
 

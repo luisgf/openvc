@@ -396,12 +396,59 @@ def _deskolemize_document(node: Any) -> Any:
     return node
 
 
+def _parse_nquads_linear(nquads_text: str) -> dict[str, list[dict[str, Any]]]:
+    """pyld's ``parse_nquads`` of *nquads_text*, in time linear in the number of quads.
+
+    pyld keeps each graph's triples unique by comparing every new triple with all those
+    already parsed (N distinct quads cost N**2/2 comparisons: 10 s for an 80 KB derived
+    credential, before the signature is checked). This parses each ``\\n``-terminated line
+    with pyld's own ``parse_nquads`` (so the grammar, the literal unescaping and the typed
+    ``JsonLdError`` for a malformed line are pyld's, on whichever pyld is installed, and a
+    document that parses today parses to the same dataset) and keeps the uniqueness with a
+    set keyed on exactly what pyld's ``_compare_rdf_triples`` compares: type and value of
+    subject, predicate and object, plus the object's language and datatype, per graph.
+    The serializer ends every quad with ``\\n`` and escapes any ``\\n`` inside a literal, so a
+    ``\\n`` is always a line boundary, in both pyld's splitters."""
+    from pyld.jsonld import JsonLdProcessor
+    dataset: dict[str, list[dict[str, Any]]] = {}
+    seen: set[tuple[Any, ...]] = set()
+    pieces = nquads_text.split("\n")
+    last = len(pieces) - 1
+    for index, piece in enumerate(pieces):
+        if not piece:
+            continue
+        chunk = piece if index == last else piece + "\n"
+        try:
+            parsed = JsonLdProcessor.parse_nquads(chunk)
+        except Exception:
+            # the same refusal pyld gives, but with the line number of the whole text
+            JsonLdProcessor.parse_nquads("\n" * index + chunk)
+            raise
+        for graph_name, triples in parsed.items():
+            for triple in triples:
+                s, p, o = triple["subject"], triple["predicate"], triple["object"]
+                key = (graph_name, s["type"], s["value"], p["type"], p["value"],
+                       o["type"], o["value"], o.get("language"), o.get("datatype"))
+                if key not in seen:
+                    seen.add(key)
+                    dataset.setdefault(graph_name, []).append(triple)
+    return dataset
+
+
 def _canonicalize(nquads_text: str) -> tuple[list[str], dict[str, str]]:
-    """(sorted canonical N-Quad lines, {input ``_:bnode`` -> ``_:c14nN``})."""
+    """(sorted canonical N-Quad lines, {input ``_:bnode`` -> ``_:c14nN``}).
+
+    Byte-identical to ``URDNA2015.main(parse_nquads(text), {})`` then ``to_nquads``:
+    that is two parses (one of the input, one of the canonical output, which ``main``
+    does when it is given no ``format``), each quadratic in pyld. Both are
+    :func:`_parse_nquads_linear` here; the second round trip is kept because pyld's
+    literal unescaping is not the inverse of its escaping (a backslash followed by ``n``
+    comes back as a backslash and a line feed), so skipping it would change a byte."""
     from pyld.jsonld import JsonLdProcessor
     issuer = new_canonicalizer()                 # URDNA2015 with the work budget (_rdfc)
-    canonical = issuer.main(JsonLdProcessor.parse_nquads(nquads_text), {})
-    text = JsonLdProcessor.to_nquads(canonical)
+    canonical = issuer.main(_parse_nquads_linear(nquads_text),
+                            {"format": "application/n-quads"})
+    text = JsonLdProcessor.to_nquads(_parse_nquads_linear(canonical))
     lines = sorted(ln for ln in text.split("\n") if ln)
     return lines, dict(issuer.canonical_issuer.existing)
 
