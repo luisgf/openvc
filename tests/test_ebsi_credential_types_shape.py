@@ -30,6 +30,12 @@ and an absent ``type`` are no types (the #367 note, before any registry request 
 mode); a string is a one-element list; a well-formed list is trusted; a 100 000-character string
 and a list of 100 000 entries are refused with a bounded message in linear time.
 
+Since #433 the core suite refuses these shapes first: through ``verify_ebsi_badge`` a malformed
+``vc.type`` is now the core's ``ClaimsInvalid`` (``VcJwtProofSuite.verify`` judges it right after
+the signature), so the pipeline tests below assert that, and the #359 guard (``_credential_types``,
+kept as defence in depth) is exercised directly with the same shapes and the same messages. The
+one shape pinned here as "one type" that the core now refuses is ``""``.
+
 The class under test is read when a test runs, not imported at the top: the file then collects
 against a tree without it (the differential run against ``main``), where each negative fails on
 its own and the controls still pass. Self-contained: ``tests/`` is not a package.
@@ -174,6 +180,20 @@ def _is_malformed(exc: BaseException) -> None:
     assert len(str(exc)) <= MESSAGE_BOUND, len(str(exc))
 
 
+def _guard(value: Any) -> BaseException:
+    """The #359 guard called directly: what ``_credential_types`` raises for *value*."""
+    with pytest.raises(EbsiVerificationError) as info:
+        verify_module._credential_types({"type": value})
+    return info.value
+
+
+def _core_refuses(exc: BaseException) -> None:
+    """The core suite's refusal (#433): the exact class, a bounded message."""
+    assert type(exc) is ClaimsInvalid
+    assert "`type` must be a non-empty string or an array of non-empty strings" in str(exc)
+    assert len(str(exc)) <= MESSAGE_BOUND, len(str(exc))
+
+
 def _p(value: Any) -> Any:
     text = repr(value)
     return pytest.param(value, id=f"{type(value).__name__}-{text[:20]}")
@@ -221,29 +241,44 @@ BAD_ENTRY = [
 
 @pytest.mark.parametrize("kwargs", MODES)
 @pytest.mark.parametrize("value,message", NOT_A_LIST)
-def test_a_type_that_is_not_a_string_or_a_list_is_typed_in_every_trust_mode(
+def test_a_type_that_is_not_a_string_or_a_list_is_the_cores_claims_invalid_in_every_trust_mode(
         kwargs: dict[str, Any], value: Any, message: str) -> None:
-    # on main a bare TypeError for the scalars, and the object's keys read as its types
+    # #433: the core refuses it right after the signature, before the EBSI guard runs
     fetch, resolver = _world()
-    with pytest.raises(EbsiVerificationError) as info:
+    with pytest.raises(OpenvcError) as info:
         verify(badge(value), resolver, **kwargs)
-    _is_malformed(info.value)
-    assert str(info.value) == message
+    _core_refuses(info.value)
     # after the signature (the issuer's key was resolved), before any registry request
     assert fetch.calls == [DidRegistryV5().identifiers_url(BASE, LEAF)]
 
 
+@pytest.mark.parametrize("value,message", NOT_A_LIST)
+def test_the_guard_types_a_type_that_is_not_a_string_or_a_list(value: Any, message: str) -> None:
+    # the #359 guard on its own (on main a bare TypeError for the scalars, and the object's
+    # keys read as its types)
+    exc = _guard(value)
+    _is_malformed(exc)
+    assert str(exc) == message
+
+
 @pytest.mark.parametrize("kwargs", MODES)
 @pytest.mark.parametrize("value,message", BAD_ENTRY)
-def test_a_list_with_a_non_string_entry_is_rejected_not_filtered(
+def test_a_list_with_a_non_string_entry_is_the_cores_claims_invalid(
         kwargs: dict[str, Any], value: Any, message: str) -> None:
-    # on main `["X", 3]` read as `["X"]`; the entry is now named and the whole list refused
     fetch, resolver = _world()
-    with pytest.raises(EbsiVerificationError) as info:
+    with pytest.raises(OpenvcError) as info:
         verify(badge(value), resolver, **kwargs)
-    _is_malformed(info.value)
-    assert str(info.value) == message
+    _core_refuses(info.value)
     assert fetch.calls == [DidRegistryV5().identifiers_url(BASE, LEAF)]
+
+
+@pytest.mark.parametrize("value,message", BAD_ENTRY)
+def test_the_guard_rejects_a_list_with_a_non_string_entry_not_filters_it(
+        value: Any, message: str) -> None:
+    # on main `["X", 3]` read as `["X"]`; the entry is named and the whole list refused
+    exc = _guard(value)
+    _is_malformed(exc)
+    assert str(exc) == message
 
 
 def test_the_class_sits_under_the_verification_error_family() -> None:
@@ -255,27 +290,29 @@ def test_the_class_sits_under_the_verification_error_family() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# The core suite's `expected_types` check runs first and is unchanged
+# With `expected_types`: the core's shape refusal (#433) comes before its membership check
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("value", [_p(v) for v in (7, None, True, 1.5, {OBC: 1}, {"a": 1})])
-def test_with_expected_types_a_scalar_or_object_type_is_still_the_suite_s_claims_invalid(
+def test_with_expected_types_a_scalar_or_object_type_is_the_suite_s_claims_invalid(
         value: Any) -> None:
-    # the core suite reads these as no types and refuses before verify.py reads the value
+    # the core suite refuses the shape (it used to read these as no types and report them
+    # missing) before verify.py reads the value
     _, resolver = _world()
-    with pytest.raises(ClaimsInvalid, match="credential missing required type"):
+    with pytest.raises(ClaimsInvalid) as info:
         verify(badge(value), resolver, expected_types=[OBC])
+    _core_refuses(info.value)
 
 
 @pytest.mark.parametrize("kwargs", MODES)
-def test_with_expected_types_a_list_that_carries_it_beside_a_non_string_is_malformed(
+def test_with_expected_types_a_list_that_carries_it_beside_a_non_string_is_refused_by_the_core(
         kwargs: dict[str, Any]) -> None:
-    # the suite finds the expected string and passes; the trust reader then refuses the list
+    # the suite used to find the expected string and pass, and the trust reader refused the
+    # list; the core now refuses it first
     _, resolver = _world()
-    with pytest.raises(EbsiVerificationError) as info:
+    with pytest.raises(ClaimsInvalid) as info:
         verify(badge([OBC, 3]), resolver, expected_types=[OBC], **kwargs)
-    _is_malformed(info.value)
-    assert str(info.value) == "credential type[1] is not a string: 3"
+    _core_refuses(info.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -313,16 +350,17 @@ def _node_client() -> Any:
 
 @pytest.mark.parametrize("require_trust", [True, False], ids=["require-trust", "no-require"])
 @pytest.mark.parametrize("value", [_p(v) for v in (7, None, True, 1.5, {"a": 1}, ["X", 3])])
-def test_the_issue_table_reaches_the_node_client_caller_as_the_typed_class(
+def test_the_issue_table_reaches_the_node_client_caller_as_a_typed_class(
         value: Any, require_trust: bool) -> None:
-    # on main a bare TypeError out of `run` (its failover loop catches EbsiError only)
+    # on main a bare TypeError out of `run` (its failover loop catches EbsiError only); now the
+    # core's typed ClaimsInvalid (an OpenvcError, not an EbsiError, so no failover either)
     client = _node_client()
     try:
-        with pytest.raises(EbsiVerificationError) as info:
+        with pytest.raises(OpenvcError) as info:
             client.run(lambda session: verify_ebsi_badge(
                 badge(value), resolver=session.resolver, proof_suite=SUITE,
                 require_trust=require_trust))
-        _is_malformed(info.value)
+        _core_refuses(info.value)
         assert not isinstance(info.value, NoHealthyNode)
         # the node was not blamed: the next walk runs on it
         result = client.run(lambda session: verify_ebsi_badge(
@@ -337,21 +375,19 @@ def test_the_issue_table_reaches_the_node_client_caller_as_the_typed_class(
 # Controls: `""`, `[]`, absent and the well-formed shapes keep today's meaning
 # --------------------------------------------------------------------------- #
 
-def test_an_empty_string_is_one_type_that_no_accreditation_lists() -> None:
+@pytest.mark.parametrize("kwargs", MODES)
+def test_an_empty_string_is_now_refused_by_the_core(kwargs: dict[str, Any]) -> None:
+    # CHANGED by #433: `""` used to be "one type that no accreditation lists" (untrusted,
+    # the registry consulted). It is an empty string, which the core's shape rule refuses.
     fetch, resolver = _world()
-    with pytest.raises(IssuerNotTrusted) as single:
-        verify(badge(""), resolver)
-    assert type(single.value) is IssuerNotTrusted
-    assert "types ['']" in str(single.value)
-    assert "names no specific type" not in str(single.value)   # it IS a specific type
-    assert fetch.calls[-1] == TirV4().issuer_url(BASE, LEAF)   # the registry was consulted
-    with pytest.raises(NoTrustedAnchor) as recursive:
-        verify(badge(""), resolver, trust_anchors={ROOT})
-    assert type(recursive.value) is NoTrustedAnchor
-    assert "has no valid accreditation for the credential's types" in str(recursive.value)
-    assert verify(badge(""), resolver, require_trust=False).trusted is False
-    assert verify(badge(""), resolver, trust_anchors={ROOT},
-                  require_trust=False).trusted is False
+    with pytest.raises(OpenvcError) as info:
+        verify(badge(""), resolver, **kwargs)
+    _core_refuses(info.value)
+    assert fetch.calls == [DidRegistryV5().identifiers_url(BASE, LEAF)]
+
+
+def test_the_guard_still_reads_an_empty_string_as_one_type() -> None:
+    assert verify_module._credential_types({"type": ""}) == [""]
 
 
 @pytest.mark.parametrize("value", [pytest.param([], id="empty-list"),
@@ -433,6 +469,10 @@ def test_a_huge_list_whose_last_entry_is_not_a_string_is_malformed_in_linear_tim
     types: list[Any] = [f"T{i}" for i in range(BIG)] + [3]
     exc, elapsed = _timed(lambda: verify(badge(types), resolver, **kwargs))
     assert isinstance(exc, BaseException)
+    _core_refuses(exc)
+    assert f"member {BIG} of the array is 3" in str(exc)
+    assert elapsed < LINEAR_BUDGET_S
+    exc, elapsed = _timed(lambda: _guard(types))              # the guard on the same list
     _is_malformed(exc)
     assert str(exc) == f"credential type[{BIG}] is not a string: 3"
     assert elapsed < LINEAR_BUDGET_S
@@ -442,6 +482,10 @@ def test_a_huge_list_of_non_strings_names_the_first_entry() -> None:
     _, resolver = _world()
     exc, elapsed = _timed(lambda: verify(badge([1] * BIG), resolver))
     assert isinstance(exc, BaseException)
+    _core_refuses(exc)
+    assert "member 0 of the array is 1" in str(exc)
+    assert elapsed < LINEAR_BUDGET_S
+    exc, elapsed = _timed(lambda: _guard([1] * BIG))
     _is_malformed(exc)
     assert str(exc) == "credential type[0] is not a string: 1"
     assert elapsed < LINEAR_BUDGET_S
@@ -462,7 +506,9 @@ def test_a_huge_list_of_non_strings_names_the_first_entry() -> None:
 def test_the_message_shows_the_offending_value_through_safe_repr(value: Any,
                                                                  message: str) -> None:
     _, resolver = _world()
-    with pytest.raises(EbsiVerificationError) as info:
+    with pytest.raises(OpenvcError) as through_core:
         verify(badge(value), resolver)
-    _is_malformed(info.value)
-    assert str(info.value) == message
+    _core_refuses(through_core.value)
+    exc = _guard(value)
+    _is_malformed(exc)
+    assert str(exc) == message

@@ -140,6 +140,25 @@ boundary is attacker-controlled until a signature verifies.
   on the validity window and the consistency checks, but is not enough to be read as a
   credential. The trade-off is in the §4 replay row. See **R1** in
   §9 for the recursion caveat.
+- **Key purpose on the JOSE lanes** — a JWS `kid` is a hint, so the key is still selected by
+  `DidDocument.key_by_kid` (bare, `#fragment` and absolute all select); then, when the resolved
+  document declares the relationship, the selected method must be referenced by it
+  (`DidDocument.grants`, DID Core 1.0 §5.3, the grant half of `key_for_purpose`):
+  `assertionMethod` for a VC-JWT, an SD-JWT VC issuer JWT and a status-list token, else
+  `KeyResolutionFailed`; `authentication` for a VP-JWT holder key, else `ClaimsInvalid` with the
+  `KeyResolutionFailed` as its cause (the VP-JWT wrapping of any holder-key failure). With the
+  relationship declared, a key listed only under `authentication` / `keyAgreement` no longer
+  issues a VC-JWT or an SD-JWT VC (#428). **Not enforced:** a relationship the document does not
+  declare (as on Data Integrity: any key then issues, a document with `authentication` but no
+  `assertionMethod` included), a KB-JWT (`cnf.jwk`), the https `/.well-known/jwt-vc-issuer` path,
+  x5c, a resolver's own non-`DidDocument` type, and `openvc_ebsi` (which still selects with
+  `key_by_kid` alone; a `did:ebsi` document resolved through the core registry is checked).
+  **Compatibility:** a declared-but-empty `assertionMethod` (every recorded did:webvh golden
+  document), a bare-string entry or method id and a `#relative` id under a non-DID document `id`
+  grant nothing. **Residual:** with duplicate method ids (or an embedded relationship entry
+  reusing a top-level id) the JOSE selection takes the first-listed method, where the Data
+  Integrity lookup refuses the duplicate; unchanged from before, and only a controller-authored
+  document can have it (`test_jose_key_purpose.py`).
 - **Data Integrity** — `eddsa-rdfc-2022` / `ecdsa-rdfc-2019` (RDF-canonical),
   `eddsa-jcs-2022` / `ecdsa-jcs-2019` (JCS), and selective-disclosure
   `ecdsa-sd-2023`. `verificationMethod`↔`issuer` binding (`src/openvc/verify.py:628-641`);
@@ -164,7 +183,8 @@ boundary is attacker-controlled until a signature verifies.
   the DS and the anchor it validated to — `countryName` present exactly once on both, a
   2-character alpha-2 code, and equal; `stateOrProvinceName` equal when both carry it,
   once each — compared as decoded text with no normalisation of it; a subject that cannot
-  be decoded is a typed refusal, not a bare `ValueError` (#383; exposed as
+  be decoded is a typed refusal, not a bare `ValueError` (#383), and so is a DS EKU, SAN or
+  public key that cannot be decoded (#430; exposed as
   `VerifiedMdoc.ds_subject` / `anchor_subject`, where `CN` / `O` are informational). The
   rest of Annex B (DS key usage, CRL distribution point, the IACA's own fields) is not
   checked, and the Table B.1 cross-check of the disclosed `issuing_country` /
@@ -769,8 +789,8 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   `didDocument`, `verificationMethod` or relationship raises `DidResolutionError`, is never
   read as undeclared, and a method or reference without a string `id` is dropped (I14,
   I15; `test_did_document_shape_typed.py`). **Residual:** the check does not know which
-  lane is asking, so a relationship that is not an array rejects the whole document, JOSE
-  lanes that never read relationships included (fail-closed, and only for a document that
+  lane is asking, so a relationship that is not an array rejects the whole document, whichever lane
+  asks (fail-closed, and only for a document that
   breaks DID Core). A dropped method that carried a key is not counted by the `kid`-less
   sole-key fallback, as a method with an undecodable Multikey never was; the key it then
   selects is well-formed and in the issuer's own document.

@@ -723,9 +723,10 @@ def _resolve_jose_key_with_x5c(
 
 
 def _resolve_jose_key(
-    resolver: Any, iss: str, kid: str | None, jwt_vc_issuer_fetch: Any = None
+    resolver: Any, iss: str, kid: str | None, jwt_vc_issuer_fetch: Any = None,
+    purpose: str = "assertionMethod",
 ) -> dict[str, Any]:
-    from .did.base import DidError
+    from .did.base import DidDocument, DidError
 
     # an https issuer is resolved via /.well-known/jwt-vc-issuer (opt-in), never
     # through the DID registry
@@ -751,6 +752,11 @@ def _resolve_jose_key(
     if vm is None:
         raise KeyResolutionFailed(
             f"no verification method for kid {safe_repr(kid)} in DID {safe_repr(iss)}")
+    # a resolver's own document type has no relationships to check: only a DidDocument
+    if isinstance(doc, DidDocument) and not doc.grants(vm, purpose):
+        raise KeyResolutionFailed(
+            f"verification method {safe_repr(kid)} of DID {safe_repr(iss)} is not "
+            f"authorized for {purpose}")
     return vm.public_key_jwk
 
 

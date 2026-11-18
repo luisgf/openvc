@@ -141,6 +141,20 @@ with a fraction tolerated and `+00:00` accepted for `Z`), not by `fromisoformat`
 accept set is the same on every interpreter: another offset, the basic format, another
 separator or hour 24 are refused.
 
+*Addendum (2026-11-17, [#432](https://github.com/luisgf/openvc/issues/432)).* "Expired"
+also covers **an over-long window**: clause 5.3.15 caps `NextUpdate − ListIssueDateTime` at
+six months, and a list that exceeds it (a far `NextUpdate` never expires, which defeats the
+rule's purpose) is staged exactly like an expired one — zero anchors, stage `"expired"` (no
+new stage: the consequence and the remedy are the expiry's), the walk continues; the LOTL is
+held to the same rule and stops the walk. The ceiling is `ListIssueDateTime` plus six
+*calendar* months (the day clamps to the month's end; `NextUpdate` exactly at the ceiling
+passes). `ListIssueDateTime` is read as strictly as `NextUpdate` (UTC, clause 5.1.3); absent,
+malformed or tz-naive means the window cannot be evaluated and the list fails closed, as a
+problem — `TrustList.issue_datetime` stays the raw string. Decision (a `needs-human` issue):
+unconditional on the XML lane, not a knob; the alternatives were a knob defaulting on, or
+documentation only. The recorded real EU LOTL (seq 388) and ES TL (seq 187) are within six
+months; no live list was fetched. The LoTE lane's ceiling stays under its profile.
+
 ### D7 — Provider interface + SSRF-guarded fetch + short TTL cache
 Fetching a TL is injected (`Callable[[str], bytes]`), so the caller supplies the
 transport and SSRF policy; the blessed default reuses `openvc.fetch.https_bytes_fetch`

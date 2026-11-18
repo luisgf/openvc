@@ -59,16 +59,55 @@ def load_x5c_chain(x5c: Sequence[str]) -> list:
     return chain
 
 
+def _lazy_errors() -> tuple[type[BaseException], ...]:
+    """What ``cryptography`` raises when it first decodes a certificate field that path
+    validation never touched (extension values, SAN name forms, the SPKI)."""
+    from cryptography import x509
+    from cryptography.exceptions import UnsupportedAlgorithm
+    return (ValueError, TypeError, x509.DuplicateExtension,
+            x509.UnsupportedGeneralNameType, UnsupportedAlgorithm)
+
+
+def leaf_extension_value(leaf: Any, oid: Any, label: str) -> Any:
+    """The decoded value of the extension *oid* of *leaf*, with every decode failure
+    (an undecodable value, a repeated extension, an unsupported SAN name form) raised as
+    :class:`X5cError` naming *label* and quoting nothing of the certificate. An absent
+    extension still raises ``x509.ExtensionNotFound`` for the caller to word.
+
+    ``cryptography`` decodes extensions lazily and path validation (``permit_all`` on the
+    end entity) never reads the leaf's, so a chain that validates can still carry one a
+    verifier is the first to decode."""
+    try:
+        return leaf.extensions.get_extension_for_oid(oid).value
+    except _lazy_errors() as exc:
+        raise X5cError(f"x5c leaf certificate {label} extension cannot be decoded") from exc
+
+
+def _san_values(san: Any, kind: Any) -> list[Any]:
+    try:
+        return list(san.get_values_for_type(kind))
+    except _lazy_errors() as exc:
+        raise X5cError(
+            "x5c leaf certificate Subject Alternative Name cannot be decoded") from exc
+
+
+def _leaf_public_key(leaf: Any) -> Any:
+    try:
+        return leaf.public_key()
+    except _lazy_errors() as exc:
+        raise X5cError("x5c leaf certificate public key cannot be decoded") from exc
+
+
 def _check_issuer_binding(leaf: Any, iss: str) -> None:
     from cryptography import x509
     from cryptography.x509 import DNSName, UniformResourceIdentifier
     from cryptography.x509.oid import ExtensionOID
     try:
-        san = leaf.extensions.get_extension_for_oid(
-            ExtensionOID.SUBJECT_ALTERNATIVE_NAME).value
+        san = leaf_extension_value(
+            leaf, ExtensionOID.SUBJECT_ALTERNATIVE_NAME, "Subject Alternative Name")
     except x509.ExtensionNotFound:
         raise X5cError("x5c leaf certificate has no Subject Alternative Name to bind the issuer")
-    if iss in san.get_values_for_type(UniformResourceIdentifier):
+    if iss in _san_values(san, UniformResourceIdentifier):
         return
     # A dNSName binds only a clean https issuer: with userinfo or a backslash, Python
     # and a browser read different hosts out of the same iss.
@@ -77,14 +116,14 @@ def _check_issuer_binding(leaf: Any, iss: str) -> None:
         host = _parse_https_issuer(iss).hostname
     except JwtVcIssuerError:
         host = None
-    if host and host in san.get_values_for_type(DNSName):
+    if host and host in _san_values(san, DNSName):
         return
     raise X5cError(f"issuer {iss!r} is not in the x5c leaf certificate's SAN (not bound)")
 
 
 def _leaf_p256_jwk(leaf: Any) -> dict[str, Any]:
     from cryptography.hazmat.primitives.asymmetric import ec
-    pub = leaf.public_key()
+    pub = _leaf_public_key(leaf)
     if not isinstance(pub, ec.EllipticCurvePublicKey) or not isinstance(pub.curve, ec.SECP256R1):
         raise X5cError("x5c leaf key is not EC P-256 (only ES256 is supported)")
     nums = pub.public_numbers()
@@ -151,6 +190,9 @@ def _validate_to_anchor(
         verified = builder.build_client_verifier().verify(leaf, list(intermediates))
     except VerificationError as exc:
         raise X5cError(f"certificate chain did not validate to a trust anchor: {exc}") from exc
+    except _lazy_errors() as exc:
+        # the verifier decodes the SAN of the end entity for its name checks
+        raise X5cError("x5c certificate chain has an extension that cannot be decoded") from exc
     anchor = verified.chain[-1] if verified.chain else None
     if anchor is None or anchor not in anchors:          # defensive: never report a non-anchor
         raise X5cError("certificate chain did not end at one of the given trust anchors")
@@ -201,7 +243,7 @@ def leaf_public_jwk(leaf: Any) -> dict[str, Any]:
     key type — notably RSA — raises :class:`X5cError` rather than producing a JWK no
     allow-listed algorithm could consume."""
     from cryptography.hazmat.primitives.asymmetric import ec, ed25519
-    pub = leaf.public_key()
+    pub = _leaf_public_key(leaf)
     if isinstance(pub, ec.EllipticCurvePublicKey):
         if isinstance(pub.curve, ec.SECP256R1):
             name, size = "P-256", 32
@@ -228,8 +270,9 @@ _MDOC_DS_EKU_OID = "1.0.18013.5.1.2"
 
 def _require_mdoc_ds_eku(leaf: Any) -> None:
     from cryptography import x509
+    from cryptography.x509.oid import ExtensionOID
     try:
-        eku = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+        eku = leaf_extension_value(leaf, ExtensionOID.EXTENDED_KEY_USAGE, "ExtendedKeyUsage")
     except x509.ExtensionNotFound:
         raise X5cError("mdoc document-signer certificate has no ExtendedKeyUsage "
                        "(needs the mdoc DS EKU 1.0.18013.5.1.2)")

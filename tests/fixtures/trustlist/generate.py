@@ -61,7 +61,7 @@ xmlns:add="http://uri.etsi.org/02231/v2/additionaltypes#">
     <TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUlistofthelists</TSLType>
     <SchemeOperatorName><Name xml:lang="en">European Commission</Name></SchemeOperatorName>
     <SchemeTerritory>EU</SchemeTerritory>
-    <ListIssueDateTime>2026-01-01T00:00:00Z</ListIssueDateTime>
+    <ListIssueDateTime>2098-10-01T00:00:00Z</ListIssueDateTime>
     <NextUpdate><dateTime>2099-01-01T00:00:00Z</dateTime></NextUpdate>
     <PointersToOtherTSL>
       <OtherTSLPointer>
@@ -102,7 +102,7 @@ DE_TL = f"""<?xml version="1.0" encoding="UTF-8"?>
     <TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUgeneric</TSLType>
     <SchemeOperatorName><Name xml:lang="en">Bundesnetzagentur</Name></SchemeOperatorName>
     <SchemeTerritory>DE</SchemeTerritory>
-    <ListIssueDateTime>2026-01-01T00:00:00Z</ListIssueDateTime>
+    <ListIssueDateTime>2098-10-01T00:00:00Z</ListIssueDateTime>
     <NextUpdate><dateTime>2099-01-01T00:00:00Z</dateTime></NextUpdate>
   </SchemeInformation>
   <TrustServiceProviderList>

@@ -918,11 +918,20 @@ class SdJwtVcProofSuite:
 
     @staticmethod
     def _split(sd_jwt: str) -> tuple[str, list[str], str]:
-        """(issuer-jwt, [disclosures], kb-jwt) — kb is '' when absent."""
+        """(issuer-jwt, [disclosures], kb-jwt) — kb is '' when absent.
+
+        RFC 9901 §4: ``SD-JWT = JWT "~" *(DISCLOSURE "~")`` with ``DISCLOSURE = BASE64URL``
+        (one or more characters). An empty segment between the issuer JWT and the last one
+        is outside the grammar and is refused, not dropped: the KB-JWT ``sd_hash`` covers the
+        re-joined form, so dropping it gave one presentation many accepted spellings. The
+        last segment is the KB-JWT, and empty there means none."""
         parts = sd_jwt.split("~")
         if len(parts) < 2:
             raise MalformedToken("not an SD-JWT (no '~' separator)")
-        return parts[0], [p for p in parts[1:-1] if p], parts[-1]
+        disclosures = parts[1:-1]
+        if not all(disclosures):
+            raise MalformedToken("an SD-JWT disclosure segment is empty")
+        return parts[0], disclosures, parts[-1]
 
     @staticmethod
     def _decode_jws(jws: str) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes]:

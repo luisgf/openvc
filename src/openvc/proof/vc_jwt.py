@@ -75,6 +75,7 @@ from ._verify_common import (
     leeway_seconds,
     reject_unknown_crit,
     safe_repr,
+    type_shape_problem,
 )
 
 # --------------------------------------------------------------------------- #
@@ -453,6 +454,15 @@ class VcJwtProofSuite:
             check_temporal=check_temporal)
 
         issuer, subject = self._reconcile(claims, credential)
+        # A signed `type` of any JSON shape used to reach the caller as the credential's
+        # type (#433). Only a PRESENT value is judged: absent, `[]` and a `type` without
+        # VerifiableCredential stay as they were (a conformance call, not made here).
+        if "type" in credential:
+            problem = type_shape_problem(credential["type"])
+            if problem is not None:
+                raise ClaimsInvalid(
+                    f"credential `type` must be a non-empty string or an array of "
+                    f"non-empty strings: {problem}")
         if expected_types:
             self._check_types(credential, expected_types)
 
