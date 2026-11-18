@@ -99,11 +99,22 @@ jobs:
 
       # Offline tier only: the live EBSI smoke test stays opt-in
       # (OPENVC_EBSI_LIVE=1) so CI never depends on an external service.
+      # coverage.py measures through sys.settrace by default before Python 3.14, and
+      # CPython 3.12 emulates settrace on top of sys.monitoring at a high cost per line
+      # in hot pure-Python loops (the RDF canonicalization budget tests): the 3.12 leg
+      # took 14m34s of the 15-minute limit on main, against 6m45s on 3.13. coverage's
+      # sys.monitoring core (available from 3.12, the default from 3.14) removes it:
+      # measured on 3.12.13, the suite takes 375 s with the default core, 83 s with
+      # sysmon and 81 s with no coverage, same total (96.08 %). No branch coverage is
+      # configured, which sysmon would not support before 3.14.
       - name: Test (pytest + coverage)
-        run: >-
-          pytest -q --cov=openvc --cov=openvc_ebsi
-          --cov-report=term-missing
-          --cov-fail-under=85
+        run: |
+          case "${{ matrix.python-version }}" in
+            3.12|3.13) export COVERAGE_CORE=sysmon ;;
+          esac
+          pytest -q --cov=openvc --cov=openvc_ebsi \
+            --cov-report=term-missing \
+            --cov-fail-under=85
 
   publish:
     name: Publish to PyPI
