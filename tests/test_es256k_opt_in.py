@@ -56,7 +56,15 @@ N_P256 = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551   # 
 FIELD_P = 2**256 - 2**32 - 977                                                # secp256k1 field
 ISSUER = "did:example:issuer"
 KID = "did:example:issuer#key-1"
-NOW = int(time.time())
+NOW: int = None  # type: ignore[assignment]  # set per test by _clock(); None fails at import
+
+
+@pytest.fixture(autouse=True)
+def _clock():
+    """Read the wall clock when the test runs, not when pytest imports the module: on a
+    slow run collection and execution are many minutes apart."""
+    global NOW
+    NOW = int(time.time())
 
 
 def b64(data: bytes) -> str:
@@ -664,17 +672,19 @@ GATES: dict[str, dict[str, Any]] = {
     "typ vc+sd-jwt": {"header": {"typ": "vc+sd-jwt"}},
     "typ application/vc+sd-jwt": {"header": {"typ": "application/vc+sd-jwt"}},
     "typ kb+jwt": {"header": {"typ": "kb+jwt"}},
-    "payload carries _sd": {"payload": claims(vc=credential(_sd=["x"]))},
-    "payload carries _sd_alg": {"payload": claims(_sd_alg="sha-256")},
-    "payload carries a '...' digest": {"payload": claims(vc=credential(items=[{"...": "x"}]))},
+    "payload carries _sd": {"payload": lambda: claims(vc=credential(_sd=["x"]))},
+    "payload carries _sd_alg": {"payload": lambda: claims(_sd_alg="sha-256")},
+    "payload carries a '...' digest": {
+        "payload": lambda: claims(vc=credential(items=[{"...": "x"}]))},
 }
 
 
 @pytest.mark.parametrize("name", sorted(GATES))
 def test_the_gates_after_the_allow_list_are_malformed_token_for_both_algs(name, no_pyjwt):
     spec = GATES[name]
+    build = spec.get("payload")                 # built now: it carries the clock of the test
     for signer in (P256, K1):
-        tok = token(signer, header=spec.get("header"), payload=spec.get("payload"))
+        tok = token(signer, header=spec.get("header"), payload=build() if build else None)
         with pytest.raises(MalformedToken) as exc:
             verify(signer, tok)
         assert type(exc.value) is MalformedToken, (name, signer.alg)
@@ -694,73 +704,89 @@ def _without(name: str) -> dict[str, Any]:
     return body
 
 
-CLAIM_CASES: dict[str, dict[str, Any]] = {
-    # name: {payload|payload_json, kwargs, expected}
-    "expired": {"payload": _w(exp=NOW - 3600), "expected": "ClaimsInvalid"},
-    "expired just past leeway": {"payload": _w(exp=NOW - 61), "expected": "ClaimsInvalid"},
-    "not yet valid": {"payload": _w(nbf=NOW + 3600), "expected": "ClaimsInvalid"},
-    "iat in the future": {"payload": _w(iat=NOW + 3600), "expected": "ClaimsInvalid"},
-    "aud mismatch": {"payload": _w(aud="https://other.example"),
-                     "kwargs": {"audience": "https://rp.example"}, "expected": "ClaimsInvalid"},
-    "aud missing, one expected": {"kwargs": {"audience": "https://rp.example"},
-                                  "expected": "ClaimsInvalid"},
-    "aud present, none expected": {"payload": _w(aud="https://rp.example"),
-                                   "expected": "ClaimsInvalid"},
-    "aud empty list, none expected": {"payload": _w(aud=[]), "expected": "ClaimsInvalid"},
-    "aud matches": {"payload": _w(aud="https://rp.example"),
-                    "kwargs": {"audience": "https://rp.example"}, "expected": "verified"},
-    "exp null": {"payload_json": json.dumps(claims()).replace(f'"exp": {NOW + 3600}',
-                                                              '"exp": null'),
-                 "expected": "ClaimsInvalid"},
-    "exp NaN": {"payload_json": json.dumps(claims()).replace(f'"exp": {NOW + 3600}',
-                                                             '"exp": NaN'),
-                "expected": "ClaimsInvalid"},
-    "exp a string": {"payload": _w(exp="soon"), "expected": "ClaimsInvalid"},
-    "nbf null": {"payload": _w(nbf=None), "expected": "ClaimsInvalid"},
-    # the expiry waiver must not switch the shape gate off: a signed `NaN` would otherwise
-    # never expire (PyJWT's verify_exp=False skips the claim entirely)
-    "exp NaN, expiry waived": {
-        "payload_json": json.dumps(claims()).replace(f'"exp": {NOW + 3600}', '"exp": NaN'),
-        "kwargs": {"check_temporal": False}, "expected": "ClaimsInvalid"},
-    "exp null, expiry waived": {
-        "payload_json": json.dumps(claims()).replace(f'"exp": {NOW + 3600}', '"exp": null'),
-        "kwargs": {"check_temporal": False}, "expected": "ClaimsInvalid"},
-    "exp a string, expiry waived": {"payload": _w(exp="abc"),
+def _claim_cases() -> dict[str, dict[str, Any]]:
+    """Built per test: the payloads carry the clock of the test, not of the import."""
+    return {
+        # name: {payload|payload_json, kwargs, expected}
+        "expired": {"payload": _w(exp=NOW - 3600), "expected": "ClaimsInvalid"},
+        "expired just past leeway": {"payload": _w(exp=NOW - 61), "expected": "ClaimsInvalid"},
+        "not yet valid": {"payload": _w(nbf=NOW + 3600), "expected": "ClaimsInvalid"},
+        "iat in the future": {"payload": _w(iat=NOW + 3600), "expected": "ClaimsInvalid"},
+        "aud mismatch": {"payload": _w(aud="https://other.example"),
+                         "kwargs": {"audience": "https://rp.example"}, "expected": "ClaimsInvalid"},
+        "aud missing, one expected": {"kwargs": {"audience": "https://rp.example"},
+                                      "expected": "ClaimsInvalid"},
+        "aud present, none expected": {"payload": _w(aud="https://rp.example"),
+                                       "expected": "ClaimsInvalid"},
+        "aud empty list, none expected": {"payload": _w(aud=[]), "expected": "ClaimsInvalid"},
+        "aud matches": {"payload": _w(aud="https://rp.example"),
+                        "kwargs": {"audience": "https://rp.example"}, "expected": "verified"},
+        "exp null": {"payload_json": json.dumps(claims()).replace(f'"exp": {NOW + 3600}',
+                                                                  '"exp": null'),
+                     "expected": "ClaimsInvalid"},
+        "exp NaN": {"payload_json": json.dumps(claims()).replace(f'"exp": {NOW + 3600}',
+                                                                 '"exp": NaN'),
+                    "expected": "ClaimsInvalid"},
+        "exp a string": {"payload": _w(exp="soon"), "expected": "ClaimsInvalid"},
+        "nbf null": {"payload": _w(nbf=None), "expected": "ClaimsInvalid"},
+        # the expiry waiver must not switch the shape gate off: a signed `NaN` would otherwise
+        # never expire (PyJWT's verify_exp=False skips the claim entirely)
+        "exp NaN, expiry waived": {
+            "payload_json": json.dumps(claims()).replace(f'"exp": {NOW + 3600}', '"exp": NaN'),
+            "kwargs": {"check_temporal": False}, "expected": "ClaimsInvalid"},
+        "exp null, expiry waived": {
+            "payload_json": json.dumps(claims()).replace(f'"exp": {NOW + 3600}', '"exp": null'),
+            "kwargs": {"check_temporal": False}, "expected": "ClaimsInvalid"},
+        "exp a string, expiry waived": {"payload": _w(exp="abc"),
+                                        "kwargs": {"check_temporal": False},
+                                        "expected": "ClaimsInvalid"},
+        # PyJWT int()-casts these, so without openvc's NumericDate shape gate each would verify:
+        # a numeric string, and a bool (True is 1, an expiry long past, which the waiver then drops)
+        "exp a numeric string": {"payload": _w(exp=str(NOW + 3600)), "expected": "ClaimsInvalid"},
+        "nbf a numeric string": {"payload": _w(nbf=str(NOW - 5)), "expected": "ClaimsInvalid"},
+        "iat a numeric string": {"payload": _w(iat=str(NOW - 5)), "expected": "ClaimsInvalid"},
+        "exp true, expiry waived": {"payload": _w(exp=True),
                                     "kwargs": {"check_temporal": False},
                                     "expected": "ClaimsInvalid"},
-    # PyJWT int()-casts these, so without openvc's NumericDate shape gate each would verify:
-    # a numeric string, and a bool (True is 1, an expiry long past, which the waiver then drops)
-    "exp a numeric string": {"payload": _w(exp=str(NOW + 3600)), "expected": "ClaimsInvalid"},
-    "nbf a numeric string": {"payload": _w(nbf=str(NOW - 5)), "expected": "ClaimsInvalid"},
-    "iat a numeric string": {"payload": _w(iat=str(NOW - 5)), "expected": "ClaimsInvalid"},
-    "exp true, expiry waived": {"payload": _w(exp=True),
-                                "kwargs": {"check_temporal": False},
-                                "expected": "ClaimsInvalid"},
-    "exp expired, expiry waived": {"payload": _w(exp=NOW - 3600),
-                                   "kwargs": {"check_temporal": False}, "expected": "verified"},
-    "sub not a string": {"payload": _w(sub=7), "expected": "ClaimsInvalid"},
-    "jti not a string": {"payload": _w(jti=["urn:uuid:1"]), "expected": "ClaimsInvalid"},
-    "sub differs from credentialSubject.id": {"payload": _w(sub="did:example:someone-else"),
-                                              "expected": "ClaimsInvalid"},
-    "jti differs from vc.id": {"payload": _w(jti="urn:uuid:2"), "expected": "ClaimsInvalid"},
-    "iss differs from vc.issuer": {"payload": _w(iss="did:example:other"),
-                                   "expected": "ClaimsInvalid"},
-    "vc.issuer is another object id": {"payload": _w(vc=credential(issuer={"id": "did:x:y"})),
+        "exp expired, expiry waived": {"payload": _w(exp=NOW - 3600),
+                                       "kwargs": {"check_temporal": False}, "expected": "verified"},
+        "sub not a string": {"payload": _w(sub=7), "expected": "ClaimsInvalid"},
+        "jti not a string": {"payload": _w(jti=["urn:uuid:1"]), "expected": "ClaimsInvalid"},
+        "sub differs from credentialSubject.id": {"payload": _w(sub="did:example:someone-else"),
+                                                  "expected": "ClaimsInvalid"},
+        "jti differs from vc.id": {"payload": _w(jti="urn:uuid:2"), "expected": "ClaimsInvalid"},
+        "iss differs from vc.issuer": {"payload": _w(iss="did:example:other"),
                                        "expected": "ClaimsInvalid"},
-    "iss missing": {"payload": _without("iss"), "expected": "ClaimsInvalid"},
-    "vc missing": {"payload": _without("vc"), "expected": "ClaimsInvalid"},
-    "vc not an object": {"payload": _w(vc="x"), "expected": "ClaimsInvalid"},
-    "expected type absent": {"kwargs": {"expected_types": ["NotThere"]},
-                             "expected": "ClaimsInvalid"},
-    "expected type present": {"kwargs": {"expected_types": ["ExampleCredential"]},
-                              "expected": "verified"},
-    "a plain valid token": {"expected": "verified"},
-}
+        "vc.issuer is another object id": {"payload": _w(vc=credential(issuer={"id": "did:x:y"})),
+                                           "expected": "ClaimsInvalid"},
+        "iss missing": {"payload": _without("iss"), "expected": "ClaimsInvalid"},
+        "vc missing": {"payload": _without("vc"), "expected": "ClaimsInvalid"},
+        "vc not an object": {"payload": _w(vc="x"), "expected": "ClaimsInvalid"},
+        "expected type absent": {"kwargs": {"expected_types": ["NotThere"]},
+                                 "expected": "ClaimsInvalid"},
+        "expected type present": {"kwargs": {"expected_types": ["ExampleCredential"]},
+                                  "expected": "verified"},
+        "a plain valid token": {"expected": "verified"},
+    }
 
 
-@pytest.mark.parametrize("name", sorted(CLAIM_CASES))
+def _claim_names() -> list[str]:
+    """The case names, needed at collection: only the keys are read, under a placeholder
+    clock that is put back to None straight away."""
+    global NOW
+    NOW = 0
+    try:
+        return sorted(_claim_cases())
+    finally:
+        NOW = None  # type: ignore[assignment]
+
+
+CLAIM_NAMES = _claim_names()
+
+
+@pytest.mark.parametrize("name", CLAIM_NAMES)
 def test_claim_handling_parity_between_es256_and_es256k(name):
-    spec = CLAIM_CASES[name]
+    spec = _claim_cases()[name]
     got = {}
     for signer in (P256, K1):
         tok = token(signer, payload=spec.get("payload"), payload_json=spec.get("payload_json"))
@@ -995,8 +1021,13 @@ def _suite() -> VcJwtProofSuite:
     return VcJwtProofSuite(allow_es256k=True)
 
 
-VALID = token(K1)
-_H, _P, _S = VALID.split(".")
+def _valid() -> tuple[str, str, str, str]:
+    """A fresh valid token and its three segments, minted when called: an import-time token
+    would carry the clock of collection."""
+    tok = token(K1)
+    return (tok, *tok.split("."))
+
+
 _FUZZ = settings(max_examples=300, deadline=None,
                  suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
 
@@ -1013,13 +1044,15 @@ def _verify_expecting_openvc_error(tok: str, jwk: Any) -> None:
 @_FUZZ
 @given(st.binary(max_size=200))
 def test_arbitrary_signature_octets_never_escape_the_taxonomy(raw):
-    _verify_expecting_openvc_error(f"{_H}.{_P}.{b64(raw)}", K1.jwk)
+    _, h, p, _ = _valid()
+    _verify_expecting_openvc_error(f"{h}.{p}.{b64(raw)}", K1.jwk)
 
 
 @_FUZZ
 @given(st.text(max_size=120))
 def test_an_arbitrary_signature_segment_never_escapes_the_taxonomy(segment):
-    _verify_expecting_openvc_error(f"{_H}.{_P}.{segment}", K1.jwk)
+    _, h, p, _ = _valid()
+    _verify_expecting_openvc_error(f"{h}.{p}.{segment}", K1.jwk)
 
 
 _json_scalar = (st.none() | st.booleans() | st.integers(min_value=-2**300, max_value=2**300)
@@ -1044,37 +1077,40 @@ _member_value = st.one_of(
 def test_arbitrary_jwk_members_never_escape_the_taxonomy(jwk):
     base = dict(K1.jwk)
     base.update(jwk)
-    _verify_expecting_openvc_error(VALID, base)
+    _verify_expecting_openvc_error(_valid()[0], base)
 
 
 @_FUZZ
 @given(st.one_of(_json_value, st.just(K1.jwk)))
 def test_an_arbitrary_jwk_value_never_escapes_the_taxonomy(jwk):
-    _verify_expecting_openvc_error(VALID, jwk)
+    _verify_expecting_openvc_error(_valid()[0], jwk)
 
 
 @_FUZZ
 @given(st.integers(0, 63), st.integers(1, 255))
 def test_any_single_octet_change_to_the_signature_is_rejected(index, delta):
-    raw = bytearray(base64.urlsafe_b64decode(_S + "=="))
+    _, h, p, sig = _valid()
+    raw = bytearray(base64.urlsafe_b64decode(sig + "=="))
     raw[index] ^= delta
     with pytest.raises(SignatureInvalid):
-        _suite().verify(f"{_H}.{_P}.{b64(bytes(raw))}", public_key_jwk=K1.jwk)
+        _suite().verify(f"{h}.{p}.{b64(bytes(raw))}", public_key_jwk=K1.jwk)
 
 
 @_FUZZ
 @given(st.integers(0, 10_000), st.integers(1, 255))
 def test_any_single_octet_change_to_the_payload_is_rejected(index, delta):
-    raw = bytearray(base64.urlsafe_b64decode(_P + "=="))
+    _, h, p, sig = _valid()
+    raw = bytearray(base64.urlsafe_b64decode(p + "=="))
     raw[index % len(raw)] ^= delta
     with pytest.raises(OpenvcError):
-        _suite().verify(f"{_H}.{b64(bytes(raw))}.{_S}", public_key_jwk=K1.jwk)
+        _suite().verify(f"{h}.{b64(bytes(raw))}.{sig}", public_key_jwk=K1.jwk)
 
 
 @_FUZZ
 @given(st.integers(0, 10_000), st.integers(1, 255))
 def test_any_single_octet_change_to_the_header_is_rejected(index, delta):
-    raw = bytearray(base64.urlsafe_b64decode(_H + "=="))
+    _, h, p, sig = _valid()
+    raw = bytearray(base64.urlsafe_b64decode(h + "=="))
     raw[index % len(raw)] ^= delta
     with pytest.raises(OpenvcError):
-        _suite().verify(f"{b64(bytes(raw))}.{_P}.{_S}", public_key_jwk=K1.jwk)
+        _suite().verify(f"{b64(bytes(raw))}.{p}.{sig}", public_key_jwk=K1.jwk)

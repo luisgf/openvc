@@ -65,7 +65,18 @@ from openvc.verify import verify_credential, verify_many
 # Helpers (copied: tests/ is not a package)
 # --------------------------------------------------------------------------- #
 
-NOW = int(time.time())
+NOW: int = None  # type: ignore[assignment]  # set per test by _clock(); None fails at import
+
+
+@pytest.fixture(autouse=True)
+def _clock():
+    """Read the wall clock when the test runs, not when pytest imports the module: on a
+    slow run collection and execution are many minutes apart."""
+    global NOW, VC_JWT
+    NOW = int(time.time())
+    VC_JWT = es256k_jws(vc_payload())
+
+
 KEY = ec.generate_private_key(ec.SECP256K1())
 _NUMS = KEY.public_key().public_numbers()
 
@@ -97,7 +108,7 @@ def vc_payload() -> dict[str, Any]:
                    "credentialSubject": {"id": "did:example:subject"}}}
 
 
-VC_JWT = es256k_jws(vc_payload())
+VC_JWT: str = None  # type: ignore[assignment]  # minted per test by _clock()
 
 
 @pytest.fixture(autouse=True)

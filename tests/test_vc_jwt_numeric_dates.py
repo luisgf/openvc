@@ -39,7 +39,16 @@ from openvc.proof.vc_jwt import VcJwtProofSuite
 
 WAIVED = VerificationPolicy(require_not_expired=False)
 POLICIES = [pytest.param(None, id="default"), pytest.param(WAIVED, id="waived")]
-NOW = int(time.time())
+NOW: int = None  # type: ignore[assignment]  # set per test by _clock(); None fails at import
+
+
+@pytest.fixture(autouse=True)
+def _clock():
+    """Read the wall clock when the test runs, not when pytest imports the module: on a
+    slow run collection and execution are many minutes apart."""
+    global NOW
+    NOW = int(time.time())
+
 
 # Raw JSON text, spliced into the payload unparsed, so NaN / Infinity / 1e400 / a bignum
 # reach the verifier exactly as an attacker writes them (json.dumps cannot emit 1e400).

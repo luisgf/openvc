@@ -52,9 +52,21 @@ from openvc.status import StatusListError, verify_status_list_token
 WAIVED = VerificationPolicy(require_not_expired=False)
 POLICIES = [pytest.param(None, id="default"), pytest.param(WAIVED, id="waived")]
 TEMPORAL = pytest.mark.parametrize("check_temporal", [True, False], ids=["temporal", "waived"])
-NOW = int(time.time())
+NOW: int = None  # type: ignore[assignment]  # set per test by _clock(); None fails at import
+FUTURE: int = None  # type: ignore[assignment]  # NOW + 3600: far past the leeway
 LEEWAY = 60                              # every suite's default
-FUTURE = NOW + 3600                      # far past the leeway
+
+
+@pytest.fixture(autouse=True)
+def _clock():
+    """Read the wall clock when the test runs, not when pytest imports the module: on a
+    slow run collection and execution are many minutes apart, which is longer than the
+    KB-JWT freshness window and than the near-NOW expiries below."""
+    global NOW, FUTURE
+    NOW = int(time.time())
+    FUTURE = NOW + 3600
+
+
 VCT = "https://credentials.example.com/identity_credential"
 AUD, NONCE = "https://verifier.example", "n-0S6_WzA2Mj"
 
@@ -316,11 +328,11 @@ KB_POLICY = VerificationPolicy(audience=AUD, nonce=NONCE, require_key_binding=Tr
 KB_WAIVED = VerificationPolicy(audience=AUD, nonce=NONCE, require_key_binding=True,
                                require_not_expired=False)
 KB_BAD = {
-    "exp-past": ("exp", str(NOW - 3600)),
+    "exp-past": ("exp", lambda: str(NOW - 3600)),
     "exp-nan": ("exp", "NaN"),
     "exp-null": ("exp", "null"),
     "exp-string": ("exp", '"abc"'),
-    "nbf-future": ("nbf", str(FUTURE)),
+    "nbf-future": ("nbf", lambda: str(FUTURE)),
     "nbf-null": ("nbf", "null"),
     "nbf-string": ("nbf", '"abc"'),
 }
@@ -334,6 +346,7 @@ def test_kb_jwt_own_exp_and_nbf_are_enforced(name, policy):
     # KB-JWT with an expired, NaN, null or future-dated exp/nbf verified. These are
     # binding failures, never an `expired` verdict, and the waiver does not cover them.
     claim, raw = KB_BAD[name]
+    raw = raw() if callable(raw) else raw
     token = _sd_jwt(kb={claim: raw})
     with pytest.raises(ClaimsInvalid, match="KB-JWT") as caught:
         verify_credential(token, policy=policy)
