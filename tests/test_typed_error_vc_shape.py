@@ -42,7 +42,6 @@ from openvc.proof.vc_jwt import VcJwtProofSuite
 from openvc.proof.vp_jwt import VpJwtProofSuite
 from openvc.verify import (
     FORMAT_DI_EDDSA_JCS,
-    TypeMismatch,
     UnknownCredentialFormat,
     VerificationPolicy,
     detect_format,
@@ -255,14 +254,17 @@ def test_vc_jwt_non_container_type_with_expected_types_is_typed(issuer, vc_type)
     # The issuer signs the token, but any did:key is an issuer: the shape is hostile.
     token = _vc_jwt(issuer, vc_type=vc_type)
     policy = VerificationPolicy(expected_types=["VerifiableCredential"])
-    with pytest.raises(TypeMismatch, match="missing required type"):
+    # #433: the suite refuses the shape itself, before the membership check (it was
+    # TypeMismatch / "missing required type" before)
+    with pytest.raises(ClaimsInvalid, match="`type` must be a non-empty string") as info:
         verify_credential(token, policy=policy)
-    with pytest.raises(ClaimsInvalid, match="missing required type"):
+    assert type(info.value) is ClaimsInvalid
+    with pytest.raises(ClaimsInvalid, match="`type` must be a non-empty string"):
         VcJwtProofSuite().verify(token, public_key_jwk=issuer[0].public_jwk(),
                                  expected_types=["VerifiableCredential"])
     # ...and it never aborts a batch
     results = verify_many([_vc_jwt(issuer), token], policy=policy)
-    assert results[0].ok and isinstance(results[1].error, TypeMismatch)
+    assert results[0].ok and type(results[1].error) is ClaimsInvalid
 
 
 # --------------------------------------------------------------------------- #
