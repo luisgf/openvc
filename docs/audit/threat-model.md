@@ -896,7 +896,8 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   is per canonicalization and bounds the cost, it does not remove it. On one core of a
   developer laptop the worst refusals measured are 1.1 s (a clique of 8), 2.8 s (a fat
   clique, 0.97 MB) and 2.3 s (the shared-target cycle, 0.94 MB), 5.5 s for a 4.4 MB document
-  of which 3.4 s is the linear cost the same bytes have without ties; a loaded shared runner
+  of which 3.4 s is the cost the same bytes have without ties (linear in the tie-breaking
+  phase; the conversion before it is bounded separately, below); a loaded shared runner
   takes several times that, because the unit is calibrated on the dearest step and the time to
   spend the budget varies by shape. A presentation of N credentials multiplies it by N + 1,
   and a parsed credential has no size cap of its own (the 1 MiB cap is on fetched documents),
@@ -908,34 +909,30 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   identical parents with 8 identical children each would have to be hand-built; a cycle of
   150 and two parents with 7 children pass). The JCS suites do no RDF work and
   are unaffected (`test_rdfc_budget.py`).
-  **Inline term definitions are refused before expansion
-  ([#446](https://github.com/luisgf/openvc/issues/446)).** JSON-LD expansion is not the
-  conversion's blank-node work: pyld re-processes a term's scoped context each time the
-  term is used, so one inline definition of K terms used by N nodes costs about N x K
-  (K = N = 2 000, 87 KB, took 14 s on one core; K = N = 1 000, 3.5 s, doubling either factor
-  doubles it), and the RDF suites expand before the signature is checked. `_check_context`
-  already refused the shape after the signature; `check_before_expansion` now runs that
-  same rule first on all three RDF suites (`eddsa-rdfc-2022` before key resolution,
-  `ecdsa-rdfc-2019` likewise, `ecdsa-sd-2023` before canonicalization), with the same
-  `ProofMalformed`, and refuses an `@context` key anywhere else in the document or the
-  proof. That second rule is a subset of what the later validation refuses: the content of
-  an `@json` literal (the value of `@value`, or of a key some served context types as
-  `@json`: `cnf.jwk`, `_sd`, `jsonSchema`) and the credentials embedded in a presentation
-  stay accepted, as they are after the signature. **Residual:** (a) the exemption is by key
-  name, so a nested `@context` under a key spelled like one of those terms, at a position
-  where it is no literal (under an inline `@vocab`), still reaches pyld and costs N x K (3.7 s
-  for K = N = 1 000) before the later validation refuses it; (b) the credentials embedded in
-  a presentation are verified one by one, and a credential signed with a JCS suite may carry
-  an inline definition and verify, so the presentation's expansion of an embedded
-  definition (3.7 s for K = N = 1 000) is not refused early; (c) an `@context` array repeating a served
-  URL is accepted, and costs time linear in its length (3 000 entries, 120 KB, 3.4 s);
-  (d) a context served through `extra_contexts` is the caller's to size. For a fixed set of
-  served contexts, JSON-LD expansion itself is linear in the document (8 000 typed nodes
-  expand in 0.3 s); the RDF conversion that follows is not: an array of N nodes under one
-  property costs time quadratic in N in pyld's `to_rdf` (8 000 nodes 8 s, 15 000 nodes of
-  858 KB 27 s, with or without a type), which this check does not touch. `add_proof` on the
-  suites canonicalizes before it validates, so an issuer signing such a document pays one
-  expansion and then gets the same `ProofMalformed` (`test_di_context_before_expansion.py`).
+  **The conversion before it (R13, second bound).** The work above is the *tie-breaking*
+  phase. Before it, pyld's JSON-LD to RDF conversion has a cost of its own that is **not**
+  linear: its node map checks each new value of a (subject, property) against all the values
+  already there, so N values of one property cost N**2/2 comparisons (8 000 values, 71 KB,
+  10.4 s on v1.38.1; also N same-`@id` node objects, N `type` values, N IRI objects, N nodes
+  with a keyword-like id that expands to a null `@id`, graphs named by a keyword id,
+  blank-node property names) and ran before the signature check
+  ([#426](https://github.com/luisgf/openvc/issues/426)). `_rdfc` now expands the document
+  and counts the comparisons pyld will make, mirroring pyld's slot partition (graph, subject,
+  property), and refuses over `MAX_CONVERSION_COMPARISONS` (1 000 000) with the same
+  `CanonicalizationBudgetExceeded` before the conversion runs, on all three RDF suites; the
+  count is checked against pyld's real calls by `test_rdf_conversion_budget.py`. The count is
+  a document-wide sum (51 subjects of 200 values are refused), per converted document: a
+  presentation secured with an RDF suite is one document, whose count is the sum over the
+  credentials it embeds. **Residuals of this bound (the lanes are not bounded end to end):** it
+  covers the node-map comparisons only. (1) On `ecdsa-sd-2023` the N-Quads text is parsed
+  again by pyld's `parse_nquads` after the conversion, quadratic in the number of quads and
+  charged 0 (78 KiB, 10.5 s before the base signature;
+  [#447](https://github.com/luisgf/openvc/issues/447)). (2) JSON-LD expansion
+  ([#446](https://github.com/luisgf/openvc/issues/446)), which runs first, is pyld's, is
+  not linear (a scoped context of K terms used by N nodes costs N x K: 94 KB of document, 27 s
+  on main before this change) and is not bounded here. It now runs twice per RDF-suite
+  conversion (once to count, once inside pyld's `to_rdf`, which must be given the document as
+  written), so that pre-existing cost is about doubled until it is bounded on its own.
 
 ## 10. Out of scope
 
