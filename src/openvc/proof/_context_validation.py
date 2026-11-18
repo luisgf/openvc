@@ -211,6 +211,76 @@ def _check_context(context: Any) -> None:
             "definitions as a context URL and pass it via extra_contexts")
 
 
+def check_before_expansion(
+    unsecured: dict[str, Any], proof: dict[str, Any], extra_contexts: Any,
+) -> None:
+    """The structural part of :func:`validate_document` that needs no JSON-LD processing,
+    run **before** anything expands the document — so before the signature is checked.
+
+    JSON-LD expansion re-processes a scoped context every time its term is used, so one
+    inline term definition (or one nested ``@context``) of K terms used by N nodes costs
+    N × K, and the RDF suites expand before they verify. The shapes refused here are ones
+    :func:`validate_document` refuses after the signature anyway, so this only moves the
+    refusal ahead of the cost, with the same :class:`ProofMalformed`:
+
+    * the document's ``@context`` through :func:`_check_context` itself (the proof
+      configuration carries that same ``@context``, whatever the proof object says);
+    * an ``@context`` key anywhere else in the document or the proof — a nested context
+      is not the compacted form of anything, which the compaction round trip refuses.
+      Exempt, because the later validation accepts them: the content of an ``@json``
+      literal (``@value``, and the value of any key some context the verifier serves
+      types as ``@json`` — ``cnf.jwk``, ``_sd``, ``jsonSchema`` — which is data), and
+      the credentials embedded in a presentation, which are verified one by one.
+
+    The ``@json`` exemption is by key name, so it over-exempts: a key spelled like a served
+    ``@json`` term at a position where it is no literal is let through here and still
+    refused after the signature. *extra_contexts* is the caller's (as for the suite)."""
+    _check_context(unsecured.get("@context"))
+    document = unsecured
+    if _is_presentation(unsecured):
+        document = {k: v for k, v in unsecured.items() if k != _EMBEDDED_CREDENTIALS}
+    members = ({k: v for k, v in document.items() if k != "@context"},
+               {k: v for k, v in proof.items() if k not in ("@context", "proofValue")})
+    if all(_nested_context(member, frozenset()) is None for member in members):
+        return                                  # the common case: nothing to look up
+    from .contexts import document_loader      # only a document that needs it pays
+
+    loader = document_loader(extra_contexts)
+    objects: list[dict[str, Any]] = []
+    _gather_contexts(sorted(getattr(loader, "contexts", {})), loader, objects, set(), 0)
+    literals = frozenset(
+        term for obj in objects for term, definition in obj.items()
+        if isinstance(definition, dict) and definition.get("@type") == "@json")
+    for member in members:
+        where = _nested_context(member, literals)
+        if where is not None:
+            raise ProofMalformed(
+                f"a nested @context (at {where[:200]}) is not accepted: publish term "
+                f"definitions as a context URL and pass it via extra_contexts")
+
+
+def _nested_context(value: Any, literals: frozenset[str], path: str = "") -> str | None:
+    """Path of the first ``@context`` key in *value* outside an ``@json`` literal (the
+    value of a key in *literals*, or of ``@value``), or None."""
+    if isinstance(value, list):
+        for position, item in enumerate(value):
+            where = _nested_context(item, literals, f"{path}/{position}")
+            if where is not None:
+                return where
+        return None
+    if not isinstance(value, dict):
+        return None
+    for key, item in value.items():
+        if key == "@context":
+            return f"{path}/@context"
+        if key == "@value" or key in literals:
+            continue
+        where = _nested_context(item, literals, f"{path}/{key}")
+        if where is not None:
+            return where
+    return None
+
+
 def _is_presentation(document: dict[str, Any]) -> bool:
     types = document.get("type")
     types = [types] if isinstance(types, str) else types
@@ -821,4 +891,5 @@ def _trusted_iris(name: Any, index: _TermIndex) -> set[str]:
     return iris
 
 
-__all__ = ["VC_BASE_CONTEXTS", "missing_types", "validate_document"]
+__all__ = ["VC_BASE_CONTEXTS", "check_before_expansion", "missing_types",
+           "validate_document"]

@@ -47,7 +47,7 @@ from ..cbor import decode as _cbor_decode
 from ..cbor import encode as _cbor_encode
 from ..errors import OpenvcError
 from ..keys import P256SigningKey, verify_signature
-from ._context_validation import validate_document
+from ._context_validation import check_before_expansion, validate_document
 from ._rdfc import canonicalize_nquads, new_canonicalizer
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
@@ -776,9 +776,12 @@ class EcdsaSdProofSuite:
         # this suite), so the base signature cannot be relied on to refuse these bytes.
         ephemeral_jwk = p256_multikey_to_jwk(parsed["public_key"])
 
+        unsecured = {k: v for k, v in derived.items() if k != "proof"}
+        # Before anything expands the document: the inline term definitions the check
+        # after the signatures refuses would cost N x K to expand (issue #446).
+        check_before_expansion(unsecured, proof, extra_contexts)
         loader = document_loader(extra_contexts)
         try:
-            unsecured = {k: v for k, v in derived.items() if k != "proof"}
             # The document as presented, as VC-DI-ECDSA's verifier canonicalizes it: no
             # deskolemization. A `urn:bnid:` IRI here is an IRI. Turning it into a blank
             # node would let the holder merge it with one of the document's own blank

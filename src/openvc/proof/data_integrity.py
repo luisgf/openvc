@@ -31,7 +31,7 @@ from typing import Any, Mapping
 
 from .. import _json
 from ..multibase import encode_multibase
-from ._context_validation import validate_document
+from ._context_validation import check_before_expansion, validate_document
 from ._rdfc import CanonicalizationBudgetExceeded, canonicalize_nquads
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
@@ -224,8 +224,11 @@ class DataIntegrityProofSuite:
         proof, proof_config, signature = prepare_di_proof(
             secured, proof_type=PROOF_TYPE, cryptosuite=CRYPTOSUITE)
 
-        loader = document_loader(extra_contexts)
         unsecured = _unsecured(secured)
+        # Before anything expands the document: the inline term definitions the check
+        # after the signature refuses would cost N x K to expand (issue #446).
+        check_before_expansion(unsecured, proof, extra_contexts)
+        loader = document_loader(extra_contexts)
         data = _hash_data(unsecured, proof_config, loader)
 
         jwk = public_key_jwk or resolve_verification_key(

@@ -322,6 +322,24 @@ All notable changes to **openvc** are documented here. The format follows
   from `canonical_public_jwk`, which keeps "JWK member 'x'". Found by a security review of `main` on 2026-11-17
   (`test_ed25519_point_check.py`).
 
+- **The RDF Data Integrity suites refuse inline term definitions before JSON-LD expansion,
+  not after the signature** ([#446](https://github.com/luisgf/openvc/issues/446)).
+  `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and `ecdsa-sd-2023` expand the document with pyld before
+  they check a signature, and pyld re-processes a term's scoped context every time the term is
+  used, so one inline definition of K terms used by N nodes cost about N x K of CPU (K = N =
+  2 000, 87 KB: 14 s through `verify_credential`; the same on `verify_many`, an `ldp_vc`
+  answer, and the async API's event loop) for a document `_check_context` refuses after the
+  signature anyway. `check_before_expansion` runs that rule first, at the top of each suite's
+  `verify` (before key resolution on the first two), with the same `ProofMalformed` and
+  message, and also refuses an `@context` key anywhere else in the document or the proof,
+  which the compaction round trip refused after the signature too. The content of an `@json`
+  literal (`cnf.jwk`, `_sd`, `jsonSchema`) and the credentials embedded in a presentation stay
+  accepted, as before. The exemption is by key name, so a nested `@context` under a key named
+  like one of those terms still reaches pyld; an `@context` array that repeats a served URL
+  and a context served through `extra_contexts` are accepted and cost what they cost; both
+  are listed in the threat model (R13). Found by the adversarial review of #445
+  (`test_di_context_before_expansion.py`).
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —

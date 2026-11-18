@@ -230,7 +230,12 @@ raises `ProofMalformed`:
   passed through `extra_contexts`). After that, every entry is either a context URL the
   offline loader serves (bundled, or yours through `extra_contexts`) or an inline object
   that carries **only** `@vocab`, set to an absolute IRI. Inline term definitions are
-  refused. Publish them as a context and pass it through `extra_contexts`.
+  refused. Publish them as a context and pass it through `extra_contexts`. The
+  verifier applies this rule before it expands the document, so before it checks a
+  signature, because JSON-LD expansion costs time proportional to the size of an inline
+  scoped context times the number of nodes that use it. For the same reason a nested
+  `@context` anywhere in the document or the proof is refused up front, except inside an
+  `@json` literal (such as `cnf.jwk`) and inside the credentials a presentation embeds.
 - **Every member is spelled the way JSON-LD compaction would spell it.** A term no
   context defines is refused, because JSON-LD drops it from the dataset and the
   signature never covers its value. These are refused too:

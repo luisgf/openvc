@@ -85,6 +85,15 @@ CASES = [
 CONTEXTS = [pytest.param(value, id=name) for name, value in CASES]
 
 
+@pytest.fixture(autouse=True)
+def _canonicalizer_guard_is_the_subject(monkeypatch):
+    """These tests pin what the verify arm does when pyld itself cannot process the
+    context. The structural refusal that now runs before expansion (#446) would answer
+    first for most of these shapes with its own message, so it is switched off here;
+    tests/test_di_context_before_expansion.py covers it."""
+    monkeypatch.setattr(ecdsa_sd, "check_before_expansion", lambda *args, **kwargs: None)
+
+
 def credential(context: Any = None, **overrides: Any) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "@context": [V2] if context is None else context,

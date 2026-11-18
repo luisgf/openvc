@@ -151,12 +151,15 @@ def test_an_earlier_inline_import_does_not_make_a_later_call_fail():
         assert nquads == expected, name
 
 
-def test_inline_import_credential_fails_for_the_right_reason_in_each_call():
+def test_inline_import_credential_fails_for_the_right_reason_in_each_call(monkeypatch):
     """A credential signed with the inline context, validation bypassed (what an attacker
     would hold). Tenant A: the signature is valid and the 1.30.2 rule refuses the inline
     context. Tenant B defines the term differently, so its dataset is another one and the
     signature must fail. No ``extra_contexts``: the import cannot load. On a tree that
-    shares pyld's cache B and the third call both reach the rule instead."""
+    shares pyld's cache B and the third call both reach the rule instead. The refusal that
+    now comes before expansion (#446) is switched off: this test is about what happens
+    once the document does reach pyld."""
+    monkeypatch.setattr(di, "check_before_expansion", lambda *args, **kwargs: None)
     _, imported = _urls("pipeline")
     key = Ed25519SigningKey.generate(kid=VM)
     jwk = key.public_jwk()
