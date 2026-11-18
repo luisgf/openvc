@@ -28,8 +28,9 @@ otherwise serialise N blocking fetches.
 ``verificationMethod`` synchronously; the async path resolves that DID *first*
 (awaiting the injected resolver) and hands the suite a one-shot in-memory resolver,
 so the suite's own resolution does no I/O. The canonicalisation + signature check
-then run inline on the event loop (bounded CPU: the RDF suites refuse a document over the
-``openvc.proof._rdfc`` budgets, JSON-LD to RDF conversion included, before the signature check).
+then run inline on the event loop. The CPU is bounded by the ``openvc.proof._rdfc`` budgets
+(canonicalization work, and the JSON-LD to RDF node-map comparisons); JSON-LD *expansion*,
+which runs before them, is pyld's and is not bounded by them.
 """
 from __future__ import annotations
 

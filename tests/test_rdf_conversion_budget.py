@@ -111,6 +111,88 @@ def _vals(n, prefix="v"):
     return [f"{prefix}{i}" for i in range(n)]
 
 
+def _padded(k: int, m: int, value="v") -> list:
+    """K empty lists (added without a comparison, they still enlarge the stored values) then M
+    repeats of *value*: pyld pays M * (K + 1) comparisons for the repeats in a slot where
+    *value* is new, and M in a slot where it was already the first."""
+    return [{"@list": []} for _ in range(k)] + [value] * m
+
+
+def _slot_shapes() -> dict[str, dict]:
+    """A value first stored in one slot, then repeated behind padding in another. A counter that
+    folds two slots pyld keeps apart (or splits one it merges) charges M instead of M * (K + 1):
+    these shapes are what the slot partition is tested with (#445 review: F1-F3)."""
+    k, m, s = 6, 12, V + "s"
+    shapes = {
+        "slot: another graph": _ld(
+            {"@id": s, "p": "v"}, {"@id": V + "g", "@graph": [{"@id": s, "p": _padded(k, m)}]}),
+        "slot: another subject": _ld(
+            {"@id": V + "s1", "p": "v"}, {"@id": V + "s2", "p": _padded(k, m)}),
+        "slot: another property": _ld({"@id": s, "p": "v", "q": _padded(k, m)}),
+        "slot: forward against reverse": _ld(
+            {"@id": V + "x", "@reverse": {"q": {"@id": s}}},
+            {"@id": s, "q": _padded(k, m, {"@id": V + "x"})}),
+        "slot: blank-node property, forward against reverse": _ld(
+            {"@id": V + "x", "@reverse": {"_:q": {"@id": s}}},
+            {"@id": s, "_:q": _padded(k, m, {"@id": V + "x"})}),
+        "slot: forward blank-node property against a reverse _:b0": _ld(
+            {"@id": V + "x", "@reverse": {"_:b0": {"@id": s}}},
+            {"@id": s, "_:x": _padded(k, m, {"@id": V + "x"})}),
+        "slot: a blank-node type is labelled before a blank-node property": _ld(
+            {"@id": V + "x", "@reverse": {"_:b1": {"@id": s}}},
+            {"@id": s, "@type": ["_:t"], "_:x": _padded(k, m, {"@id": V + "x"})}),
+        "slot: an anonymous node takes a label before a blank-node property": _ld(
+            {"@id": V + "x", "@reverse": {"_:b1": {"@id": s}}},
+            {"@id": s, "@included": [{"p": "v"}], "_:x": _padded(k, m, {"@id": V + "x"})}),
+        "slot: a blank-node id takes a label before a blank-node property": _ld(
+            {"@id": V + "x", "@reverse": {"_:b1": {"@id": s}}},
+            {"@id": s, "@included": [{"@id": "_:n", "p": "v"}],
+             "_:x": _padded(k, m, {"@id": V + "x"})}),
+        "slot: two blank-node properties": _ld(
+            {"@id": s, "_:q": _padded(k, 4), "_:r": _padded(k, 4)}),
+        "slot: nested graphs": _ld({"@id": V + "g", "@graph": [
+            {"@id": s, "p": "v"}, {"@id": V + "h", "@graph": [{"@id": s, "p": _padded(k, m)}]}]}),
+        "slot: subjects that differ only by case": _ld(
+            {"@id": V + "s", "p": "v"}, {"@id": V + "S", "p": _padded(k, m)}),
+        "slot: blank-node labels that differ only by case": _ld(
+            {"@id": "_:a", "p": "v"}, {"@id": "_:A", "p": _padded(k, m)}),
+        "slot: graph named by a blank node": _ld(
+            {"@id": s, "p": "v"}, {"@id": "_:g", "@graph": [{"@id": s, "p": _padded(k, m)}]}),
+    }
+    for keyword in ("@type", "@none", "@graph", "@id", "@value", "@set"):
+        shapes[f"slot: graph named {keyword}"] = _ld(
+            {"@id": s, "p": "v"}, {"@id": keyword, "@graph": [{"@id": s, "p": _padded(k, m)}]})
+    shapes["slot: graph named @default"] = _ld(
+        {"@id": s, "p": "v"}, {"@id": "@default", "@graph": [{"@id": s, "p": _padded(k, m)}]})
+    return shapes
+
+
+def _null_id_shapes() -> dict[str, dict]:
+    """A keyword-like id (``"@a"``) expands to ``"@id": null``: pyld puts every such node on one
+    key (and crashes later, after the merge, once a string-keyed node shares the graph)."""
+    n, s = 14, V + "s"
+    return {
+        "null id: one type each": _ld(*[{"@id": "@a", "@type": V + f"T{i}"} for i in range(n)]),
+        "null id: in @included": _ld({"@id": s, "@included": [
+            {"@id": "@a", "@type": V + f"T{i}"} for i in range(n)]}),
+        "null id: reverse items under N parents": _ld(
+            *[{"@id": V + f"s{i}", "@reverse": {"q": {"@id": "@a"}}} for i in range(n)]),
+        "null id: reverse items with types": _ld(
+            *[{"@id": V + f"s{i}", "@reverse": {"q": {"@id": "@a", "@type": V + f"T{i}"}}}
+              for i in range(n)]),
+        "null id: graph names": _ld(
+            *[{"@id": "@a", "@graph": [{"@id": s, "p": f"v{i}"}]} for i in range(n)]),
+        "null id: references": _ld({"@id": s, "p": [{"@id": "@a"}] * n}),
+        "null id: in a list": _ld({"@id": s, "p": {"@list": [
+            {"@id": "@a", "@type": V + f"T{i}"} for i in range(n)]}}),
+        "null id: with forward values": _ld(
+            *[{"@id": "@a", "p": f"v{i}"} for i in range(n)]),
+        "null id: id map with keyword-like keys": {
+            "@context": {"@vocab": V, "idm": {"@container": "@id"}}, "@id": s,
+            "idm": {f"@k{chr(97 + i)}": {"@type": V + f"T{i}"} for i in range(n)}},
+    }
+
+
 def _corpus() -> dict[str, dict]:
     n = 14
     s = "https://v.example/s"
@@ -221,6 +303,8 @@ def _corpus() -> dict[str, dict]:
                                        "@id": "a", "@index": "i", "p": _vals(5)},
         "nested depth": _ld({"@id": s, "p": {"@id": V + "a", "p": {"@id": V + "b", "p": [
             {"@id": V + "c", "p": _vals(6)}, {"@id": V + "c", "p": _vals(6, "w")}]}}}),
+        **_slot_shapes(),
+        **_null_id_shapes(),
     }
 
 
@@ -232,7 +316,10 @@ def test_the_charge_is_never_below_what_pyld_really_does(name, pyld_calls):
     expanded = jsonld.expand(document, pyld_options(loader))
     during_expand = pyld_calls[0]
     pyld_calls[0] = 0
-    jsonld.to_rdf(document, pyld_options(loader))
+    try:
+        jsonld.to_rdf(document, pyld_options(loader))
+    except Exception:                  # noqa: BLE001 - pyld may fail after the merge was done
+        pass
     real = pyld_calls[0] - during_expand            # the node-map merge alone
     assert _rdfc._conversion_cost(expanded, 10**9) >= real, name
 
@@ -251,65 +338,142 @@ def test_the_corpus_is_not_vacuous(pyld_calls):
         assert _rdfc._conversion_cost(expanded, 10**9) >= 14 * 13 // 2, name
 
 
-def _fuzz_value(rng: random.Random, depth: int):
-    ids = ["_:a", "_:b", V + "x", V + "y"]
-    kind = rng.randrange(14 if depth > 0 else 6)
-    if kind == 0:
-        return rng.choice(["a", "b", 1, True, 1.0])
-    if kind == 1:
-        return {"@value": rng.choice(["a", "b"]), "@type": rng.choice([V + "T", V + "U"])}
-    if kind == 2:
-        return {"@value": rng.choice(["a", "b"]), "@language": rng.choice(["en", "de"])}
-    if kind == 3:
-        return {"@id": rng.choice(ids)}
-    if kind == 4:
-        return {"@list": [_fuzz_value(rng, 0) for _ in range(rng.randrange(0, 4))]}
-    if kind == 5:
-        return {"@id": rng.choice(ids)} if rng.random() < 0.5 else {"@value": "z"}
-    return _fuzz_node(rng, depth - 1)
+_FUZZ_CONTEXT = {
+    "@vocab": V,
+    "lst": {"@container": "@list"}, "st": {"@container": "@set"},
+    "idx": {"@container": "@index"}, "lang": {"@container": "@language"},
+    "gr": {"@container": "@graph"}, "gid": {"@container": ["@graph", "@id"]},
+    "idm": {"@container": "@id"}, "tym": {"@container": "@type"},
+    "ref": {"@type": "@id"}, "voc": {"@type": "@vocab"}, "js": {"@type": "@json"},
+    "rev": {"@reverse": V + "p"}, "revq": {"@reverse": V + "q", "@container": "@set"},
+    "nst": "@nest", "inc": "@included",
+    "sc": {"@id": V + "sc", "@context": {"p": V + "q", "q": V + "p"}},     # scoped contexts
+    "T": {"@id": V + "T", "@context": {"r": {"@id": V + "p", "@type": "@id"}}},
+    "en": {"@id": V + "p", "@language": "en"},
+}
+_FUZZ_ALPHABETS = {
+    # (extra ids, extra forward properties, extra reverse properties)
+    "plain": ([], [], []),
+    "keywords": (["@a", "@foo", "@type", "@none", "@default", "@graph", "@id", "@merged"], [], []),
+    "bnode-properties": ([], ["_:b0", "_:b1", "_:p"], ["_:b0", "_:b1", "_:p"]),
+    "all": (["@a", "@type", "@none", "@default", "@merged"], ["_:b0", "_:p"], ["_:b0", "_:p"]),
+}
 
 
-def _fuzz_node(rng: random.Random, depth: int) -> dict:
-    node: dict = {}
-    if rng.random() < 0.8:
-        node["@id"] = rng.choice(["_:a", "_:b", "_:c", V + "x", V + "y"])
-    if rng.random() < 0.3:
-        node["@type"] = [rng.choice([V + "T", V + "U", "_:t"]) for _ in range(rng.randrange(1, 4))]
-    for prop in rng.sample(["p", "q", "r"], rng.randrange(0, 4)):
-        node[prop] = [_fuzz_value(rng, depth) for _ in range(rng.randrange(0, 6))]
-    if depth > 0 and rng.random() < 0.2:
-        node["@graph"] = [_fuzz_node(rng, depth - 1) for _ in range(rng.randrange(0, 4))]
-    if depth > 0 and rng.random() < 0.2:
-        node["@included"] = [_fuzz_node(rng, depth - 1) for _ in range(rng.randrange(1, 3))]
-    if depth > 0 and rng.random() < 0.2:
-        node["@reverse"] = {rng.choice(["p", "q"]): [
-            {"@id": rng.choice(["_:a", "_:b", V + "x", V + "y"]), **(
-                {"p": [_fuzz_value(rng, 0)]} if rng.random() < 0.3 else {})}
-            for _ in range(rng.randrange(1, 5))]}
-    return node
+class _Fuzz:
+    """Seeded JSON-LD generator: blank labels that collide with pyld's own (``_:b0``), IRIs,
+    relative ids, keyword and keyword-like ids, blank-node properties in forward and ``@reverse``
+    position, named graphs (by IRI, blank node and keyword id), lists, reverse and nested
+    properties, ``@included``, and the context features above."""
+
+    def __init__(self, seed: int, alphabet: str) -> None:
+        self.rng = random.Random(seed)
+        ids, props, rprops = _FUZZ_ALPHABETS[alphabet]
+        self.ids = ["_:a", "_:b", "_:b0", "_:b1", V + "x", V + "y", "rel", "urn:z"] + ids
+        self.types = [V + "T", V + "U", "_:t", "_:b0", "T"]
+        self.props = ["p", "q", "r", "sc", "en", "ref", "voc"] + props
+        self.rprops = ["p", "q"] + rprops
+
+    def scalar(self):
+        return self.rng.choice(["a", "b", 1, True, 1.0, "1", False, float("nan"), "x"])
+
+    def value(self, depth: int):
+        r = self.rng
+        kind = r.randrange(12 if depth > 0 else 6)
+        if kind == 0:
+            return self.scalar()
+        if kind == 1:
+            return {"@value": r.choice(["a", "b", 1]),
+                    "@type": r.choice([V + "T", V + "U", "urn:t"])}
+        if kind == 2:
+            return {"@value": r.choice(["a", "b"]), "@language": r.choice(["en", "de"])}
+        if kind == 3:
+            return {"@id": r.choice(self.ids)}
+        if kind == 4:
+            return {"@list": [self.value(0) for _ in range(r.randrange(0, 4))]}
+        if kind == 5:
+            return {"@value": r.choice([{"a": 1}, [1], "s"]), "@type": "@json"}
+        return self.node(depth - 1)
+
+    def node(self, depth: int) -> dict:
+        r = self.rng
+        n: dict = {}
+        if r.random() < 0.75:
+            n["@id"] = r.choice(self.ids)
+        if r.random() < 0.35:
+            n["@type"] = [r.choice(self.types) for _ in range(r.randrange(1, 4))]
+        for prop in r.sample(self.props, r.randrange(0, 4)):
+            n[prop] = [self.value(depth) for _ in range(r.randrange(0, 6))]
+        if r.random() < 0.12:
+            n["lst"] = [self.value(0) for _ in range(r.randrange(0, 4))]
+        if r.random() < 0.12:
+            n["idx"] = {r.choice("ij"): [self.scalar() for _ in range(r.randrange(1, 3))]}
+        if r.random() < 0.12:
+            n["js"] = [r.choice([{"a": 1}, [1, 2], "s", True]) for _ in range(r.randrange(1, 4))]
+        if depth > 0:
+            if r.random() < 0.12:
+                n["gr"] = [self.node(depth - 1) for _ in range(r.randrange(1, 3))]
+            if r.random() < 0.12:
+                n["gid"] = {r.choice(self.ids): [self.node(depth - 1)]}
+            if r.random() < 0.12:
+                n["idm"] = {r.choice(self.ids): self.node(depth - 1)}
+            if r.random() < 0.10:
+                n["tym"] = {r.choice(self.types): self.node(depth - 1)}
+            if r.random() < 0.15:
+                n["rev"] = [self.node(depth - 1) if r.random() < .5 else {"@id": r.choice(self.ids)}
+                            for _ in range(r.randrange(1, 4))]
+            if r.random() < 0.10:
+                n["revq"] = [{"@id": r.choice(self.ids)} for _ in range(r.randrange(1, 4))]
+            if r.random() < 0.15:
+                n["nst"] = {r.choice(self.props): [self.value(depth - 1) for _ in range(3)]}
+            if r.random() < 0.18:
+                n["@graph"] = [self.node(depth - 1) for _ in range(r.randrange(0, 4))]
+            if r.random() < 0.18:
+                n["@included"] = [{**self.node(depth - 1), "p": [self.value(0)]}
+                                  for _ in range(r.randrange(1, 3))]
+            if r.random() < 0.10:
+                n["inc"] = [{**self.node(depth - 1), "q": [self.value(0)]}
+                            for _ in range(r.randrange(1, 3))]
+            if r.random() < 0.2:
+                n["@reverse"] = {r.choice(self.rprops): [
+                    self.node(depth - 1) if r.random() < .4 else {"@id": r.choice(self.ids)}
+                    for _ in range(r.randrange(1, 5))] for _ in range(r.randrange(1, 3))}
+        return n
+
+    def document(self) -> dict:
+        body = {"@graph": [self.node(2) for _ in range(self.rng.randrange(1, 6))]}
+        if self.rng.random() < 0.2:
+            body = self.node(2)
+        return {"@context": _FUZZ_CONTEXT, **body}
 
 
-def test_the_charge_is_never_below_pyld_over_a_seeded_fuzz(pyld_calls):
-    rng = random.Random(426)
+@pytest.mark.parametrize("alphabet", sorted(_FUZZ_ALPHABETS))
+@pytest.mark.parametrize("seed", [426, 427])
+def test_the_charge_is_never_below_pyld_over_a_seeded_fuzz(alphabet, seed, pyld_calls):
+    # keyword-like ids, blank-node properties in both directions, graphs named by keywords and
+    # blank nodes, scoped contexts: the classes a plain-alphabet fuzz never reached (#445 review)
+    gen = _Fuzz(seed, alphabet)
     loader = document_loader(None)
     checked = nonzero = 0
-    for _ in range(600):
-        document = {"@context": {"@vocab": V},
-                    "@graph": [_fuzz_node(rng, 3) for _ in range(rng.randrange(1, 6))]}
+    for _ in range(100):
+        document = gen.document()
         try:
             pyld_calls[0] = 0
             expanded = jsonld.expand(document, pyld_options(loader))
             during_expand = pyld_calls[0]
             pyld_calls[0] = 0
-            jsonld.to_rdf(document, pyld_options(loader))
+            try:
+                jsonld.to_rdf(document, pyld_options(loader))
+            except Exception:              # noqa: BLE001 - pyld fails late: the merge was done
+                pass
         except jsonld.JsonLdError:
-            continue                                # not valid JSON-LD: pyld refuses it too
+            continue                       # not valid JSON-LD: pyld refuses it too
         real = pyld_calls[0] - during_expand
         charge = _rdfc._conversion_cost(expanded, 10**9)
-        assert charge >= real, (charge, real, json.dumps(document))
+        assert charge >= real, (alphabet, seed, charge, real, json.dumps(document))
         checked += 1
         nonzero += real > 0
-    assert checked > 200 and nonzero > 100         # the generator reaches the merge path
+    assert checked > 90 and nonzero > 50      # the generator reaches the merge path
 
 
 def test_the_charge_of_one_fat_property_is_exact():
@@ -317,6 +481,66 @@ def test_the_charge_of_one_fat_property_is_exact():
     for n in (2, 10, 57):
         expanded = jsonld.expand(_ld({"@id": V + "s", "p": _vals(n)}), pyld_options(loader))
         assert _rdfc._conversion_cost(expanded, 10**9) == n * (n - 1) // 2
+
+
+@pytest.mark.parametrize("name", sorted(_slot_shapes()))
+def test_slot_shapes_are_charged_exactly(name, pyld_calls):
+    # the partition into (graph, subject, property) slots must be pyld's own: a slot folded
+    # into another (or split) turns the duplicate shortcut into an under-count. Exact equality,
+    # not >=, so that a mutant folding any of these slots fails by name (the review's m4,
+    # "fold every named graph into its parent", charged 665 where pyld made 6 634).
+    document = _slot_shapes()[name]
+    loader = document_loader(None)
+    expanded = jsonld.expand(document, pyld_options(loader))
+    pyld_calls[0] = 0
+    try:
+        jsonld.to_rdf(document, pyld_options(loader))
+    except Exception:                      # noqa: BLE001 - pyld may fail after the merge
+        pass
+    assert _rdfc._conversion_cost(expanded, 10**9) == pyld_calls[0], name
+    assert pyld_calls[0] > 0, name         # the shape really reaches the merge
+
+
+@pytest.mark.parametrize("name", sorted(_null_id_shapes()))
+def test_null_id_shapes_are_charged_at_least_what_pyld_does_and_not_zero(name, pyld_calls):
+    document = _null_id_shapes()[name]
+    loader = document_loader(None)
+    expanded = jsonld.expand(document, pyld_options(loader))
+    assert '"@id": null' in json.dumps(expanded), name       # the shape is what it claims
+    pyld_calls[0] = 0
+    try:
+        jsonld.to_rdf(document, pyld_options(loader))
+    except Exception:                      # noqa: BLE001 - pyld fails after the merge
+        pass
+    charge = _rdfc._conversion_cost(expanded, 10**9)
+    assert charge >= pyld_calls[0], name
+    if name not in ("null id: id map with keyword-like keys", "null id: with forward values"):
+        assert charge > 50, name       # (forward values of a null-id node are never stored)
+
+
+def test_the_conversion_gets_the_document_as_written_not_its_expanded_form():
+    # A second expansion is not the identity: it resolves a relative @id that "@base": null kept
+    # relative, so the signed dataset changes (the forged-type document of
+    # test_dcql_type_values.py, GHSA-vrxg-57v4-85mc). to_rdf therefore expands the document
+    # itself, and the result is byte-identical to pyld's normalize.
+    document = {"@context": [VC2, {"@base": None}], "id": "forged",
+                "type": ["VerifiableCredential"],
+                "credentialSubject": {"id": "did:example:s", "name": "x"}}
+    loader = document_loader(None)
+    expected = jsonld.normalize(
+        document, pyld_options(loader, algorithm="URDNA2015", format="application/n-quads"))
+    assert _rdfc.canonicalize_nquads(document, loader) == expected
+    expanded = jsonld.expand(document, pyld_options(loader))
+    assert jsonld.to_rdf(expanded, pyld_options(loader)) != jsonld.to_rdf(
+        document, pyld_options(loader))                     # why the expanded form is not used
+
+
+def test_a_document_with_a_keyword_like_id_still_converts():
+    document = {"@context": {"@vocab": V}, "@id": "@a", "https://v.example/p": "v"}
+    loader = document_loader(None)
+    expected = jsonld.normalize(
+        document, pyld_options(loader, algorithm="URDNA2015", format="application/n-quads"))
+    assert _rdfc.canonicalize_nquads(document, loader) == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -439,6 +663,98 @@ def test_ecdsa_sd_refuses_a_hostile_document_on_every_conversion_path(pyld_calls
         suite.verify(derived, public_key_jwk=sk.public_jwk())
     assert type(ei.value).__name__ == BUDGET_ERROR, ei.value
     assert pyld_calls[0] == 0
+
+
+# --------------------------------------------------------------------------- #
+# The documents of the #445 review (F1-F3): every one passed the first version of the count
+# --------------------------------------------------------------------------- #
+
+def _review_bodies() -> dict[str, dict]:
+    """Bodies added to a credential whose only context is the VC v2 one."""
+    return {
+        "F1 null-id nodes, one type each (@included)": {"@included": [
+            {"id": "@a", "type": f"urn:t:{i}"} for i in range(1600)]},
+        "F1 null-id node as reverse item of N parents": {"@included": [
+            {"id": f"urn:s:{i}", "@reverse": {"urn:q": {"id": "@a"}}} for i in range(1600)]},
+        "F1 null-id graph names": {"@included": [
+            {"id": "@a", "@graph": [{"id": "urn:s", "urn:p": f"v{i}"}]} for i in range(1600)]},
+        "F1 null-id nodes in a list": {"credentialSubject": {"id": "did:example:s", "urn:p": {
+            "@list": [{"id": "@a", "type": f"urn:t:{i}"} for i in range(1600)]}}},
+        "F2 graph named by the keyword @type": {"@included": [
+            {"id": "urn:s", "urn:p": "v"},
+            {"id": "@type", "@graph": [{"id": "urn:s", "urn:p": _padded(400, 3000)}]}]},
+        "F2 graph named by the keyword @none": {"@included": [
+            {"id": "urn:s", "urn:p": "v"},
+            {"id": "@none", "@graph": [{"id": "urn:s", "urn:p": _padded(400, 3000)}]}]},
+        "F3 blank-node property, forward against reverse": {"@included": [
+            {"id": "urn:x", "@reverse": {"_:q": {"id": "urn:s"}}},
+            {"id": "urn:s", "_:q": [{"@list": []}] * 400 + [{"id": "urn:x"}] * 3000}]},
+    }
+
+
+def _vc2_credential(body: dict, cryptosuite: str) -> dict:
+    issuer = _p256_key()[1] if cryptosuite == "ecdsa-rdfc-2019" else _ISSUER
+    doc = {"@context": [VC2], "type": ["VerifiableCredential"], "issuer": issuer,
+           "credentialSubject": {"id": "did:example:s"}, **body,
+           "proof": {"type": "DataIntegrityProof", "cryptosuite": cryptosuite,
+                     "created": "2020-01-01T00:00:00Z",
+                     "verificationMethod": f"{issuer}#{issuer[len('did:key:'):]}",
+                     "proofPurpose": "assertionMethod", "proofValue": "z" + "1" * 86}}
+    return doc
+
+
+@pytest.mark.parametrize("shape", sorted(_review_bodies()))
+@pytest.mark.parametrize("cryptosuite", ["eddsa-rdfc-2022", "ecdsa-rdfc-2019"])
+def test_review_documents_are_refused_before_pyld_compares_anything(
+        shape, cryptosuite, pyld_calls):
+    doc = _vc2_credential(_review_bodies()[shape], cryptosuite)
+    with pytest.raises(ProofMalformed) as ei:
+        verify_credential(doc)
+    assert type(ei.value).__name__ == BUDGET_ERROR, ei.value
+    assert pyld_calls[0] == 0
+
+
+@pytest.mark.parametrize("shape", sorted(_review_bodies()))
+def test_review_documents_are_refused_on_ecdsa_sd_too(shape, pyld_calls):
+    kid = "did:key:zDnaeykfoobar#zDnaeykfoobar"
+    sk = P256SigningKey.generate(kid=kid)
+    suite = EcdsaSdProofSuite()
+    base = suite.add_base_proof(
+        {"@context": [VC2], "type": ["VerifiableCredential"], "issuer": "did:example:issuer",
+         "validFrom": "2026-01-01T00:00:00Z",
+         "credentialSubject": {"id": "did:example:s", "name": "Ada"}},
+        signing_key=sk, verification_method=kid, mandatory_pointers=["/issuer"])
+    derived = suite.derive_proof(base, selective_pointers=["/credentialSubject/name"])
+    derived.update(_review_bodies()[shape])
+    pyld_calls[0] = 0
+    with pytest.raises(ProofMalformed) as ei:
+        suite.verify(derived, public_key_jwk=sk.public_jwk())
+    assert type(ei.value).__name__ == BUDGET_ERROR, ei.value
+    assert pyld_calls[0] == 0
+
+
+def test_the_message_says_the_budget_is_summed_over_the_document_and_quotes_nothing():
+    doc = _vc2_credential({"@included": [
+        {"id": "urn:s", "urn:p": [f"marker-{i}" for i in range(1500)]}]}, "eddsa-rdfc-2022")
+    with pytest.raises(ProofMalformed) as ei:
+        verify_credential(doc)
+    message = str(ei.value)
+    assert "summed over the whole document" in message and "1000000" in message
+    assert "marker" not in message and "urn:" not in message
+
+
+def test_a_presentation_of_credentials_is_counted_per_document():
+    # the budget is per converted document: three credentials of 1 000 distinct values each cost
+    # 3 x 499 500 comparisons in one presentation and none of them is refused
+    values = [f"v{i}" for i in range(1000)]
+    one = _vc2_credential({"credentialSubject": {"id": "did:example:s", "urn:p": values}},
+                          "eddsa-rdfc-2022")
+    loader = document_loader(None)
+    costs = [_rdfc._conversion_cost(jsonld.expand(d, pyld_options(loader)), 10**9)
+             for d in (one, one, one)]
+    assert costs == [1000 * 999 // 2] * 3 and sum(costs) > _rdfc.MAX_CONVERSION_COMPARISONS
+    for d in (one, one, one):
+        _rdfc.canonicalize_nquads({k: v for k, v in d.items() if k != "proof"}, loader)
 
 
 # --------------------------------------------------------------------------- #

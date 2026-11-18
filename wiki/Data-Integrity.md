@@ -220,14 +220,29 @@ A second, earlier bound covers pyld's **JSON-LD to RDF conversion**. pyld checks
 of a property against every value already stored under that property of that subject, so N
 values of one property cost about N**2/2 comparisons (8 000 values in a 71 KB credential took
 10 seconds, with a garbage proof, because the conversion runs before the signature is looked
-at). The same cost is reached by many node objects with the same `id`, many `type` values and
-many IRI objects. openvc expands the document (linear), replays that merge and counts the
-comparisons pyld will make, per graph, subject and property, and refuses over
-`MAX_CONVERSION_COMPARISONS` (1 000 000, about a third of a second on one core) with the same
-`CanonicalizationBudgetExceeded`, before the conversion runs. The repository's RDF fixtures
-need at most 2; a credential with about 1 400 distinct values under one property is the
-largest that passes. `ecdsa-sd-2023`'s own conversions are guarded the same way, and the JCS suites do no
-RDF work.
+at). The same cost is reached by many node objects with the same `id`, many `type` values,
+many IRI objects, many nodes whose `id` is keyword-like (`"@a"`, which expands to a null `@id`
+and merges), graphs named by a keyword and blank-node property names. openvc expands the
+document, replays that merge (mirroring which graph, subject and property each value
+lands in) and counts the comparisons pyld will make, refusing over
+`MAX_CONVERSION_COMPARISONS` (1 000 000, about a third of a second of comparisons on one core)
+with the same `CanonicalizationBudgetExceeded`, before the conversion runs. The count is
+**summed over the whole document**, not per property, so it has several cliffs: one property
+with about 1 400 distinct values; any array of more than about 1 400 node objects (each is a
+distinct reference); 51 subjects of 200 values each; three properties of 1 000 values; and a
+sub-object of k values repeated n times costs about n k²/2. A presentation of many credentials
+is converted one document at a time, each with its own count. The repository's RDF fixtures
+need at most 2. `ecdsa-sd-2023`'s own conversions are guarded the same way, and the JCS suites
+do no RDF work.
+
+**What this does not bound:** JSON-LD *expansion*, which runs first and is pyld's. It is not
+linear: a scoped context (an inline term with its own `@context`) is processed again for every
+node that uses it, so K terms used by N nodes cost N x K, and the same holds for the bundled VC
+v2 type-scoped contexts on a megabyte of typed nodes (seconds). The document is expanded twice
+now (once to count, once inside the conversion, which has to be given the document as written),
+so that cost is about doubled: on a megabyte of typed nodes 2.7 s became 5.2 s, and an inline
+scoped context of 1 750 terms used by 1 000 nodes (47 KB) 6.5 s became 13 s. Size limits on the
+document you pass in remain the caller's.
 
 ## The JSON must be what was signed
 

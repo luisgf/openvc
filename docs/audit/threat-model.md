@@ -889,16 +889,23 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   150 and two parents with 7 children pass). The JCS suites do no RDF work and
   are unaffected (`test_rdfc_budget.py`).
   **The conversion before it (R13, second bound).** The work above is the *tie-breaking*
-  phase. Before it, pyld's JSON-LD to RDF conversion has a cost of its own that is **not** linear: its node map checks each new value of a
-  (subject, property) against all the values already there, so N values of one property cost
-  N**2/2 comparisons (8 000 values, 71 KB, 10.4 s on v1.38.1; also N same-`@id` node objects,
-  N `type` values, N IRI objects) and ran before the signature check
+  phase. Before it, pyld's JSON-LD to RDF conversion has a cost of its own that is **not**
+  linear: its node map checks each new value of a (subject, property) against all the values
+  already there, so N values of one property cost N**2/2 comparisons (8 000 values, 71 KB,
+  10.4 s on v1.38.1; also N same-`@id` node objects, N `type` values, N IRI objects, N nodes
+  with a keyword-like id that expands to a null `@id`, graphs named by a keyword id,
+  blank-node property names) and ran before the signature check
   ([#426](https://github.com/luisgf/openvc/issues/426)). `_rdfc` now expands the document
-  and counts the comparisons pyld will make, refusing over `MAX_CONVERSION_COMPARISONS`
-  (1 000 000, about a third of a second) with the same `CanonicalizationBudgetExceeded`
-  before the conversion runs; the count is checked against pyld's real calls by
-  `test_rdf_conversion_budget.py`. **Residual of this bound:** expansion itself is linear but
-  not free (a 1 MB document refuses in about 0.3 s, 6 MB in 1.4 s), and the same one-core caveat applies.
+  and counts the comparisons pyld will make, mirroring pyld's slot partition (graph, subject,
+  property), and refuses over `MAX_CONVERSION_COMPARISONS` (1 000 000) with the same
+  `CanonicalizationBudgetExceeded` before the conversion runs; the count is checked against
+  pyld's real calls by `test_rdf_conversion_budget.py`. The count is a document-wide sum (51
+  subjects of 200 values are refused), per converted document. **Residual of this bound:** it
+  covers the node-map comparisons only. JSON-LD expansion, which runs first, is pyld's, is
+  not linear (a scoped context of K terms used by N nodes costs N x K: 94 KB of document, 27 s
+  on main before this change) and is not bounded here. It now runs twice per RDF-suite
+  conversion (once to count, once inside pyld's `to_rdf`, which must be given the document as
+  written), so that pre-existing cost is about doubled until it is bounded on its own.
 
 ## 10. Out of scope
 
