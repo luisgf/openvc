@@ -52,7 +52,6 @@ Two spec warts, handled deliberately:
 from __future__ import annotations
 
 import base64
-import calendar
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,7 +59,7 @@ from typing import Any, Callable, Mapping, NoReturn, Sequence
 
 from .. import _json
 from ..proof._verify_common import utc_instant
-from .consume import Select
+from .consume import Select, _plus_months
 from .errors import (
     TrustListError,
     TrustListParseError,
@@ -692,14 +691,6 @@ def _check_signer_dn(leaf: Any, scheme: Mapping[str, Any], *, territory: str | N
             raise TrustListSignatureError(
                 f"LoTE signing certificate countryName {countries!r} does not match "
                 f"the SchemeTerritory {territory!r} (clause 6.8)")
-
-
-def _plus_months(dt: datetime, months: int) -> datetime:
-    month = dt.month - 1 + months
-    year = dt.year + month // 12
-    month = month % 12 + 1
-    return dt.replace(year=year, month=month,
-                      day=min(dt.day, calendar.monthrange(year, month)[1]))
 
 
 def _check_profile(

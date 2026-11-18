@@ -752,11 +752,11 @@ def resolve_verification_key(
                 except UnsupportedDidMethod:
                     doc = None
                 except DidResolutionError as exc:
-                    raise KeyResolutionError(f"could not resolve {did!r}: {exc}") from exc
+                    raise KeyResolutionError(f"could not resolve {safe_repr(did)}: {exc}") from exc
         if doc is None:
             if not did.startswith("did:key:"):
                 raise KeyResolutionError(
-                    f"cannot resolve {verification_method!r} offline "
+                    f"cannot resolve {safe_repr(verification_method)} offline "
                     f"(pass a resolver, or an injected public_key_jwk)")
             from ..did.did_key import DidKeyResolver
             try:
@@ -764,7 +764,7 @@ def resolve_verification_key(
             except DidResolutionError as exc:
                 # the registry path above types the same failure; a malformed did:key
                 # must not escape as a bare DidError that is no ProofError either
-                raise KeyResolutionError(f"could not resolve {did!r}: {exc}") from exc
+                raise KeyResolutionError(f"could not resolve {safe_repr(did)}: {exc}") from exc
 
     purpose = proof_purpose or "assertionMethod"
     vm = doc.key_for_purpose(verification_method, purpose)
@@ -785,13 +785,13 @@ def resolve_verification_key(
         matches = doc._methods_with_id(verification_method, doc._base())
         if not matches:
             raise KeyResolutionError(
-                f"verificationMethod {verification_method!r} not in the DID document")
+                f"verificationMethod {safe_repr(verification_method)} not in the DID document")
         if len(matches) > 1:
             raise KeyResolutionError(
                 f"verificationMethod {safe_repr(verification_method)} names "
                 f"{len(matches)} methods in the DID document")
         raise ProofPurposeMismatch(
-            f"verificationMethod {verification_method!r} is not authorized for "
+            f"verificationMethod {safe_repr(verification_method)} is not authorized for "
             f"proofPurpose {purpose!r}")
     return vm.public_key_jwk
 

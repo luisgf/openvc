@@ -5,7 +5,7 @@
     <TSLType>http://uri.etsi.org/TrstSvc/TrustedList/TSLType/EUgeneric</TSLType>
     <SchemeOperatorName><Name xml:lang="en">Bundesnetzagentur</Name></SchemeOperatorName>
     <SchemeTerritory>DE</SchemeTerritory>
-    <ListIssueDateTime>2026-01-01T00:00:00Z</ListIssueDateTime>
+    <ListIssueDateTime>2098-10-01T00:00:00Z</ListIssueDateTime>
     <NextUpdate><dateTime>2099-01-01T00:00:00Z</dateTime></NextUpdate>
   </SchemeInformation>
   <TrustServiceProviderList>

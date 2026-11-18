@@ -54,6 +54,7 @@ All notable changes to **openvc** are documented here. The format follows
   and `VerifiedPresentation` docstrings and the Presentations wiki page now say what
   `holder` means on each lane and what the switch enforces where. Found by the internal
   security review of 2026-11-07 (`test_openid4vp_holder_binding_lanes.py`).
+
 - **mdoc: the document signer must share its IACA anchor's subject `countryName`, and its
   `stateOrProvinceName` when both carry it, as ISO/IEC 18013-5 §9.3.3 requires; the result
   now exposes both subjects** ([#383](https://github.com/luisgf/openvc/issues/383)).
@@ -255,6 +256,15 @@ All notable changes to **openvc** are documented here. The format follows
   `jsonld.normalize`, the goldens included. Found by the internal security review of
   2026-11-07 (`test_rdfc_budget.py`).
 
+- **status: under `require_status=True` a `credentialStatus` entry of an unrecognised type now
+  fails closed even when the credential also carries a recognised entry.** The gate only fired
+  when no entry was recognised, so an issuer publishing revocation through a mechanism openvc
+  does not implement and suspension through a Bitstring list had its revocations skipped by the
+  default policy. `StatusUnavailable` is raised before any resolver is called, on the sync and
+  async pipelines; `require_status=False` and `check_credential_status` keep skipping such
+  entries, and `openvc.status.unrecognised_status_entries` counts them. Found by the internal
+  security review of 2026-11-17 (#427, `test_status_unrecognised_entry.py`).
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
@@ -379,6 +389,76 @@ All notable changes to **openvc** are documented here. The format follows
   lists still anchor (a LOTL that fails this way stops the walk with that one problem). The
   recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
   security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
+
+- **Key-resolution errors no longer echo an attacker-sized identifier whole**
+  ([#431](https://github.com/luisgf/openvc/issues/431)). A credential with a megabyte-long
+  `iss` or `verificationMethod` produced a megabyte-long exception message before any
+  signature was checked, and callers log the message. The quoted value now goes through
+  `safe_repr` (200 characters) in `resolve_verification_key`, the two DID resolver
+  registries (`no resolver for …`), the issuer and status-issuer binding refusals, the
+  `did:webvh` `versionId` refusals, the JSON-LD context loader's refusal and the async
+  twins; in `openvc.fetch` the URL of `unexpected status … for …` and the request target
+  (and the library's own echo of it) in `fetch failed for https://host…` are cut the same
+  way. The wording and the exception classes are unchanged, and an ordinary identifier is
+  still quoted in full (`test_bounded_identifier_echo.py`).
+
+- **A resolver failure that is not `socket.gaierror` no longer escapes `openvc.fetch` as a
+  bare `OSError`** ([#425](https://github.com/luisgf/openvc/issues/425)).
+  `_resolve_public_ips` typed only `socket.gaierror` (and `ValueError`); CPython reports
+  `EAI_SYSTEM` as a plain `OSError` carrying the errno (`EMFILE`, `ENOMEM`, ...), which left
+  `https_json_fetch` / `https_text_fetch` — and a `did:web` `verify_credential`, and the whole
+  `verify_many` batch — with an untyped exception. Every `OSError` from the lookup is now an
+  `UnsafeUrlError` (`KeyResolutionFailed` through the pipeline, one item's error in a batch).
+  `MemoryError` and other non-`OSError` `BaseException`s still propagate unchanged
+  (`test_fetch_resolver_errors.py`).
+
+- **SD-JWT: an empty disclosure segment (`~~`) is refused, not dropped**
+  ([#434](https://github.com/luisgf/openvc/issues/434)). RFC 9901 §4 gives
+  `SD-JWT = JWT "~" *(DISCLOSURE "~")` with `DISCLOSURE = BASE64URL` (one or more
+  characters), but `SdJwtVcProofSuite._split` filtered empty segments out, and the KB-JWT
+  `sd_hash` is computed over the re-joined form, so one presentation had many accepted
+  spellings (`<jwt>~d1~~d2~`, `<jwt>~~d1~d2~`, `<jwt>~d1~d2~~~`, and `<jwt>~~` with no
+  disclosure at all); a holder-bound one verified with `key_bound=True` when sent with extra
+  `~`, so anything keyed on the presented string (a replay cache, an audit log) saw several
+  values for one presentation. **A presentation with a doubled `~` verified before and is
+  refused now**, as `MalformedToken` ("an SD-JWT disclosure segment is empty") through
+  `verify_credential`, `verify_credential_async`, `verify_vp_token` (`dc+sd-jwt` and nested in
+  a VP-JWT) and `SdJwtVcProofSuite.verify` / `create_presentation`. The last segment keeps its
+  meaning (empty = no KB-JWT), `<jwt>~d1~d2` with no trailing `~` was already refused, and
+  `issue()` / `create_presentation()` already emit the canonical form; every recorded SD-JWT
+  vector (IETF examples, the EUDI capture) verifies unchanged. Nothing else in the library
+  reads the `~` structure past the first or last segment, so no other lane needed a change.
+  Found by a security review of `main` on 2026-11-17 (`test_sd_jwt_empty_segments.py`).
+
+- **A certificate that chains to a trusted anchor but carries a malformed EKU, an unsupported
+  SAN name form or an unusable public key is now a typed refusal, not a bare `cryptography`
+  exception** ([#430](https://github.com/luisgf/openvc/issues/430)). `cryptography` decodes a
+  certificate's extension values, SAN name forms and SPKI on first access, and path validation
+  never reads them on the end entity, so the readers that run after the chain validated —
+  the mdoc DS-EKU check, the `iss`→SAN binding, the leaf-key-to-JWK step (mdoc, WRPRC, LoTE,
+  OpenID4VCI key proofs) and the WRPRC EKU gate — let `ValueError`, `UnsupportedGeneralNameType`
+  or `UnsupportedAlgorithm` out of `verify_credential`, `verify_vp_token` and `verify_many`
+  (aborting a batch). Each lazily parsed field now has one guarded accessor in `openvc.x5c`
+  mapping those to `X5cError` with a message that names the field and quotes nothing from the
+  certificate; the path verifier's own SAN decode is guarded the same way. The callers'
+  existing mapping applies (`MdocTrustError`, `KeyResolutionFailed`, `RpRegistrationError`,
+  `TrustListSignatureError`); a missing EKU / SAN keeps its own message
+  (`test_x5c_lazy_fields.py`).
+
+- **XML trusted lists: a `NextUpdate` more than six calendar months after the
+  `ListIssueDateTime` now makes the list contribute no anchors**
+  ([#432](https://github.com/luisgf/openvc/issues/432)). ETSI TS 119 612 clause 5.3.15
+  bounds the update window at six months and discards a list whose `NextUpdate` is past as
+  expired; the XML lane only checked the second half, so a signed list with a far
+  `NextUpdate` (the repository's own fixtures used 2099) kept yielding `granted` anchors
+  indefinitely, defeating the expiry rule. `walk_lotl` now records such a list — the LOTL
+  included, which stops the walk — as an `"expired"` problem, zero anchors, the walk
+  continuing; `NextUpdate` exactly at `ListIssueDateTime` plus six calendar months still
+  passes. An absent, malformed, tz-naive or non-UTC `ListIssueDateTime` fails the same way
+  (the window cannot be evaluated). The recorded real EU LOTL and Spanish TL are inside the
+  window. The synthetic fixtures' `ListIssueDateTime` moved to 2098-10-01 to stay inside it.
+  The LoTE lane is unchanged. Found by the internal security review of 2026-11-17
+  (`test_trustlist_update_window.py`).
 
 - **VC-JWT refuses a `vc.type` that is not a non-empty string or an array of non-empty
   strings** ([#433](https://github.com/luisgf/openvc/issues/433)). **A VC-JWT with a malformed

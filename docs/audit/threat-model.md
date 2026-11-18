@@ -164,7 +164,8 @@ boundary is attacker-controlled until a signature verifies.
   the DS and the anchor it validated to — `countryName` present exactly once on both, a
   2-character alpha-2 code, and equal; `stateOrProvinceName` equal when both carry it,
   once each — compared as decoded text with no normalisation of it; a subject that cannot
-  be decoded is a typed refusal, not a bare `ValueError` (#383; exposed as
+  be decoded is a typed refusal, not a bare `ValueError` (#383), and so is a DS EKU, SAN or
+  public key that cannot be decoded (#430; exposed as
   `VerifiedMdoc.ds_subject` / `anchor_subject`, where `CN` / `O` are informational). The
   rest of Annex B (DS key usage, CRL distribution point, the IACA's own fields) is not
   checked, and the Table B.1 cross-check of the disclosed `issuing_country` /
@@ -475,7 +476,7 @@ negative corpus are the drift alarm (see [assurance.md](assurance.md)).
 | I5 | VC-JWT, and a W3C SD-JWT (a payload that names a VCDM base context, whatever its issuer `typ`), reconcile the JWT envelope with the credential (`iss`/`sub`/`jti`); every identifier a present `issuer` carries must be `iss`; with no `iss` member and a W3C `typ` (or none), the body `issuer` stands in for it (#290) | `proof/vc_jwt.py:360-381`; `issuer_identifiers` (`proof/_verify_common.py`); `_vcdm_issuer` (`proof/sd_jwt.py`) | `test_vc_jwt.py`, `test_sd_jwt_vcdm_consistency.py`, `test_sd_jwt_issuer_fallback.py` |
 | I6 | x5c leaf SAN bound to `iss`; binding after path-validation; a `dNSName` binds only an unambiguous https `iss` | `x5c.py:56-70,151-154`; `_parse_https_issuer` (`jwt_vc_issuer.py`) | `test_x5c*`, `test_sd_jwt.py:425`, `test_https_issuer_identifier.py` |
 | I7 | Present-but-unparseable timestamp fails **closed** | `proof/_verify_common.py:84-85`; `check_jwt_temporal` (same module) | `test_di_jcs.py`, `test_sd_jwt.py:333`, `test_jose_temporal_claims.py`, `test_vc_jwt_numeric_dates.py`, `test_sd_jwt_vcdm_validity.py` |
-| I8 | `require_status=True` by default; declared-but-unresolvable status rejects | `verify.py:147,781-787` | `test_status.py` |
+| I8 | `require_status=True` by default; declared-but-unresolvable status rejects, and so does a `credentialStatus` entry of an unrecognised type even next to a recognised one (`unrecognised_status_entries`, raised before any resolver runs; `require_status=False` and `check_credential_status` still skip it) | `verify.py:147,781-787` | `test_status.py`, `test_status_unrecognised_entry.py` |
 | I9 | Signing goes through the `SigningKey` protocol — no private key in-process | `proof/vc_jwt.py:75-92`; `proof/_jws.py:53` | `test_keys*` |
 | I10 | SSRF guard: https-only, forbidden-range block (any address that is not `is_global`, RFC 6598 CGNAT included), redirect refusal, IP-pin | `fetch.py:49-92,126,143-144` | `test_fetch*`, `test_did_web_hostile_host.py` |
 | I11 | Status decompression bounded at 16 MiB, incremental | `status/_decompress.py:23,38-66` | `test_status_decompress.py:46-82` |

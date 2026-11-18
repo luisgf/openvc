@@ -51,6 +51,7 @@ from . import _json
 from .did.base import DidResolutionError
 from .did.did_web import AsyncDidWebResolver, DidWebResolver
 from .observability import logger, span
+from .proof._verify_common import safe_repr
 
 if TYPE_CHECKING:
     from .did.did_webvh import AsyncDidWebvhResolver, DidWebvhResolver
@@ -97,12 +98,18 @@ _ip_is_forbidden = ip_is_forbidden
 
 def _resolve_public_ips(host: str, port: int) -> list[str]:
     """Resolve *host* and return its addresses, raising if ANY is SSRF-sensitive
-    (fail closed: one bad address rejects the host)."""
+    (fail closed: one bad address rejects the host).
+
+    Every ``OSError`` from the resolver is typed, not only ``socket.gaierror``: CPython
+    reports ``EAI_SYSTEM`` as a plain ``OSError`` carrying the errno (``EMFILE``,
+    ``ENOMEM``, ...). ``MemoryError`` and other non-``OSError`` ``BaseException``s are
+    deliberately not caught here and propagate unchanged through
+    :func:`_resolve_within`."""
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     # ValueError covers the UnicodeError the IDNA codec raises on a host it cannot
     # encode (an empty label, or one over 63 characters) before any DNS query.
-    except (socket.gaierror, ValueError) as exc:
+    except (OSError, ValueError) as exc:  # socket.gaierror is an OSError
         raise UnsafeUrlError(f"cannot resolve host {host!r}: {exc}") from exc
     ips = [str(info[4][0]) for info in infos]
     if not ips:
@@ -245,8 +252,8 @@ def _https_get(
             timer.start()
         except RuntimeError as exc:  # thread exhaustion: fail closed, typed
             raise DidResolutionError(
-                f"fetch failed for https://{hostname}{target}: cannot start the deadline "
-                f"watchdog: {exc}") from exc
+                f"fetch failed for https://{hostname}{_bounded(target)}: "
+                f"cannot start the deadline watchdog: {exc}") from exc
         watchdog = timer
         # request() opens the connection (connect + TLS handshake) on first use.
         conn.request("GET", target, headers={
@@ -282,7 +289,9 @@ def _https_get(
         if expired.is_set() or (isinstance(exc, TimeoutError) and time.monotonic() >= deadline):
             raise _deadline_error(
                 hostname, target, conn.phase if conn is not None else "TCP connect") from exc
-        raise DidResolutionError(f"fetch failed for https://{hostname}{target}: {exc}") from exc
+        raise DidResolutionError(
+            f"fetch failed for https://{hostname}{_bounded(target)}: {_bounded(str(exc))}"
+        ) from exc
     finally:
         if watchdog is not None:
             # cancel() alone could leave the callback mid-run; join() orders it before the
@@ -296,10 +305,16 @@ def _https_get(
             conn.close()
 
 
+def _bounded(text: str, limit: int = 200) -> str:
+    """*text* cut at *limit* characters, for an error message (an attacker-sized path or
+    a library's echo of it never becomes an attacker-sized log line)."""
+    return text if len(text) <= limit else f"{text[:limit]}... ({len(text)} chars)"
+
+
 def _deadline_error(hostname: str, target: str, phase: str) -> DidResolutionError:
     return DidResolutionError(
-        f"fetch failed for https://{hostname}{target}: exceeded the wall-clock deadline "
-        f"during the {phase}")
+        f"fetch failed for https://{hostname}{_bounded(target)}: "
+        f"exceeded the wall-clock deadline during the {phase}")
 
 
 def _https_fetch_guarded(
@@ -367,7 +382,7 @@ def _https_fetch_guarded(
     if status in _REDIRECT_STATUSES:
         raise UnsafeUrlError(f"redirect ({status}) not followed (SSRF guard)")
     if status != 200:
-        raise DidResolutionError(f"unexpected status {status} for {url!r}")
+        raise DidResolutionError(f"unexpected status {status} for {safe_repr(url)}")
     if len(raw) > max_bytes:
         raise DidResolutionError(f"response exceeds {max_bytes} bytes")
     return raw
