@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Protocol, runtime_checkable
 from .. import _json
 from ..errors import OpenvcError
 from ..multibase import MultibaseError, decode_multibase, read_varint
+from ..proof._verify_common import safe_repr
 
 # multicodec varint heads for the public-key types openvc decodes from a Multikey
 # (publicKeyMultibase) — Ed25519 and the two NIST curves, matching did:key.
@@ -375,7 +376,7 @@ class DidResolverRegistry:
         for r in self._resolvers:
             if r.supports(did):
                 return r.resolve(did)
-        raise UnsupportedDidMethod(f"no resolver for {did!r}")
+        raise UnsupportedDidMethod(f"no resolver for {safe_repr(did)}")
 
 
 # --------------------------------------------------------------------------- #
@@ -430,7 +431,7 @@ class AsyncDidResolverRegistry:
         for r in self._resolvers:
             if r.supports(did):
                 return await r.resolve(did)
-        raise UnsupportedDidMethod(f"no resolver for {did!r}")
+        raise UnsupportedDidMethod(f"no resolver for {safe_repr(did)}")
 
 
 __all__ = [

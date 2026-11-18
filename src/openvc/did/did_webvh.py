@@ -251,11 +251,11 @@ def _verify_entry_proof(entry: dict[str, Any], active_keys: list[str]) -> None:
 def _parse_version_id(version_id: Any, expected_number: int) -> str:
     """Split ``{n}-{entryHash}``, checking *n* == *expected_number*; return entryHash."""
     if not isinstance(version_id, str) or "-" not in version_id:
-        raise DidWebvhError(f"malformed versionId {version_id!r}")
+        raise DidWebvhError(f"malformed versionId {safe_repr(version_id)}")
     number, _, entry_hash = version_id.partition("-")
     if number != str(expected_number) or not entry_hash:
         raise DidWebvhError(
-            f"versionId {version_id!r} is not version {expected_number} of the log")
+            f"versionId {safe_repr(version_id)} is not version {expected_number} of the log")
     return entry_hash
 
 

@@ -54,6 +54,7 @@ from .status import (
     check_credential_status_async,
     check_token_status_async,
     parse_status_entries,
+    unrecognised_status_entries,
     parse_token_status_ref,
 )
 from .verify import (
@@ -404,7 +405,7 @@ class _OneShotResolver:
 
     def resolve(self, did: str) -> Any:
         if did != self._did:
-            raise DidResolutionError(f"unknown DID {did!r}")
+            raise DidResolutionError(f"unknown DID {safe_repr(did)}")
         return self._doc
 
 
@@ -432,7 +433,7 @@ async def _preresolved_di_resolver(doc: dict[str, Any], resolver: Any) -> Any:
     except UnsupportedDidMethod:
         return None
     except DidResolutionError as exc:
-        raise KeyResolutionError(f"could not resolve {did!r}: {exc}") from exc
+        raise KeyResolutionError(f"could not resolve {safe_repr(did)}: {exc}") from exc
     return _OneShotResolver(did, did_doc)
 
 
@@ -475,6 +476,14 @@ async def _check_status_async(
     result: Union[StatusResult, TokenStatusResult, None] = None
 
     entries = parse_status_entries(w3c_source)
+    unrecognised = unrecognised_status_entries(w3c_source)
+    if unrecognised and policy.require_status:
+        # an entry we cannot check fails closed even when others can be checked, and
+        # before any resolver is called (the issuer may publish revocation through it)
+        raise StatusUnavailable(
+            f"credential declares {unrecognised} credentialStatus entr"
+            f"{'y' if unrecognised == 1 else 'ies'} of an unrecognised type "
+            "(set policy.require_status=False to skip)")
     if entries:
         if resolve_status_list is None:
             _fail_closed(policy, "credentialStatus", "resolve_status_list")
@@ -488,10 +497,6 @@ async def _check_status_async(
                 raise CredentialSuspended(
                     f"credential {_as_str(w3c_source.get('id'))!r} is suspended")
             result = w3c
-    elif w3c_source.get("credentialStatus") and policy.require_status:
-        raise StatusUnavailable(
-            "credential declares a credentialStatus of an unrecognised type "
-            "(set policy.require_status=False to skip)")
 
     if ietf_source is not None:
         ref = parse_token_status_ref(ietf_source)

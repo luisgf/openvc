@@ -915,11 +915,15 @@ def _require_eku(leaf: Any, required_eku: str) -> None:
     from cryptography import x509
     from cryptography.x509.oid import ExtensionOID
 
+    from .x5c import X5cError, leaf_extension_value
+
     try:
-        eku = leaf.extensions.get_extension_for_oid(ExtensionOID.EXTENDED_KEY_USAGE).value
+        eku = leaf_extension_value(leaf, ExtensionOID.EXTENDED_KEY_USAGE, "ExtendedKeyUsage")
     except x509.ExtensionNotFound:
         raise RpRegistrationError(
             f"WRPRC signing certificate has no extendedKeyUsage (needs {required_eku!r})")
+    except X5cError as exc:
+        raise RpRegistrationError(f"WRPRC signing certificate: {exc}") from exc
     if required_eku not in {oid.dotted_string for oid in eku}:
         raise RpRegistrationError(
             f"WRPRC signing certificate lacks the required extendedKeyUsage {required_eku!r}")
