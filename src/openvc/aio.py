@@ -39,6 +39,7 @@ from typing import Any, Sequence, Union
 
 from .did.base import (
     AsyncDidResolverRegistry,
+    DidDocument,
     DidResolutionError,
     UnsupportedDidMethod,
     as_async_resolver,
@@ -365,6 +366,7 @@ async def _resolve_jose_key_with_x5c_async(
 
 async def _resolve_jose_key_async(
     resolver: Any, iss: str, kid: str | None, jwt_vc_issuer_fetch: Any = None,
+    purpose: str = "assertionMethod",
 ) -> dict[str, Any]:
     """Async counterpart of ``openvc.verify._resolve_jose_key``: an https issuer is
     resolved via /.well-known/jwt-vc-issuer (awaiting *jwt_vc_issuer_fetch*), else the
@@ -392,6 +394,11 @@ async def _resolve_jose_key_async(
     if vm is None:
         raise KeyResolutionFailed(
             f"no verification method for kid {safe_repr(kid)} in DID {safe_repr(iss)}")
+    # a resolver's own document type has no relationships to check: only a DidDocument
+    if isinstance(doc, DidDocument) and not doc.grants(vm, purpose):
+        raise KeyResolutionFailed(
+            f"verification method {safe_repr(kid)} of DID {safe_repr(iss)} is not "
+            f"authorized for {purpose}")
     return vm.public_key_jwk
 
 

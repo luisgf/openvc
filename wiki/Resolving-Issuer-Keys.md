@@ -110,7 +110,7 @@ an object, and for a `verificationMethod` or a relationship (`assertionMethod`,
 object there is never read as "not declared": an undeclared relationship leaves the key
 purpose unenforced, and a bare string would otherwise be read one character at a time.
 The parser does not know which lane is asking, so a relationship that is not an array
-rejects the whole document, JOSE lanes that never read relationships included.
+rejects the whole document, whichever lane asks.
 A method whose `id` is not a string, and a relationship entry that is neither an id string
 nor an object with a string `id`, are dropped, so they select no key and grant no purpose.
 A method dropped this way is not counted when a token with no `kid` falls back to the
@@ -179,7 +179,27 @@ case-sensitive string, else `ProofPurposeMismatch`. An entry for another DID, an
 version or a path grants nothing, even when its fragment matches. A relationship the
 document does not declare at all is not enforced. The JOSE lanes (VC-JWT, SD-JWT VC)
 look the key up by the JWS `kid` and still accept a bare or `#`-relative `kid`, since a
-`kid` is only a hint; they check no relationship.
+`kid` is only a hint. They then hold the selected key to its relationship, but only when
+the document declares it: `assertionMethod` for a VC-JWT, an SD-JWT VC issuer JWT and a
+status-list token, `authentication` for a VP-JWT holder key (DID Core 1.0 §5.3). A refusal
+is `KeyResolutionFailed` on the issuer lanes; on a VP-JWT it is `ClaimsInvalid` with the
+`KeyResolutionFailed` as its cause, as for any holder key that cannot be resolved. When
+`assertionMethod` is declared, a key listed only under `authentication` or `keyAgreement`
+cannot sign a credential.
+
+What is **not** enforced: a relationship the document does not declare at all (any key of
+the document, a `keyAgreement` P-256 key included, still signs; so does a document with
+only `authentication` and no `assertionMethod`); a resolver that returns its own document
+type rather than `DidDocument`; an https issuer (`/.well-known/jwt-vc-issuer`); x5c; a
+KB-JWT (`cnf.jwk`); and the `openvc_ebsi` lanes, which select by `kid` alone. A `did:ebsi`
+document resolved through the core registry **is** checked.
+
+What stops verifying, because the document's own declaration says so: a document whose
+`assertionMethod` is declared but empty (all the recorded `did:webvh` golden documents
+list their key under `authentication` with `"assertionMethod": []`); a relationship entry
+or a method `id` written as a bare string (`key-1`); and a `#relative` id or entry in a
+document whose own `id` is not a DID. The Data Integrity lane already answered the same
+way.
 
 A `#key-1` resolves only against a document `id` that is a DID by the DID Core 1.0 §3.1
 syntax: `did:`, a method name of lower-case letters and digits, and a method-specific id

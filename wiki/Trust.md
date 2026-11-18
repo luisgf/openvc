@@ -48,6 +48,12 @@ Properties worth knowing:
   (`+00:00` is accepted for `Z`, a fraction is tolerated; any other offset, a
   tz-naive value or another layout is never read as UTC) is a parse failure, not
   unbounded validity.
+- **Six-month update window** — §5.3.15 also bounds `NextUpdate − ListIssueDateTime`
+  to six calendar months. A list (the LOTL included) that exceeds it, or whose
+  `ListIssueDateTime` is absent or not a UTC date-time, contributes **zero** anchors and is
+  recorded as an `expired` problem — otherwise a far `NextUpdate` would never expire. The
+  LoTE lane applies the same ceiling under a profile (below). The recorded real EU LOTL and
+  ES TL are both inside the window.
 - **Selective** — the default selection keeps `granted` qualified-CA services
   (the ones that issue EUDI issuer certs); pass `select=None` for everything, or a
   `Select(service_types=…)` over `ServiceType`. Beyond `CA_QC`, the named types cover
