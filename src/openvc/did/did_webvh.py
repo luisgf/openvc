@@ -208,7 +208,7 @@ def _verify_entry_proof(entry: dict[str, Any], active_keys: list[str]) -> None:
     """Verify the entry's ``eddsa-jcs-2022`` Data Integrity proof by a key in
     *active_keys*. hashData = ``sha256(JCS(proofConfig)) ‖ sha256(JCS(entry−proof))`` —
     the same shape as the JCS DI suites, over the log entry as the document."""
-    from ..keys import verify_signature      # local: keeps did<-keys import lazy
+    from ..keys import UnusablePublicKey, verify_signature      # local: keeps did<-keys import lazy
 
     proofs = entry.get("proof")
     if isinstance(proofs, dict):              # tolerate a single proof object
@@ -241,8 +241,14 @@ def _verify_entry_proof(entry: dict[str, Any], active_keys: list[str]) -> None:
             sig = decode_multibase(pv)
         except MultibaseError:
             continue
-        if verify_signature(alg="EdDSA", public_jwk=_multikey_to_jwk(multikey),
-                            signing_input=hash_data, signature=sig):
+        try:
+            verified = verify_signature(
+                alg="EdDSA", public_jwk=_multikey_to_jwk(multikey),
+                signing_input=hash_data, signature=sig)
+        except UnusablePublicKey as exc:   # an updateKey that is no usable key: the log is refused
+            raise DidWebvhError(
+                f"updateKey {multikey!r} is not a usable Ed25519 key: {exc}") from exc
+        if verified:
             return
     raise DidWebvhError(
         "no valid eddsa-jcs-2022 proof by an authorized updateKey on this log entry")
