@@ -396,12 +396,85 @@ def _deskolemize_document(node: Any) -> Any:
     return node
 
 
+# One line of N-Quads with its terminator: the three that pyld 2.0.4 ends a line at (CRLF,
+# LF, a lone CR; pyld 3.x's ``splitlines`` also ends one at a few more, see below).
+_NQUADS_LINE = re.compile(r"[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+")
+
+
+def _stage_two_parser() -> Any:
+    """The parser ``URDNA2015.main`` calls on its own output when it is given no ``format``:
+    ``pyld.nquads.parse_nquads`` (raising ``ParserError``) on pyld 3.x,
+    ``JsonLdProcessor.parse_nquads`` (raising ``JsonLdError``) on 2.0.4. The second round
+    trip keeps the class and message of a failure there."""
+    try:
+        from pyld.nquads import parse_nquads
+    except ImportError:                                  # pyld 2.0.4
+        from pyld.jsonld import JsonLdProcessor
+        parse_nquads = JsonLdProcessor.parse_nquads
+    return parse_nquads
+
+
+def _parse_nquads_linear(nquads_text: str, parse: Any = None) -> dict[str, list[dict[str, Any]]]:
+    """pyld's ``parse_nquads`` of *nquads_text*, in time linear in the number of quads.
+
+    pyld keeps each graph's triples unique by comparing every new triple with all those
+    already parsed (N distinct quads cost N**2/2 comparisons: 10 s for an 80 KB derived
+    credential, before the signature is checked). This cuts the text into lines at CRLF, LF
+    and a lone CR (each piece keeps its terminator), parses each piece with pyld's own
+    parser (*parse*, default ``JsonLdProcessor.parse_nquads``; so the grammar, the literal
+    unescaping and the typed error for a malformed line are pyld's, on whichever pyld is
+    installed, and a document that parses today parses to the same dataset) and keeps the
+    uniqueness with a set keyed on exactly what pyld's ``_compare_rdf_triples`` compares:
+    type and value of subject, predicate and object, plus the object's language and
+    datatype, per graph.
+
+    Those three are the line ends of pyld 2.0.4, so each piece is one of its lines and the
+    scan sees one quad at a time. pyld 3.x's ``splitlines`` also ends a line at a vertical
+    tab, form feed, FS/GS/RS, NEL and U+2028/U+2029; a piece holding one is split again by
+    pyld, which is what it did on the whole text, so the result is the same. It is not
+    cut here, because on 2.0.4 those characters are ordinary text (a literal may hold one).
+    That cannot cost quadratic time: pyld's serializer ends every quad with LF and drops an
+    IRI that holds such a character, so a piece it produced holds one quad."""
+    from pyld.jsonld import JsonLdProcessor
+    if parse is None:
+        parse = JsonLdProcessor.parse_nquads
+    dataset: dict[str, list[dict[str, Any]]] = {}
+    seen: set[tuple[Any, ...]] = set()
+    for index, chunk in enumerate(_NQUADS_LINE.findall(nquads_text)):
+        try:
+            parsed = parse(chunk)
+        except Exception:
+            # the same refusal pyld gives, but with the line number of the whole text
+            parse("\n" * index + chunk)
+            raise
+        for graph_name, triples in parsed.items():
+            for triple in triples:
+                s, p, o = triple["subject"], triple["predicate"], triple["object"]
+                key = (graph_name, s["type"], s["value"], p["type"], p["value"],
+                       o["type"], o["value"], o.get("language"), o.get("datatype"))
+                if key not in seen:
+                    seen.add(key)
+                    dataset.setdefault(graph_name, []).append(triple)
+    return dataset
+
+
 def _canonicalize(nquads_text: str) -> tuple[list[str], dict[str, str]]:
-    """(sorted canonical N-Quad lines, {input ``_:bnode`` -> ``_:c14nN``})."""
+    """(sorted canonical N-Quad lines, {input ``_:bnode`` -> ``_:c14nN``}).
+
+    Byte-identical to ``URDNA2015.main(parse_nquads(text), {})`` then ``to_nquads``:
+    that is two parses (one of the input, one of the canonical output, which ``main``
+    does when it is given no ``format``), each quadratic in pyld. Both are
+    :func:`_parse_nquads_linear` here, the second with the parser ``main`` itself would use,
+    so a failure there keeps its class. The second parse is kept because it drops lines
+    that are equal after canonicalization: ``main`` leaves a label that already starts with
+    ``_:c14n`` alone, so an input ``_:c14n1`` and a blank node issued ``_:c14n1`` can end up
+    as the same line. (It does not change a literal: the first parse's unescape is not the
+    inverse of the escape, but the second pass over its output returns that output.)"""
     from pyld.jsonld import JsonLdProcessor
     issuer = new_canonicalizer()                 # URDNA2015 with the work budget (_rdfc)
-    canonical = issuer.main(JsonLdProcessor.parse_nquads(nquads_text), {})
-    text = JsonLdProcessor.to_nquads(canonical)
+    canonical = issuer.main(_parse_nquads_linear(nquads_text),
+                            {"format": "application/n-quads"})
+    text = JsonLdProcessor.to_nquads(_parse_nquads_linear(canonical, _stage_two_parser()))
     lines = sorted(ln for ln in text.split("\n") if ln)
     return lines, dict(issuer.canonical_issuer.existing)
 
