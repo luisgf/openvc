@@ -62,10 +62,13 @@ Output is byte-identical to
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import json
 import math
 from collections import Counter
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from .contexts import pyld_options
@@ -76,14 +79,20 @@ from .errors import ProofMalformed
 # microsecond, so the ceiling is a fraction of a second of one core; the repository's RDF
 # fixtures need 2 at most (see the wiki).
 MAX_CONVERSION_COMPARISONS = 1_000_000
-# JSON-LD context work one pyld call may do (see :func:`_budgeted_processor_class`): term
+# JSON-LD context work one verification may do (see :func:`verification_budget`): term
 # definitions created, plus one unit per ``_MAPPINGS_PER_UNIT`` term entries copied when an
-# active context is cloned. pyld re-processes a scoped context for every place its term is
-# used, so one inline definition of K terms used N times costs K x N definitions, and an
-# attacker's document reaches that before any signature check (issue #446). A definition costs
-# about 4 microseconds (3.9 to 10 measured), a copied entry about 7 nanoseconds.
-MAX_CONTEXT_WORK = 200_000
+# active context is cloned (and the charges below). pyld re-processes a scoped context for
+# every place its term is used, so one inline definition of K terms used N times costs
+# K x N definitions, and an attacker's document reaches that before any signature check
+# (issue #446). A definition costs about 4 microseconds (3.9 to 10 measured), a copied entry
+# about 7 nanoseconds.
+MAX_CONTEXT_WORK = 300_000
 _MAPPINGS_PER_UNIT = 512
+# pyld also pays for the *size* of a term definition (a long IRI is expanded character by
+# character: 25 ns a byte, about 200 bytes to a unit) and a fixed cost for every context it
+# processes (12 microseconds measured, an empty scoped context used 250 000 times).
+_DEFINITION_BYTES_PER_UNIT = 128
+_PROCESS_CONTEXT_UNITS = 2
 # Distinct blank nodes in one canonicalized dataset. Without ties a blank node costs
 # nothing in Hash N-Degree Quads; the cap sizes the issuer copies the work counter charges.
 MAX_BLANK_NODES = 1024
@@ -128,10 +137,84 @@ def _context_work_exceeded(limit: int) -> CanonicalizationBudgetExceeded:
         f"scoped contexts cost too much to expand")
 
 
+class _Work:
+    """The context work one verification has done (see :func:`verification_budget`)."""
+
+    __slots__ = ("limit", "terms", "copied", "tripped")
+
+    def __init__(self) -> None:
+        self.limit = MAX_CONTEXT_WORK
+        self.terms = 0
+        self.copied = 0
+        self.tripped: CanonicalizationBudgetExceeded | None = None
+
+    def charge(self) -> None:
+        if self.terms + self.copied // _MAPPINGS_PER_UNIT > self.limit:
+            self.tripped = self.tripped or _context_work_exceeded(self.limit)
+            raise self.tripped
+
+
+_ACTIVE: contextvars.ContextVar[_Work | None] = contextvars.ContextVar(
+    "openvc_context_work", default=None)
+
+
+@contextlib.contextmanager
+def verification_budget(*, join: bool = False) -> Iterator[_Work]:
+    """One context budget for everything the code inside the ``with`` expands.
+
+    A verification expands and compacts its document several times (the proof
+    configuration and the document before the signature, the document twice more and the
+    types after it), and ``MAX_CONTEXT_WORK`` is the ceiling of **all of them together**,
+    not of each pyld call. Processors built by :func:`new_processor` inside the block charge
+    this budget. With ``join=True`` an enclosing block's budget is reused (a suite's
+    ``verify`` joins the one the pipeline opened around it); otherwise a fresh one starts, so
+    verifying another credential from inside (a status list, a schema) is its own verification.
+
+    The budget lives in a :mod:`contextvars` variable that is set and reset around the block:
+    it is per task and per thread, it cannot leak out of the block, and a call made with no
+    block open gets a private budget of its own."""
+    current = _ACTIVE.get()
+    if join and current is not None:
+        yield current
+        return
+    work = _Work()
+    token = _ACTIVE.set(work)
+    try:
+        yield work
+    finally:
+        _ACTIVE.reset(token)
+
+
+def budgeted_verification(verify: Any) -> Any:
+    """Decorator for a suite's ``verify``: everything it expands shares one budget (it joins
+    the pipeline's when one is open, see :func:`verification_budget`)."""
+    @functools.wraps(verify)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with verification_budget(join=True):
+            return verify(*args, **kwargs)
+
+    return wrapper
+
+
+def _definition_size(args: Any) -> int:
+    """The bytes of the term definition ``_create_term_definition(active_ctx, local_ctx, term,
+    ...)`` is about to read: the term and the strings of its definition."""
+    try:
+        term, definition = args[2], args[1].get(args[2])
+    except (IndexError, AttributeError, TypeError):
+        return 0
+    size = len(term) if isinstance(term, str) else 0
+    if isinstance(definition, str):
+        return size + len(definition)
+    if isinstance(definition, (dict, Mapping)):
+        return size + sum(len(v) for v in definition.values() if isinstance(v, str))
+    return size
+
+
 @functools.lru_cache(maxsize=1)
 def _budgeted_processor_class() -> Any:
-    """pyld's ``JsonLdProcessor`` with a ceiling on the **context work** one instance does
-    (one instance per call, nothing global: build it with :func:`new_processor`).
+    """pyld's ``JsonLdProcessor`` that charges the **context work** it does to a budget
+    (build one with :func:`new_processor`; one per call, nothing is kept on the class).
 
     The cost of JSON-LD expansion and compaction that an attacker controls is pyld
     processing a scoped context (a term definition's own ``@context``) again for every node
@@ -140,40 +223,53 @@ def _budgeted_processor_class() -> Any:
     counted here; the copy of the active context that each scoped context starts from is
     counted too, one unit per ``_MAPPINGS_PER_UNIT`` entries. Over ``MAX_CONTEXT_WORK`` raises
     :class:`CanonicalizationBudgetExceeded` from inside pyld, so the work stops where it is;
-    the error is also kept in ``tripped``, because pyld 2.0.4 wraps whatever a scoped context
+    the error is also kept on the budget, because pyld 2.0.4 wraps whatever a scoped context
     raises into a ``JsonLdError`` (:func:`_guarded` re-raises it). The output is pyld's own:
-    only the counting is added."""
+    only the counting is added. What a use of an inline context costs *besides* term
+    definitions (pyld serializing it again) is removed in
+    :func:`openvc.proof.contexts.pyld_options`, not counted here.
+
+    Two more costs are charged where they are made: a term definition costs about one unit
+    per ``_DEFINITION_BYTES_PER_UNIT`` bytes of its strings besides the unit itself (a context
+    of long IRIs), and every ``_process_context`` call ``_PROCESS_CONTEXT_UNITS`` (its fixed
+    cost: an empty scoped context used 250 000 times).
+
+    The counting override sits inside pyld's ``_create_term_definition`` -> ``_expand_iri`` ->
+    ``_create_term_definition`` recursion and adds one Python frame to each level: a context
+    whose terms depend on each other through a chain of prefixes longer than about 325 (495
+    without the override, on CPython 3.14) reaches the interpreter's
+    recursion limit and is refused as ``DataIntegrityError`` where it used to verify."""
     from pyld.jsonld import JsonLdProcessor
 
     class _BudgetedProcessor(JsonLdProcessor):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
-            self.limit = MAX_CONTEXT_WORK
-            self.terms = 0
-            self.copied = 0
-            self.tripped: CanonicalizationBudgetExceeded | None = None
-
-        def _charge(self) -> None:
-            if self.terms + self.copied // _MAPPINGS_PER_UNIT > self.limit:
-                self.tripped = self.tripped or _context_work_exceeded(self.limit)
-                raise self.tripped
+            self.work = _ACTIVE.get() or _Work()
 
         def _create_term_definition(self, *args: Any, **kwargs: Any) -> Any:
-            self.terms += 1
-            self._charge()
+            work = self.work
+            work.terms += 1 + _definition_size(args) // _DEFINITION_BYTES_PER_UNIT
+            work.charge()
             return super()._create_term_definition(*args, **kwargs)
 
+        def _process_context(self, *args: Any, **kwargs: Any) -> Any:
+            work = self.work
+            work.terms += _PROCESS_CONTEXT_UNITS
+            work.charge()
+            return super()._process_context(*args, **kwargs)
+
         def _clone_active_context(self, active_ctx: Any) -> Any:
-            self.copied += len(active_ctx.get("mappings") or ())
-            self._charge()
+            work = self.work
+            work.copied += len(active_ctx.get("mappings") or ())
+            work.charge()
             return super()._clone_active_context(active_ctx)
 
     return _BudgetedProcessor
 
 
 def new_processor() -> Any:
-    """A fresh context-budgeted ``JsonLdProcessor``; its work counters are its own, so use
-    one per call (calls that share one share the budget)."""
+    """A context-budgeted ``JsonLdProcessor``: it charges the budget of the enclosing
+    :func:`verification_budget` block, or a private one when there is none."""
     return _budgeted_processor_class()()
 
 
@@ -181,15 +277,15 @@ def _guarded(processor: Any, call: Any) -> Any:
     try:
         return call()
     except Exception:
-        if processor.tripped is not None:
-            raise processor.tripped from None      # pyld 2.0.4 may have re-wrapped it
+        if processor.work.tripped is not None:
+            raise processor.work.tripped from None      # pyld 2.0.4 may have re-wrapped it
         raise
 
 
 def budgeted_expand(document: Any, loader: Any, processor: Any = None, **options: Any) -> Any:
     """``jsonld.expand(document, pyld_options(loader, **options))`` under the context
-    budget (of *processor* when given, so one document's calls can share it): the same
-    output, :class:`CanonicalizationBudgetExceeded` over it."""
+    budget (of *processor* when given): the same output,
+    :class:`CanonicalizationBudgetExceeded` over it."""
     processor = processor or new_processor()
     return _guarded(processor, lambda: processor.expand(
         document, pyld_options(loader, **options)))
@@ -197,7 +293,7 @@ def budgeted_expand(document: Any, loader: Any, processor: Any = None, **options
 
 def budgeted_compact(expanded: Any, context: Any, loader: Any, processor: Any = None) -> Any:
     """``jsonld.compact(expanded, context, pyld_options(loader))`` under the context budget
-    (of *processor* when given, so one document's calls can share it)."""
+    (of *processor* when given)."""
     processor = processor or new_processor()
     return _guarded(processor, lambda: processor.compact(
         expanded, context, pyld_options(loader)))
@@ -518,8 +614,8 @@ def to_rdf(document: Any, loader: Any, **options: Any) -> Any:
     try:
         expanded = processor.expand(document, pyld_options(loader))
     except jsonld.JsonLdError:
-        if processor.tripped is not None:
-            raise processor.tripped from None
+        if processor.work.tripped is not None:
+            raise processor.work.tripped from None
         # to_rdf expands again and raises the error callers expect
     else:
         _conversion_cost(expanded, MAX_CONVERSION_COMPARISONS)

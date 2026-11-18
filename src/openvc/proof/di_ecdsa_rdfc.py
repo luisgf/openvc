@@ -33,6 +33,7 @@ from ..errors import OpenvcError
 from ..keys import verify_signature
 from ..multibase import encode_multibase
 from ._context_validation import check_context_before_expansion, validate_document
+from ._rdfc import budgeted_verification
 from ._verify_common import (
     ALG_PROFILE,
     DEFAULT_LEEWAY_S,
@@ -161,6 +162,7 @@ class EcdsaRdfcProofSuite:
         secured["proof"] = dict(proof, proofValue=encode_multibase(signature))
         return secured
 
+    @budgeted_verification
     def verify(
         self,
         secured: dict[str, Any],

@@ -932,37 +932,57 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   ([#446](https://github.com/luisgf/openvc/issues/446)), which runs first, is bounded by the
   third budget below.
   **JSON-LD expansion (R13, third bound, [#446](https://github.com/luisgf/openvc/issues/446)).**
-  pyld processes a term's scoped context again for every node that uses the term, so a scoped
-  context of K terms used by N nodes costs K x N term definitions (K = N = 2 000, 87 KB, 14 s;
-  one node typed `T` N times spends 4 bytes a use: 102 KB took 159 s), and the RDF suites
-  expand before the signature. Shape rules cannot bound that: the later validation accepts an
-  `@context` key inside an `@json` literal (so under any key named like one, with an inline
-  `@vocab`) and ignores the embedded credentials of a presentation (a credential may add
-  `VerifiablePresentation` to its `type`), and `meta.type_values` expands a self-signed JCS or
-  VC-JWT credential's context on lanes with no RDF suite at all. So the unit is the work
-  itself: `_rdfc.new_processor()` is pyld's `JsonLdProcessor` (one per call, nothing global,
-  pyld 2.0.4 and 3.x) counting every `_create_term_definition`, plus one unit per 512 entries
-  of every active-context copy, and refuses over `MAX_CONTEXT_WORK` (200 000, about 0.8 s)
-  with the same `CanonicalizationBudgetExceeded`, from inside pyld so the work stops where it
-  is. Every expansion and compaction an attacker's bytes reach is charged (the RDF suites'
-  conversion, whose two expansions share one budget; `ecdsa-sd-2023`'s derivation and
-  verification; context validation and `missing_types`; the `type_values` match). The cheap
-  exact part stays in front: the document's `@context` rule of the later validation
-  (`check_context_before_expansion`) runs before any pyld work. **Calibration** (a unit is
-  about 4 microseconds; every RDF fixture and golden of the repository needs at most 486 units,
-  13 186 calls measured): 1 000 typed nodes of the densest bundled type 28 000 (14 %); 256 KiB
-  of such nodes 35 000; 1 MiB 138 000 (69 %); a presentation of 100 credentials 7 300; so the
-  ceiling is 4x or more up to about 700 KB of densely typed nodes and about 1.4x at 1 MiB.
-  A refusal costs 0.75 to 0.85 s on every shape measured (the issue's rows, the nested and
-  `jwk`-named variants at 87 to 135 KB, an `ldp_vc` presentation, a credential typed
-  `VerifiablePresentation`, the `type_values` route). **Residuals:** the budget bounds the cost
-  per document, it does not remove it: under a second of event-loop time per document on the
-  async lane, and a presentation embeds its credentials in one document, whose cost is the
-  sum. A document of more than about 700 KB of densely typed nodes, or a `@context` that
-  repeats a served URL more than about 1 900 times, is refused though it verified before.
-  Expansion that creates no term definition (a large plain document) is linear and not capped
-  by size; the N-Quads parse of `ecdsa-sd-2023` is linear since #447 (below). `add_proof` and `derive_proof` run the same budget
-  (a base credential another party issued is refused before its derivation).
+  pyld applies a term's scoped context again for every node that uses the term, and before it
+  does it calls `ContextResolver.resolve`, which serializes an inline context whole to build a
+  cache key, hit or miss and before any term is defined: J bytes and K terms used by N nodes cost
+  J x N bytes and K x N term definitions (K = N = 2 000, 87 KB, 14 s; a type used N times spends
+  4 bytes a use: 41 KB 26 s, 100 KiB 159 to 190 s), and the RDF suites expand before the
+  signature. Shape rules cannot bound that (the later validation accepts an `@context` key
+  inside an `@json` literal, so under any key named like one with an inline `@vocab`, and
+  ignores the embedded credentials of a presentation, which a credential may claim by adding
+  `VerifiablePresentation` to its `type`; `meta.type_values` expands a self-signed JCS or VC-JWT
+  credential's context on lanes with no RDF suite at all), and a count of term definitions alone
+  misses the serialization. So two controls. (1) `pyld_options` hands pyld a `ContextResolver`
+  that resolves an inline context object once per call: keyed by identity (the memo holds the
+  object, so an `id` is never reused; it is forgotten when pyld rewrites a fetched context in
+  place, the one mutation pyld makes of a context it has seen; it lives in the resolver, which is
+  built per call), everything else delegated to pyld's own `resolve` element by element (100 KiB:
+  190 s -> 0.22 s; the 7 500-document differential against pyld's functions, `expand`, `compact`,
+  `to_rdf` and canonicalization, finds 0 differences on pyld 3.1.0 and 2.0.4). (2)
+  `_rdfc.new_processor()` is pyld's `JsonLdProcessor` charging one unit per term definition (plus
+  one per 128 bytes of the definition's strings), one per 512 entries of every active-context
+  copy and two for every context processed, to one budget per verification
+  (`verification_budget`, a `contextvars` block: per task and thread, reset on exit, joined by a
+  suite's `verify`, fresh for a nested verification), refusing over `MAX_CONTEXT_WORK` (300 000)
+  with the same `CanonicalizationBudgetExceeded` from inside pyld so the work stops where it is.
+  Every expansion and compaction an attacker's bytes reach is charged (the conversion, whose
+  two expansions share it; `ecdsa-sd-2023`; context validation; `missing_types`; the
+  `type_values` match, which has its own), and a test fails on a call of any pyld entry point
+  outside `_rdfc` however it is imported. The cheap exact part stays in front: the document's
+  `@context` rule of the later validation (`check_context_before_expansion`) runs before any pyld
+  work. **Calibration** (per verification; a unit is about 4 microseconds): every RDF fixture
+  and golden of the repository needs at most 1 410 units (10 966 budgets measured); 1 000 nodes
+  typed `BitstringStatusListEntry` 73 000, typed `DataIntegrityProof` (the densest bundled type)
+  101 000; 100 KiB / 1 MiB of nodes typed `BitstringStatusListEntry` 35 000 / 355 000, typed
+  `DataIntegrityProof` 115 000 / 1 174 000, typed `JsonSchema` 21 000 / 214 000; plain 1 MiB 250.
+  So the ceiling is at least 4x above 1 000 nodes of any bundled type, and above about 260 KB of
+  `DataIntegrityProof`-typed nodes, 870 KB of `BitstringStatusListEntry`-typed nodes or 600
+  repetitions of a served `@context` URL a verification is refused though it verified before. The
+  tension is real: 4x for a megabyte of the densest type would need a ceiling of 4.7 million,
+  about 20 s per refusal. A refusal costs 0.9 to 1.4 s on every shape measured (the issue's rows,
+  the nested and `jwk`-named variants, an `ldp_vc` presentation, a credential typed
+  `VerifiablePresentation`, the `type_values` route, 1 MiB of body, long IRIs, an empty scoped
+  context used 250 000 times). **Residuals:** the bound is per verification, not per `vp_token`:
+  each embedded credential is its own verification (21 credentials of 49 KB: 19 s), and the
+  `type_values` match has another; it is event-loop time on the async lane; a document with no
+  scoped context expands in linear time with no size cap here; the counts of bundled contexts
+  depend a little on process history (pyld's processed-context cache for them is shared between
+  calls: about 100 units per context, 162 units for a first call against 58 later); and the
+  counting override adds one Python frame to pyld's term-definition recursion, so a context whose
+  terms depend on each other through a chain of more than about 325 prefixes (495 without it, on
+  CPython 3.14) is refused as `DataIntegrityError` where it verified. `add_proof` and
+  `derive_proof` run the same budget (a base credential another party issued is refused before
+  its derivation).
   **`ecdsa-sd-2023` also
   re-parsed its N-Quads** (twice) with pyld's `parse_nquads`, whose per-graph uniqueness scan
   compares each new triple with all those before it: an 80 KB derived credential of N one-valued

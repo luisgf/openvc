@@ -31,7 +31,7 @@ so the suite's own resolution does no I/O. The canonicalisation + signature chec
 then run inline on the event loop. The RDF suites charge three budgets before the signature
 check (``openvc.proof._rdfc``: canonicalization work, the node-map comparisons of the
 JSON-LD to RDF conversion, and the context work of JSON-LD expansion, #446), each a ceiling
-of about a second at most that still runs inline on the event loop; the CPU is not bounded
+of about a second or more that still runs inline on the event loop; the CPU is not bounded
 end to end: on ecdsa-sd-2023 the N-Quads parse (linear since #447) is not charged.
 """
 from __future__ import annotations
@@ -48,6 +48,7 @@ from .did.base import (
 )
 from .errors import OpenvcError
 from .observability import logger, span
+from .proof._rdfc import verification_budget
 from .proof._verify_common import safe_repr
 from .proof.errors import KeyResolutionError
 from .schema import SchemaUnavailable, validate_credential_schema_async
@@ -321,17 +322,18 @@ async def _verify_data_integrity_async(
     # Resolve the proof's verificationMethod DID up front (async); the suite then
     # verifies synchronously against a one-shot in-memory resolver — no I/O inside.
     sync_resolver = await _preresolved_di_resolver(doc, resolver)
-    if fmt in (FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS):
-        verified = suite.verify(
-            doc, resolver=sync_resolver, expected_proof_purpose=policy.proof_purpose,
-            now=policy.now, check_temporal=policy.require_not_expired)
-    else:
-        verified = suite.verify(
-            doc, resolver=sync_resolver, expected_proof_purpose=policy.proof_purpose,
-            now=policy.now, extra_contexts=extra_contexts,
-            check_temporal=policy.require_not_expired)
-    _bind_issuer_to_verification_method(verified)
-    _check_di_types(verified.credential, policy.expected_types, fmt, extra_contexts)
+    with verification_budget():            # the suite and the types check share one budget
+        if fmt in (FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS):
+            verified = suite.verify(
+                doc, resolver=sync_resolver, expected_proof_purpose=policy.proof_purpose,
+                now=policy.now, check_temporal=policy.require_not_expired)
+        else:
+            verified = suite.verify(
+                doc, resolver=sync_resolver, expected_proof_purpose=policy.proof_purpose,
+                now=policy.now, extra_contexts=extra_contexts,
+                check_temporal=policy.require_not_expired)
+        _bind_issuer_to_verification_method(verified)
+        _check_di_types(verified.credential, policy.expected_types, fmt, extra_contexts)
     status = await _check_status_async(verified.credential, verified.credential, policy,
                                        resolve_status_list, resolve_status_list_token,
                                        credential_issuer=verified.issuer)

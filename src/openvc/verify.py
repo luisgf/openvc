@@ -67,6 +67,7 @@ from . import _json
 from .cache import batch_resolvers
 from .errors import KeyResolutionFailed, OpenvcError, VerificationError
 from .observability import logger, span
+from .proof._rdfc import verification_budget
 from .proof._verify_common import (
     DEFAULT_KB_MAX_AGE_S,
     DEFAULT_LEEWAY_S,
@@ -674,17 +675,18 @@ def _verify_data_integrity(
 
     # The JCS suites canonicalize with RFC 8785 (no JSON-LD term resolution), so —
     # unlike the RDF suites — they take no extra_contexts.
-    if fmt in (FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS):
-        verified = suite.verify(
-            doc, resolver=resolver, expected_proof_purpose=policy.proof_purpose,
-            now=policy.now, check_temporal=policy.require_not_expired)
-    else:
-        verified = suite.verify(
-            doc, resolver=resolver, expected_proof_purpose=policy.proof_purpose,
-            now=policy.now, extra_contexts=extra_contexts,
-            check_temporal=policy.require_not_expired)
-    _bind_issuer_to_verification_method(verified)
-    _check_di_types(verified.credential, policy.expected_types, fmt, extra_contexts)
+    with verification_budget():            # the suite and the types check share one budget
+        if fmt in (FORMAT_DI_EDDSA_JCS, FORMAT_DI_ECDSA_JCS):
+            verified = suite.verify(
+                doc, resolver=resolver, expected_proof_purpose=policy.proof_purpose,
+                now=policy.now, check_temporal=policy.require_not_expired)
+        else:
+            verified = suite.verify(
+                doc, resolver=resolver, expected_proof_purpose=policy.proof_purpose,
+                now=policy.now, extra_contexts=extra_contexts,
+                check_temporal=policy.require_not_expired)
+        _bind_issuer_to_verification_method(verified)
+        _check_di_types(verified.credential, policy.expected_types, fmt, extra_contexts)
     # DI credentials use W3C credentialStatus, but pass the doc as the IETF source
     # too so a (non-conformant) token `status` on one is not silently skipped
     status = _check_status(verified.credential, verified.credential, policy,

@@ -377,37 +377,45 @@ All notable changes to **openvc** are documented here. The format follows
   `eddsa-jcs-2022` / `ecdsa-jcs-2019` are unaffected (`test_rdf_conversion_budget.py`). Found
   by an internal security review of 2026-11-17.
 
-- **JSON-LD expansion is bounded by a context work budget, and an inline term definition
-  in the document `@context` is refused before pyld is entered**
-  ([#446](https://github.com/luisgf/openvc/issues/446)). pyld processes a term's scoped
-  context again for every node that uses the term, so a scoped context of K terms used by N
-  nodes cost K x N term definitions, before any signature check on `eddsa-rdfc-2022`,
-  `ecdsa-rdfc-2019` and `ecdsa-sd-2023` (K = N = 2 000, 87 KB: 14 s through
-  `verify_credential`; a node typed `T` N times, 4 bytes a use: 41 KB 26 s, 102 KB 159 s; the
-  same through `verify_many`, an `ldp_vc` answer and the async API's event loop). The shape is
-  one the signature-time validation refuses, but its exemptions are exactly where it cannot
-  help: an `@context` key under any key named like a served `@json` term (with an inline
-  `@vocab`), the credentials a presentation embeds (a credential may add
-  `VerifiablePresentation` to its `type`), and the `meta.type_values` match, which expands a
-  self-signed JCS or VC-JWT credential's context on lanes with no RDF suite. So the bound is
-  the work: `openvc.proof._rdfc.new_processor()` is pyld's `JsonLdProcessor` (one per call,
-  nothing global, pyld 2.0.4 and 3.x, output byte-identical) counting every term definition
-  plus one unit per 512 entries of every active-context copy, and refuses over
-  `MAX_CONTEXT_WORK` (200 000: 0.75 to 0.85 s on every shape measured, from inside pyld so
-  the work stops there) with the existing `CanonicalizationBudgetExceeded`
-  (`ProofMalformed`). Every expansion and compaction an attacker's bytes reach is charged:
-  the RDF suites' conversion (its two expansions share one budget), `ecdsa-sd-2023`'s
-  derivation and verification, context validation, `missing_types` and the `type_values`
-  match; a test fails on any other call of pyld's entry points in the source. In front of it,
-  the document's `@context` rule of the later validation (same class and message) runs before
-  any pyld work. Calibration: every RDF fixture and golden needs at most 486 units, a
-  credential with 1 000 densely typed nodes about 28 000, 1 MiB of such nodes 138 000 (69 %);
-  a document of more than about 700 KB of densely typed nodes, or a `@context` repeating a
-  served URL more than about 1 900 times, is now refused. **Residual:** the cost is bounded
-  per document (under a second of event-loop time), not removed; a plain document with no
-  scoped context expands in linear time with no size cap here; the N-Quads parse of
-  `ecdsa-sd-2023` is linear since #447. Found by the adversarial review of #445
-  (`test_di_context_before_expansion.py`).
+- **JSON-LD expansion no longer re-serializes an inline context on every use, and the context
+  work of one verification is budgeted** ([#446](https://github.com/luisgf/openvc/issues/446)).
+  pyld applies a scoped context again for every node that uses its term, and before it does it
+  calls `ContextResolver.resolve`, which serializes an inline context whole (`canonicalize`) to
+  build a cache key, hit or miss, before any term is defined. A scoped context of J bytes used by
+  N nodes therefore cost J x N bytes of serialization and K x N term definitions, before any
+  signature check on `eddsa-rdfc-2022`, `ecdsa-rdfc-2019` and `ecdsa-sd-2023`, the `ldp_vc`
+  lane, the `meta.type_values` match of a self-signed credential and the async API's event loop:
+  K = N = 2 000 (87 KB) took 14 s; a type used N times (4 bytes a use) 41 KB 26 s, 100 KiB 159 to
+  190 s, a megabyte hours. Two parts. (1) `pyld_options` gives every call a `ContextResolver`
+  that resolves an inline context *object* once per call (by identity, holding the object, its
+  memo forgotten when pyld rewrites a fetched context in place, never shared between calls), and
+  delegates everything else to pyld's own `resolve` element by element: 100 KiB of body-size
+  document 190 s -> 0.22 s, K = N = 4 000 cache hits 10 s -> 0.13 s, 1 MiB 0.9 s, with output
+  identical to pyld's (7 500 seeded documents through `expand`, `compact`, `to_rdf` and
+  canonicalization, 0 differences on pyld 3.1.0 and 2.0.4). (2) What a use still costs is
+  counted: `openvc.proof._rdfc.new_processor()` is pyld's `JsonLdProcessor` charging the term
+  definitions it creates (one unit each, plus one per 128 bytes of a definition's strings), one
+  per 512 entries of every active-context copy and two for every context it processes, to **one
+  budget per verification** (`verification_budget`: the proof configuration, the document, the
+  checks after the signature and `expected_types` of one credential share it; a status list or
+  schema verified from inside is its own), and refuses over `MAX_CONTEXT_WORK` (300 000) with the
+  existing `CanonicalizationBudgetExceeded` from inside pyld, so the work stops there; the
+  document's `@context` rule of the later validation (same class and message) runs before any
+  pyld work. A test fails on any call of a pyld entry point outside `_rdfc`, however pyld is
+  imported. **What a refusal costs and what is now refused:** a refusal takes 0.9 to 1.4 s of one
+  core (0.9 s for a 1 MiB body, 1.1 s for `@context` repeating a served URL); a verification
+  whose context work is over 300 000 units is refused although it verified before: about 600
+  repetitions of a served `@context` URL, a credential of about 260 KB of nodes typed
+  `DataIntegrityProof` (101 000 units for 1 000 such nodes, the densest bundled type), about 870
+  KB of `BitstringStatusListEntry` nodes (73 000 for 1 000). Every RDF fixture and golden needs at
+  most 1 410. **Not bounded:** a verification is bounded, a `vp_token` is not (each embedded
+  credential is its own verification, linear: 21 credentials of 49 KB took 19 s, 0.9 s each); a
+  document with no scoped context expands in linear time with no size cap here; the counting
+  override adds a Python frame to pyld's term-definition recursion, so a context whose terms
+  depend on each other through a chain of more than about 325 prefixes (495 without it, on the
+  CPython the tests ran on) is refused as `DataIntegrityError` where it verified. Found by the
+  adversarial review of #445 (`test_di_context_before_expansion.py`,
+  `test_pyld_identity_resolver.py`).
 
 ### Fixed
 

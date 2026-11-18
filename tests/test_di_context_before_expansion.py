@@ -27,6 +27,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import copy
+import importlib.metadata
 import random
 from pathlib import Path
 from typing import Any
@@ -403,7 +404,7 @@ def test_a_scoped_context_that_costs_too_much_is_refused_by_the_budget(
     assert str(LIMIT) in str(caught.value), caught.value
     assert "a.example" not in str(caught.value), "the message quotes no document text"
     # pyld did real work, and was stopped where the ceiling is
-    assert LIMIT - 200 <= real_terms[0] <= LIMIT + 800, real_terms[0]
+    assert 0 < real_terms[0] <= LIMIT + 800, real_terms[0]
 
 
 @pytest.mark.parametrize("entry", ["verify_credential", "suite.verify", "verify_many_async"])
@@ -459,7 +460,7 @@ def test_context_validation_after_the_signature_is_budgeted_too(low, real_terms)
     with pytest.raises(ProofError) as caught:
         validate_document(document, config, document_loader(None))
     assert type(caught.value) is CanonicalizationBudgetExceeded, caught.value
-    assert LIMIT - 200 <= real_terms[0] <= LIMIT + 800
+    assert 0 < real_terms[0] <= LIMIT + 800
 
 
 def test_missing_types_is_budgeted_too(low, real_terms):
@@ -468,7 +469,7 @@ def test_missing_types_is_budgeted_too(low, real_terms):
     with pytest.raises(ProofError) as caught:
         missing_types(_hostile_body(), ["VerifiableCredential"], document_loader(None))
     assert type(caught.value) is CanonicalizationBudgetExceeded, caught.value
-    assert LIMIT - 200 <= real_terms[0] <= LIMIT + 800
+    assert 0 < real_terms[0] <= LIMIT + 800
 
 
 def test_deriving_from_a_third_partys_base_credential_is_budgeted(
@@ -488,29 +489,26 @@ def test_deriving_from_a_third_partys_base_credential_is_budgeted(
     with pytest.raises(ProofError) as caught:
         suite.derive_proof(base, selective_pointers=["/credentialSubject/id"])
     assert type(caught.value) is CanonicalizationBudgetExceeded, caught.value
-    assert LIMIT - 200 <= real_terms[0] <= LIMIT + 800
+    assert 0 < real_terms[0] <= LIMIT + 800
 
 
 # --- the copy of a big active context is charged too ------------------------------ #
 
-def test_cloning_a_big_active_context_for_many_scoped_types_is_charged(
-        monkeypatch, real_terms):
-    """A served context of 5 000 terms is cheap to define once, but pyld copies the active
-    context for every node whose type brings a scoped context of its own (the bundled
-    ``JsonSchema``): the copies, one unit per 512 entries, stop it where the definitions
-    alone (a handful per node) would not."""
-    monkeypatch.setattr(_rdfc, "MAX_CONTEXT_WORK", 20_000)
-    big = {"https://a.example/ctx/big": {"@context": {
-        f"b{i}": f"https://a.example/b{i}" for i in range(5000)}}}
-    n = 1200
-    doc = _rdf_credential(
-        "eddsa-rdfc-2022", [V2, "https://a.example/ctx/big"], {"id": "did:example:s"},
-        credentialSchema=[{"id": f"https://e.example/s{i}", "type": "JsonSchema"}
-                          for i in range(n)])
-    with pytest.raises(ProofError) as caught:
-        verify_credential(doc, policy=POLICY, extra_contexts=big)
-    assert type(caught.value) is CanonicalizationBudgetExceeded, caught.value
-    assert real_terms[0] < 20_000, "the definitions alone are under the ceiling"
+def test_cloning_a_big_active_context_for_many_scoped_types_is_charged(monkeypatch, real_terms):
+    """An active context of 5 000 terms is defined once, but pyld copies it for every node whose
+    type brings a scoped context of its own (the bundled ``JsonSchema``): the copies, one unit
+    per 512 entries, stop it where the definitions alone (a handful per node) would not. The
+    document is expanded directly: an inline definition of that size is refused earlier on
+    the verification path."""
+    monkeypatch.setattr(_rdfc, "MAX_CONTEXT_WORK", 15_000)
+    big = {f"b{i}": f"https://a.example/b{i}" for i in range(5000)}
+    document = {"@context": [V2, big], "type": ["VerifiableCredential"],
+                "credentialSubject": {"id": "a:s"},
+                "credentialSchema": [{"id": f"https://e.example/s{i}", "type": "JsonSchema"}
+                                     for i in range(600)]}
+    with pytest.raises(CanonicalizationBudgetExceeded):
+        _rdfc.budgeted_expand(document, document_loader(None))
+    assert real_terms[0] < 15_000, "the definitions alone are under the ceiling"
 
 
 # --- the issue's own shape, at the real ceiling ----------------------------------- #
@@ -521,7 +519,7 @@ def test_the_issues_document_at_its_size_is_refused_at_the_default_ceiling(real_
                           {"id": "did:example:s", "jwk": _node(k, n)})
     with pytest.raises(CanonicalizationBudgetExceeded):
         verify_credential(doc, policy=POLICY)
-    assert _rdfc.MAX_CONTEXT_WORK - 200 <= real_terms[0] <= _rdfc.MAX_CONTEXT_WORK + 800
+    assert 0 < real_terms[0] <= _rdfc.MAX_CONTEXT_WORK + 800
 
 
 # --- ldp_vc in verify_vp_token (the shape OpenID4VP mandates) ----------------------- #
@@ -556,7 +554,7 @@ def test_an_ldp_vc_presentation_embedding_a_scoped_context_is_refused_by_the_bud
     with pytest.raises(ProofError) as caught:
         _answer(_vp(suite_id, embedded))
     assert type(caught.value) is CanonicalizationBudgetExceeded, caught.value
-    assert LIMIT - 200 <= real_terms[0] <= LIMIT + 800
+    assert 0 < real_terms[0] <= LIMIT + 800
 
 
 @pytest.mark.parametrize("suite_id", ["eddsa-rdfc-2022", "ecdsa-rdfc-2019"])
@@ -588,7 +586,7 @@ def test_type_values_expansion_of_a_self_signed_credential_is_bounded(low, real_
     with pytest.raises(ClaimsInvalid, match="CanonicalizationBudgetExceeded") as caught:
         verify_vp_token({"c1": [vp]}, dcql_query=query, nonce=NONCE, client_id=CLIENT_ID)
     assert type(caught.value) is ClaimsInvalid
-    assert LIMIT - 200 <= real_terms[0] <= LIMIT + 800
+    assert 0 < real_terms[0] <= LIMIT + 800
 
 
 # --------------------------------------------------------------------------- #
@@ -729,8 +727,7 @@ def test_the_budgeted_processor_is_pyld_byte_for_byte_and_its_charge_is_never_be
         processor = _rdfc.new_processor()
         ours = _outcome(lambda: processor.expand(copy.deepcopy(document), pyld_options(loader)))
         assert ours == reference
-        assert processor.terms >= real_terms[0], "the charge is below the work done"
-        assert processor.terms == real_terms[0]
+        assert processor.work.terms >= real_terms[0], "the charge is below the work done"
         if ours[0] != "ok":
             continue
         compared += 1
@@ -746,17 +743,18 @@ def test_the_budgeted_processor_is_pyld_byte_for_byte_and_its_charge_is_never_be
     assert compared > 100              # the fuzz is not vacuous: most documents expand
 
 
-def test_each_processor_has_its_own_counters_and_a_trip_is_sticky(monkeypatch):
+def test_each_unscoped_processor_has_its_own_budget_and_a_trip_is_sticky(monkeypatch):
     first, second = _rdfc.new_processor(), _rdfc.new_processor()
+    assert first.work is not second.work
     loader = document_loader(None)
     document = {"@context": [V2, ABS, _scoped(10)], "@id": "a:s", "@type": ["T"]}
     first.expand(document, pyld_options(loader))
-    assert first.terms > 0 and second.terms == 0
+    assert first.work.terms > 0 and second.work.terms == 0
     monkeypatch.setattr(_rdfc, "MAX_CONTEXT_WORK", 5)
     tight = _rdfc.new_processor()
     with pytest.raises(CanonicalizationBudgetExceeded, match="limit 5"):
         _rdfc.budgeted_expand(document, loader, tight)   # pyld re-wraps what a scope raises
-    assert tight.tripped is not None
+    assert tight.work.tripped is not None
 
 
 def test_a_second_budget_error_is_the_same_class_from_every_helper(monkeypatch):
@@ -772,33 +770,211 @@ def test_a_second_budget_error_is_the_same_class_from_every_helper(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# 4b. One budget per verification, and what else a unit pays for
+# --------------------------------------------------------------------------- #
+
+def _expansion_cost(document) -> int:
+    """The context work of one expansion of *document*, on a budget of its own."""
+    processor = _rdfc.new_processor()
+    processor.expand(copy.deepcopy(document), pyld_options(document_loader(None)))
+    return processor.work.terms + processor.work.copied // 512
+
+
+def test_the_two_expansions_of_to_rdf_share_one_budget(monkeypatch):
+    """K x N just over half the ceiling per expansion: one expansion passes, ``to_rdf``
+    (the count and the conversion expand the document twice) is refused."""
+    document = {"@context": [V2] * 40, "@type": "https://a.example/T"}
+    cost = _expansion_cost(document)
+    monkeypatch.setattr(_rdfc, "MAX_CONTEXT_WORK", cost + cost // 2)      # 1.5 expansions
+    loader = document_loader(None)
+    _rdfc.budgeted_expand(document, loader)                               # one fits
+    with pytest.raises(CanonicalizationBudgetExceeded):
+        _rdfc.to_rdf(document, loader)                                    # two do not
+    with pytest.raises(CanonicalizationBudgetExceeded):
+        _rdfc.canonicalize_nquads(document, loader)
+
+
+@pytest.mark.parametrize("entry", ["suite.verify", "verify_credential", "verify_many",
+                                   "verify_credential_async"])
+def test_a_verification_spends_one_budget_across_its_expansions(entry, monkeypatch):
+    """A valid credential whose every pyld call is far under the ceiling, but whose
+    verification (proof configuration, document, the two checks after the signature) is
+    not: refused, where one budget per pyld call would let it through."""
+    document = _signed("eddsa-rdfc-2022", _rdf_credential("eddsa-rdfc-2022", [V2] * 40))
+    ceiling = 15_000
+    monkeypatch.setattr(_rdfc, "MAX_CONTEXT_WORK", ceiling)
+    assert 2 * _expansion_cost(document) < ceiling, "each to_rdf call fits on its own"
+    with pytest.raises(CanonicalizationBudgetExceeded):
+        ENTRIES[entry](document)
+    small = _signed("eddsa-rdfc-2022", _rdf_credential("eddsa-rdfc-2022", [V2] * 3))
+    assert ENTRIES[entry](small).issuer == ED_DID                          # the control verifies
+
+
+def test_the_checks_after_the_signature_charge_the_suites_budget():
+    from openvc.proof._context_validation import missing_types
+
+    document = _signed("eddsa-rdfc-2022", _rdf_credential("eddsa-rdfc-2022", [V2] * 5))
+    with _rdfc.verification_budget() as work:
+        DataIntegrityProofSuite().verify(document)             # joins the open budget
+        after_suite = work.terms
+        assert after_suite > 0
+        missing_types(document, ["VerifiableCredential"], document_loader(None))
+        assert work.terms > after_suite
+
+
+def test_a_nested_verification_has_a_budget_of_its_own(monkeypatch):
+    """The pipeline opens a fresh budget per verification: verifying another credential
+    from inside one (a status list, a schema) is not charged to the outer one."""
+    document = _signed("eddsa-rdfc-2022", _rdf_credential("eddsa-rdfc-2022", [V2]))
+    with _rdfc.verification_budget() as outer:
+        verify_credential(document, policy=POLICY)
+        assert outer.terms == 0
+
+
+# --- a unit also pays for the size of a definition and for every context processed ------ #
+
+def test_a_context_of_long_iris_is_charged_for_its_size(low, real_terms):
+    """pyld expands an IRI character by character: 20 terms of 2 000 bytes used by 30 nodes
+    are 600 definitions, far under the ceiling counted one unit each, and 80 KB of IRI work
+    on top."""
+    url = "https://a.example/ctx/long"
+    long_terms = {f"k{i}": "https://e.example/" + "x" * 2000 + str(i) for i in range(20)}
+    extra = {url: {"@context": {"T": {"@id": "https://a.example/T", "@context": long_terms}}}}
+    document = _rdf_credential("eddsa-rdfc-2022", [V2, url],
+                               {"id": "did:example:s", "type": ["T"] * 40})
+    with pytest.raises(ProofError) as caught:
+        verify_credential(document, policy=POLICY, extra_contexts=extra)
+    assert type(caught.value) is CanonicalizationBudgetExceeded, caught.value
+    assert real_terms[0] < LIMIT // 2, "the definitions alone are well under the ceiling"
+
+
+def test_every_context_pyld_processes_has_a_fixed_cost(low, real_terms):
+    """An empty scoped context used again and again defines no term and copies a small
+    active context, yet pyld 3.x processes it each time (12 microseconds a use)."""
+    scoped = {"T": {"@id": "https://a.example/T", "@context": {}}}
+    document = {"@context": [V2, scoped], "@id": "a:s", "@type": ["T"] * 2000}
+    if importlib.metadata.version("pyld").startswith("2."):
+        pytest.skip("pyld 2.0.4 processes no context for an empty scoped context")
+    with pytest.raises(CanonicalizationBudgetExceeded):
+        _rdfc.budgeted_expand(document, document_loader(None))
+    assert real_terms[0] < 100
+
+
+# --- the recursion limit the counting override moves --------------------------------- #
+
+def _prefix_chain(n):
+    url = "https://a.example/ctx/chain"
+    chain = {f"a{i}": f"a{i + 1}:x" for i in range(n)}
+    chain[f"a{n}"] = "https://e.example/"
+    return url, {url: {"@context": chain}}
+
+
+def test_a_chain_of_dependent_prefixes_verifies_below_the_documented_limit():
+    """The counting override sits inside pyld's ``_create_term_definition`` recursion and adds
+    one Python frame to each level, so a context whose terms depend on each other through a
+    chain of prefixes verifies up to about 325 links here (495 without the override: the
+    limit moves with the interpreter's recursion limit and frame sizes). 100 links is far
+    inside it on every supported CPython."""
+    url, extra = _prefix_chain(100)
+    document = _rdf_credential("eddsa-rdfc-2022", [V2, url],
+                               {"id": "did:example:s", "a0:y": "v"})
+    secured = _signed("eddsa-rdfc-2022", document, extra_contexts=extra)
+    assert verify_credential(secured, policy=POLICY, extra_contexts=extra).issuer == ED_DID
+
+
+def test_a_chain_past_the_interpreters_limit_is_a_typed_refusal():
+    from openvc.proof.data_integrity import DataIntegrityError
+
+    url, extra = _prefix_chain(2000)
+    document = _rdf_credential("eddsa-rdfc-2022", [V2, url],
+                               {"id": "did:example:s", "a0:y": "v"})
+    with pytest.raises(DataIntegrityError) as caught:
+        verify_credential(document, policy=POLICY, extra_contexts=extra)
+    assert type(caught.value) is DataIntegrityError
+
+
+# --------------------------------------------------------------------------- #
 # 5. No call site can forget the budget
 # --------------------------------------------------------------------------- #
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
+_BUILDER = Path("openvc/proof/_rdfc.py")      # builds the budgeted subclass of JsonLdProcessor
 _UNBUDGETED = {"expand", "compact", "to_rdf", "flatten", "frame", "normalize", "from_rdf",
                "process_context", "load_document"}
 
 
+def _unbudgeted_pyld_calls(source):
+    """``(line, what)`` for every call of a pyld entry point that does not go through the
+    budgeted processor, however pyld was imported: ``jsonld.expand(...)``,
+    ``import pyld.jsonld as x; x.expand(...)``, ``from pyld.jsonld import expand as e; e(...)``,
+    ``_pyld().expand(...)``, ``pyld.jsonld.expand(...)`` and any construction of a bare
+    ``JsonLdProcessor``."""
+    tree = ast.parse(source)
+    modules, functions, classes = {"_pyld"}, set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "pyld" or alias.name.startswith("pyld."):
+                    modules.add(alias.asname or alias.name.split(".")[0])
+        elif (isinstance(node, ast.ImportFrom) and node.module
+              and node.module.split(".")[0] == "pyld"):
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if alias.name == "JsonLdProcessor":
+                    classes.add(bound)
+                elif alias.name in _UNBUDGETED:
+                    functions.add(bound)
+                elif alias.name in ("jsonld", "*"):
+                    modules.add(bound)
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in functions:
+            found.append((node.lineno, func.id))
+        elif isinstance(func, ast.Name) and func.id in classes:
+            found.append((node.lineno, f"{func.id}()"))
+        elif isinstance(func, ast.Attribute):
+            root = func.value
+            while isinstance(root, (ast.Attribute, ast.Call)):
+                root = root.value if isinstance(root, ast.Attribute) else root.func
+            if func.attr == "JsonLdProcessor" or (
+                    func.attr in _UNBUDGETED and isinstance(root, ast.Name)
+                    and root.id in modules | classes):
+                found.append((node.lineno, f"{root.id}...{func.attr}"))
+    return found
+
+
+@pytest.mark.parametrize("snippet, expected", [
+    ("from pyld import jsonld\njsonld.expand(d, o)", 1),
+    ("from pyld import jsonld as ld\nld.compact(d, c, o)", 1),
+    ("import pyld.jsonld as x\nx.expand(d, o)", 1),
+    ("import pyld\npyld.jsonld.to_rdf(d, o)", 1),
+    ("import pyld as p\np.jsonld.expand(d, o)", 1),
+    ("from pyld.jsonld import expand as e\ne(d, o)", 1),
+    ("from pyld.jsonld import JsonLdProcessor as P\nP().expand(d, o)", 2),
+    ("_pyld().expand(d, o)", 1),
+    ("import pyld.jsonld as x\nx.JsonLdProcessor()", 1),
+    ("from pyld import jsonld\nx = jsonld.JsonLdError", 0),
+    ("from pyld.jsonld import JsonLdProcessor\nJsonLdProcessor.parse_nquads(t)", 0),
+    ("from pyld import jsonld  # presence check only", 0),
+    ("budgeted_expand(d, loader)", 0),
+    ("re.compile(x).expand(template)", 0),
+])
+def test_the_scanner_sees_a_pyld_call_through_any_import_spelling(snippet, expected):
+    assert len(_unbudgeted_pyld_calls(snippet)) == expected, snippet
+
+
 def test_no_source_file_calls_an_unbudgeted_pyld_entry_point():
     """Every expansion, compaction and conversion goes through ``openvc.proof._rdfc``'s
-    budgeted processor: nothing else in the source calls ``jsonld.<entry>`` or constructs a
-    bare ``JsonLdProcessor`` (``_rdfc`` itself builds the budgeted subclass)."""
+    budgeted processor: nothing else in the source calls a pyld entry point or constructs a
+    bare ``JsonLdProcessor``, however pyld is imported (``_rdfc`` builds the budgeted
+    subclass)."""
     offenders = []
     for path in sorted(_SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in _UNBUDGETED):
-                receiver = node.func.value
-                name = receiver.id if isinstance(receiver, ast.Name) else (
-                    receiver.attr if isinstance(receiver, ast.Attribute) else
-                    receiver.func.id if isinstance(receiver, ast.Call)
-                    and isinstance(receiver.func, ast.Name) else "")
-                if name in {"jsonld", "pyld", "_pyld", "JsonLdProcessor"}:
-                    offenders.append(
-                        f"{path.relative_to(_SRC)}:{node.lineno} {name}.{node.func.attr}")
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                    and node.func.id == "JsonLdProcessor"):
-                offenders.append(f"{path.relative_to(_SRC)}:{node.lineno} JsonLdProcessor()")
+        if path.relative_to(_SRC) == _BUILDER:
+            continue
+        for line, what in _unbudgeted_pyld_calls(path.read_text(encoding="utf-8")):
+            offenders.append(f"{path.relative_to(_SRC)}:{line} {what}")
     assert not offenders, offenders

@@ -19,6 +19,7 @@ it, so the loader a call is handed is the only source of contexts that call sees
 from __future__ import annotations
 
 import json
+import functools
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
@@ -181,13 +182,77 @@ def pyld_options(loader: Callable[[str, Any], dict], **options: Any) -> dict[str
     the options anew for each call: a resolver remembers what it resolved, and one call's
     must not be another's. The loader may be any callable; one that is not
     :func:`document_loader`'s shares nothing. pyld is imported here, not at module level,
-    because the core loads without it."""
-    from pyld.context_resolver import ContextResolver
+    because the core loads without it.
 
+    The resolver is an :func:`_identity_resolver_class` instance: pyld serializes an inline
+    context again on every use to build its cache key, a cost proportional to the size of
+    the context for every node that uses it (issue #446)."""
     shared: MutableMapping[str, Any] = (
         _BundledResolutions(loader._static_urls) if isinstance(loader, _OfflineLoader) else {})
     return {**options, "documentLoader": loader,
-            "contextResolver": ContextResolver(shared, loader)}
+            "contextResolver": _identity_resolver_class()(shared, loader)}
+
+
+@functools.lru_cache(maxsize=1)
+def _identity_resolver_class() -> Any:
+    """pyld's ``ContextResolver`` that resolves an inline context *object* once per call.
+
+    ``ContextResolver.resolve`` (pyld 2.0.4 and 3.x alike) turns every object element of an
+    ``@context`` into a cache key with ``canonicalize(dict(ctx))``, the whole context
+    serialized, each time pyld applies it: once per node that uses a scoped context, hit or
+    miss, before any term is defined. So a scoped context of J bytes used by N nodes costs
+    J x N bytes of serialization whatever the processed-context cache does (100 KiB: 190 s),
+    work that no count of term definitions sees. This subclass remembers, by object identity,
+    what an inline context resolved to and answers the next use from that; everything else
+    (a URL, ``None``, a non-object, an object it has not seen) goes to pyld's own ``resolve``
+    one element at a time, so the result, the errors and the ``cycles`` set are pyld's.
+
+    The memo is sound because (1) what an inline element resolves to depends on the object
+    alone: ``ResolvedContext(ctx)``, found or created under a key that is a function of the
+    object's content, never of ``active_ctx``, ``base`` or ``cycles``; (2) it holds a
+    reference to every object it keys, so an ``id`` cannot be reused for another object while
+    the resolver lives; (3) it lives in the resolver, which :func:`pyld_options` builds anew
+    for every call, so nothing is shared between calls and a loader that hands out a private
+    copy of a document on every load loses only the memo hits; and (4) the one place pyld
+    mutates a context object it has already seen is ``_resolve_context_urls``, which
+    rewrites relative ``@context`` URLs inside a freshly fetched remote document in place.
+    That method is overridden to forget the memo first, so a hit on an object that was
+    rewritten afterwards cannot happen. The caller's input is not touched: pyld expands a
+    deep copy. A ``frozendict`` is immutable, so keying it by identity is as safe, and the
+    top-level ``@context`` unwrap applies to the argument only, as in pyld, never to a list
+    element."""
+    from frozendict import frozendict
+    from pyld.context_resolver import ContextResolver
+
+    class _IdentityResolver(ContextResolver):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self._seen: dict[int, tuple[Any, list[Any]]] = {}
+
+        def resolve(self, active_ctx: Any, context: Any, base: Any, cycles: Any = None) -> Any:
+            if cycles is None:
+                cycles = set()                       # shared by every element, as in pyld
+            if isinstance(context, (dict, frozendict)) and "@context" in context:
+                context = context["@context"]       # the argument only, never an element
+            if not isinstance(context, list):
+                context = [context]
+            resolved: list[Any] = []
+            for element in context:
+                if isinstance(element, (dict, frozendict)):
+                    hit = self._seen.get(id(element))
+                    if hit is None or hit[0] is not element:
+                        hit = (element, super().resolve(active_ctx, [element], base, cycles))
+                        self._seen[id(element)] = hit    # holds the object: its id is not reused
+                    resolved.extend(hit[1])
+                else:
+                    resolved.extend(super().resolve(active_ctx, [element], base, cycles))
+            return resolved
+
+        def _resolve_context_urls(self, context: Any, base: Any) -> None:
+            self._seen.clear()                       # pyld rewrites context objects in place
+            super()._resolve_context_urls(context, base)
+
+    return _IdentityResolver
 
 
 __all__ = [

@@ -32,7 +32,7 @@ from typing import Any, Mapping
 from .. import _json
 from ..multibase import encode_multibase
 from ._context_validation import check_context_before_expansion, validate_document
-from ._rdfc import CanonicalizationBudgetExceeded, canonicalize_nquads
+from ._rdfc import CanonicalizationBudgetExceeded, budgeted_verification, canonicalize_nquads
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -192,6 +192,7 @@ class DataIntegrityProofSuite:
         secured["proof"] = dict(proof, proofValue=encode_multibase(signature))
         return secured
 
+    @budgeted_verification
     def verify(
         self,
         secured: dict[str, Any],

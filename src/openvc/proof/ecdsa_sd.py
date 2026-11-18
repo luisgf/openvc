@@ -50,6 +50,7 @@ from ..keys import P256SigningKey, verify_signature
 from ._context_validation import check_context_before_expansion, validate_document
 from ._rdfc import (
     budgeted_compact,
+    budgeted_verification,
     budgeted_expand,
     canonicalize_nquads,
     new_canonicalizer,
@@ -806,6 +807,7 @@ class EcdsaSdProofSuite:
         mandatory_idx = [i for i, ln in enumerate(relabeled) if ln in mandatory_set]
         return relabeled, label_map, mandatory_idx
 
+    @budgeted_verification
     def verify(
         self,
         derived: dict[str, Any],
