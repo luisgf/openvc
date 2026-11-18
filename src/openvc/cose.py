@@ -25,7 +25,7 @@ from typing import Any
 
 from . import cbor
 from .errors import OpenvcError
-from .keys import verify_signature
+from .keys import UnusablePublicKey, verify_signature
 
 __all__ = [
     "CoseError",
@@ -247,8 +247,11 @@ def verify_sign1(
             f"{sorted(COSE_ALG_TO_JOSE)} = ES256/ES384/EdDSA)")
     payload = _effective_payload(sign1.payload, detached_payload, "COSE_Sign1")
     tbs = _tbs("Signature1", sign1.protected, external_aad, payload)
-    return verify_signature(
-        alg=jose_alg, public_jwk=public_jwk, signing_input=tbs, signature=sign1.signature)
+    try:
+        return verify_signature(
+            alg=jose_alg, public_jwk=public_jwk, signing_input=tbs, signature=sign1.signature)
+    except UnusablePublicKey as exc:     # only this refusal; #391 owns the rest of the mapping
+        raise CoseError(f"COSE_Sign1 public key is unusable: {exc}") from exc
 
 
 def verify_mac0(

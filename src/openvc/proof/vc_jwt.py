@@ -50,11 +50,13 @@ from typing import Any, Protocol, runtime_checkable
 
 import jwt as pyjwt
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
 # The proof error taxonomy lives in openvc.proof.errors; these are re-exported for
 # back-compat (old imports like `from openvc.proof.vc_jwt import SignatureInvalid`).
 from .. import _json
+from ..keys import UnusablePublicKey, check_ed25519_point
 from .errors import (  # noqa: F401
     ClaimsInvalid,
     MalformedToken,
@@ -632,7 +634,22 @@ class VcJwtProofSuite:
         try:
             if alg in ("ES256", "ES384"):
                 return ECAlgorithm.from_jwk(json.dumps(jwk))
-            return OKPAlgorithm.from_jwk(json.dumps(jwk))   # EdDSA / Ed25519 (Ed25519 only)
+            key = OKPAlgorithm.from_jwk(json.dumps(jwk))    # EdDSA / Ed25519 (Ed25519 only)
+            # PyJWT checks only the length: refuse a small-order / non-canonical point, the
+            # one rule of keys.verify_signature (SignatureInvalid, as on every proof suite)
+            # PyJWT verifies with the public half of a JWK that carries `d` (it returns a
+            # private key object); that half is the key whose point is checked, and what
+            # PyJWT returned is what is returned, as before.
+            if isinstance(key, Ed25519PrivateKey):
+                verifying = key.public_key()
+            elif isinstance(key, Ed25519PublicKey):
+                verifying = key
+            else:
+                raise ValueError("not an Ed25519 key")
+            check_ed25519_point(verifying.public_bytes_raw())
+            return key
+        except UnusablePublicKey as exc:               # the suite's one class for it
+            raise SignatureInvalid(f"could not verify {alg} signature: {exc}") from exc
         except Exception as exc:
             raise ProofError(f"could not load {alg} key from JWK: {exc}") from exc
 

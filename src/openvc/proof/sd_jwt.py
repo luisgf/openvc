@@ -49,7 +49,7 @@ from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 from .. import _json
-from ..keys import KeyBackendError, verify_signature
+from ..keys import KeyBackendError, UnusablePublicKey, verify_signature
 from ._verify_common import (
     issuer_identifiers,
     DEFAULT_KB_MAX_AGE_S,
@@ -968,6 +968,8 @@ class SdJwtVcProofSuite:
         try:
             ok = verify_signature(
                 alg=alg, public_jwk=jwk, signing_input=signing_input, signature=signature)
+        except UnusablePublicKey as exc:       # small-order / non-canonical: the suite's class
+            raise SignatureInvalid(f"could not verify {what}: {exc}") from exc
         except KeyBackendError as exc:
             raise ProofError(f"could not verify {what}: {exc}") from exc
         if not ok:

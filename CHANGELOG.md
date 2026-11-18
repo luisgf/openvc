@@ -290,6 +290,38 @@ All notable changes to **openvc** are documented here. The format follows
   returns a value for those inputs where it raised a bare exception). `needs-human` issue, implemented as the recommended option
   (`test_jose_key_purpose.py`).
 
+- **Ed25519 public keys of small order or non-canonical encoding are refused wherever a key
+  is built for verification, not only on the OpenID4VCI key-proof lane**
+  ([#429](https://github.com/luisgf/openvc/issues/429)). `canonical_public_jwk` refused the
+  eight small-order points and `y >= p` (#379), but every verifying path built the key with
+  `Ed25519PublicKey.from_public_bytes`, which checks only the length: under the identity
+  point, `R` = identity with `S` = 0 verifies for every message, so a credential, a status
+  token or a Key Binding JWT under such a key needed no private key, and the identity had four
+  spellings with four thumbprints. Measured on `main` through `verify_credential` (a `did:jwk`
+  issuer, no private key anywhere): the identity, the point of order 2, the order-4 point
+  and the identity spelled with `y >= p` were each accepted on the first payload. The rule is
+  now one public helper, `openvc.keys.check_ed25519_point`, which raises the new
+  `openvc.keys.UnusablePublicKey` (an `InvalidKey`, so `canonical_public_jwk` is unchanged);
+  `keys.verify_signature` applies it before the signature is checked and raises it, never
+  `False`. The class is uniform: **every proof suite raises `SignatureInvalid`** for it
+  (VC-JWT, SD-JWT VC issuer JWT and KB-JWT, VP-JWT, status-list token, `eddsa-jcs-2022`,
+  `eddsa-rdfc-2022`; a `ProofError`, so code that catches the family is unaffected), and
+  **every other lane raises its own family**, never a bare `InvalidKey`: did:webvh a
+  `DidWebvhError` (`KeyResolutionFailed` / `KeyResolutionError` through the pipeline, as for
+  any log the resolver refuses; on `main` such a log was accepted, and a second entry signed
+  by no one could swap the document's keys), COSE a `CoseError` (mdoc reports it as `MdocSignatureInvalid` for IssuerAuth
+  and `MdocDeviceAuthError` for DeviceAuth), WRPRC an `RpRegistrationError` and LoTE a
+  `TrustListSignatureError`. Any other bad key (wrong-length `x`, wrong curve, a missing
+  member) keeps the class and message it had, and the general `KeyBackendError` mapping of
+  `cose.verify_sign1` stays with #391. A valid key and every Ed25519 golden are unchanged (a JWK that
+  also carries the private member `d` still verifies on VC-JWT, as before); P-256 and P-384
+  need no change. What the rule leaves out: a mixed-order key (a small-order component added
+  to a prime-order point) is accepted; did:key and did:jwk still *resolve* a refused point
+  (the refusal comes when the key verifies something); a did:webvh `updateKey` that is listed
+  but never signs is not examined. The refusal text names "the Ed25519 public key", except
+  from `canonical_public_jwk`, which keeps "JWK member 'x'". Found by a security review of `main` on 2026-11-17
+  (`test_ed25519_point_check.py`).
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
