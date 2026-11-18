@@ -519,8 +519,8 @@ def test_null_id_shapes_are_charged_at_least_what_pyld_does_and_not_zero(name, p
 
 
 def test_the_conversion_gets_the_document_as_written_not_its_expanded_form():
-    # A second expansion is not the identity: it resolves a relative @id that "@base": null kept
-    # relative, so the signed dataset changes (the forged-type document of
+    # On pyld 3.x a second expansion is not the identity: it resolves a relative @id that
+    # "@base": null kept relative, so the signed dataset changes (the forged-type document of
     # test_dcql_type_values.py, GHSA-vrxg-57v4-85mc). to_rdf therefore expands the document
     # itself, and the result is byte-identical to pyld's normalize.
     document = {"@context": [VC2, {"@base": None}], "id": "forged",
@@ -530,9 +530,8 @@ def test_the_conversion_gets_the_document_as_written_not_its_expanded_form():
     expected = jsonld.normalize(
         document, pyld_options(loader, algorithm="URDNA2015", format="application/n-quads"))
     assert _rdfc.canonicalize_nquads(document, loader) == expected
-    expanded = jsonld.expand(document, pyld_options(loader))
-    assert jsonld.to_rdf(expanded, pyld_options(loader)) != jsonld.to_rdf(
-        document, pyld_options(loader))                     # why the expanded form is not used
+    # (on pyld 3.x, to_rdf(jsonld.expand(document)) differs from to_rdf(document) for this
+    # document; 2.0.4 does not show it, which is no reason to hand it the expanded form)
 
 
 def test_a_document_with_a_keyword_like_id_still_converts():

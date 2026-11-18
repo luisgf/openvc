@@ -410,9 +410,9 @@ def to_rdf(document: Any, loader: Any, **options: Any) -> Any:
     is added); the conversion itself is pyld's, on the document as written.
 
     The document is therefore expanded twice (once to count, once inside ``to_rdf``). Handing
-    ``to_rdf`` the expanded form would save that, but a second expansion is not the identity:
-    it resolves a relative ``@id`` that a ``"@base": null`` context kept relative against the
-    default base, which changes the signed dataset (the forged-type document of
+    ``to_rdf`` the expanded form would save that, but on pyld 3.x a second expansion is not the
+    identity: it resolves a relative ``@id`` that a ``"@base": null`` context kept relative
+    against the default base, which changes the signed dataset (the forged-type document of
     ``test_dcql_type_values.py``). Expansion is pyld's and is not bounded here: an inline
     scoped context costs it time proportional to the nodes that use it times its size.
 

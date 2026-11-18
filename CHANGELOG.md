@@ -292,7 +292,7 @@ All notable changes to **openvc** are documented here. The format follows
   node-map comparisons only. JSON-LD expansion is pyld's: it is not linear (an inline scoped
   context of K terms used by N nodes costs N x K), it is not bounded by this change, and the
   document is now expanded twice (once to count, once inside `to_rdf`, which must be given the
-  document as written: expanding the expanded form again resolves a relative `@id` that
+  document as written: on pyld 3.x expanding the expanded form again resolves a relative `@id` that
   `"@base": null` kept relative, which changes the signed dataset). Output of an accepted document is byte-identical to `jsonld.normalize`.
   `eddsa-jcs-2022` / `ecdsa-jcs-2019` are unaffected (`test_rdf_conversion_budget.py`). Found
   by an internal security review of 2026-11-17.
