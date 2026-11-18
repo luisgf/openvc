@@ -437,6 +437,74 @@ All notable changes to **openvc** are documented here. The format follows
   `MemoryError` and other non-`OSError` `BaseException`s still propagate unchanged
   (`test_fetch_resolver_errors.py`).
 
+- **SD-JWT: an empty disclosure segment (`~~`) is refused, not dropped**
+  ([#434](https://github.com/luisgf/openvc/issues/434)). RFC 9901 §4 gives
+  `SD-JWT = JWT "~" *(DISCLOSURE "~")` with `DISCLOSURE = BASE64URL` (one or more
+  characters), but `SdJwtVcProofSuite._split` filtered empty segments out, and the KB-JWT
+  `sd_hash` is computed over the re-joined form, so one presentation had many accepted
+  spellings (`<jwt>~d1~~d2~`, `<jwt>~~d1~d2~`, `<jwt>~d1~d2~~~`, and `<jwt>~~` with no
+  disclosure at all); a holder-bound one verified with `key_bound=True` when sent with extra
+  `~`, so anything keyed on the presented string (a replay cache, an audit log) saw several
+  values for one presentation. **A presentation with a doubled `~` verified before and is
+  refused now**, as `MalformedToken` ("an SD-JWT disclosure segment is empty") through
+  `verify_credential`, `verify_credential_async`, `verify_vp_token` (`dc+sd-jwt` and nested in
+  a VP-JWT) and `SdJwtVcProofSuite.verify` / `create_presentation`. The last segment keeps its
+  meaning (empty = no KB-JWT), `<jwt>~d1~d2` with no trailing `~` was already refused, and
+  `issue()` / `create_presentation()` already emit the canonical form; every recorded SD-JWT
+  vector (IETF examples, the EUDI capture) verifies unchanged. Nothing else in the library
+  reads the `~` structure past the first or last segment, so no other lane needed a change.
+  Found by a security review of `main` on 2026-11-17 (`test_sd_jwt_empty_segments.py`).
+
+- **A certificate that chains to a trusted anchor but carries a malformed EKU, an unsupported
+  SAN name form or an unusable public key is now a typed refusal, not a bare `cryptography`
+  exception** ([#430](https://github.com/luisgf/openvc/issues/430)). `cryptography` decodes a
+  certificate's extension values, SAN name forms and SPKI on first access, and path validation
+  never reads them on the end entity, so the readers that run after the chain validated —
+  the mdoc DS-EKU check, the `iss`→SAN binding, the leaf-key-to-JWK step (mdoc, WRPRC, LoTE,
+  OpenID4VCI key proofs) and the WRPRC EKU gate — let `ValueError`, `UnsupportedGeneralNameType`
+  or `UnsupportedAlgorithm` out of `verify_credential`, `verify_vp_token` and `verify_many`
+  (aborting a batch). Each lazily parsed field now has one guarded accessor in `openvc.x5c`
+  mapping those to `X5cError` with a message that names the field and quotes nothing from the
+  certificate; the path verifier's own SAN decode is guarded the same way. The callers'
+  existing mapping applies (`MdocTrustError`, `KeyResolutionFailed`, `RpRegistrationError`,
+  `TrustListSignatureError`); a missing EKU / SAN keeps its own message
+  (`test_x5c_lazy_fields.py`).
+
+- **XML trusted lists: a `NextUpdate` more than six calendar months after the
+  `ListIssueDateTime` now makes the list contribute no anchors**
+  ([#432](https://github.com/luisgf/openvc/issues/432)). ETSI TS 119 612 clause 5.3.15
+  bounds the update window at six months and discards a list whose `NextUpdate` is past as
+  expired; the XML lane only checked the second half, so a signed list with a far
+  `NextUpdate` (the repository's own fixtures used 2099) kept yielding `granted` anchors
+  indefinitely, defeating the expiry rule. `walk_lotl` now records such a list — the LOTL
+  included, which stops the walk — as an `"expired"` problem, zero anchors, the walk
+  continuing; `NextUpdate` exactly at `ListIssueDateTime` plus six calendar months still
+  passes. An absent, malformed, tz-naive or non-UTC `ListIssueDateTime` fails the same way
+  (the window cannot be evaluated). The recorded real EU LOTL and Spanish TL are inside the
+  window. The synthetic fixtures' `ListIssueDateTime` moved to 2098-10-01 to stay inside it.
+  The LoTE lane is unchanged. Found by the internal security review of 2026-11-17
+  (`test_trustlist_update_window.py`).
+
+- **VC-JWT refuses a `vc.type` that is not a non-empty string or an array of non-empty
+  strings** ([#433](https://github.com/luisgf/openvc/issues/433)). **A VC-JWT with a malformed
+  `type` verified before and is refused now.** `VcJwtProofSuite.verify` never looked at the
+  shape of the signed `vc.type`: a `type` of `5`, `null`, `true`, `""`,
+  `{"VerifiableCredential": 1}`, `[["VerifiableCredential"]]` or `["VerifiableCredential", 5]`
+  verified under the default policy and `result.credential["type"]` handed it to the caller
+  (with `expected_types` pinned only `["VerifiableCredential", 5]` also verified; the rest were
+  `TypeMismatch`). Now a **present** `type` of any other shape is `ClaimsInvalid` right after
+  the signature verifies, on the classic and the ML-DSA lane, sync and async, the message naming
+  the shape through `safe_repr` and never the value; with `expected_types` set, that refusal
+  replaces the `TypeMismatch` the same credential got. Through `verify_ebsi_badge` such a
+  credential now fails with the core's `ClaimsInvalid` before the EBSI guard runs, and `""`,
+  which that function read as one type no accreditation lists, is refused too. The guard
+  (`CredentialTypeMalformed`, new in this unreleased version, #359) stays as defence in depth,
+  but no shape reaches it through the public API with `VcJwtProofSuite` as the `proof_suite`:
+  the core refuses every shape the guard does. Not changed, and not decided here: on VC-JWT an
+  absent `type`, `[]` and a `type` without `VerifiableCredential` still verify; Data Integrity
+  and `vc+sd-jwt` (where #275 ignores non-string entries on purpose) are untouched
+  (`test_credential_type_shape.py`).
+
 ## [1.38.1] — 2026-11-07
 
 ### Security

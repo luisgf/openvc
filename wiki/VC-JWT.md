@@ -103,6 +103,14 @@ already hold the key. Normally you let the pipeline resolve it from the
   date, a future `nbf` or a future `iat`. In `verify_many` such a token fails as
   its own item. The classic lane (PyJWT) and the ML-DSA lane apply the same
   rules, and on both a present `sub` or `jti` must be a string.
+- **A present `vc.type` must be well-formed.** After the signature verifies, a `type` that is
+  not a non-empty string or an array of non-empty strings (a number, `null`, `""`, an object, a
+  nested array, `["VerifiableCredential", 5]`) is a `ClaimsInvalid` naming the shape, never
+  the value, on the classic and the ML-DSA lane. Before v1.39.0 such a credential verified and
+  the caller received that value as the credential's type. An absent `type`, `[]` and a `type`
+  without `VerifiableCredential` are *not* refused by this rule: pin `expected_types` if you
+  need them refused. The rule is VC-JWT only; Data Integrity and SD-JWT VC read `type` as
+  before.
 - **A token with an `aud` needs your audience** (RFC 7519 §4.1.3,
   [ADR-0008](https://github.com/luisgf/openvc/blob/main/docs/adr/ADR-0008-jose-temporal-and-audience.md)).
   A VC-JWT that carries `aud` verifies only when you pass an audience that is one

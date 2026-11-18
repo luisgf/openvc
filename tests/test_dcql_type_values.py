@@ -236,9 +236,22 @@ def test_unbundled_context_is_a_typed_loader_error(lane):
 
 @needs_pyld
 def test_non_string_type_item_fails_closed():
+    # jwt_vc_json: since #433 VcJwtProofSuite refuses the shape itself, before type_values
+    # matching runs (it used to reach expansion and fail with "cannot expand")
     vp = _present("jwt_vc_json", [([V2], ["VerifiableCredential", 5])])
-    with pytest.raises(ClaimsInvalid, match="cannot expand"):
+    with pytest.raises(ClaimsInvalid, match="type` must be a non-empty string or an array") as info:
         _verify("jwt_vc_json", vp, [[VC_IRI]])
+    assert type(info.value) is ClaimsInvalid
+
+
+@needs_pyld
+def test_non_string_type_item_fails_closed_in_expansion_on_ldp_vc():
+    # ldp_vc (JCS Data Integrity) still verifies this credential, so it reaches
+    # `_expanded_types`, which fails closed: the path the jwt_vc_json test used to pin
+    vp = _present("ldp_vc", [([V2], ["VerifiableCredential", 5])])
+    with pytest.raises(ClaimsInvalid, match="cannot expand") as info:
+        _verify("ldp_vc", vp, [[VC_IRI]])
+    assert type(info.value) is ClaimsInvalid
 
 
 @needs_pyld
