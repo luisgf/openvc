@@ -911,8 +911,10 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   re-parsed its N-Quads** (twice) with pyld's `parse_nquads`, whose per-graph uniqueness scan
   compares each new triple with all those before it: an 80 KB derived credential of N one-valued
   properties cost 10 s before the signature check, a count the work budget never sees. It is now one
-  pyld parse per line with a set for the uniqueness (`ecdsa_sd._parse_nquads_linear`, 0.13 s for
-  the same document; the canonical output is byte-identical,
+  pyld parse per line (cut at CRLF, LF and a lone CR) with a set for the uniqueness
+  (`ecdsa_sd._parse_nquads_linear`: no triple comparison at all, 0.13 s for the same document
+  on pyld 3.x and 0.15 s on 2.0.4, whichever of the three ends the lines; the canonical output
+  is byte-identical,
   [#447](https://github.com/luisgf/openvc/issues/447), `test_ecdsa_sd_nquads_parse.py`).
 
 ## 10. Out of scope

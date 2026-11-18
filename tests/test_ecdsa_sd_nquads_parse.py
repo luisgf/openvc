@@ -60,7 +60,7 @@ def _outcome(fn, text):
     try:
         return ("ok", fn(text))
     except Exception as exc:                                   # noqa: BLE001
-        return ("raised", type(exc))
+        return ("raised", type(exc), str(exc))
 
 
 # -- counting pyld's triple comparisons ---------------------------------------------------- #
@@ -303,20 +303,9 @@ def test_fuzz_corpus_covers_the_shapes_it_claims():
     "\u2028", "\u0085", "\x0b", "\x1c",
 ])
 def test_literals_survive_pyld_escaping_quirks_identically(literal):
-    """pyld's unescape is not the inverse of its escape (backslash + n comes back as
-    backslash + line feed); the old code applied it twice and so does the new one."""
     doc = [{"@id": "http://example.org/s", "http://example.org/p": [{"@value": literal}]}]
     text = _to_nquads(doc, LOADER)
     assert _outcome(_canonicalize, text) == _outcome(_old_canonicalize, text)
-    # and the literal reaches the output (or the same refusal) in both
-    kind, _ = _outcome(_canonicalize, text)
-    assert kind in ("ok", "raised")
-
-
-def test_the_unescape_quirk_is_real_so_the_test_above_means_something():
-    doc = [{"@id": "http://example.org/s", "http://example.org/p": [{"@value": "\\n"}]}]
-    lines, _ = _canonicalize(_to_nquads(doc, LOADER))
-    assert lines == _old_canonicalize(_to_nquads(doc, LOADER))[0]
 
 
 def test_duplicate_quads_are_dropped_as_before():
@@ -369,3 +358,154 @@ def test_blank_and_whitespace_lines_are_skipped_as_before():
     text = '\n  \n<http://e/s> <http://e/p> "x" .\n\t\n\n'
     assert _canonicalize(text) == _old_canonicalize(text)
     assert _canonicalize("") == _old_canonicalize("") == ([], {})
+
+
+# -- 4. every line end pyld knows, on whichever pyld is installed (review F1, F2) ---------------- #
+
+def _quads(n, end):
+    return "".join(f'<http://e/s{i}> <http://e/p> "v{i}" .{end}' for i in range(n))
+
+
+LINE_ENDS = [pytest.param("\n", id="lf"), pytest.param("\r", id="lone-cr"),
+             pytest.param("\r\n", id="crlf")]
+
+
+def _ends_a_line(end):
+    """Does this pyld accept a quad ended by *end*? 2.0.4 ends a line at CR and CRLF; 3.x
+    keeps the CR in the line, which its grammar refuses (both old and new code, alike)."""
+    return _outcome(_old_canonicalize, _quads(1, end))[0] == "ok"
+
+
+@pytest.mark.parametrize("end", LINE_ENDS)
+def test_the_old_code_is_quadratic_for_every_line_end(comparisons, end):
+    """Control for the bounds below, on this pyld: N distinct quads, N**2/2 comparisons."""
+    if not _ends_a_line(end):
+        pytest.skip("this pyld refuses a CR in a line; there is no scan to count")
+    _old_canonicalize(_quads(300, end))
+    assert comparisons["n"] > 300 * 300 // 4
+
+
+@pytest.mark.parametrize("end", LINE_ENDS)
+def test_canonicalize_is_not_quadratic_for_every_line_end(comparisons, end):
+    if not _ends_a_line(end):
+        text = _quads(N, end)
+        assert _outcome(_canonicalize, text) == _outcome(_old_canonicalize, text)
+        return
+    lines, _ = _canonicalize(_quads(N, end))
+    assert len(lines) == N
+    assert comparisons["n"] < N
+
+
+@pytest.mark.parametrize("end", LINE_ENDS)
+def test_parse_nquads_linear_is_not_quadratic_for_every_line_end(comparisons, end):
+    if not _ends_a_line(end):
+        text = _quads(N, end)
+        assert _outcome(_canonicalize, text) == _outcome(_old_canonicalize, text)
+        return
+    dataset = ecdsa_sd._parse_nquads_linear(_quads(N, end))
+    assert len(dataset["@default"]) == N
+    assert comparisons["n"] < N
+
+
+def test_mixed_line_ends_are_not_quadratic(comparisons):
+    ends = ["\n", "\r", "\r\n"]
+    text = "".join(f'<http://e/s{i}> <http://e/p> "v{i}" .{ends[i % 3]}' for i in range(N))
+    if not _ends_a_line("\r"):
+        assert _outcome(_canonicalize, text) == _outcome(_old_canonicalize, text)
+        return
+    assert len(_canonicalize(text)[0]) == N
+    assert comparisons["n"] < N
+
+
+@pytest.mark.parametrize("end", LINE_ENDS)
+@pytest.mark.parametrize("make", SHAPES)
+def test_a_document_whose_nquads_use_any_line_end_matches_the_old_code(make, end, derived):
+    unsecured = {k: v for k, v in make(derived, 40).items() if k != "proof"}
+    text = _to_nquads(unsecured, LOADER).replace("\n", end)
+    assert _outcome(_canonicalize, text) == _outcome(_old_canonicalize, text)
+
+
+@pytest.mark.parametrize("text", [
+    '<a:s> <a:p> "a" .\r<a:s> <a:p> "b" .\r<a:s> <a:p> "c" .\rgarbage\n',
+    '<a:s> <a:p> "a" .\r\n<a:s> <a:p> "b" .\r\ngarbage\r\n',
+    '<a:s> <a:p> "a" .\n\r<a:s> <a:p> "b" .\rgarbage',
+], ids=["lone-cr", "crlf", "mixed"])
+def test_the_error_line_number_counts_every_line_end(text):
+    """On pyld 2.0.4 a lone CR ends a line, so ``garbage`` is line 4, not line 2."""
+    old, new = _outcome(_old_canonicalize, text), _outcome(_canonicalize, text)
+    assert old[0] == "raised"
+    assert new == old
+
+
+# -- 5. the failure of the second parse keeps its class (review F3) ------------------------------ #
+
+@pytest.mark.parametrize("text", [
+    '<a:s> <a:p> "v" <_:c14n0 x> .\n',
+    '<a:s> <a:p> "v" <_:c14n0!> .\n',
+])
+def test_a_failure_in_the_second_parse_has_the_class_and_message_it_had(text):
+    old, new = _outcome(_old_canonicalize, text), _outcome(_canonicalize, text)
+    assert old[0] == "raised"                                # it is the second parse that fails
+    assert new == old
+
+
+# -- 6. one named test per mutant of the dedupe key and the round trips (review F4) -------------- #
+
+def test_the_key_keeps_the_object_language():
+    text = '<a:s> <a:p> "x"@en .\n<a:s> <a:p> "x"@de .\n'
+    assert len(_canonicalize(text)[0]) == 2
+    assert _outcome(_canonicalize, text) == _outcome(_old_canonicalize, text)
+
+
+def test_the_key_keeps_the_type_of_subject_predicate_and_object():
+    # an IRI spelled <_:b0> and the blank node _:b0 are two different subjects
+    text = '<_:b0> <a:p> <a:o> .\n_:b0 <a:p> <a:o> .\n'
+    assert _outcome(_canonicalize, text) == _outcome(_old_canonicalize, text)
+    assert len(_canonicalize(text)[0]) == 2
+    # a literal and an IRI with the same text are two different objects
+    assert len(_canonicalize('<a:s> <a:p> "a:o" .\n<a:s> <a:p> <a:o> .\n')[0]) == 2
+
+
+def test_the_key_keeps_the_datatype_and_the_graph():
+    text = ('<a:s> <a:p> "1" .\n<a:s> <a:p> "1"^^<a:int> .\n<a:s> <a:p> "1" <a:g> .\n'
+            '<a:s> <a:p> "1" <a:h> .\n')
+    assert len(_canonicalize(text)[0]) == 4
+
+
+_COLLISION_PROBE = """
+import sys
+from openvc.proof import ecdsa_sd
+from openvc.proof._rdfc import new_canonicalizer
+text = '_:c14n0 <a:p> "x" .\\n_:b0 <a:p> "x" .\\n'
+unparsed = new_canonicalizer().main(ecdsa_sd._parse_nquads_linear(text),
+                                    {"format": "application/n-quads"})
+print(len(unparsed.splitlines()), len(ecdsa_sd._canonicalize(text)[0]))
+"""
+
+
+def test_the_second_parse_drops_lines_equal_after_canonicalization():
+    """``main`` leaves a label that starts with ``_:c14n`` alone while it may issue the same
+    label to another node: two different input quads become one line, and only the second
+    parse drops it. Which of two identical-looking nodes is issued first depends on the
+    process's hash seed, so this runs the probe under several seeds: some collide."""
+    import os
+    import subprocess
+    import sys
+    outcomes = set()
+    for seed in range(8):
+        env = {**os.environ, "PYTHONHASHSEED": str(seed),
+               "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+        out = subprocess.run([sys.executable, "-c", _COLLISION_PROBE], env=env, check=True,
+                             capture_output=True, text=True).stdout.split()
+        outcomes.add(tuple(out))
+    assert ("2", "1") in outcomes          # two lines without the second parse, one with it
+    assert outcomes <= {("2", "1"), ("2", "2")}
+    text = '_:c14n0 <a:p> "x" .\n_:b0 <a:p> "x" .\n'
+    assert _canonicalize(text) == _old_canonicalize(text)
+
+
+def test_a_form_feed_is_not_cut_here():
+    """pyld 3.x ends a line at a form feed and pyld 2.0.4 does not; each keeps doing so."""
+    for text in ['<a:s> <a:p> "a" .\x0c<a:s> <a:p> "b" .\n',
+                 '<a:s> <a:p> "a\x0cb" .\n', '<a:s> <a:p> "a b" .\n']:
+        assert _outcome(_canonicalize, text) == _outcome(_old_canonicalize, text)

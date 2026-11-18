@@ -220,8 +220,9 @@ byte-identical to pyld's `normalize`.
 dataset, and pyld's own parser keeps each graph's triples unique by comparing every new triple
 with all those before it, which is quadratic in the number of quads (a derived credential with
 8 000 extra one-valued properties, 80 KB, took 10 s and the work budget charges nothing for
-it). openvc parses one line at a time with pyld's parser and keeps the uniqueness in a set, so
-the cost is linear (0.13 s for that document) and the canonical lines and blank-node labels are
+it). openvc parses one line at a time (cut at CRLF, LF and a lone CR) with pyld's parser and keeps
+the uniqueness in a set, so the cost is linear on pyld 3.x and on the 2.0.4 floor (0.13 s and
+0.15 s for that document) and the canonical lines and blank-node labels are
 byte-identical to what pyld alone produced; a malformed line is still pyld's `JsonLdError`,
 which `verify` turns into `ProofMalformed`.
 

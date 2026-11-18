@@ -327,10 +327,12 @@ All notable changes to **openvc** are documented here. The format follows
   by comparing every new triple with all those already parsed, so N distinct quads cost N²/2
   comparisons. A derived credential with 8 000 extra one-valued properties (80 KB) cost 10 s
   through `verify_credential` before the base signature was looked at, a cost neither RDF
-  budget counts; it now costs 0.13 s. The parse is one pyld `parse_nquads` per line with a set
-  for the uniqueness, so the grammar, the literal unescaping and the `JsonLdError` for a
-  malformed line stay pyld's, and the canonical lines and the blank-node label map are
-  byte-identical to before (differential tests against a copy of the old code over a fuzzed
+  budget counts; it now costs 0.13 s on pyld 3.x and 0.15 s on the 2.0.4 floor. The parse is
+  one pyld `parse_nquads` per line (cut at CRLF, LF and a lone CR, the line ends of pyld
+  2.0.4) with a set for the uniqueness, so the grammar, the literal unescaping and the
+  error for a malformed line (its class, message and line number, on each pyld version,
+  the second parse included) stay pyld's, and the canonical lines and the blank-node label
+  map are byte-identical to before (differential tests against a copy of the old code over a fuzzed
   corpus, the W3C vc-di-ecdsa vectors, and the pyld 2.0.4 and 3.x semantics). The other two RDF
   suites never parsed N-Quads. Found by the review of #445
   (`test_ecdsa_sd_nquads_parse.py`).
