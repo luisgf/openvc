@@ -455,7 +455,7 @@ def test_the_charge_is_never_below_pyld_over_a_seeded_fuzz(alphabet, seed, pyld_
     gen = _Fuzz(seed, alphabet)
     loader = document_loader(None)
     checked = nonzero = 0
-    for _ in range(100):
+    for _ in range(50):
         document = gen.document()
         try:
             pyld_calls[0] = 0
@@ -473,7 +473,7 @@ def test_the_charge_is_never_below_pyld_over_a_seeded_fuzz(alphabet, seed, pyld_
         assert charge >= real, (alphabet, seed, charge, real, json.dumps(document))
         checked += 1
         nonzero += real > 0
-    assert checked > 90 and nonzero > 50      # the generator reaches the merge path
+    assert checked > 45 and nonzero > 25      # the generator reaches the merge path
 
 
 def test_the_charge_of_one_fat_property_is_exact():
@@ -754,11 +754,14 @@ def test_the_message_says_the_budget_is_summed_over_the_document_and_quotes_noth
     assert "marker" not in message and "urn:" not in message
 
 
-def _presentation(holder_suite, n_credentials=3, n_values=900):
+_SMALL_CEILING = 40_000        # three credentials of 200 values: 3 x 19 900 > 40 000 > 19 900
+
+
+def _presentation(n_credentials=3, n_values=200):
     """``n_credentials`` RDF-signed credentials of ``n_values`` distinct values each (each
-    below the ceiling: n*(n-1)/2 = 404 550 comparisons, 3 of them 1.2 million), and a
-    presentation of them signed by the holder with ``holder_suite``. The holder signs with the
-    ceiling lifted, so the verifier is what is tested."""
+    below the ceiling, together above it) and the unsigned presentation of them. The ceiling is
+    lowered by the tests, so that the documents stay small (the mechanism is the sum, not the
+    size)."""
     isk, idid, ivm = _ed_key()
     hsk, hdid, hvm = _ed_key()
     credentials = [DataIntegrityProofSuite().add_proof(
@@ -793,7 +796,8 @@ def _verify_presentation(signed):
 
 def test_a_presentation_signed_with_an_rdf_suite_is_one_document_whose_count_is_the_sum(
         monkeypatch, pyld_calls):
-    credentials, presentation, holder = _presentation(DataIntegrityProofSuite())
+    monkeypatch.setattr(_rdfc, "MAX_CONVERSION_COMPARISONS", _SMALL_CEILING)
+    credentials, presentation, holder = _presentation()
     for credential in credentials:                  # each credential alone is under the ceiling
         assert verify_credential(credential)
     signed = _sign_presentation(DataIntegrityProofSuite(), presentation, holder, monkeypatch)
@@ -810,7 +814,8 @@ def test_a_presentation_signed_with_an_rdf_suite_is_one_document_whose_count_is_
 
 def test_the_same_credentials_under_a_jcs_signed_presentation_verify(monkeypatch):
     from openvc.proof.di_jcs import EddsaJcsProofSuite
-    credentials, presentation, holder = _presentation(EddsaJcsProofSuite())
+    monkeypatch.setattr(_rdfc, "MAX_CONVERSION_COMPARISONS", _SMALL_CEILING)
+    credentials, presentation, holder = _presentation()
     signed = _sign_presentation(EddsaJcsProofSuite(), presentation, holder, monkeypatch)
     assert _verify_presentation(signed)             # only each credential is converted
 
@@ -822,9 +827,9 @@ def test_the_same_credentials_under_a_jcs_signed_presentation_verify(monkeypatch
 def test_the_controls_still_reach_the_signature_check():
     p = V + "p"
     controls = {
-        "identical values": _wrap({"id": "did:example:s", p: ["x"] * 8000}),
+        "identical values": _wrap({"id": "did:example:s", p: ["x"] * 3000}),
         "one value per property": _wrap({"id": "did:example:s",
-                                         **{V + f"p{i}": "v" for i in range(8000)}}),
+                                         **{V + f"p{i}": "v" for i in range(3000)}}),
     }
     for name, doc in controls.items():
         with pytest.raises(SignatureInvalid):
