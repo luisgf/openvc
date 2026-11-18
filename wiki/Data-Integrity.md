@@ -264,9 +264,19 @@ that repeats a served URL more than about 1 900 times.
 cost per document, they do not remove it: a refusal still costs up to about a second of one
 core, which on the async API is event-loop time, and a plain document with no scoped context
 expands in time linear in its size, with no cap here (size limits on the document you pass in
-remain the caller's). (2) On `ecdsa-sd-2023`, the N-Quads text is parsed again by pyld's
-`parse_nquads` after the conversion, and that is quadratic in the number of quads and charged
-0 here ([#447](https://github.com/luisgf/openvc/issues/447)).
+remain the caller's). (2) On `ecdsa-sd-2023`, the N-Quads text is parsed again after the
+conversion; that step is not charged here, and it is linear since
+[#447](https://github.com/luisgf/openvc/issues/447) (next paragraph).
+
+`ecdsa-sd-2023` has one more step before the signature check: it reads its N-Quads back into a
+dataset, and pyld's own parser keeps each graph's triples unique by comparing every new triple
+with all those before it, which is quadratic in the number of quads (a derived credential with
+8 000 extra one-valued properties, 80 KB, took 10 s and the work budget charges nothing for
+it). openvc parses one line at a time (cut at CRLF, LF and a lone CR) with pyld's parser and keeps
+the uniqueness in a set, so the cost is linear on pyld 3.x and on the 2.0.4 floor (0.13 s and
+0.15 s for that document) and the canonical lines and blank-node labels are
+byte-identical to what pyld alone produced; a malformed line is still pyld's `JsonLdError`,
+which `verify` turns into `ProofMalformed`.
 
 ## The JSON must be what was signed
 

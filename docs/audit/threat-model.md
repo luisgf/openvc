@@ -925,9 +925,10 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   presentation secured with an RDF suite is one document, whose count is the sum over the
   credentials it embeds. **Residuals of this bound (the lanes are not bounded end to end):** it
   covers the node-map comparisons only. (1) On `ecdsa-sd-2023` the N-Quads text is parsed
-  again by pyld's `parse_nquads` after the conversion, quadratic in the number of quads and
-  charged 0 (78 KiB, 10.5 s before the base signature;
-  [#447](https://github.com/luisgf/openvc/issues/447)). (2) JSON-LD expansion
+  again after the conversion; with pyld's own `parse_nquads` that was quadratic in the
+  number of quads and charged 0 (78 KiB, 10.5 s before the base signature), and it is
+  parsed in linear time since
+  [#447](https://github.com/luisgf/openvc/issues/447) (below). (2) JSON-LD expansion
   ([#446](https://github.com/luisgf/openvc/issues/446)), which runs first, is bounded by the
   third budget below.
   **JSON-LD expansion (R13, third bound, [#446](https://github.com/luisgf/openvc/issues/446)).**
@@ -960,8 +961,17 @@ items marked **✅ Resolved** have since been fixed and stay here as an audit tr
   sum. A document of more than about 700 KB of densely typed nodes, or a `@context` that
   repeats a served URL more than about 1 900 times, is refused though it verified before.
   Expansion that creates no term definition (a large plain document) is linear and not capped
-  by size; pyld's N-Quads parsing is #447. `add_proof` and `derive_proof` run the same budget
+  by size; the N-Quads parse of `ecdsa-sd-2023` is linear since #447 (below). `add_proof` and `derive_proof` run the same budget
   (a base credential another party issued is refused before its derivation).
+  **`ecdsa-sd-2023` also
+  re-parsed its N-Quads** (twice) with pyld's `parse_nquads`, whose per-graph uniqueness scan
+  compares each new triple with all those before it: an 80 KB derived credential of N one-valued
+  properties cost 10 s before the signature check, a count the work budget never sees. It is now one
+  pyld parse per line (cut at CRLF, LF and a lone CR) with a set for the uniqueness
+  (`ecdsa_sd._parse_nquads_linear`: no triple comparison at all, 0.13 s for the same document
+  on pyld 3.x and 0.15 s on 2.0.4, whichever of the three ends the lines; the canonical output
+  is byte-identical,
+  [#447](https://github.com/luisgf/openvc/issues/447), `test_ecdsa_sd_nquads_parse.py`).
 
 ## 10. Out of scope
 

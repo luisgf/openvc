@@ -32,7 +32,7 @@ then run inline on the event loop. The RDF suites charge three budgets before th
 check (``openvc.proof._rdfc``: canonicalization work, the node-map comparisons of the
 JSON-LD to RDF conversion, and the context work of JSON-LD expansion, #446), each a ceiling
 of about a second at most that still runs inline on the event loop; the CPU is not bounded
-end to end: on ecdsa-sd-2023 pyld's N-Quads parsing (#447) is pyld's and is not covered.
+end to end: on ecdsa-sd-2023 the N-Quads parse (linear since #447) is not charged.
 """
 from __future__ import annotations
 
