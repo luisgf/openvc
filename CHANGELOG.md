@@ -54,6 +54,7 @@ All notable changes to **openvc** are documented here. The format follows
   and `VerifiedPresentation` docstrings and the Presentations wiki page now say what
   `holder` means on each lane and what the switch enforces where. Found by the internal
   security review of 2026-11-07 (`test_openid4vp_holder_binding_lanes.py`).
+
 - **mdoc: the document signer must share its IACA anchor's subject `countryName`, and its
   `stateOrProvinceName` when both carry it, as ISO/IEC 18013-5 §9.3.3 requires; the result
   now exposes both subjects** ([#383](https://github.com/luisgf/openvc/issues/383)).
@@ -388,6 +389,7 @@ All notable changes to **openvc** are documented here. The format follows
   lists still anchor (a LOTL that fails this way stops the walk with that one problem). The
   recorded EU LOTL and Spanish TL goldens (UTF-8) parse as before. Found by the internal
   security review of 2026-11-07 (§ M12; `test_trustlist_encoding_typed.py`).
+
 - **Key-resolution errors no longer echo an attacker-sized identifier whole**
   ([#431](https://github.com/luisgf/openvc/issues/431)). A credential with a megabyte-long
   `iss` or `verificationMethod` produced a megabyte-long exception message before any
@@ -427,6 +429,21 @@ All notable changes to **openvc** are documented here. The format follows
   vector (IETF examples, the EUDI capture) verifies unchanged. Nothing else in the library
   reads the `~` structure past the first or last segment, so no other lane needed a change.
   Found by a security review of `main` on 2026-11-17 (`test_sd_jwt_empty_segments.py`).
+
+- **A certificate that chains to a trusted anchor but carries a malformed EKU, an unsupported
+  SAN name form or an unusable public key is now a typed refusal, not a bare `cryptography`
+  exception** ([#430](https://github.com/luisgf/openvc/issues/430)). `cryptography` decodes a
+  certificate's extension values, SAN name forms and SPKI on first access, and path validation
+  never reads them on the end entity, so the readers that run after the chain validated —
+  the mdoc DS-EKU check, the `iss`→SAN binding, the leaf-key-to-JWK step (mdoc, WRPRC, LoTE,
+  OpenID4VCI key proofs) and the WRPRC EKU gate — let `ValueError`, `UnsupportedGeneralNameType`
+  or `UnsupportedAlgorithm` out of `verify_credential`, `verify_vp_token` and `verify_many`
+  (aborting a batch). Each lazily parsed field now has one guarded accessor in `openvc.x5c`
+  mapping those to `X5cError` with a message that names the field and quotes nothing from the
+  certificate; the path verifier's own SAN decode is guarded the same way. The callers'
+  existing mapping applies (`MdocTrustError`, `KeyResolutionFailed`, `RpRegistrationError`,
+  `TrustListSignatureError`); a missing EKU / SAN keeps its own message
+  (`test_x5c_lazy_fields.py`).
 
 ## [1.38.1] — 2026-11-07
 

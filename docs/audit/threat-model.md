@@ -164,7 +164,8 @@ boundary is attacker-controlled until a signature verifies.
   the DS and the anchor it validated to — `countryName` present exactly once on both, a
   2-character alpha-2 code, and equal; `stateOrProvinceName` equal when both carry it,
   once each — compared as decoded text with no normalisation of it; a subject that cannot
-  be decoded is a typed refusal, not a bare `ValueError` (#383; exposed as
+  be decoded is a typed refusal, not a bare `ValueError` (#383), and so is a DS EKU, SAN or
+  public key that cannot be decoded (#430; exposed as
   `VerifiedMdoc.ds_subject` / `anchor_subject`, where `CN` / `O` are informational). The
   rest of Annex B (DS key usage, CRL distribution point, the IACA's own fields) is not
   checked, and the Table B.1 cross-check of the disclosed `issuing_country` /
