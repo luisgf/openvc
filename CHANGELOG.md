@@ -322,6 +322,46 @@ All notable changes to **openvc** are documented here. The format follows
   from `canonical_public_jwk`, which keeps "JWK member 'x'". Found by a security review of `main` on 2026-11-17
   (`test_ed25519_point_check.py`).
 
+- **The node-map comparisons of the JSON-LD to RDF conversion that the three RDF suites run
+  before the signature are now charged against a ceiling: a document whose merge would make
+  more than 1 000 000 value comparisons is refused as `CanonicalizationBudgetExceeded` before
+  pyld runs it** ([#426](https://github.com/luisgf/openvc/issues/426)).
+  pyld builds its node map with a duplicate check per value, so N values of one property of
+  one subject cost about N**2/2 `compare_values` calls: on v1.38.1 a 71 KB credential (8 000
+  values) cost 10.4 s through `verify_credential` with a garbage `proofValue` (the proof is
+  canonicalized before the key is even resolved), 191 KB cost 171 s, and the same cost is
+  reached by N node objects with the same `@id` (they merge), N `type` values, N IRI objects,
+  N values of a bundled term, N nodes with a keyword-like `id` (`"@a"`, which expands to a
+  null `@id` and merges), graphs named by a keyword id, and blank-node property names; on the
+  async API it stalled the event loop. The #381 budget only started after the conversion.
+  `openvc.proof._rdfc` now expands the document, replays pyld's node-map merge,
+  mirroring the rules that decide which (graph, subject, property) slot a value lands in
+  (the identifier issuer's labels for blank-node ids, types and forward properties, `@reverse`
+  properties as written, null ids as one subject, `@default` as the default graph), and
+  refuses over `MAX_CONVERSION_COMPARISONS` before `to_rdf` is called; the same check guards the
+  `to_rdf` calls of `ecdsa-sd-2023`. The count is **summed over the whole document**, not per
+  property: 51 subjects of 200 values, three properties of 1 000 values or a 45-value
+  sub-object repeated 1 000 times are refused, while one property with about 1 400 distinct
+  values is not. A presentation secured with an RDF suite is **one** converted document: its
+  count is the sum over the credentials it embeds (three credentials of 1 000 values each
+  verify alone and are refused together, at the holder and at the verifier), while a
+  presentation secured with a JCS suite or a VP-JWT converts only each credential. A test checks the count against the real `compare_values` calls of pyld
+  over a corpus of shapes and a seeded fuzz whose alphabet includes keyword ids, blank-node
+  properties in both directions, keyword- and blank-named graphs and scoped contexts; the
+  repository's RDF fixtures need at most 2 comparisons. **Residuals (not bounded by this
+  change):** the count covers the node-map comparisons only, so the lanes are not bounded
+  end to end. (1) JSON-LD expansion ([#446](https://github.com/luisgf/openvc/issues/446)) is
+  pyld's: it is not linear (an inline scoped
+  context of K terms used by N nodes costs N x K), it is not bounded by this change, and the
+  document is now expanded twice (once to count, once inside `to_rdf`, which must be given the
+  document as written: on pyld 3.x expanding the expanded form again resolves a relative `@id` that
+  `"@base": null` kept relative, which changes the signed dataset). (2) On `ecdsa-sd-2023`
+  the N-Quads text is parsed again by pyld's `parse_nquads`, which is quadratic in the number
+  of quads and is charged 0 here ([#447](https://github.com/luisgf/openvc/issues/447)).
+  Output of an accepted document is byte-identical to `jsonld.normalize`.
+  `eddsa-jcs-2022` / `ecdsa-jcs-2019` are unaffected (`test_rdf_conversion_budget.py`). Found
+  by an internal security review of 2026-11-17.
+
 ### Fixed
 
 - **Schema validation no longer lets the JSON Schema processor's bare exceptions escape —
