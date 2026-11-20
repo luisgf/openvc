@@ -1518,9 +1518,8 @@ def _expanded_types(query_id: str, index: int, result: Any, loader: Any) -> froz
     top-level node, so nothing else in it changes how its types expand. Each call gets
     its own pyld context resolver, so no context processed here is cached for, or taken
     from, another call."""
-    from pyld import jsonld
-
-    from .proof.contexts import DocumentLoaderError, pyld_options
+    from .proof._rdfc import budgeted_expand
+    from .proof.contexts import DocumentLoaderError
     from .verify import (
         FORMAT_DI_ECDSA_JCS,
         FORMAT_DI_ECDSA_RDFC,
@@ -1538,7 +1537,7 @@ def _expanded_types(query_id: str, index: int, result: Any, loader: Any) -> froz
         return frozenset()
     document = {key: credential[key] for key in ("@context", "type") if key in credential}
     try:
-        expanded = jsonld.expand(document, pyld_options(loader, base=_RELATIVE_BASE))
+        expanded = budgeted_expand(document, loader, base=_RELATIVE_BASE)
     except Exception as exc:
         # pyld wraps a loader refusal in its own JsonLdError: surface the actionable
         # "unbundled context" error if it caused this (as Data Integrity does). Anything

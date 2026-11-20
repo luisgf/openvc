@@ -112,7 +112,8 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
 
-from .contexts import DocumentLoaderError, pyld_options
+from ._rdfc import budgeted_compact, budgeted_expand, new_processor
+from .contexts import DocumentLoaderError
 from .errors import ProofError, ProofMalformed
 
 VC_BASE_CONTEXTS = frozenset({
@@ -191,6 +192,17 @@ def validate_document(
     _check_compacted(proof_config, loader, what="proof", indexes=indexes)
 
 
+def check_context_before_expansion(unsecured: dict[str, Any]) -> None:
+    """The document's ``@context`` rule of :func:`validate_document` — the same
+    :func:`_check_context`, so the same refusal — for a caller that has not expanded the
+    document yet. It is linear in the ``@context`` array and refuses the plain spelling of an
+    inline term definition before pyld spends any time on it. Every suite grafts the document's
+    ``@context`` onto the proof configuration, so this covers both. What it cannot see, a
+    scoped context reached some other way, is bounded by the context budget of
+    :mod:`openvc.proof._rdfc`."""
+    _check_context(unsecured.get("@context"))
+
+
 def _check_context(context: Any) -> None:
     entries = [context] if isinstance(context, str) else context
     if not isinstance(entries, list) or not entries:
@@ -219,16 +231,15 @@ def _is_presentation(document: dict[str, Any]) -> bool:
 
 def _check_compacted(document: dict[str, Any], loader: Any, *, what: str,
                      indexes: dict[str, _TermIndex]) -> None:
-    from pyld import jsonld          # the caller already canonicalized with pyld
-
     try:
-        expanded = jsonld.expand(document, pyld_options(loader))
+        processor = new_processor()         # the expansion and the compactions share it
+        expanded = budgeted_expand(document, loader, processor)
         if not (isinstance(expanded, list) and len(expanded) == 1
                 and isinstance(expanded[0], dict)):
             raise ProofMalformed(f"the {what} must describe exactly one top-level node")
         node = expanded[0]
         _check_expanded(node, node.get("@id"), what=what, top=True)
-        compacted = jsonld.compact(expanded, document["@context"], pyld_options(loader))
+        compacted = budgeted_compact(expanded, document["@context"], loader, processor)
         same = _canonical(compacted) == _canonical(document)
         where = "" if same else _first_difference(
             _normalize(document), _normalize(compacted), "")[:200]
@@ -238,8 +249,8 @@ def _check_compacted(document: dict[str, Any], loader: Any, *, what: str,
             # not properties: stub it out first (rare, so a second compaction only then).
             stubbed = _stub_json_literals(expanded)
             if stubbed is not expanded:
-                compacted = jsonld.compact(
-                    stubbed, document["@context"], pyld_options(loader))
+                compacted = budgeted_compact(
+                    stubbed, document["@context"], loader, processor)
             context_key = _canonical(document["@context"])
             if context_key not in indexes:
                 indexes[context_key] = _term_index(document["@context"], loader)
@@ -775,13 +786,13 @@ def missing_types(document: dict[str, Any], expected: Sequence[str],
     inline ``@vocab`` therefore matches a bare name only when the verifier serves a
     context giving it that name (a published context, or one holding just that
     ``@vocab``); otherwise pin its full IRI."""
-    from pyld import jsonld          # the suite already canonicalized with pyld
-
     unsecured = {k: v for k, v in document.items() if k != "proof"}
     if _is_presentation(unsecured):
         unsecured.pop(_EMBEDDED_CREDENTIALS, None)
     try:
-        expanded = jsonld.expand(unsecured, pyld_options(loader))
+        expanded = budgeted_expand(unsecured, loader)
+    except ProofError:
+        raise
     except Exception as exc:         # pyld's JsonLdError, ... — validated already
         raise ProofMalformed(f"cannot expand the document's types: {exc}") from exc
     node = expanded[0] if isinstance(expanded, list) and len(expanded) == 1 else None
@@ -821,4 +832,5 @@ def _trusted_iris(name: Any, index: _TermIndex) -> set[str]:
     return iris
 
 
-__all__ = ["VC_BASE_CONTEXTS", "missing_types", "validate_document"]
+__all__ = ["VC_BASE_CONTEXTS", "check_context_before_expansion", "missing_types",
+           "validate_document"]

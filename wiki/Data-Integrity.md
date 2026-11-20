@@ -240,17 +240,42 @@ each credential, one document at a time. The repository's RDF fixtures need at m
 `ecdsa-sd-2023`'s own `to_rdf` calls are charged the same way, and the JCS suites do no RDF
 work.
 
-**What this does not bound** (the lanes are not bounded end to end): (1) JSON-LD *expansion*
-([#446](https://github.com/luisgf/openvc/issues/446)), which runs first and is pyld's. (2) On
-`ecdsa-sd-2023`, the N-Quads text is parsed again after the conversion; that step is
-not charged here, and it is linear since
-[#447](https://github.com/luisgf/openvc/issues/447) (next paragraph). About expansion: it is not linear: a scoped context (an inline term with its own `@context`) is processed again for every
-node that uses it, so K terms used by N nodes cost N x K, and the same holds for the bundled VC
-v2 type-scoped contexts on a megabyte of typed nodes (seconds). The document is expanded twice
-now (once to count, once inside the conversion, which has to be given the document as written),
-so that cost is about doubled: on a megabyte of typed nodes 2.7 s became 5.2 s, and an inline
-scoped context of 1 750 terms used by 1 000 nodes (47 KB) 6.5 s became 13 s. Size limits on the
-document you pass in remain the caller's.
+A third bound charges the **JSON-LD expansion** that runs before both
+([#446](https://github.com/luisgf/openvc/issues/446)). pyld applies a term's scoped context again
+for every node that uses the term, and each time first serializes an inline context whole to build
+its cache key, so a scoped context of J bytes and K terms used by N nodes costs J x N bytes and
+K x N term definitions (K = N = 2 000, an 87 KB credential, 14 seconds with a garbage proof; a
+type used N times spends 4 bytes a use and 100 KiB took up to 190 seconds). openvc removes the
+first cost, by resolving an inline context object once per call instead of serializing it on
+every use (100 KiB: 190 s became 0.22 s), and counts the second: one unit per term definition
+(plus one per 128 bytes of a definition's strings, one per 512 entries of every active-context
+copy and two for every context processed), refusing over `MAX_CONTEXT_WORK` (300 000, about 1 to
+1.4 seconds of one core) with the same `CanonicalizationBudgetExceeded`, from inside pyld, so the
+work stops where it is. The budget is **one per verification**: the proof configuration, the
+document, the checks after the signature and `expected_types` of one credential share it, the
+two expansions of the conversion included; a status list or schema credential verified from
+inside it has its own. A presentation is one verification and each credential it embeds is
+another; the `meta.type_values` match of `verify_vp_token` has its own as well. The document's
+`@context` is also checked first, before any pyld work (an inline term definition is refused
+outright, as it is after the signature). Measured per verification: every RDF fixture needs at
+most 1 410 units; 1 000 nodes typed `BitstringStatusListEntry` 73 000, typed `DataIntegrityProof`
+(the densest bundled type) 101 000; 100 KiB / 1 MiB of nodes typed `BitstringStatusListEntry`
+35 000 / 355 000, typed `DataIntegrityProof` 115 000 / 1 174 000, typed `JsonSchema` 21 000 /
+214 000, plain 1 MiB 250. So a document of more than about 260 KB of `DataIntegrityProof`-typed
+nodes, 870 KB of `BitstringStatusListEntry`-typed nodes, or a `@context` that repeats a served
+URL more than about 600 times, is refused (the node-map budget above refuses one property with
+more than about 1 400 values first). The counting adds one Python frame to pyld's term-definition
+recursion, so a context whose terms depend on each other through a chain of more than about 325
+prefixes (495 without it) is refused as `DataIntegrityError`.
+
+**What this does not bound** (the lanes are not bounded end to end): (1) The budgets bound the
+cost per verification, not per `vp_token` (each embedded credential is its own verification:
+21 credentials of 49 KB took 19 seconds, 0.9 s each), a refusal still costs up to about 1.4
+seconds of one core, which on the async API is event-loop time, and a document with no scoped
+context expands in time linear in its size with no cap here (size limits on the document you
+pass in remain the caller's). (2) On `ecdsa-sd-2023`, the N-Quads text is parsed again after the
+conversion; that step is not charged here, and it is linear since
+[#447](https://github.com/luisgf/openvc/issues/447) (next paragraph).
 
 `ecdsa-sd-2023` has one more step before the signature check: it reads its N-Quads back into a
 dataset, and pyld's own parser keeps each graph's triples unique by comparing every new triple

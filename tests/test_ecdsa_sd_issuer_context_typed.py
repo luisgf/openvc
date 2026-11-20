@@ -85,6 +85,16 @@ CASES = [
 CONTEXTS = [pytest.param(value, id=name) for name, value in CASES]
 
 
+@pytest.fixture
+def _canonicalizer_guard_is_the_subject(monkeypatch):
+    """The verify arm's guard for a context pyld itself cannot process. The refusal of the
+    document's ``@context`` that now comes before expansion (#446) would answer first for
+    most of these shapes with its own message, so it is switched off for the tests that pin
+    the guard; tests/test_di_context_before_expansion.py covers the early refusal."""
+    monkeypatch.setattr(ecdsa_sd, "check_context_before_expansion",
+                        lambda *args, **kwargs: None)
+
+
 def credential(context: Any = None, **overrides: Any) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "@context": [V2] if context is None else context,
@@ -301,6 +311,7 @@ def test_the_same_context_not_served_is_the_typed_refusal():
 # -- the verify side, which already had the arm ------------------------------ #
 
 @pytest.mark.parametrize("context", CONTEXTS)
+@pytest.mark.usefixtures("_canonicalizer_guard_is_the_subject")
 def test_verify_side_is_typed_and_keeps_its_own_prefix(context):
     shown = with_context(DERIVED, context)
     refused(lambda: SUITE.verify(shown, public_key_jwk=SK.public_jwk()),
@@ -311,6 +322,7 @@ def test_verify_side_is_typed_and_keeps_its_own_prefix(context):
 
 
 @pytest.mark.parametrize("context", CONTEXTS)
+@pytest.mark.usefixtures("_canonicalizer_guard_is_the_subject")
 def test_verify_many_returns_both_items(context):
     batch = [copy.deepcopy(DERIVED), with_context(DERIVED, context)]
     policy = VerificationPolicy(require_status=False)
@@ -426,6 +438,7 @@ def test_derive_proof_cuts_a_pyld_message_quoting_a_huge_context():
         _cut(exc, _PREFIX)
 
 
+@pytest.mark.usefixtures("_canonicalizer_guard_is_the_subject")
 def test_verify_cuts_a_pyld_message_quoting_a_huge_context():
     exc = refused(lambda: SUITE.verify(
         with_context(DERIVED, "x" * _BIG), public_key_jwk=SK.public_jwk()),
@@ -433,6 +446,7 @@ def test_verify_cuts_a_pyld_message_quoting_a_huge_context():
     _cut(exc, _DERIVED_PREFIX)
 
 
+@pytest.mark.usefixtures("_canonicalizer_guard_is_the_subject")
 def test_a_real_pyld_refusal_follows_the_same_rule_in_every_arm():
     # pyld 3.x refusals are 130 to 470 characters and fit whole; pyld 2.0.4 appends the
     # traceback of its inner error (up to about 2600), so its longest are cut. Either way

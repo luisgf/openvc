@@ -31,8 +31,8 @@ from typing import Any, Mapping
 
 from .. import _json
 from ..multibase import encode_multibase
-from ._context_validation import validate_document
-from ._rdfc import CanonicalizationBudgetExceeded, canonicalize_nquads
+from ._context_validation import check_context_before_expansion, validate_document
+from ._rdfc import CanonicalizationBudgetExceeded, budgeted_verification, canonicalize_nquads
 from ._verify_common import (
     DEFAULT_LEEWAY_S,
     CredentialExpired,
@@ -192,6 +192,7 @@ class DataIntegrityProofSuite:
         secured["proof"] = dict(proof, proofValue=encode_multibase(signature))
         return secured
 
+    @budgeted_verification
     def verify(
         self,
         secured: dict[str, Any],
@@ -224,8 +225,9 @@ class DataIntegrityProofSuite:
         proof, proof_config, signature = prepare_di_proof(
             secured, proof_type=PROOF_TYPE, cryptosuite=CRYPTOSUITE)
 
-        loader = document_loader(extra_contexts)
         unsecured = _unsecured(secured)
+        check_context_before_expansion(unsecured)        # cheap and exact; before any pyld work
+        loader = document_loader(extra_contexts)
         data = _hash_data(unsecured, proof_config, loader)
 
         jwk = public_key_jwk or resolve_verification_key(
